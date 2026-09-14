@@ -21,3 +21,7 @@ The CI follow-up requires `bun run test:storage-full` after the ordinary suite. 
 ## Account-service follow-up
 
 Revision `73b7d152f52eea5bc79819bb74dbabd05834ad6f` adds explicit optional news consent, anonymous signed-link unsubscribe, a manually invoked campaign sender and a restricted owner dashboard. See [the operations guide](operations/news-and-owner.md). Existing users are not subscribed automatically. Sending requires the operator’s public postal address and an explicitly approved campaign; provider acceptance is not inbox delivery. The file manifest marks original-runtime equality per file so current source cannot be mistaken for a rebuilt installer.
+
+## Unified owner analytics
+
+Revision `2b4035d97dfd04315c88d49d947b1763f3e2955c` adds repository-scoped owner analytics, preserved daily history and explicit unavailable/capped provider states. Metadata collection and the owner service change; signed installers and the memory runtime retain their original source. Private analytics reports and credentials are not included.
