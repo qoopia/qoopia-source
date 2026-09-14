@@ -24,6 +24,9 @@ test('T27 does not degrade from spoofed SQLITE_FULL text or code',()=>{
  expect(storageDegradation().degraded).toBe(false);
 });
 
+// The fault mutates SQLite's page limit and the process-wide write latch.
+// CI must run `bun run test:storage-full` in its own process/database after
+// the ordinary suite; its deliberate skip there is not a qualification.
 const sqliteFullTest=process.env.QOOPIA_T27_SQLITE_FULL==='true'?test:test.skip;
 sqliteFullTest('T27 SQLITE_FULL preserves committed data, degrades readiness, blocks later writes and keeps reads',async()=>{
  const baselineText='T27 baseline '+randomUUID(),baseline=await call('note_create',{type:'memory',text:baselineText});expect(baseline.isError).toBe(false);const baselineId=baseline.value.id;

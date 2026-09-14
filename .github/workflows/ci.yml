@@ -59,6 +59,10 @@ jobs:
       - name: Tests
         run: bun test
 
+      - name: Storage-full failure mode (isolated database)
+        timeout-minutes: 1
+        run: bun run test:storage-full
+
       - name: Bounded V4 qualification
         run: |
           mkdir -p artifacts/v4/evidence/P09-ci

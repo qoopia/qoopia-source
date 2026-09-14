@@ -72,6 +72,7 @@ bun install --frozen-lockfile
 bun run typecheck
 bun run lint
 bun test
+bun run test:storage-full
 ```
 
 For a disposable development installation, choose an unused directory:
@@ -82,6 +83,8 @@ export QOOPIA_SERVER_ROLE=canonical
 bun run migrate
 bun run dev
 ```
+
+The ordinary suite leaves one deliberate skip for the SQLite-full fault. `test:storage-full` runs it in a fresh temporary database; both commands are mandatory in CI. See the [storage-full check](docs/operations/storage-full-check.md).
 
 Use synthetic data. Keep production credentials and personal memory out of tests. The schema-35 upgrade test includes a verified source-only fixture, so it does not need access to private Git history.
 
