@@ -225,7 +225,6 @@
   "What is a steward?": "Кто такой управляющий агент?",
   "A steward is your own agent with permission to administer your environment. You can also select it as your external representative in Bridges. Assigning the role does not start an always-running AI process.": "Это ваш агент с разрешением управлять пространством. Его также можно выбрать внешним представителем в Мостах. Назначение роли не запускает постоянно работающий ИИ-процесс.",
   "Is the source code publicly available?": "Доступен ли исходный код?",
-  "Signed installers are publicly available. The product source repository remains private; this is not a public open-source release.": "Подписанные установщики доступны всем. Репозиторий исходного кода остаётся закрытым; это не выпуск с открытым исходным кодом.",
   "Keep going.": "Продолжайте.",
   "Keep what matters.": "Сохраняйте важное.",
   "Privacy & control": "Приватность и контроль",
@@ -316,7 +315,6 @@
   "V1 release notes — Qoopia": "Описание версии V1 — Qoopia",
   "Releases / 11 September 2026": "Версии / 11 сентября 2026",
   "Public V1 release.": "Публичная версия V1.",
-  "Signed installers are available for macOS Apple Silicon and Linux x64. The product source repository remains private.": "Подписанные установщики доступны для macOS на Apple Silicon и Linux x64. Репозиторий исходного кода остаётся закрытым.",
   "Memory, connections and Bridges": "Память, подключения и Мосты",
   "A consistent interface across desktop, browser and embedded access to one selected environment.": "Единый интерфейс приложения, браузера и встроенной панели для выбранного пространства.",
   "A Connections page for MCP clients, native integrations and explicit authorization.": "Раздел «Подключения» для MCP-клиентов, локальных интеграций и явных разрешений.",
@@ -889,5 +887,7 @@
   "Installation task": "Задание на установку",
   "Enable JavaScript to prepare a task, or follow the manual installation steps below.": "Включите JavaScript для подготовки задания или выполните ручную установку по инструкции ниже.",
   "Qoopia V1 requires macOS 15 or later on Apple Silicon. Intel Macs and Windows are not supported.": "Qoopia V1 требует macOS 15 или новее и Apple Silicon. Intel Mac и Windows не поддерживаются.",
-  "Apple Silicon Mac, macOS 15.0 or newer. Intel Macs and Windows are not supported.": "Mac с Apple Silicon и macOS 15.0 или новее. Intel Mac и Windows не поддерживаются."
+  "Apple Silicon Mac, macOS 15.0 or newer. Intel Macs and Windows are not supported.": "Mac с Apple Silicon и macOS 15.0 или новее. Intel Mac и Windows не поддерживаются.",
+  "Qoopia V1 source code is publicly available under the MIT license. Signed installers are published separately.": "Исходники Qoopia V1 открыты по лицензии MIT. Подписанные установщики публикуются отдельно.",
+  "Signed installers are available for macOS Apple Silicon and Linux x64. Qoopia V1 source is public under MIT.": "Подписанные установщики доступны для macOS Apple Silicon и Linux x64. Исходники Qoopia V1 открыты по лицензии MIT."
 }

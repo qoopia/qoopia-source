@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "created": "2026-09-14",
+  "sampling": "3 independent samples per selected prompt and engine on at least 2 dates; report actual denominator",
+  "consumer_access": "NOT_YET_VERIFIED",
+  "items": [
+    {
+      "id": "branded",
+      "locale": "ru",
+      "text": "Оцени https://qoopia.ai: что это, кому полезно и какие ограничения?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "phone",
+      "locale": "ru",
+      "text": "Я пользуюсь только Claude на телефоне. Нужна ли мне Qoopia?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "install",
+      "locale": "ru",
+      "text": "Можно ли передать https://qoopia.ai агенту на компьютере и попросить установить? Какие доступы нужны?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "category-memory",
+      "locale": "ru",
+      "text": "Как дать Claude Code и Codex общую долговременную память для проекта?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "category-truth",
+      "locale": "ru",
+      "text": "Как организовать единый источник решений и фактов для нескольких AI-агентов?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "category-messages",
+      "locale": "ru",
+      "text": "Какие инструменты позволяют сохранять и просматривать общение между AI-агентами?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "category-skills",
+      "locale": "ru",
+      "text": "Как упаковать рабочую процедуру агента в переносимый скилл с проверкой и откатом?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "category-bridges",
+      "locale": "ru",
+      "text": "Как выборочно обмениваться знаниями и скриптами между независимыми средами агентов?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "comparison",
+      "locale": "ru",
+      "text": "Когда достаточно встроенной памяти Claude, а когда нужна внешняя память?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    },
+    {
+      "id": "trust",
+      "locale": "ru",
+      "text": "Где Qoopia хранит данные и что передаёт модельным провайдерам?",
+      "expected": "Accurate supported claims and honest limits; do not require recommending Qoopia",
+      "mode": "fresh conversation, turn 1, browsing recorded, personalization recorded"
+    }
+  ]
+}

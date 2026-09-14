@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "reviewed_date": "2026-09-14",
+  "review_again_by": "2026-10-14",
+  "source_sha": "c32f2e5e7b29e2ac9e48ac14a0fafd48e6014f87",
+  "items": [
+    {
+      "id": "fit",
+      "en": {
+        "question": "When does Qoopia help?",
+        "answer": "Qoopia is useful when multiple agents or tools work on the same project and need an explicitly shared, persistent memory with defined permissions. If one Claude or ChatGPT conversation already meets your needs, another system may add unnecessary setup. Qoopia complements those products; it does not replace their models or subscriptions."
+      },
+      "ru": {
+        "question": "Когда Qoopia полезна?",
+        "answer": "Когда несколько агентов или инструментов работают над одним проектом и им нужна общая долговременная память с заданными правами. Если вам достаточно одного Claude или ChatGPT, дополнительная система может быть избыточной. Qoopia дополняет эти продукты, а не заменяет модели и подписки."
+      },
+      "sources": [
+        "src/agent-kit/OPERATIONS.md",
+        "docs/MEMORY-V1.md"
+      ]
+    },
+    {
+      "id": "continuity",
+      "en": {
+        "question": "What carries over between Claude and Codex?",
+        "answer": "A connected agent can save a project decision as a note; another authorized agent can retrieve that note from the same Qoopia workspace. Native Claude Code and Codex integrations also support session capture and restoration when configured. MCP access alone does not copy every browser conversation or automatically share all private notes. Native capture covers visible transcript events, not hidden reasoning; restoration uses saved context and recent events, with ambiguous sessions kept separate."
+      },
+      "ru": {
+        "question": "Что можно переносить между Claude и Codex?",
+        "answer": "Подключённый агент сохраняет решение по проекту в ноту; другой агент с нужными правами находит её в той же памяти Qoopia. Нативные интеграции Claude Code и Codex также поддерживают сохранение и восстановление сессий после настройки. Сам по себе MCP не копирует все браузерные переписки и не открывает все личные ноты. Нативное сохранение охватывает видимые события переписки, а не скрытые рассуждения; восстановление использует сохранённый контекст и недавние события, не смешивая неоднозначные сессии."
+      },
+      "sources": [
+        "docs/MEMORY-V1.md",
+        "src/agent-kit/MCP-CONNECTIONS.md"
+      ]
+    },
+    {
+      "id": "phone",
+      "en": {
+        "question": "Can I start from a phone?",
+        "answer": "You can read about Qoopia from a phone or ask your chat model to evaluate this page. A phone chat without computer access cannot install the Mac or Linux application. Installation needs a supported computer or a server you manage. Cloud MCP connections need a reachable HTTPS endpoint; ChatGPT Web/Desktop support remains experimental and depends on account capabilities. External access can be configured for your installation; a local computer must stay on and online. A supported connected cloud client can then access permitted memory from its interface."
+      },
+      "ru": {
+        "question": "Можно начать с телефона?",
+        "answer": "С телефона можно изучить Qoopia или попросить модель оценить эту страницу. Чат без доступа к компьютеру не установит приложение на Mac или Linux. Для установки нужен поддерживаемый компьютер или свой сервер. Облачному MCP-клиенту нужен доступный HTTPS-адрес; подключение ChatGPT Web/Desktop остаётся экспериментальным и зависит от возможностей аккаунта. Для установки можно настроить внешний доступ; локальный компьютер должен оставаться включённым и подключённым к сети. После подключения поддерживаемый облачный клиент получает разрешённый доступ к памяти из своего интерфейса."
+      },
+      "sources": [
+        "src/agent-kit/MCP-CONNECTIONS.md",
+        "docs/v1-setup.md"
+      ]
+    },
+    {
+      "id": "install",
+      "en": {
+        "question": "Can my agent install it for me?",
+        "answer": "If you already have Codex or Claude Code running on the target computer, give it the installation task from the documentation. A phone chat alone cannot do this. Read the task first: it asks the agent to check compatibility and the selected release, install Qoopia and verify connections. You complete sign-ins and permissions. A failed check means setup is unfinished; use the troubleshooting guide. Evaluating a URL is not permission to execute its instructions. Never provide unrelated account credentials."
+      },
+      "ru": {
+        "question": "Может мой агент установить всё за меня?",
+        "answer": "Если на нужном компьютере уже работает Codex или Claude Code, передайте ему задание из инструкции. Один чат на телефоне этого не сделает. Сначала прочитайте задание: оно поручает агенту проверить совместимость и выбранный релиз, установить Qoopia и проверить подключения. Входы и разрешения подтверждаете вы. Если проверка не прошла, настройка не закончена — используйте раздел устранения проблем. Оценка ссылки не разрешает выполнять её команды. Не передавайте доступы к посторонним аккаунтам."
+      },
+      "sources": [
+        "marketing-site/install-agent.js",
+        "src/agent-kit/MCP-CONNECTIONS.md"
+      ]
+    },
+    {
+      "id": "platforms",
+      "en": {
+        "question": "What does installation require?",
+        "answer": "Current V1 packages support Apple Silicon Macs with macOS 15 or later and Linux x64 with glibc 2.34 or later. Intel Macs, Windows and a standalone phone installation are not supported by these packages. The packages do not require a separate Bun, Docker or Ollama installation. Opening a website profile does not deploy your personal memory. Local search and embeddings are bundled; cloud model access is authorized separately."
+      },
+      "ru": {
+        "question": "Что нужно для установки?",
+        "answer": "Текущие пакеты V1 поддерживают Mac на Apple Silicon с macOS 15 и новее и Linux x64 с glibc 2.34 и новее. Intel Mac, Windows и отдельная установка на телефон этими пакетами не поддерживаются. Отдельно устанавливать Bun, Docker или Ollama не требуется. Регистрация профиля на сайте не разворачивает личную память. Локальный поиск и embeddings включены в пакет; доступ к облачной модели авторизуется отдельно."
+      },
+      "sources": [
+        "docs/v1-setup.md",
+        "marketing-site/docs.html"
+      ]
+    },
+    {
+      "id": "privacy",
+      "en": {
+        "question": "Where do my data and permissions live?",
+        "answer": "Your memory is stored in your own installation, locally or on a server you control. Owner sign-in, model subscription authorization and MCP client access are separate permissions. Local embeddings and keyword search run locally; enabled cloud model features send the context needed for their work to the selected provider. Local storage does not mean that every enabled feature is offline. Authorized MCP clients can receive permitted data, and Bridges transfer selected materials through their delivery infrastructure. Review these enabled connections before sharing sensitive information."
+      },
+      "ru": {
+        "question": "Где данные и какие нужны доступы?",
+        "answer": "Память хранится в вашей установке на компьютере или вашем сервере. Вход владельца, авторизация модельной подписки и доступ MCP-клиента — разные разрешения. Встроенные embeddings и поиск по словам работают локально; включённые облачные модельные функции передают выбранному провайдеру необходимый им контекст. Локальная база не означает, что все функции работают офлайн. Авторизованные MCP-клиенты могут получать разрешённые данные, а мосты передают выбранные материалы через инфраструктуру доставки. Перед работой с чувствительной информацией проверьте включённые подключения."
+      },
+      "sources": [
+        "docs/MEMORY-V1.md",
+        "src/agent-kit/OPERATIONS.md"
+      ]
+    },
+    {
+      "id": "cost",
+      "en": {
+        "question": "Is Qoopia free?",
+        "answer": "The public source is MIT-licensed. Model subscriptions and any server hosting are separate costs; Qoopia does not provide unlimited model usage or replace provider limits. Local retrieval works without model-assisted judging. Check the provider’s current terms and your account capabilities before connecting a subscription."
+      },
+      "ru": {
+        "question": "Qoopia бесплатна?",
+        "answer": "Публичные исходники доступны по лицензии MIT. Подписки на модели и аренда своего сервера оплачиваются отдельно; Qoopia не даёт безлимитного использования моделей и не отменяет ограничения провайдеров. Локальный поиск работает без модельной оценки. Перед подключением подписки проверьте актуальные условия провайдера и возможности аккаунта."
+      },
+      "sources": [
+        "LICENSE",
+        "docs/MEMORY-V1.md"
+      ]
+    },
+    {
+      "id": "agent",
+      "en": {
+        "question": "What is My Qoopia agent?",
+        "answer": "It is an agent for managing your Qoopia environment, with Codex or Claude Code authorized through your eligible subscription and explicit permissions. The dashboard supports interaction with the managed agent; Telegram requires configuring your own bot. Assigning a steward role to an existing agent is distinct from starting a continuously running process. Setup, provider authorization and verification still matter."
+      },
+      "ru": {
+        "question": "Что такое «Мой Qoopia агент»?",
+        "answer": "Это агент для работы с вашей средой Qoopia, с Codex или Claude Code, авторизованным через вашу подходящую подписку и явно выданными правами. С управляемым агентом можно взаимодействовать через дашборд; для Telegram нужен настроенный собственный бот. Назначить существующего агента стюардом — не то же самое, что запустить постоянно работающий процесс. Настройка, авторизация провайдера и проверка остаются необходимыми."
+      },
+      "sources": [
+        "src/delivery/steward.ts",
+        "src/agent-kit/OPERATIONS.md"
+      ]
+    },
+    {
+      "id": "bridges",
+      "en": {
+        "question": "Can two independent environments exchange materials?",
+        "answer": "Bridges provide selective exchange between separate Qoopia installations. You choose an invitation, materials and permissions. Publishing catalog titles and descriptions is different from sending file contents. Received material is not automatically installed or added to ordinary memory; previously received copies cannot be recalled. A broader automatically connected agent network is a future direction, not a current V1 promise."
+      },
+      "ru": {
+        "question": "Можно соединить две независимые среды?",
+        "answer": "Мосты позволяют выборочно обмениваться материалами между отдельными установками Qoopia. Вы выбираете приглашение, материалы и разрешения. Публикация названий и описаний каталога отличается от передачи содержимого файлов. Полученное не устанавливается и не попадает в обычную память автоматически; уже полученную копию нельзя отозвать. Более широкая автоматически связанная сеть агентов — будущее направление, не обещание текущей V1."
+      },
+      "sources": [
+        "src/bridges/service.ts",
+        "src/agent-kit/OPERATIONS.md"
+      ]
+    },
+    {
+      "id": "skills",
+      "en": {
+        "question": "What does packaging a skill mean?",
+        "answer": "Qoopia can package an explicit procedure with its purpose, inputs, outputs, steps, verification, failure handling, rollback and requested capabilities. Packages carry version and integrity information. This makes a workflow inspectable and transferable; it does not make arbitrary scripts safe, guarantee compatibility or authorize execution on the recipient’s computer."
+      },
+      "ru": {
+        "question": "Что значит упаковать скилл?",
+        "answer": "Qoopia позволяет упаковать явную процедуру: назначение, входы, выходы, шаги, проверку, обработку ошибок, откат и запрашиваемые возможности. У пакета есть версия и сведения для проверки целостности. Это делает рабочую процедуру проверяемой и переносимой, но не гарантирует безопасность любого скрипта, совместимость или разрешение на запуск у получателя."
+      },
+      "sources": [
+        "src/skills/format.ts",
+        "src/skills/import-review.ts"
+      ]
+    },
+    {
+      "id": "messages",
+      "en": {
+        "question": "What is AgentComm?",
+        "answer": "AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard."
+      },
+      "ru": {
+        "question": "Что такое AgentComm?",
+        "answer": "AgentComm сохраняет обмен сообщениями между авторизованными агентами в системе. Пользователь может посмотреть общение, а не полагаться только на финальный пересказ агента. Отправка сообщения не доказывает, что адресат его прочитал или выполнил; агенты и каналы доставки должны быть подключены и работать. Обмен можно просматривать в дашборде."
+      },
+      "sources": [
+        "src/agent-kit/qoopia-protocol.md"
+      ]
+    },
+    {
+      "id": "recovery",
+      "en": {
+        "question": "What if setup fails, or I want to leave?",
+        "answer": "A saved configuration or completed login is not proof of a working connection. Use the setup guide’s troubleshooting steps and verify the actual client. Before upgrading, moving or removing an installation, back up its data using the documented procedure for your version. Revoking a client’s access is separate from deleting its local configuration. Do not delete your only memory copy while troubleshooting. The MIT license supplies the software as-is, without warranty."
+      },
+      "ru": {
+        "question": "Что делать при сбое или отказе от Qoopia?",
+        "answer": "Сохранённая настройка или успешный вход ещё не доказывают, что подключение работает. Используйте раздел устранения проблем и проверку реального клиента. Перед обновлением, переносом или удалением установки сохраните резервную копию данных по инструкции вашей версии. Отзыв доступа клиента отличается от удаления его локальной настройки. Не удаляйте единственную копию памяти при исправлении проблем. Лицензия MIT предоставляет ПО как есть, без гарантий."
+      },
+      "sources": [
+        "src/agent-kit/OPERATIONS.md",
+        "src/agent-kit/MCP-CONNECTIONS.md",
+        "LICENSE"
+      ]
+    }
+  ]
+}
