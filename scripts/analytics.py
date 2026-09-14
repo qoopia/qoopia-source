@@ -107,6 +107,14 @@ def sql_source(store,file,source):
         queries=AUTH_QUERIES if source=='account_service' else MEMORY_QUERIES
         for metric,query in queries.items():store.observe(source,metric,db.execute(query).fetchone()[0])
         if source=='account_service':
+            tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'news_preferences' in tables:
+                store.observe(source,'news_subscribers',db.execute('SELECT count(*) FROM news_preferences p JOIN connection_accounts a ON a.id=p.account_id AND a.email=p.email WHERE p.subscribed=1').fetchone()[0])
+                for state in ['sending','accepted','failed','uncertain','skipped']:
+                    store.observe(source,'news_deliveries',db.execute('SELECT count(*) FROM news_deliveries WHERE status=?',(state,)).fetchone()[0],{'state':state})
+            if 'account_activity' in tables:
+                store.observe(source,'signins_recorded',db.execute('SELECT COALESCE(sum(login_count),0) FROM account_activity').fetchone()[0],kind='cumulative')
+                store.observe(source,'accounts_registration_unknown',db.execute('SELECT count(*) FROM connection_accounts a LEFT JOIN account_activity x ON x.account_id=a.id WHERE x.registered_at IS NULL').fetchone()[0])
             # Always emit explicit zeros for known states; unknown states are a schema error.
             for state in ['provisioning','active','revoked']:
                 store.observe(source,'managed_devices',db.execute('SELECT count(*) FROM connection_devices WHERE state=?',(state,)).fetchone()[0],{'state':state})
@@ -192,7 +200,7 @@ def daily_backup(store,directory):
     temp.replace(file)
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--db',required=True);p.add_argument('--auth-db');p.add_argument('--memory-db');p.add_argument('--events-db');p.add_argument('--github',action='store_true');p.add_argument('--provider-import');p.add_argument('--export');p.add_argument('--backup');p.add_argument('--backup-directory');p.add_argument('--operations',action='store_true');a=p.parse_args();os.umask(0o077)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--db',required=True);p.add_argument('--auth-db');p.add_argument('--memory-db');p.add_argument('--events-db');p.add_argument('--github',action='store_true');p.add_argument('--provider-import');p.add_argument('--export');p.add_argument('--owner-export');p.add_argument('--backup');p.add_argument('--backup-directory');p.add_argument('--operations',action='store_true');a=p.parse_args();os.umask(0o077)
     s=Store(a.db);ok=[]
     if a.github:ok.append(s.run('github_releases',lambda:github(s,'qoopia/qoopia-downloads')))
     if a.auth_db:ok.append(s.run('account_service',lambda:sql_source(s,a.auth_db,'account_service')))
@@ -204,6 +212,10 @@ def main():
     if a.backup_directory:ok.append(s.run('analytics_backup',lambda:daily_backup(s,a.backup_directory)))
     if a.export:
         dest=Path(a.export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(s.export(),ensure_ascii=False,indent=2)+'\n');temp.replace(dest)
+    if a.owner_export:
+        data=s.export();data={k:data[k] for k in ['generated_at','latest','event_daily','source_runs']}
+        dest=Path(a.owner_export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(data,ensure_ascii=False)+'\n')
+        temp.replace(dest)
     if a.backup:
         with sqlite3.connect(a.backup) as target:s.db.backup(target)
     print(canonical({'status':'ok' if all(ok) else 'partial','checks':len(ok),'failures':ok.count(False),'db':str(Path(a.db).resolve())}));s.db.close()
