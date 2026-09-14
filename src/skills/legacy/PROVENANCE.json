@@ -1,0 +1,11 @@
+{
+  "source_commit": "92ac921f3205b81554185902510b55d2d5daf6ff",
+  "unchanged_sha256": {
+    "jcs.ts": "3be0d2c7bca44ae5018eb97c3a35ad114cafcdefb070c5eb5be52961988bbdd0",
+    "signing.ts": "5f8510efd15e2078ce25c7ae75b4b916481d28a194a7b1f6f57fcc91aa43b8e9",
+    "archive.ts": "b2f23b696638310ec56c41d6f65a2788628143417fde9a8dd920bd0532fa9209",
+    "unicode.ts": "173c40fc3450e37bdcad4a028ecd626d2e6f7abfd3cbf686d9663eb0e57ccf52",
+    "unicode-tables.ts": "35e82cc04a2d789faa8a36a6f6d1c23e465f6cb64c59cbc8b9af98a53e64bc04"
+  },
+  "outcome.ts": "Exact exports RefusedText, NotWellFormedText, assertWellFormedText only; original lines 347\u2013359,398\u2013402."
+}

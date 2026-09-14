@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.qoopia.archive-stale</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{BUN_PATH}}</string>
+        <string>run</string>
+        <string>{{WORKING_DIR}}/scripts/archive-stale.ts</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>QOOPIA_ROOT</key>
+        <string>{{QOOPIA_ROOT}}</string>
+        <key>QOOPIA_DATA_DIR</key>
+        <string>{{QOOPIA_DATA_DIR}}</string>
+        <key>QOOPIA_LOG_LEVEL</key>
+        <string>info</string>
+        <key>QOOPIA_LOG_DIR</key>
+        <string>{{LOG_DIR}}</string>
+    </dict>
+    <!-- Weekly: Sunday 03:00 local time. KeepAlive=false because this is
+         a one-shot job; launchd should re-run it on the next calendar
+         match, not respawn it. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/archive-stale.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/archive-stale.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>{{WORKING_DIR}}</string>
+</dict>
+</plist>

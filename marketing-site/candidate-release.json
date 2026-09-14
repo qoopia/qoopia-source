@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "version": "V1",
+  "candidate": "V16 RC2",
+  "tag": "v5.0.0-v1.20260914-rc2",
+  "source": "0b0890b6c83dce41347916f3e1cbf3d5acd5db16",
+  "source_digest": "d8fc2e6930a90b5cf176920479dff4b5285e0723e2bc7500feee41b761d740c5",
+  "status": "SIGNED_CANDIDATE_PENDING_RC2_MAC_CONTINUITY_ACCEPTANCE",
+  "packages": {
+    "darwin-arm64": {
+      "file": "qoopia-v1-0b0890b-darwin-arm64.dmg",
+      "sha256": "7fd94b6e72d32a8d91f72a15f43c5f06c5ce935d394580b4237aa7178264c065",
+      "bytes": 141474472,
+      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.0-v1.20260914-rc2/qoopia-v1-0b0890b-darwin-arm64.dmg"
+    },
+    "linux-x64": {
+      "file": "qoopia-v1-0b0890b-linux-x64.tar.gz",
+      "sha256": "f6d3fe5b27680d73badf3dd57d3ed15e0fd6b949b1bd5cf7ed0785c1d697fb91",
+      "bytes": 148866086,
+      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.0-v1.20260914-rc2/qoopia-v1-0b0890b-linux-x64.tar.gz"
+    }
+  },
+  "requirements": {
+    "darwin-arm64": "Apple Silicon, macOS 15.0 or newer. Actual clean-machine acceptance pending.",
+    "linux-x64": "Linux x64, glibc 2.34 or newer. Isolated existing-host install checked; new clean-OS qualification not performed."
+  },
+  "publisher_key_sha256": "542bd3715cfbc89fbb2df47b8c40f4964e340993f316f0c32866a2972965e33b",
+  "notarization": {
+    "format": "qoopia-apple-notarization/1",
+    "artifact": "qoopia-v1-0b0890b-darwin-arm64.dmg",
+    "status": "Accepted",
+    "id": "11dafca7-8eda-4be5-9789-fd27da3524b9",
+    "sha256": "7fd94b6e72d32a8d91f72a15f43c5f06c5ce935d394580b4237aa7178264c065",
+    "app": {
+      "status": "Accepted",
+      "id": "69193667-a8f3-4c02-b940-bbdde7fcfda3",
+      "stapled": true
+    }
+  },
+  "pending": [
+    "Independent RC2 update and working primary client on the user Mac",
+    "Actual steward assignment in the user installation",
+    "Native session capture, subscription summary and restoration in a new session",
+    "Remote 894 px dashboard confirmation"
+  ],
+  "experimental": [
+    "ChatGPT Web",
+    "ChatGPT Desktop"
+  ],
+  "acceptance_prompt": "https://qoopia.ai/prompts/mac-v16-rc2-finish-ru.md"
+}

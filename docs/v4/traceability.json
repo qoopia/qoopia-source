@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "spec_requirement_source": "QOOPIA_V4_PROFESSIONAL_TZ.md#14",
+  "requirements": [
+    { "id": "R01", "decision": "Qoopia remains canonical; no Mem0 dependency", "evidence": ["docs/decisions/ADR-V4-001.md", "docs/v4/architecture.md"] },
+    { "id": "R02", "decision": "Version lineage starts at accepted P00 SHA", "evidence": ["artifacts/v4/checkpoints/P00.md", "docs/v4/README.md"] },
+    { "id": "R03", "decision": "Split-brain guard remains a compatibility boundary", "evidence": ["docs/v4/api-compatibility.md", "docs/v4/threat-model.md"] },
+    { "id": "R04", "decision": "Legacy denominator cannot shrink", "evidence": ["docs/v4/schema-contract.md"] },
+    { "id": "R05", "decision": "Supersede heads expand before top-k", "evidence": ["docs/decisions/ADR-V4-002.md", "docs/v4/recall-ranking.md"] },
+    { "id": "R06", "decision": "Explain and traces use ordering values after ACL", "evidence": ["docs/decisions/ADR-V4-005.md", "docs/v4/recall-ranking.md"] },
+    { "id": "R07", "decision": "Lifecycle is opt-in and bounded", "evidence": ["docs/decisions/ADR-V4-003.md", "docs/v4/lifecycle-policy.md"] },
+    { "id": "R08", "decision": "Lifecycle has no physical delete behavior", "evidence": ["docs/decisions/ADR-V4-003.md"] },
+    { "id": "R09", "decision": "Extraction is proposal-only with explicit review", "evidence": ["docs/decisions/ADR-V4-004.md", "docs/v4/architecture.md"] },
+    { "id": "R10", "decision": "Provenance is hash-only and ACL-preserving", "evidence": ["docs/decisions/ADR-V4-002.md", "docs/v4/schema-contract.md"] },
+    { "id": "R11", "decision": "Dedup and conflicts remain explicit review state", "evidence": ["docs/v4/schema-contract.md", "docs/v4/tool-contract.json"] },
+    { "id": "R12", "decision": "Canonical MCP evolution is additive", "evidence": ["docs/decisions/ADR-V4-006.md", "docs/v4/contracts/proposed-v4-tools.json", "docs/v4/contracts/v4-response-schemas.json"] },
+    { "id": "R13", "decision": "Compatibility overlay is frozen and absent from V4 clients", "evidence": ["docs/v4/tool-contract.md", "docs/v4/contracts/current-tools.json"] },
+    { "id": "R14", "decision": "AgentComm ledger remains canonical; receipts are additive", "evidence": ["docs/decisions/ADR-V4-008.md", "docs/v4/schema-contract.md"] },
+    { "id": "R15", "decision": "Native MCP runtime evidence remains a rollout gate", "evidence": ["docs/v4/rollout-dag.md", "docs/v4/api-compatibility.md"] },
+    { "id": "R16", "decision": "Roles and canaries resolve from live canonical state", "evidence": ["docs/decisions/ADR-V4-001.md", "docs/v4/feature-flags.md"] },
+    { "id": "R17", "decision": "RU-first deterministic benchmark is frozen", "evidence": ["docs/v4/benchmark-protocol.json", "docs/v4/benchmark-corpus-spec.json", "docs/v4/contracts/v4-benchmark-case.schema.json", "docs/v4/performance-budgets.json"] },
+    { "id": "R18", "decision": "Workspace/private/secret safety is fail-closed", "evidence": ["docs/v4/threat-model.md"] },
+    { "id": "R19", "decision": "Export/import and restore are complete and verifiable", "evidence": ["docs/decisions/ADR-V4-009.md", "docs/v4/export-dr-contract.md", "docs/v4/export-table-policy.json"] },
+    { "id": "R20", "decision": "Production mutation requires owner GO and backup", "evidence": ["docs/decisions/ADR-V4-010.md", "docs/v4/rollout-dag.md"] },
+    { "id": "R21", "decision": "Each phase leaves a resumable checkpoint", "evidence": ["docs/v4/rollout-dag.md", "docs/v4/ownership.md"] },
+    { "id": "R22", "decision": "Each phase requires independent fable-5 PASS", "evidence": ["docs/decisions/ADR-V4-010.md"] },
+    { "id": "R23", "decision": "SLO and regression budgets are machine-readable", "evidence": ["docs/v4/performance-budgets.json", "docs/v4/benchmark-protocol.json"] },
+    { "id": "R24", "decision": "No external Mem0 corpus or dependency", "evidence": ["docs/decisions/ADR-V4-001.md", "docs/v4/threat-model.md"] },
+    { "id": "R25", "decision": "Production proof requires transport and audit evidence", "evidence": ["docs/decisions/ADR-V4-008.md", "docs/v4/rollout-dag.md"] }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "name": "success-one-head",
+      "rerank": "success",
+      "heads": 1,
+      "expected_source_ranks": {"head": 1, "decoy": 2},
+      "expected_final_order": ["head", "decoy"],
+      "fallback_reason": null
+    },
+    {
+      "name": "fallback-one-head",
+      "rerank": "fallback",
+      "heads": 1,
+      "expected_source_ranks": {"decoy": 1, "head": 2},
+      "expected_final_order": ["decoy", "head"],
+      "fallback_reason": "rerank_http_error"
+    },
+    {
+      "name": "success-multiple-heads",
+      "rerank": "success",
+      "heads": 2,
+      "expected_source_ranks": {"head_new": 1, "head_old": 2, "decoy": 3},
+      "expected_final_order": ["decoy", "head_new", "head_old"],
+      "fallback_reason": null
+    },
+    {
+      "name": "fallback-multiple-heads",
+      "rerank": "fallback",
+      "heads": 2,
+      "expected_source_ranks": {"decoy": 1, "head_new": 2, "head_old": 3},
+      "expected_final_order": ["decoy", "head_new", "head_old"],
+      "fallback_reason": "rerank_http_error"
+    }
+  ]
+}

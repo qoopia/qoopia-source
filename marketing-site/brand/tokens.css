@@ -1,0 +1,49 @@
+:root {
+  /* Colour — black palette, no chromatic accents */
+  --qoopia-black: #0B0A09;
+  --qoopia-white: #FFFFFF;
+  --qoopia-smoke: #B7B1A6;
+  --qoopia-muted: #6E6963;
+  --qoopia-line: #2A2724;
+  --qoopia-surface: #141311;
+
+  /* Semantic */
+  --qoopia-bg: var(--qoopia-black);
+  --qoopia-fg: var(--qoopia-white);
+  --qoopia-fg-secondary: var(--qoopia-smoke);
+  --qoopia-fg-disabled: var(--qoopia-muted);
+  --qoopia-border: var(--qoopia-line);
+  --qoopia-inverse-bg: var(--qoopia-white);
+  --qoopia-inverse-fg: var(--qoopia-black);
+
+  /* Type */
+  --qoopia-font-display: 'Marck Script', cursive;   /* wordmark, display headings */
+  --qoopia-font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --qoopia-size-display: 72px;
+  --qoopia-size-h1: 40px;
+  --qoopia-size-h2: 28px;
+  --qoopia-size-body: 17px;
+  --qoopia-size-small: 14px;
+  --qoopia-line-display: 1.15;
+  --qoopia-line-body: 1.5;
+
+  /* Space — 8px module */
+  --qoopia-space-1: 8px;
+  --qoopia-space-2: 16px;
+  --qoopia-space-3: 24px;
+  --qoopia-space-4: 40px;
+  --qoopia-space-5: 64px;
+  --qoopia-space-6: 96px;
+
+  /* Radius & stroke */
+  --qoopia-radius-sm: 6px;
+  --qoopia-radius-md: 12px;
+  --qoopia-radius-lg: 20px;
+  --qoopia-radius-icon: 22.5%;   /* app icon: 27/120 */
+  --qoopia-stroke-gesture: 3px;  /* signature gesture in UI: 2–3px, round caps */
+
+  /* Motion — the gesture draws left to right */
+  --qoopia-duration-gesture: 450ms;
+  --qoopia-duration-ui: 180ms;
+  --qoopia-ease-gesture: cubic-bezier(.2, .75, .25, 1);
+}

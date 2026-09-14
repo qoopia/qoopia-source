@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "baseline_rule": "When the frozen V3 baseline is better than an absolute limit, the candidate may regress by at most 10 percent.",
+  "latency_ms": {
+    "default_recall_p50_max": 75,
+    "default_recall_p95_max": 250,
+    "default_recall_p99_max": 500,
+    "explain_overhead_p95_absolute_max": 50,
+    "explain_overhead_p95_percent_max": 20,
+    "lifecycle_on_recall_p95_max": 300,
+    "deep_cross_encoder_p95_max": 2000,
+    "deep_llm_judge_p95_max": 18000,
+    "mcp_non_search_read_p95_max": 150,
+    "mcp_normal_write_p95_max": 250,
+    "extraction_queue_ack_max": 250,
+    "extraction_50_messages_p95_max": 15000,
+    "agentcomm_persist_p95_max": 250,
+    "agentcomm_ack_healthy_consumer_p95_max": 60000,
+    "agentcomm_close_synthetic_p95_max": 120000,
+    "dashboard_api_p95_max": 500,
+    "dashboard_initial_usable_render_max": 2000,
+    "code_rollback_rto_max": 900000,
+    "restore_rehearsal_rto_max": 1800000
+  },
+  "quality": {
+    "exact_lexical_recall_at_5_min": 0.98,
+    "semantic_paraphrase_recall_at_5_min": 0.9,
+    "mixed_ru_en_recall_at_5_min": 0.9,
+    "latest_only_stale_surfacing_max": 0.02,
+    "workspace_private_secret_leakage_max": 0,
+    "extraction_false_auto_write_max": 0,
+    "legacy_coverage_min": "943/943 or 100 percent of a newer owner-accepted manifest"
+  },
+  "backup": {
+    "normal_rpo_seconds_max": 86400,
+    "pre_mutation_backup_age_seconds_max": 1800
+  },
+  "token_efficiency": {
+    "rule": "Accuracy may not improve solely by exceeding the frozen top-k or context-token budget.",
+    "report_fields": ["context_tokens_per_query", "answer_accuracy", "top_k", "mode"]
+  }
+}

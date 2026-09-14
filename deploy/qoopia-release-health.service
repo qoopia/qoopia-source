@@ -1,0 +1,18 @@
+[Unit]
+Description=Qoopia public release and analytics health
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=askhat
+Group=askhat
+UMask=0077
+EnvironmentFile=/srv/qoopia-monitor/release.env
+ExecStart=/usr/bin/python3 /srv/qoopia-monitor/release-health.py --root /srv/qoopia-monitor --source ${QOOPIA_RELEASE_SHA}
+TimeoutStartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/qoopia-monitor

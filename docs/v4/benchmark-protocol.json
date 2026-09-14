@@ -1,0 +1,87 @@
+{
+  "schema_version": 2,
+  "corpus": {
+    "id": "qoopia-v4-p01-1",
+    "identity_kind": "fully deterministic materialization specification",
+    "spec_path": "docs/v4/benchmark-corpus-spec.json",
+    "spec_sha256": "b900d64f4e95653e9cfe8e76286307157f6954592a81dbe5dacfb15897642b3f",
+    "case_schema_path": "docs/v4/contracts/v4-benchmark-case.schema.json",
+    "case_schema_id": "https://qoopia.local/contracts/v4-benchmark-case.schema.json",
+    "case_schema_sha256": "c6ee6f1ab10a2015cd6143f7905bef8fbba8d70c3459d9a7b19bbfd78077b6e5",
+    "materialized_path": "benchmarks/v4/corpus/qoopia-v4-p01-1.jsonl",
+    "materialized_hash_rule": "SHA-256 of exact UTF-8 JSONL bytes; two clean offline materializations must match before any benchmark is accepted",
+    "seed": 400,
+    "recall_case_count": 200,
+    "splits": { "train": 100, "dev": 50, "holdout": 50 },
+    "holdout_policy": "No product threshold, rank weight, prompt, or fixture may be changed after a holdout result is observed. A change requires a new corpus ID and rerun of all modes."
+  },
+  "primary_strata": {
+    "ru_exact": 35,
+    "ru_semantic": 35,
+    "en_exact_semantic": 25,
+    "mixed_ru_en": 25,
+    "supersede_temporal_conflict": 25,
+    "entity_provenance": 20,
+    "workspace_private_secret_poisoning": 20,
+    "archive_zero_result_fallback": 15
+  },
+  "scales": [1, 10],
+  "scale_rule": "Use the exact scale_10x algorithm in the corpus spec; answer sets, requests, case order, split membership, and labels remain identical.",
+  "modes": ["v3_baseline", "v4_flags_off", "v4_flags_on"],
+  "mode_contract": {
+    "v3_baseline": "exact base b6c169b9c72a2f983933610072b4909ef61261c3 behavior and its frozen configuration",
+    "v4_flags_off": "candidate binary with every V4 behavior flag false and the same non-V4 configuration",
+    "v4_flags_on": "candidate binary with relations/latest/explain/lifecycle/feedback paths enabled according to the frozen request; no deep or deep_llm unless the case says so"
+  },
+  "warmup_runs_per_mode_scale": 2,
+  "measured_runs_per_mode_scale": 3,
+  "measured_latency_profile": "warm",
+  "cold_profile": "reported separately and never substituted for the gated warm profile",
+  "run_order": [
+    ["v3_baseline", "v4_flags_off", "v4_flags_on"],
+    ["v4_flags_off", "v4_flags_on", "v3_baseline"],
+    ["v4_flags_on", "v3_baseline", "v4_flags_off"]
+  ],
+  "query_order": "Within every warmup and measured run, sort by SHA-256(seed + LF + scale + LF + repetition + LF + case_id) as lowercase bytes, then case_id ASC. All modes use the same order for that scale/repetition.",
+  "hardware_manifest_required": [
+    "cpu_model", "logical_cpu_count", "memory_bytes", "kernel", "architecture",
+    "container_runtime", "image_digest", "bun_version", "sqlite_version",
+    "filesystem_type", "container_cpu_limit", "container_memory_limit"
+  ],
+  "fairness": {
+    "same_image_family": true,
+    "same_materialized_corpus_hash": true,
+    "fresh_database_per_mode_scale": true,
+    "same_query_order_per_repetition": true,
+    "same_top_k": true,
+    "same_external_backend_availability": true,
+    "holdout_hidden_from_tuning": true,
+    "network_disabled_for_default_offline_modes": true,
+    "clock": "monotonic high-resolution duration; wall clock is fixture-frozen where ranking uses now"
+  },
+  "evaluator": {
+    "result_normalization": "Read returned result IDs in order, discard later duplicates of the same (kind,id), and evaluate the first five. An error/timeout produces an empty result list and remains in the latency sample.",
+    "quality_pool": "Pool all measured case-run pairs. Every metric reports numerator, denominator, value, mode, scale, split, and primary_stratum. Warmups are never in a denominator.",
+    "recall_at_k": "For each case with at least one relevant label, |unique relevant IDs in top k| / |relevant IDs|; macro-average over eligible measured case-run pairs. k is 1 or 5.",
+    "mrr": "For each case with at least one relevant label, reciprocal of the first rank <=5 whose ID is relevant, else 0; macro-average over the same eligible pairs.",
+    "ndcg_at_5": "DCG=sum_{rank=1..5}((2^gain-1)/log2(rank+1)), gain from the relevant label or 0. IDCG sorts all positive gains DESC and truncates to 5. Exclude cases with IDCG=0; macro-average DCG/IDCG.",
+    "exact_fact_accuracy": "Eligible when labels.exact_fact is non-null. Success requires exact RFC 8785 equality of the value at json_pointer in the returned payload for source_id; missing source/path is failure. Denominator is eligible measured case-run pairs.",
+    "zero_result_accuracy": "Eligible when labels.expected_zero=true. Success requires zero visible results and no hidden ID/token in explain or trace. Denominator is eligible measured case-run pairs.",
+    "stale_surfacing_rate": "Eligible when request.latest_only=true and stale_ids is non-empty. Numerator counts pairs where any stale ID occurs in top 5; denominator is eligible measured case-run pairs.",
+    "conflict_visibility_rate": "Denominator is the total number of conflict_groups across measured pairs. A group succeeds only when every labeled active head is in top 5 and each returned head carries the conflict reason; numerator is successful groups.",
+    "leakage_count": "Raw count of occurrences of forbidden_ids or canary_tokens in results, explain, traces, logs, or artifacts. Denominator is all measured pairs and acceptance requires count 0, not a ratio.",
+    "latency_quantiles": "Use successful and failed measured durations in integer microseconds. Sort ascending; q percentile is element at 1-based nearest-rank ceil(q*N), then report milliseconds. N must equal 200*3 per mode/scale or the run is invalid.",
+    "context_tokens_per_query": "Deterministic estimate ceil(UTF-8 byte length of the exact serialized returned context JSON / 4), named estimator ceil_utf8_bytes_div_4_v1. Report arithmetic mean and p95 with the same nearest-rank rule.",
+    "failure_policy": "Missing case, duplicate case, schema-invalid case, corpus hash drift, denominator drift, backend availability drift, or fewer than three measured repetitions invalidates the entire mode/scale rather than shrinking a denominator."
+  },
+  "required_metrics": [
+    "Recall@1", "Recall@5", "MRR", "nDCG@5", "exact_fact_accuracy",
+    "zero_result_accuracy", "stale_surfacing_rate", "conflict_visibility_rate",
+    "leakage_count", "p50_ms", "p95_ms", "p99_ms", "context_tokens_per_query"
+  ],
+  "non_recall_scenarios": [
+    "extraction_accept_edit_reject", "extraction_no_auto_write", "agentcomm_fault_matrix",
+    "export_import_corruption", "native_runtime_discovery", "dashboard_workflow"
+  ],
+  "failure_modes": ["embedding_unavailable", "reranker_unavailable", "extractor_unavailable"]
+}

@@ -1,0 +1,10 @@
+{
+  "source_revision": "1fbfdfc0de7c01c9913eb48e7b948a9808baf2bc",
+  "included_paths": [
+    "src",
+    "package.json"
+  ],
+  "sha256": "c9fff1713f0cf1aa366125db4070204d31250aaa1beb014c9081a117bcfa24a2",
+  "contents": "Historical source code only; no database, credentials, Git objects or operational evidence.",
+  "purpose": "Execute the original schema-35 permission behavior before migration."
+}

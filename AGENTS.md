@@ -1,0 +1,3 @@
+# Working on Qoopia
+
+Read README.md and docs/SOURCE-PROVENANCE.md first. Check Git status before editing and preserve other work. Use synthetic data in a temporary installation for tests. Never use a user's database, credentials or personal conversations as fixtures. Run the checks relevant to a change; CI is the full release gate. Keep the existing brand and separate MCP memory access from model-provider login. Do not deploy, publish a release, send messages or alter a user's connections without authorization. Report what was verified and what remains untested. Do not import private development history into this repository.

@@ -1,0 +1,37 @@
+{
+  "fixture": "p2-csv-summary/1",
+  "declared_before_implementation": true,
+  "objective": "Native runtime uses installed SKILL.md to validate CSV and produce summary.json; no direct script substitute",
+  "first": {
+    "counts": {
+      "A": 2,
+      "B": 1
+    },
+    "totals": {
+      "A": 20,
+      "B": 5
+    },
+    "overall": 25
+  },
+  "second": {
+    "counts": {
+      "A": 1,
+      "B": 1
+    },
+    "totals": {
+      "A": 3,
+      "B": 7
+    },
+    "overall": 10
+  },
+  "invalid": {
+    "status": "refused",
+    "reason": "invalid_amount"
+  },
+  "assertions": [
+    "exact JSON artifact equals expected object",
+    "invalid input produces refusal without summary",
+    "no changes outside disposable managed roots; native permission refusal is not success"
+  ],
+  "native_runs": "NOT RUN: Leo performs separately; builder only version/help probes"
+}

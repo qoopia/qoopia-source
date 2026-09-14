@@ -1,0 +1,15 @@
+import './p2-safe-env.ts';
+import '../setup.ts';
+import {runMigrations} from '../../src/db/migrate.ts';
+import {db} from '../../src/db/connection.ts';
+import {bootstrapOwner,issuePairing,redeemPairing} from '../../src/auth/pairings.ts';
+import {principalAuth} from './p1-fixtures.ts';
+import {configureRuntime,RUNTIMES} from '../../src/skills/loop.ts';
+import {startHttpServer} from '../../src/http.ts';
+import {writeFileSync} from 'node:fs';
+runMigrations();const owner=bootstrapOwner(db,'UI fixture','Disposable UI test'),auth=principalAuth(db,owner.agent_id);
+const target=redeemPairing(issuePairing(auth,{profile:'memory-worker',name:'Disposable Codex',runtime_id:'codex',expected_revision:1,idempotency_key:'ui-target'},db).one_time_code!,db);
+redeemPairing(issuePairing(auth,{profile:'runtime-reporter',name:'Disposable reporter',runtime_id:'codex',target_agent_id:target.data.agent_id,expected_revision:1,idempotency_key:'ui-report'},db).one_time_code!,db);
+configureRuntime(auth,{runtime_id:target.data.runtime_registration_id,runtime_kind:'codex',runtime_version:RUNTIMES.codex.version,platform:'darwin-arm64',expected_revision:2,idempotency_key:'ui-configure'},db);
+const server=startHttpServer();server.once('error',error=>{console.error(error.code);process.exit(2);});
+server.once('listening',()=>{const address=server.address() as {port:number};writeFileSync(process.argv[2]!,JSON.stringify({url:`http://127.0.0.1:${address.port}`,api_key:owner.api_key}),{mode:0o600});});

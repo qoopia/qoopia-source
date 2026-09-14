@@ -1,0 +1,9 @@
+{
+  "package": "qrcode-generator",
+  "version": "2.0.4",
+  "license": "MIT",
+  "upstream": "https://raw.githubusercontent.com/kazuhikoarase/qrcode-generator/83b7e8fe3fddd3b0368dbafd6ce56995bd25e3c8/LICENSE",
+  "path": "scripts/vendor/licenses/qrcode-generator-2.0.4-LICENSE",
+  "sha256": "3a850fa5f08101db6f40676c2786e10bd2cd5fff7b12ffdf1e0c434d4e49d90c",
+  "package_sha256": "0c8db18ad7f1b9dece93dd87dc0624be938f9b9b21e93c0f78e6e2d194ac10e9"
+}

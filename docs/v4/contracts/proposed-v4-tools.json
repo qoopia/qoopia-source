@@ -1,0 +1,2147 @@
+{
+  "additive_only": true,
+  "authorization_contract": {
+    "admin_agent_types": [
+      "owner",
+      "steward"
+    ],
+    "evaluation_order": [
+      "authenticated",
+      "tool_profile",
+      "oauth_scope",
+      "instance_role",
+      "workspace",
+      "resource_visibility",
+      "capability",
+      "transaction_recheck"
+    ],
+    "private_note_bypass_agent_types": [
+      "owner",
+      "steward",
+      "claude-privileged"
+    ],
+    "resource_rules": {
+      "base_note_visible": "The named note is visible under current workspace, deleted-state, and private-note rules; NOT_FOUND is used when visibility would leak existence.",
+      "delivery_recipient_only": "The receipt consumer_id is derived only from AuthContext.agent_id. Callers cannot select another consumer or workspace; message_id may only narrow the caller's own receipt.",
+      "feedback_note_visible": "The note is currently visible. If trace_id is supplied, the unexpired trace belongs to AuthContext.agent_id and contains that note; pin/unpin additionally requires owner/steward.",
+      "notes_mutable": "Both notes are in AuthContext.workspace_id and each passes the existing note-service mutation/private-owner checks.",
+      "relation_endpoints_visible": "A relation row is returned only when both endpoint notes are visible to the caller.",
+      "review_capability": "The caller is the run initiator or owner/steward; accept/edit of rule, finance, owner-approved decision, or legal-classified content requires owner/steward.",
+      "run_initiator_or_admin": "The caller initiated the extraction run or has owner/steward capability; candidates still expose only authorized source references.",
+      "session_range_visible": "The session and every source message in the inclusive range are visible to the caller in AuthContext.workspace_id.",
+      "trace_caller_or_admin": "The trace caller matches AuthContext.agent_id or the caller has owner/steward capability; every returned item is re-filtered through current result visibility.",
+      "workspace_export_admin": "Caller has owner/steward capability; export scope is exactly AuthContext.workspace_id and cannot be selected by request input.",
+      "workspace_import_admin": "Caller has owner/steward capability; target_workspace_id must equal AuthContext.workspace_id and artifact resolution is confined to the sanctioned export root."
+    },
+    "unknown_agent_type_policy": "no special capability",
+    "unknown_profile_scope_or_instance_policy": "deny",
+    "workspace_source": "AuthContext.workspace_id only; request IDs never widen workspace"
+  },
+  "baseline_sha": "b6c169b9c72a2f983933610072b4909ef61261c3",
+  "canonical_tools": [
+    {
+      "availability": "always",
+      "description": "Read the activity audit log with filters.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "entity_id": {
+            "type": "string"
+          },
+          "entity_type": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "activity_list",
+      "risk": "read"
+    },
+    {
+      "availability": "steward_only",
+      "description": "Deactivate (soft-delete) an agent. All API keys and OAuth tokens become immediately invalid. Self-guard: steward cannot deactivate itself.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Name of the agent to deactivate",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "agent_deactivate",
+      "risk": "admin"
+    },
+    {
+      "availability": "always",
+      "description": "List messages addressed to the calling agent. Messages are pushed into your turn automatically as they arrive, so this is a history view rather than something you must poll; if your client has no runtime to push to, listing them here is what delivers them. Whatever this returns is recorded as delivered. status filters by transport delivery state.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "delivered",
+              "undelivered"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "agent_inbox",
+      "risk": "read"
+    },
+    {
+      "availability": "steward_only",
+      "description": "List all agents in the workspace (or all workspaces for privileged steward). Returns name, type, active status, and last_seen.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {},
+        "type": "object"
+      },
+      "name": "agent_list",
+      "risk": "read"
+    },
+    {
+      "availability": "steward_only",
+      "description": "Create a new agent with optional bootstrap notes from a role preset. Returns the API key ONCE — it is never stored or logged in plaintext. If a role preset is specified, bootstrap notes are created and a thin system prompt is returned ready for copy-paste.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Agent name (unique within workspace)",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "role": {
+            "description": "Optional role preset for bootstrap notes. Available: general, family, ops-kz, smm",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "agent_onboard",
+      "risk": "admin"
+    },
+    {
+      "availability": "always",
+      "description": "Reply within an existing session. If to_agent is omitted the most recent other party is used. Set close=true to close the session after sending.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 50000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "close": {
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "reply_to_message_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "to_agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "body"
+        ],
+        "type": "object"
+      },
+      "name": "agent_reply",
+      "risk": "write-low"
+    },
+    {
+      "availability": "always",
+      "description": "Send a message to another agent. It is delivered into the recipient's turn automatically; nothing has to be acknowledged. Agents in your own workspace are matched first; a name that is unique instance-wide also reaches an agent in another workspace (memory, notes and recall stay private to each). Creates a new session if session_id is omitted. Supply idempotency_key to make retries return the original send.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 50000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "request",
+              "ack",
+              "reply",
+              "status",
+              "system"
+            ],
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "parent_message_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "to_agent": {
+            "description": "Recipient agent name or id.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "topic": {
+            "description": "Used only when creating a new session.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_agent",
+          "body"
+        ],
+        "type": "object"
+      },
+      "name": "agent_send",
+      "risk": "write-low"
+    },
+    {
+      "availability": "always",
+      "description": "Close an open agent session. Status flips to 'closed' and timestamps are stamped; the close action is logged in the activity audit.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "agent_session_close",
+      "risk": "write-low"
+    },
+    {
+      "availability": "always",
+      "description": "Open a new agent-to-agent session with a topic. Optionally seed it atomically with an initial message by passing to_agent + message. Supply idempotency_key to make retries return the original session.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 50000,
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "to_agent": {
+            "type": "string"
+          },
+          "topic": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
+      },
+      "name": "agent_session_create",
+      "risk": "write-low"
+    },
+    {
+      "availability": "steward_only",
+      "description": "Change an agent's MCP tool risk profile. Profiles: 'read-only' (only risk='read' tools), 'no-destructive' (read + write-low), 'full' (every tool the agent's type qualifies for). Steward-only. Refuses to demote the caller (self-lockout) or the last active full-profile steward in the workspace (workspace lockout). Activates on the next MCP request — current in-flight requests are not interrupted.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Name of the agent whose profile is being changed",
+            "minLength": 1,
+            "type": "string"
+          },
+          "tool_profile": {
+            "description": "New profile to apply",
+            "enum": [
+              "read-only",
+              "no-destructive",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "tool_profile"
+        ],
+        "type": "object"
+      },
+      "name": "agent_set_profile",
+      "risk": "admin"
+    },
+    {
+      "availability": "always",
+      "description": "List active agents in the workspace. Pass 'agent' to look up a single name; that lookup also finds an agent in another workspace when the name is unique instance-wide, flagged with external_workspace.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "agent_status",
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "Workspace snapshot: open tasks, recent notes, active deals, agent activity. Call at session start to restore context.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "limit_per_section": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project ULID or exact project note text",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "brief",
+      "risk": "read"
+    },
+    {
+      "availability": "QOOPIA_ENTITY_PAGES",
+      "description": "Fetch a canonical entity page by id or slug (Phase 2 Item C). Workspace-scoped.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "entity_get",
+      "risk": "read"
+    },
+    {
+      "availability": "QOOPIA_ENTITY_PAGES",
+      "description": "Add a directed link between two entities in the same workspace (Phase 2 Item C). Idempotent on (source, target, relation_type). Self-loops forbidden. Reserved relations: participants, depends_on, supersedes, related_to, documents, triggers (free-form strings accepted; vocabulary lives in services/entities.ts).",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "relation_type": {
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "source_entity_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "target_entity_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_entity_id",
+          "target_entity_id",
+          "relation_type"
+        ],
+        "type": "object"
+      },
+      "name": "entity_link",
+      "risk": "write-low"
+    },
+    {
+      "availability": "QOOPIA_ENTITY_PAGES",
+      "description": "Render an entity page as markdown with title, summary, metadata, and inline outgoing/incoming link sections (Phase 2 Item C). Body capped at 32 KiB; secrets are detected and refused via assertNoSecrets.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "entity_page_render",
+      "risk": "read"
+    },
+    {
+      "availability": "QOOPIA_ENTITY_PAGES",
+      "description": "Search entity pages (Phase 2 Item C). With `query`, runs FTS5 on entity_pages_fts. Without, lists by type/status. Returns title + truncated 240-char summary preview.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "status": {
+            "description": "Default 'active'.",
+            "enum": [
+              "active",
+              "archived",
+              "deprecated"
+            ],
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "person",
+              "agent",
+              "machine",
+              "service",
+              "project",
+              "protocol",
+              "incident",
+              "skill",
+              "knowledge"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "entity_search",
+      "risk": "read"
+    },
+    {
+      "availability": "QOOPIA_ENTITY_PAGES",
+      "description": "Insert or update a canonical entity page (Phase 2 Item C). Idempotent on (workspace, slug). type ∈ person/agent/machine/service/project/protocol/incident/skill/knowledge. Workspace pinned from auth.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "metadata": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "slug": {
+            "description": "URL-safe id, lowercase letters/digits/-/_; UNIQUE per workspace.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "description": "Default 'active'.",
+            "enum": [
+              "active",
+              "archived",
+              "deprecated"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 100000,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "person",
+              "agent",
+              "machine",
+              "service",
+              "project",
+              "protocol",
+              "incident",
+              "skill",
+              "knowledge"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "slug",
+          "title"
+        ],
+        "type": "object"
+      },
+      "name": "entity_upsert",
+      "risk": "write-low"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "owner",
+          "steward"
+        ],
+        "instance_role_any": [
+          "canonical"
+        ],
+        "oauth_scope_any": [
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "workspace_export_admin"
+        ],
+        "tool_profile_any": [
+          "full"
+        ],
+        "transaction_recheck": true
+      },
+      "availability": "always_after_P08",
+      "description": "Generate a signed high-sensitivity export only inside the sanctioned export root; returns an opaque artifact ID and hashes, never bundle bytes.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 8,
+            "type": "string"
+          },
+          "plan_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_hash",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "export_bundle",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/ExportBundleResponse"
+      },
+      "risk": "admin"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "owner",
+          "steward"
+        ],
+        "instance_role_any": [
+          "canonical"
+        ],
+        "oauth_scope_any": [
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "workspace_export_admin"
+        ],
+        "tool_profile_any": [
+          "full"
+        ],
+        "transaction_recheck": true
+      },
+      "availability": "always_after_P08",
+      "description": "Build a privileged read-only count and policy plan for the caller's workspace; no row body is returned.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "include_ephemeral": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "export_plan",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/ExportPlanResponse"
+      },
+      "risk": "admin"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical"
+        ],
+        "oauth_scope_any": [
+          "mcp:write",
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "session_range_visible"
+        ],
+        "tool_profile_any": [
+          "no-destructive",
+          "full"
+        ],
+        "transaction_recheck": true
+      },
+      "availability": "QOOPIA_V4_EXTRACTION",
+      "description": "Create or reuse an idempotent extraction proposal run. It never writes canonical notes or entities.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "extractor_version": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 8,
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_end_id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "source_start_id": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "source_start_id",
+          "source_end_id",
+          "extractor_version",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "extraction_preview",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/ExtractionPreviewResponse"
+      },
+      "risk": "write-low"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical"
+        ],
+        "oauth_scope_any": [
+          "mcp:write",
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "review_capability"
+        ],
+        "tool_profile_any": [
+          "no-destructive",
+          "full"
+        ],
+        "transaction_recheck": true
+      },
+      "availability": "QOOPIA_V4_EXTRACTION",
+      "description": "Accept, edit, or reject one candidate with optimistic concurrency. Only accept/edit creates a canonical note.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "accept",
+              "edit",
+              "reject"
+            ],
+            "type": "string"
+          },
+          "candidate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "edited_tags": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "type": "array"
+          },
+          "edited_text": {
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          },
+          "edited_type": {
+            "enum": [
+              "note",
+              "task",
+              "deal",
+              "contact",
+              "finance",
+              "project",
+              "memory",
+              "rule",
+              "knowledge",
+              "context",
+              "decision"
+            ],
+            "type": "string"
+          },
+          "expected_review_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 8,
+            "type": "string"
+          },
+          "reason_code": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "action",
+          "expected_review_version",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "extraction_review",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/ExtractionReviewResponse"
+      },
+      "risk": "write-low"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical",
+          "legacy-readonly"
+        ],
+        "oauth_scope_any": [
+          "mcp:read",
+          "mcp:write",
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "run_initiator_or_admin"
+        ],
+        "tool_profile_any": [
+          "read-only",
+          "no-destructive",
+          "full"
+        ],
+        "transaction_recheck": false
+      },
+      "availability": "QOOPIA_V4_EXTRACTION",
+      "description": "Read one authorized extraction run and its paginated candidate review state.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "candidate_cursor": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "candidate_limit": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "name": "extraction_run_get",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/ExtractionRunGetResponse"
+      },
+      "risk": "read"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical",
+          "legacy-readonly"
+        ],
+        "oauth_scope_any": [
+          "mcp:read",
+          "mcp:write",
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "run_initiator_or_admin"
+        ],
+        "tool_profile_any": [
+          "read-only",
+          "no-destructive",
+          "full"
+        ],
+        "transaction_recheck": false
+      },
+      "availability": "QOOPIA_V4_EXTRACTION",
+      "description": "List extraction runs visible to the caller in the current workspace.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "review",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "extraction_run_list",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/ExtractionRunListResponse"
+      },
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "Read one uploaded file by id, or by folder + filename. Returns inline text for text/markdown/docx/pdf; for other binary returns metadata + a dashboard download_path. Workspace-scoped.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "description": "Filename (use with folder).",
+            "type": "string"
+          },
+          "folder": {
+            "description": "Folder (use with filename).",
+            "type": "string"
+          },
+          "id": {
+            "description": "File id.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "file_get",
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "List files the owner uploaded via the dashboard into named folders. Optional folder / owner filters. Workspace-scoped. Returns metadata (id, folder, filename, mime, size, readable).",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "folder": {
+            "description": "Filter to one folder.",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "owner": {
+            "description": "Uploader/owner agent name.",
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "file_list",
+      "risk": "read"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "owner",
+          "steward"
+        ],
+        "instance_role_any": [
+          "canonical"
+        ],
+        "oauth_scope_any": [
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "workspace_import_admin"
+        ],
+        "tool_profile_any": [
+          "full"
+        ],
+        "transaction_recheck": true
+      },
+      "availability": "always_after_P08",
+      "description": "Validate one sanctioned export artifact for the caller's workspace and return conflicts. Applying an import is never an MCP operation.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target_workspace_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "target_workspace_id"
+        ],
+        "type": "object"
+      },
+      "name": "import_plan",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/ImportPlanResponse"
+      },
+      "risk": "admin"
+    },
+    {
+      "availability": "always",
+      "description": "Create a note in the universal notes table. Use type to distinguish task/deal/contact/finance/project/memory/decision/etc.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "metadata": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task_bound_id": {
+            "description": "Bind this note to a task; auto-purged when task closes.",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "note",
+              "task",
+              "deal",
+              "contact",
+              "finance",
+              "project",
+              "memory",
+              "rule",
+              "knowledge",
+              "context",
+              "decision"
+            ],
+            "type": "string"
+          },
+          "visibility": {
+            "description": "ADR-014: 'workspace' (default) shares note with all agents in this workspace. 'private' restricts reads to this agent and admin types.",
+            "enum": [
+              "workspace",
+              "private"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "note_create",
+      "risk": "write-low"
+    },
+    {
+      "availability": "always",
+      "description": "Soft-delete a note (sets deleted_at).",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "note_delete",
+      "risk": "write-destructive"
+    },
+    {
+      "availability": "always",
+      "description": "Fetch a single note by ULID.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "note_get",
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "List notes with filters: type, project_id, agent, status (from metadata), tags, date range, session.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "include_archived": {
+            "type": "boolean"
+          },
+          "include_deleted": {
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "order": {
+            "enum": [
+              "created_desc",
+              "created_asc",
+              "updated_desc"
+            ],
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task_bound_id": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "note",
+              "task",
+              "deal",
+              "contact",
+              "finance",
+              "project",
+              "memory",
+              "rule",
+              "knowledge",
+              "context",
+              "decision"
+            ],
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "note_list",
+      "risk": "read"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical",
+          "legacy-readonly"
+        ],
+        "oauth_scope_any": [
+          "mcp:read",
+          "mcp:write",
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "base_note_visible",
+          "relation_endpoints_visible"
+        ],
+        "tool_profile_any": [
+          "read-only",
+          "no-destructive",
+          "full"
+        ],
+        "transaction_recheck": false
+      },
+      "availability": "QOOPIA_V4_RELATIONS",
+      "description": "List visible V4 relations for one note after workspace and private-note authorization.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "direction": {
+            "default": "any",
+            "enum": [
+              "any",
+              "outgoing",
+              "incoming"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "note_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "relation_types": {
+            "items": {
+              "enum": [
+                "supersedes",
+                "conflicts_with",
+                "supports",
+                "derived_from"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "note_id"
+        ],
+        "type": "object"
+      },
+      "name": "note_relation_list",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/NoteRelationListResponse"
+      },
+      "risk": "read"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical"
+        ],
+        "oauth_scope_any": [
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "notes_mutable"
+        ],
+        "tool_profile_any": [
+          "full"
+        ],
+        "transaction_recheck": true
+      },
+      "availability": "QOOPIA_V4_RELATIONS",
+      "description": "Atomically link a current note to the prior note, mirror legacy metadata, and archive the prior note without deleting it.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "expected_target_updated_at_ms": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 8,
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "source_note_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "target_note_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_note_id",
+          "target_note_id",
+          "expected_target_updated_at_ms",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "note_supersede",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/NoteSupersedeResponse"
+      },
+      "risk": "write-destructive"
+    },
+    {
+      "availability": "always",
+      "description": "Update a note. Metadata merges shallowly by default; use metadata_replace to fully replace.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "metadata_replace": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task_bound_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "maxLength": 100000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "note_update",
+      "risk": "write-destructive"
+    },
+    {
+      "availability": "always",
+      "description": "Full-text search across notes, activity log, and session messages. Returns results with complete text (no truncation). Default is hybrid-only (FTS5 + bge-m3 vector channel fused via RRF, ~50ms, no external sidecar). Opt-in `deep=true` adds a cross-encoder rerank stage (~1.5s) that reorders top candidates by pair-wise relevance; `deep_llm=true` instead invokes the Claude-Haiku LLM judge (~5-17s, sharper on tricky mono-term / cross-language queries). Both rerank paths are bounded by their timeout env and fall back to raw RRF order on sidecar failure.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "cross_workspace": {
+            "description": "Honored only for privileged agents (Claude).",
+            "type": "boolean"
+          },
+          "deep": {
+            "description": "Cross-encoder rerank on top of the hybrid pool (~1.5s). Default OFF unless server has QOOPIA_RERANK_DEFAULT_DEEP=1. Set true to opt in per call; set false to force raw RRF order even when the env default is on.",
+            "type": "boolean"
+          },
+          "deep_llm": {
+            "description": "LLM-judge rerank via Claude Haiku sidecar (~5-15s). Opt-in for tricky / high-precision recall; overrides `deep`.",
+            "type": "boolean"
+          },
+          "explain": {
+            "default": false,
+            "description": "Return bounded score components and reason codes for visible results only. Requires QOOPIA_V4_RECALL_EXPLAIN.",
+            "type": "boolean"
+          },
+          "include_archived": {
+            "description": "Include notes whose metadata.status='archived'. Default false — archived rows hidden to keep results focused.",
+            "type": "boolean"
+          },
+          "include_history": {
+            "default": false,
+            "description": "Relation audit mode. true requires include_archived=true, forces effective latest_only=false when omitted, and is incompatible with explicit latest_only=true.",
+            "type": "boolean"
+          },
+          "latest_only": {
+            "description": "Return active supersede heads only. Effective default remains false until QOOPIA_V4_LATEST_ONLY is enabled. include_history=true forces false when omitted and rejects explicit true.",
+            "type": "boolean"
+          },
+          "lifecycle": {
+            "description": "Per-call lifecycle override. true requires QOOPIA_V4_LIFECYCLE; false disables lifecycle for this call.",
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "query": {
+            "description": "Full-text keywords. Use multiple terms to narrow.",
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "scope": {
+            "description": "notes (default) | activity (audit log) | sessions (conversation messages) | all (union of the three).",
+            "enum": [
+              "notes",
+              "activity",
+              "sessions",
+              "all"
+            ],
+            "type": "string"
+          },
+          "trace": {
+            "default": false,
+            "description": "Persist a privacy-safe bounded trace and return its opaque ID. Requires QOOPIA_V4_RECALL_EXPLAIN.",
+            "type": "boolean"
+          },
+          "type": {
+            "enum": [
+              "note",
+              "task",
+              "deal",
+              "contact",
+              "finance",
+              "project",
+              "memory",
+              "rule",
+              "knowledge",
+              "context",
+              "decision"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "recall",
+      "risk": "read"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical"
+        ],
+        "oauth_scope_any": [
+          "mcp:write",
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "feedback_note_visible"
+        ],
+        "tool_profile_any": [
+          "no-destructive",
+          "full"
+        ],
+        "transaction_recheck": true
+      },
+      "availability": "QOOPIA_V4_FEEDBACK",
+      "description": "Record bounded feedback for a visible note. pin and unpin require owner or steward capability.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "feedback": {
+            "enum": [
+              "helpful",
+              "not_helpful",
+              "stale",
+              "incorrect",
+              "confirm",
+              "pin",
+              "unpin"
+            ],
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 8,
+            "type": "string"
+          },
+          "note_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason_code": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason_text": {
+            "maxLength": 500,
+            "type": "string"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_id",
+          "feedback",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "recall_feedback",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/RecallFeedbackResponse"
+      },
+      "risk": "write-low"
+    },
+    {
+      "authorization": {
+        "agent_type_any": [
+          "authenticated"
+        ],
+        "instance_role_any": [
+          "canonical",
+          "legacy-readonly"
+        ],
+        "oauth_scope_any": [
+          "mcp:read",
+          "mcp:write",
+          "mcp:admin"
+        ],
+        "resource_rules": [
+          "trace_caller_or_admin"
+        ],
+        "tool_profile_any": [
+          "read-only",
+          "no-destructive",
+          "full"
+        ],
+        "transaction_recheck": false
+      },
+      "availability": "QOOPIA_V4_RECALL_EXPLAIN",
+      "description": "Read one bounded privacy-safe recall trace scoped to its caller or an authorized admin.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include_items": {
+            "default": true,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "trace_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id"
+        ],
+        "type": "object"
+      },
+      "name": "recall_trace_get",
+      "result_schema": {
+        "$ref": "https://qoopia.local/contracts/v4-response-schemas.json#/definitions/RecallTraceGetResponse"
+      },
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "Fetch raw messages by ID range (expand a prior summary).",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "end_id": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "start_id": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_id",
+          "end_id"
+        ],
+        "type": "object"
+      },
+      "name": "session_expand",
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "Load recent messages from a session. Pass session_id='latest' to get the most recent session of this agent.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "include_summaries": {
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "session_recent",
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "Append one message to a session. Call after every user message AND every assistant response.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant",
+              "system",
+              "tool"
+            ],
+            "type": "string"
+          },
+          "session_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "token_count": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "role",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "session_save",
+      "risk": "write-low"
+    },
+    {
+      "availability": "always",
+      "description": "FTS5 search across saved session messages.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "own_agent",
+              "workspace",
+              "all"
+            ],
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "session_search",
+      "risk": "read"
+    },
+    {
+      "availability": "always",
+      "description": "Save your own summary of a message range. Qoopia does not generate summaries — you write the text.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 50000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "level": {
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "msg_end_id": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "msg_start_id": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "token_count": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "content",
+          "msg_start_id",
+          "msg_end_id"
+        ],
+        "type": "object"
+      },
+      "name": "session_summarize",
+      "risk": "write-low"
+    },
+    {
+      "availability": "QOOPIA_SKILLS",
+      "description": "Fetch a skill entity by id or slug (Phase 2 Item E). Throws NOT_FOUND if the entity exists but is a different type. Workspace-scoped.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "skill_get",
+      "risk": "read"
+    },
+    {
+      "availability": "QOOPIA_SKILLS",
+      "description": "Mark a skill runbook as verified (Phase 2 Item E). Updates metadata.last_tested and metadata.tester_agent — leaves the rest of the runbook untouched. Re-runs the full metadata validation so the row never drifts into an invalid shape during a mark.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "tested_at": {
+            "description": "ISO timestamp when the runbook was last verified.",
+            "type": "string"
+          },
+          "tester_agent": {
+            "description": "Agent slug that ran the verification.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "tested_at",
+          "tester_agent"
+        ],
+        "type": "object"
+      },
+      "name": "skill_mark_tested",
+      "risk": "write-low"
+    },
+    {
+      "availability": "QOOPIA_SKILLS",
+      "description": "Render a skill as an actionable markdown runbook (Phase 2 Item E). Sections: Trigger, Prerequisites, Steps, Verification, Failure modes, Rollback, Code paths, Related incidents. Operators paste the output into a session log when they run the skill.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "skill_render_runbook",
+      "risk": "read"
+    },
+    {
+      "availability": "QOOPIA_SKILLS",
+      "description": "Search skill entities (Phase 2 Item E). Pins type='skill' so the caller cannot accidentally widen across entity types. With `query`, FTS5 on entity_pages_fts; without, lists by status. Returns title + 240-char summary preview.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Default 25, capped at 100.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "status": {
+            "description": "Default 'active'.",
+            "enum": [
+              "active",
+              "archived",
+              "deprecated"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "skill_search",
+      "risk": "read"
+    },
+    {
+      "availability": "QOOPIA_SKILLS",
+      "description": "Insert or update a skill runbook entity (Phase 2 Item E). Wraps entity_upsert with type='skill' and validates the full metadata shape (skill_version, trigger_conditions, exact_steps, verification_gates, failure_modes, rollback, related_code_paths, related_incidents). Idempotent on (workspace, slug). Workspace pinned from auth.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "metadata": {
+            "additionalProperties": true,
+            "description": "Required skill metadata. See SKILL_METADATA_REQUIRED in src/services/skills.ts.",
+            "properties": {
+              "exact_steps": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "failure_modes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "last_tested": {
+                "type": "string"
+              },
+              "owner_agent": {
+                "type": "string"
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "related_code_paths": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "related_incidents": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "rollback": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string"
+              },
+              "skill_version": {
+                "type": "string"
+              },
+              "tester_agent": {
+                "type": "string"
+              },
+              "trigger_conditions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "verification_gates": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "skill_version",
+              "owner_agent",
+              "trigger_conditions",
+              "scope",
+              "prerequisites",
+              "exact_steps",
+              "verification_gates",
+              "failure_modes",
+              "rollback",
+              "related_code_paths",
+              "related_incidents"
+            ],
+            "type": "object"
+          },
+          "slug": {
+            "description": "URL-safe slug; UNIQUE per workspace.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "description": "Default 'active'.",
+            "enum": [
+              "active",
+              "archived",
+              "deprecated"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "description": "Required for skills — renders as the runbook intro.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "summary",
+          "metadata"
+        ],
+        "type": "object"
+      },
+      "name": "skill_upsert",
+      "risk": "write-low"
+    }
+  ],
+  "compatibility": {
+    "baseline_defaults_unchanged_when_flags_off": true,
+    "baseline_required_fields_unchanged": true,
+    "baseline_response_envelopes_unchanged": true,
+    "deprecated_compat_overlay_extended": false,
+    "feature_disabled_policy": "An explicitly requested gated option returns FEATURE_DISABLED; it is never silently enabled or ignored.",
+    "mcp_error_envelope": "isError=true with stable CODE: message text; no internal stack or secret",
+    "mcp_success_envelope": "content[0].text contains one JSON value",
+    "oauth_risk_mapping": {
+      "admin": [
+        "mcp:admin"
+      ],
+      "read": [
+        "mcp:read",
+        "mcp:write",
+        "mcp:admin"
+      ],
+      "write-destructive": [
+        "mcp:admin"
+      ],
+      "write-low": [
+        "mcp:write",
+        "mcp:admin"
+      ]
+    },
+    "unknown_fields_policy": "server Zod schemas remain authoritative"
+  },
+  "legacy_compat_overlay": {
+    "aliases": [
+      {
+        "name": "create",
+        "risk": "write-low"
+      },
+      {
+        "name": "delete",
+        "risk": "write-destructive"
+      },
+      {
+        "name": "get",
+        "risk": "read"
+      },
+      {
+        "name": "list",
+        "risk": "read"
+      },
+      {
+        "name": "note",
+        "risk": "write-low"
+      },
+      {
+        "name": "update",
+        "risk": "write-destructive"
+      }
+    ],
+    "brief_agent_name_overlay": true,
+    "default_enabled": false,
+    "enable_flag": "QOOPIA_ENABLE_V2_COMPAT"
+  },
+  "migration_target": 32,
+  "response_schema_registry": {
+    "draft": "http://json-schema.org/draft-07/schema#",
+    "id": "https://qoopia.local/contracts/v4-response-schemas.json",
+    "path": "docs/v4/contracts/v4-response-schemas.json"
+  },
+  "schema_version": 2,
+  "target_version": "4.0.0"
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "tool_release": "2026.07.16.1",
+  "version_marker": ".qoopia-tool-release",
+  "required_workspace_paths": [
+    "tools/AGENTS.md",
+    "tools/agent_tools/AGENTS.md",
+    "tools/cron_tools/AGENTS.md",
+    "tools/media_tools/AGENTS.md",
+    "tools/task_tools/AGENTS.md",
+    "tools/user_tools/AGENTS.md",
+    "tools/webhook_tools/AGENTS.md"
+  ],
+  "tree_excludes": [
+    ".qoopia-tool-release",
+    "local/",
+    "__pycache__/",
+    ".pyc"
+  ]
+}

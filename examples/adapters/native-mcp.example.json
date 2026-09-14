@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "qoopia": {
+      "transport": "http",
+      "urlFromEnv": "QOOPIA_MCP_URL",
+      "headersFromEnv": {
+        "Authorization": "QOOPIA_MCP_TOKEN"
+      }
+    }
+  }
+}

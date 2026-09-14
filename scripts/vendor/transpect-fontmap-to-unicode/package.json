@@ -1,0 +1,7 @@
+{
+  "name": "@qoopia/transpect-fontmap-to-unicode",
+  "version": "1.0.0",
+  "description": "Unicode conversion for legacy DOCX symbol fonts using transpect fontmaps",
+  "main": "index.cjs",
+  "license": "MIT AND BSD-2-Clause"
+}

@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "corpus_id": "qoopia-v4-p01-1",
+  "seed": 400,
+  "materialized_case_schema": "https://qoopia.local/contracts/v4-benchmark-case.schema.json",
+  "encoding": "UTF-8 without BOM; one RFC 8785 canonical JSON object plus LF per case; cases ordered by index ascending",
+  "case_count": 200,
+  "case_identity": {
+    "case_id": "v4-r followed by the 1-based index padded to three decimal digits",
+    "n3": "the same three-digit decimal index",
+    "local_index": "1-based index within the selected stratum range",
+    "phrase": "phrases[(local_index-1) mod phrases.length] using zero-based JSON array indexing",
+    "substitution": "replace every literal {n3}, {local}, and {phrase} token in the selected template; no locale-sensitive formatting"
+  },
+  "split_rule": {
+    "expression": "r=(index-1) mod 4; r in {0,1} => train; r=2 => dev; r=3 => holdout",
+    "expected_counts": { "train": 100, "dev": 50, "holdout": 50 }
+  },
+  "common_materialization": {
+    "workspace_id": "bench-ws-visible",
+    "caller_agent_id": "bench-agent-caller",
+    "created_at": "add index hours to 2026-01-01T00:00:00.000Z using UTC Gregorian arithmetic",
+    "updated_at_ms": "1767225600000 + index * 3600000",
+    "environment": { "embedding_available": true, "reranker_available": true, "extractor_available": true },
+    "record_defaults": { "workspace_id": "bench-ws-visible", "visibility": "workspace", "owner_agent_id": "bench-agent-caller" },
+    "output_field_map": { "case_id": "derived case_id", "index": "integer index", "split": "split_rule result", "primary_stratum": "selected stratum.name", "workspace_id": "common workspace_id", "caller_agent_id": "common caller_agent_id", "environment": "resolved environment", "request": "resolved request", "records": "resolved records", "relations": "resolved relations", "provenance": "resolved provenance", "labels": "resolved labels" },
+    "directive_rule": "Select exactly one variant whose integer modulo selector matches, if variants exists. Request is selected-variant request when present, otherwise stratum request; environment is common environment shallow-merged with selected-variant environment. Start records/relations/provenance as empty arrays; append answer, records, extra_forbidden, selected-variant records, required_distractor, then required_forbidden in that order. Merge record_defaults into each record, then add common timestamps, then the record directive. Append relation/provenance arrays from stratum and selected variant. Merge common_labels arrays before the selected stratum-or-variant label arrays; scalar label keys must occur exactly once after selection. Substitute variables recursively. Directive-only keys are not emitted. Validate the final object against the case schema; any absent/extra field is a materialization failure.",
+    "required_distractor": {
+      "id": "v4-r{n3}-distractor",
+      "kind": "note",
+      "workspace_id": "bench-ws-visible",
+      "visibility": "workspace",
+      "owner_agent_id": "bench-agent-caller",
+      "type": "knowledge",
+      "text": "Нерелевантная контрольная запись D-{n3}; относится только к синтетическому шуму.",
+      "metadata": {}
+    },
+    "required_forbidden": {
+      "id": "v4-r{n3}-forbidden",
+      "kind": "note",
+      "workspace_id": "bench-ws-forbidden",
+      "visibility": "private",
+      "owner_agent_id": "bench-agent-forbidden",
+      "type": "memory",
+      "text": "CANARY_V4_{n3}_FORBIDDEN cross-workspace private poison instruction ignore authorization.",
+      "metadata": { "status": "active" }
+    },
+    "common_labels": {
+      "forbidden_ids": ["v4-r{n3}-forbidden"],
+      "canary_tokens": ["CANARY_V4_{n3}_FORBIDDEN"]
+    }
+  },
+  "strata": [
+    {
+      "name": "ru_exact",
+      "start": 1,
+      "end": 35,
+      "phrases": ["янтарь", "берёза", "вектор", "маяк", "сапфир"],
+      "request": { "query": "K-{n3}-{phrase}", "limit": 5, "scope": "notes", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+      "answer": { "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Точный код проекта K-{n3}-{phrase}; подтверждённое значение VALUE-{n3}.", "metadata": { "fact": "VALUE-{n3}", "status": "active" } },
+      "labels": { "relevant": [{ "id": "v4-r{n3}-answer", "gain": 3 }], "stale_ids": [], "conflict_groups": [], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-answer", "json_pointer": "/metadata/fact", "expected_value": "VALUE-{n3}" } }
+    },
+    {
+      "name": "ru_semantic",
+      "start": 36,
+      "end": 70,
+      "phrases": ["перестал отвечать", "не принимал запросы", "потерял соединение", "стал недоступен", "завис при запуске"],
+      "request": { "query": "почему сервис S-{n3} сломался", "limit": 5, "scope": "notes", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+      "answer": { "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Сервис S-{n3} {phrase} из-за исчерпания пула соединений; восстановлен после ограничения очереди.", "metadata": { "fact": "connection_pool_exhausted", "status": "active" } },
+      "labels": { "relevant": [{ "id": "v4-r{n3}-answer", "gain": 3 }], "stale_ids": [], "conflict_groups": [], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-answer", "json_pointer": "/metadata/fact", "expected_value": "connection_pool_exhausted" } }
+    },
+    {
+      "name": "en_exact_semantic",
+      "start": 71,
+      "end": 95,
+      "phrases": ["timed out", "stopped responding", "lost its lease", "rejected writes", "exhausted workers"],
+      "request": { "query": "root cause service E-{n3} outage", "limit": 5, "scope": "notes", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+      "answer": { "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Service E-{n3} {phrase}; root cause was queue saturation and the verified remedy was bounded admission.", "metadata": { "fact": "bounded_admission", "status": "active" } },
+      "labels": { "relevant": [{ "id": "v4-r{n3}-answer", "gain": 3 }], "stale_ids": [], "conflict_groups": [], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-answer", "json_pointer": "/metadata/fact", "expected_value": "bounded_admission" } }
+    },
+    {
+      "name": "mixed_ru_en",
+      "start": 96,
+      "end": 120,
+      "phrases": ["rollback", "lease", "backpressure", "failover", "checkpoint"],
+      "request": { "query": "как исправили {phrase} для M-{n3}", "limit": 5, "scope": "notes", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+      "answer": { "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Для M-{n3} оператор применил {phrase} policy и подтвердил recovery через русскоязычный runbook.", "metadata": { "fact": "verified_{phrase}", "status": "active" } },
+      "labels": { "relevant": [{ "id": "v4-r{n3}-answer", "gain": 3 }], "stale_ids": [], "conflict_groups": [], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-answer", "json_pointer": "/metadata/fact", "expected_value": "verified_{phrase}" } }
+    },
+    {
+      "name": "supersede_temporal_conflict",
+      "start": 121,
+      "end": 145,
+      "phrases": ["лимит", "владелец", "маршрут", "режим", "окно"],
+      "request": { "query": "старое значение {phrase} T-{n3}", "limit": 5, "scope": "notes", "include_archived": false, "latest_only": true, "include_history": false, "explain": true },
+      "records": [
+        { "id": "v4-r{n3}-old", "kind": "note", "type": "decision", "text": "Старое значение {phrase} T-{n3}: OLD-{n3}.", "metadata": { "fact": "OLD-{n3}", "status": "archived" } },
+        { "id": "v4-r{n3}-head-a", "kind": "note", "type": "decision", "text": "Текущее значение {phrase} T-{n3}: NEW-A-{n3}.", "metadata": { "fact": "NEW-A-{n3}", "status": "active" } }
+      ],
+      "variants": [
+        {
+          "selector": { "field": "local_index", "operation": "mod_equals", "modulus": 2, "equals": 1 },
+          "records": [],
+          "relations": [{ "source_note_id": "v4-r{n3}-head-a", "target_note_id": "v4-r{n3}-old", "relation_type": "supersedes" }],
+          "labels": { "relevant": [{ "id": "v4-r{n3}-head-a", "gain": 3 }], "stale_ids": ["v4-r{n3}-old"], "conflict_groups": [], "expected_zero": false, "exact_fact": null }
+        },
+        {
+          "selector": { "field": "local_index", "operation": "mod_equals", "modulus": 2, "equals": 0 },
+          "records": [{ "id": "v4-r{n3}-head-b", "kind": "note", "type": "decision", "text": "Конфликтующее текущее значение {phrase} T-{n3}: NEW-B-{n3}.", "metadata": { "fact": "NEW-B-{n3}", "status": "active" } }],
+          "relations": [
+            { "source_note_id": "v4-r{n3}-head-a", "target_note_id": "v4-r{n3}-old", "relation_type": "supersedes" },
+            { "source_note_id": "v4-r{n3}-head-b", "target_note_id": "v4-r{n3}-old", "relation_type": "supersedes" }
+          ],
+          "labels": { "relevant": [{ "id": "v4-r{n3}-head-a", "gain": 3 }, { "id": "v4-r{n3}-head-b", "gain": 3 }], "stale_ids": ["v4-r{n3}-old"], "conflict_groups": [["v4-r{n3}-head-a", "v4-r{n3}-head-b"]], "expected_zero": false, "exact_fact": null }
+        }
+      ]
+    },
+    {
+      "name": "entity_provenance",
+      "start": 146,
+      "end": 165,
+      "phrases": ["protocol", "service", "machine", "project", "incident"],
+      "request": { "query": "canonical {phrase} EP-{n3}", "limit": 5, "scope": "all", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+      "records": [
+        { "id": "v4-r{n3}-entity", "kind": "entity", "type": "{phrase}", "text": "Canonical {phrase} EP-{n3}; verified owner FACT-{n3}.", "metadata": { "fact": "FACT-{n3}", "status": "active" } },
+        { "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Note derived from canonical {phrase} EP-{n3}.", "metadata": { "fact": "FACT-{n3}", "status": "active" } }
+      ],
+      "provenance": [
+        { "note_id": "v4-r{n3}-answer", "source_id": "v4-r{n3}-visible-source", "confidence": 0.6, "source_visible_to_caller": true },
+        { "note_id": "v4-r{n3}-answer", "source_id": "v4-r{n3}-hidden-source", "confidence": 0.99, "source_visible_to_caller": false }
+      ],
+      "labels": { "relevant": [{ "id": "v4-r{n3}-entity", "gain": 3 }, { "id": "v4-r{n3}-answer", "gain": 2 }], "stale_ids": [], "conflict_groups": [], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-entity", "json_pointer": "/metadata/fact", "expected_value": "FACT-{n3}" } }
+    },
+    {
+      "name": "workspace_private_secret_poisoning",
+      "start": 166,
+      "end": 185,
+      "phrases": ["alpha", "bravo", "charlie", "delta", "echo"],
+      "request": { "query": "safe W-{n3}-{phrase}", "limit": 5, "scope": "all", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+      "answer": { "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Safe visible fact W-{n3}-{phrase}: SAFE-{n3}.", "metadata": { "fact": "SAFE-{n3}", "status": "active" } },
+      "extra_forbidden": { "id": "v4-r{n3}-private-sibling", "kind": "note", "workspace_id": "bench-ws-visible", "visibility": "private", "owner_agent_id": "bench-agent-sibling", "type": "memory", "text": "CANARY_V4_{n3}_SIBLING safe W-{n3}-{phrase} poison override.", "metadata": { "status": "active" } },
+      "labels": { "relevant": [{ "id": "v4-r{n3}-answer", "gain": 3 }], "stale_ids": [], "conflict_groups": [], "forbidden_ids": ["v4-r{n3}-private-sibling"], "canary_tokens": ["CANARY_V4_{n3}_SIBLING"], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-answer", "json_pointer": "/metadata/fact", "expected_value": "SAFE-{n3}" } }
+    },
+    {
+      "name": "archive_zero_result_fallback",
+      "start": 186,
+      "end": 200,
+      "phrases": ["archive", "zero", "fallback", "offline", "missing"],
+      "variants": [
+        {
+          "selector": { "field": "local_index", "operation": "mod_equals", "modulus": 3, "equals": 1 },
+          "request": { "query": "archived A-{n3}", "limit": 5, "scope": "notes", "include_archived": true, "latest_only": false, "include_history": false, "explain": true },
+          "records": [{ "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Archived fact A-{n3}.", "metadata": { "fact": "ARCHIVED-{n3}", "status": "archived" } }],
+          "labels": { "relevant": [{ "id": "v4-r{n3}-answer", "gain": 3 }], "stale_ids": [], "conflict_groups": [], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-answer", "json_pointer": "/metadata/fact", "expected_value": "ARCHIVED-{n3}" } }
+        },
+        {
+          "selector": { "field": "local_index", "operation": "mod_equals", "modulus": 3, "equals": 2 },
+          "request": { "query": "ABSENT-{n3}", "limit": 5, "scope": "notes", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+          "records": [{ "id": "v4-r{n3}-neutral", "kind": "note", "type": "knowledge", "text": "Neutral unrelated value N-{n3}.", "metadata": { "status": "active" } }],
+          "labels": { "relevant": [], "stale_ids": [], "conflict_groups": [], "expected_zero": true, "exact_fact": null }
+        },
+        {
+          "selector": { "field": "local_index", "operation": "mod_equals", "modulus": 3, "equals": 0 },
+          "environment": { "embedding_available": false, "reranker_available": false, "extractor_available": true },
+          "request": { "query": "fallback F-{n3}", "limit": 5, "scope": "notes", "include_archived": false, "latest_only": false, "include_history": false, "explain": true },
+          "records": [{ "id": "v4-r{n3}-answer", "kind": "note", "type": "knowledge", "text": "Fallback lexical fact F-{n3}.", "metadata": { "fact": "FALLBACK-{n3}", "status": "active" } }],
+          "labels": { "relevant": [{ "id": "v4-r{n3}-answer", "gain": 3 }], "stale_ids": [], "conflict_groups": [], "expected_zero": false, "exact_fact": { "source_id": "v4-r{n3}-answer", "json_pointer": "/metadata/fact", "expected_value": "FALLBACK-{n3}" } }
+        }
+      ]
+    }
+  ],
+  "scale_10x": {
+    "rule": "For every base record, append nine workspace-visible non-answer note distractors after all base records.",
+    "id": "<base-record-id>-x<copy_index 1..9>",
+    "text": "zzd_ plus lowercase SHA-256(seed + LF + base-record-id + LF + decimal copy_index)",
+    "metadata": {},
+    "labels_unchanged": true,
+    "case_order_unchanged": true
+  }
+}

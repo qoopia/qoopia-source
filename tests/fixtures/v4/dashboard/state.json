@@ -1,0 +1,12 @@
+{
+  "feature_flags": { "dashboard": true, "recall_explain": true, "extraction": true },
+  "traces": [{ "id": "trace-synthetic", "query_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "result_count": 0 }],
+  "relations": [{ "id": "rel-synthetic", "source_note_id": "note-head", "target_note_id": "note-old", "relation_type": "supersedes" }],
+  "conflicts": [],
+  "extraction": [{ "run": { "id": "run-synthetic" }, "candidates": [{ "id": "candidate-synthetic", "proposed_text": "Synthetic reviewed proposal", "proposed_type": "memory", "confidence": 0.91, "risk_flags": [], "status": "pending", "review_version": 0 }] }],
+  "lifecycle": [{ "note_id": "note-head", "type": "memory", "recall_count": 2, "confirmation_count": 1, "owner_pinned": 0 }],
+  "feedback": [],
+  "agentcomm": { "receipts": { "pending": 0, "leased": 0, "dead_letter": 0 } },
+  "runtime_acceptance": { "status": "deferred_to_p10", "evidence": [] },
+  "operations": { "schema_version": 32, "export_import": "dry_run_not_yet_available_p08", "restore_rehearsal": "not_yet_available_p08", "production_apply_controls": false }
+}

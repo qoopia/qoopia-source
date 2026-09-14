@@ -1,0 +1,53 @@
+-- 023-skill-metadata-schema.sql — fat skills layer schema convention
+-- (Phase 2 Item E).
+--
+-- Plan note: 01KSC0E9F1WFWJMSP58KS34H2A §"Item E — Fat skills layer".
+-- Reuses entity_pages type='skill' (migration 021) per Q-P2-5 — no
+-- new table is created. The skills layer is a typed convention on
+-- top of entity_pages.metadata; this migration only records the
+-- convention as schema_version 23 so a clean DB rolls forward into
+-- the Item E feature flag space with a recognisable marker.
+--
+-- Why not a CHECK constraint?
+--   - SQLite CHECK constraints on JSON-extracted columns require
+--     json_extract() in a CHECK expression, which is enforced at
+--     row write time. Adding a per-type constraint after the table
+--     exists would mean a table rebuild (CREATE TABLE …; INSERT …;
+--     DROP …; ALTER … RENAME), which is destructive for any existing
+--     entity rows in a staging or local DB.
+--   - The skill_upsert helper (src/services/skills.ts) enforces the
+--     metadata schema at the service boundary. The MCP surface and
+--     the seed script both go through that helper, so the only path
+--     that could write a malformed skill is a direct entity_upsert
+--     call with type='skill' — that path is already gated by the
+--     QOOPIA_ENTITY_PAGES flag and by the same QoopiaError taxonomy
+--     used elsewhere.
+--   - Treating the skill metadata as a TypeScript-enforced shape
+--     (not a SQL constraint) keeps the migration additive and lets
+--     the shape evolve without follow-up rebuilds. The shape lives in
+--     src/services/skills.ts SKILL_METADATA_REQUIRED — additions are
+--     non-breaking; removals would require this migration plus a
+--     follow-up version bump.
+--
+-- Required skill metadata fields (enforced by skill_upsert):
+--   skill_version         — semver-ish string ('1.0.0'); bumps when
+--                           steps change incompatibly
+--   owner_agent           — agent slug that maintains the runbook
+--   trigger_conditions    — string[]: when to invoke the skill
+--   scope                 — short string: what the skill covers
+--   prerequisites         — string[]: what must be true before running
+--   exact_steps           — string[]: ordered, idempotent steps
+--   verification_gates    — string[]: pass/fail checks per step or final
+--   failure_modes         — string[]: known ways the runbook fails
+--   rollback              — string: how to undo if mid-run failure
+--   related_code_paths    — string[]: absolute paths or repo-relative
+--   related_incidents     — string[]: incident slugs or postmortem IDs
+--
+-- Optional fields (set by skill_mark_tested):
+--   last_tested           — ISO timestamp when the runbook last passed
+--   tester_agent          — agent slug that ran the verification
+--
+-- Rollback: /srv/qoopia/code/migrations/rollback/023-skill-metadata-schema.rollback.sql.
+
+INSERT INTO schema_versions (version, description)
+  VALUES (23, '023-skill-metadata-schema.sql');

@@ -1,0 +1,17 @@
+{
+  "flags": ["QOOPIA_V4_RELATIONS", "QOOPIA_V4_LATEST_ONLY", "QOOPIA_V4_RECALL_EXPLAIN"],
+  "cases": [
+    {"name": "normal-default", "include_archived": false, "include_history": false, "latest_only": "omitted", "valid": true, "effective_latest_only": true},
+    {"name": "normal-explicit-off", "include_archived": false, "include_history": false, "latest_only": false, "valid": true, "effective_latest_only": false},
+    {"name": "normal-explicit-on", "include_archived": false, "include_history": false, "latest_only": true, "valid": true, "effective_latest_only": true},
+    {"name": "archived-default", "include_archived": true, "include_history": false, "latest_only": "omitted", "valid": true, "effective_latest_only": true},
+    {"name": "archived-explicit-off", "include_archived": true, "include_history": false, "latest_only": false, "valid": true, "effective_latest_only": false},
+    {"name": "archived-explicit-on", "include_archived": true, "include_history": false, "latest_only": true, "valid": true, "effective_latest_only": true},
+    {"name": "history-missing-archive-default", "include_archived": false, "include_history": true, "latest_only": "omitted", "valid": false, "error_code": "INVALID_ARGUMENT"},
+    {"name": "history-missing-archive-off", "include_archived": false, "include_history": true, "latest_only": false, "valid": false, "error_code": "INVALID_ARGUMENT"},
+    {"name": "history-missing-archive-on", "include_archived": false, "include_history": true, "latest_only": true, "valid": false, "error_code": "INVALID_ARGUMENT"},
+    {"name": "history-default", "include_archived": true, "include_history": true, "latest_only": "omitted", "valid": true, "effective_latest_only": false},
+    {"name": "history-explicit-off", "include_archived": true, "include_history": true, "latest_only": false, "valid": true, "effective_latest_only": false},
+    {"name": "history-conflict-on", "include_archived": true, "include_history": true, "latest_only": true, "valid": false, "error_code": "INVALID_ARGUMENT"}
+  ]
+}

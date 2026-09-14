@@ -1,0 +1,95 @@
+@import url("tokens.css");
+@font-face{font-family:'Marck Script';src:url('MarckScript-Regular.ttf') format('truetype');font-weight:400;font-display:swap}
+@font-face{font-family:'IBM Plex Sans';src:url('IBMPlexSans.ttf') format('truetype');font-weight:100 900;font-display:swap}
+:root{color-scheme:dark}
+.q-wordmark{font:400 36px/1.15 var(--qoopia-font-display);letter-spacing:0;color:var(--qoopia-white)}
+.q-brand{font-size:36px;display:flex;align-items:baseline;gap:16px;text-decoration:none;color:var(--qoopia-white)}
+.q-brand img{display:block;flex-shrink:0;width:1em;height:auto;transform:translateY(.095em);padding:0;box-sizing:content-box}
+/* Pair only the mark and name; subtitles belong outside this row. */
+.q-brand .q-wordmark{display:block;font-size:inherit;line-height:1;margin-bottom:0}
+.q-auth{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--qoopia-bg);color:var(--qoopia-fg);font:17px/1.5 var(--qoopia-font-ui)}
+.q-auth main,.q-auth .card{box-sizing:border-box;max-width:560px;width:100%;padding:40px 24px;text-align:left;background:var(--qoopia-bg);border-radius:12px;box-shadow:none}
+.q-auth h1{font:500 40px/1.2 var(--qoopia-font-ui);margin:40px 0 24px;overflow-wrap:anywhere}
+.q-auth h2{font-size:28px;font-weight:500}
+.q-auth p,.q-auth .info,.q-auth .scope-list{color:var(--qoopia-smoke);font-size:17px;line-height:1.5}
+.q-auth .client{color:var(--qoopia-white)}
+.q-auth button,.q-auth .btn{font:500 17px/1.5 var(--qoopia-font-ui);padding:8px 18px;min-height:40px;border:1px solid var(--qoopia-white);border-radius:6px;background:var(--qoopia-white);color:var(--qoopia-black);cursor:pointer}
+.q-auth .deny{background:transparent;color:var(--qoopia-white)}
+.q-auth .actions{display:flex;gap:16px;flex-wrap:wrap;margin-top:24px}
+.q-auth a{color:inherit}
+.q-auth :focus-visible{outline:3px solid var(--qoopia-white);outline-offset:4px}
+.q-auth button:disabled{opacity:.6;cursor:not-allowed}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Language choice is a text control; country flags do not represent languages. */
+.q-language{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;font:500 12px/1.5 var(--qoopia-font-ui);letter-spacing:.06em;color:var(--qoopia-smoke)}
+.q-language button{position:relative;appearance:none;background:transparent;color:inherit;border:0;border-radius:0;min-width:36px;min-height:40px;padding:8px 4px;font:inherit;letter-spacing:inherit;cursor:pointer}
+.q-language button[aria-pressed="true"]{color:var(--qoopia-white)}
+.q-language button[aria-pressed="true"]::after{content:'';position:absolute;left:4px;right:4px;bottom:4px;height:4px;background:url('/brand/logo/motif-underline.svg') center/100% 100% no-repeat}
+.q-language button:focus-visible{outline:2px solid var(--qoopia-white);outline-offset:3px;border-radius:3px}
+.q-language-login{display:flex;justify-content:flex-end;margin-bottom:16px}
+html[lang="ru"] .q-wordmark{font-family:var(--qoopia-font-display)}
+
+/* Account pages share the product's quiet, monochrome visual language. */
+.q-auth main:has(.q-profile){max-width:1040px;padding:48px 32px}
+.q-profile [hidden]{display:none!important}
+.q-profile .profile-nav,.q-profile .profile-identity,.q-profile .profile-footer{display:flex;justify-content:space-between;align-items:center;gap:24px;flex-wrap:wrap}
+.q-profile .profile-nav{margin:-8px 0 40px;font-size:14px}
+.q-profile .profile-caption{font-size:11px;letter-spacing:.12em;color:var(--qoopia-smoke)}
+.q-profile .profile-identity{padding:24px 0 36px;border-bottom:1px solid var(--qoopia-line);margin-bottom:36px}
+.q-profile .profile-email{font-size:clamp(20px,3vw,30px);color:var(--qoopia-white);margin:8px 0 0;overflow-wrap:anywhere}
+.q-profile .profile-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:32px;align-items:start}
+.q-profile .profile-panel{padding:28px;border:1px solid var(--qoopia-line);border-radius:12px;min-width:0}
+.q-profile .profile-quiet{border-color:transparent;background:var(--qoopia-surface)}
+.q-profile h2{margin:16px 0 20px;font-size:28px;line-height:1.2;letter-spacing:-.035em}
+.q-profile .profile-lead{font-size:25px;line-height:1.35;color:var(--qoopia-white);margin:20px 0}
+.q-profile label{display:block;margin:16px 0 8px;font-size:14px}
+.q-profile input{box-sizing:border-box;display:block;width:100%;min-height:48px;background:var(--qoopia-black);color:var(--qoopia-white);border:1px solid var(--qoopia-smoke);border-radius:6px;padding:10px 12px;font:inherit}
+.q-profile .profile-primary{box-sizing:border-box;display:block;text-align:center;width:100%;text-decoration:none;margin:20px 0}
+.q-profile .profile-small,.q-profile .profile-address{font-size:13px;line-height:1.6}
+.q-profile .profile-address{overflow-wrap:anywhere}
+.q-profile .profile-divider{text-align:center;font-size:13px;color:var(--qoopia-smoke)}
+.q-profile details{margin-top:28px;border-top:1px solid var(--qoopia-line);padding-top:20px}
+.q-profile summary{cursor:pointer;font-size:15px}
+.q-profile .profile-steps{padding-left:20px}
+.q-profile .profile-steps li{padding-left:8px;margin:20px 0}
+.q-profile .profile-steps p{font-size:15px;margin:8px 0}
+.q-profile .profile-footer{margin-top:40px;border-top:1px solid var(--qoopia-line);padding-top:24px;font-size:13px;color:var(--qoopia-smoke)}
+.q-profile #profile-status{margin-top:24px;overflow-wrap:anywhere}
+@media(max-width:700px){.q-auth main:has(.q-profile){padding:28px 20px}.q-profile .profile-grid{grid-template-columns:1fr;gap:24px}.q-profile .profile-panel{padding:24px}.q-profile .profile-identity{gap:16px}.q-profile .profile-nav{margin-bottom:24px}}
+
+/* Accessible browser surfaces stay within the canonical palette. */
+::selection{background:var(--qoopia-white);color:var(--qoopia-black)}
+input,textarea{caret-color:var(--qoopia-white)}
+input::placeholder,textarea::placeholder{color:var(--qoopia-smoke);opacity:1}
+a{text-underline-offset:.2em}
+:focus-visible{outline:2px solid var(--qoopia-white);outline-offset:4px}
+button,a,input,select,textarea,summary{touch-action:manipulation;scroll-margin-block:96px}
+h1,h2,h3{text-wrap:balance;scroll-margin-top:96px}
+.q-skip{position:fixed;top:8px;left:8px;z-index:1000;padding:12px 18px;background:var(--qoopia-white);color:var(--qoopia-black);transform:translateY(-200%)}
+.q-skip:focus{transform:none}
+.q-consent form{margin:24px 0}
+.q-consent input{box-sizing:border-box;width:100%;margin:8px 0 16px;padding:12px;border:1px solid var(--qoopia-smoke);border-radius:var(--qoopia-radius-sm);background:var(--qoopia-black);color:var(--qoopia-white);font:inherit}
+.q-consent button{width:100%}
+.q-consent .quiet button{background:transparent;color:var(--qoopia-white)}
+.q-consent dd{margin:8px 0 24px;overflow-wrap:anywhere}
+.q-consent small{color:var(--qoopia-smoke);overflow-wrap:anywhere}
+.q-auth button:hover:not(:disabled),.q-auth .btn:hover{background:var(--qoopia-smoke);color:var(--qoopia-black)}
+.q-guide{margin:0;background:var(--qoopia-bg);color:var(--qoopia-fg);font:17px/1.5 var(--qoopia-font-ui)}
+.q-guide main{max-width:850px;margin:0 auto;padding:40px 24px 96px}
+.q-guide h1{font:500 clamp(32px,5vw,40px)/1.2 var(--qoopia-font-ui);margin:40px 0 24px}
+.q-guide h2{font-size:28px;line-height:1.3;margin-top:40px;font-weight:500}
+.q-guide h3{font-size:21px;margin-top:24px;font-weight:500}
+.q-guide p,.q-guide li,.q-guide small{color:var(--qoopia-smoke)}
+.q-guide a{color:inherit}
+.q-guide nav{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.q-guide aside{padding:24px;border:1px solid var(--qoopia-line);border-radius:var(--qoopia-radius-md)}
+.q-guide code{overflow-wrap:anywhere;font-size:14px}
+.q-guide li{margin:8px 0}
+.q-guide .guide-clients{padding:16px 0}
+.q-profile .profile-small,.q-profile .profile-address,.q-profile .profile-divider,.q-profile .profile-footer{font-size:14px}
+@media(pointer:coarse){.q-language button{min-width:44px;min-height:44px}.q-auth button,.q-auth .btn,.q-guide nav a{min-height:44px}}
+
+.q-consent .languages{margin-top:24px;text-align:right}
+
+@media(max-width:700px){.q-profile .profile-grid:has(#signin-form)>.profile-panel{grid-row:1}}

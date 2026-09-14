@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect Qoopia analytics every five minutes
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=300
+AccuracySec=10
+Unit=qoopia-analytics.service
+
+[Install]
+WantedBy=timers.target

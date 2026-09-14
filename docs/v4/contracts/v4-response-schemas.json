@@ -1,0 +1,310 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://qoopia.local/contracts/v4-response-schemas.json",
+  "title": "Qoopia V4 MCP response contracts",
+  "definitions": {
+    "Cursor": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "Relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_note_id", "target_note_id", "relation_type", "created_by_agent_id", "metadata", "created_at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source_note_id": { "type": "string", "minLength": 1 },
+        "target_note_id": { "type": "string", "minLength": 1 },
+        "relation_type": { "type": "string", "enum": ["supersedes", "conflicts_with", "supports", "derived_from"] },
+        "created_by_agent_id": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object", "additionalProperties": true },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "NoteRelationListResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relations", "next_cursor"],
+      "properties": {
+        "relations": { "type": "array", "maxItems": 100, "items": { "$ref": "#/definitions/Relation" } },
+        "next_cursor": { "$ref": "#/definitions/Cursor" }
+      }
+    },
+    "NoteSupersedeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relation_id", "source_note_id", "target_note_id", "active_head_ids", "target_archived"],
+      "properties": {
+        "relation_id": { "type": "string", "minLength": 1 },
+        "source_note_id": { "type": "string", "minLength": 1 },
+        "target_note_id": { "type": "string", "minLength": 1 },
+        "active_head_ids": { "type": "array", "minItems": 1, "maxItems": 1000, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "target_archived": { "const": true }
+      }
+    },
+    "ExtractionRunStatus": {
+      "type": "string",
+      "enum": ["queued", "running", "review", "completed", "failed", "cancelled"]
+    },
+    "ExtractionRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "session_id", "source_start_id", "source_end_id", "source_range_hash", "extractor_version", "status", "candidate_count", "accepted_count", "rejected_count", "error_code", "created_at", "updated_at", "completed_at"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "source_start_id": { "type": "integer", "minimum": 1 },
+        "source_end_id": { "type": "integer", "minimum": 1 },
+        "source_range_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "extractor_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "status": { "$ref": "#/definitions/ExtractionRunStatus" },
+        "candidate_count": { "type": "integer", "minimum": 0 },
+        "accepted_count": { "type": "integer", "minimum": 0 },
+        "rejected_count": { "type": "integer", "minimum": 0 },
+        "error_code": { "type": ["string", "null"], "maxLength": 200 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "ExtractionCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "proposed_text", "proposed_type", "proposed_tags", "proposed_entities", "source_message_ids", "confidence", "dedup_note_id", "conflict_note_ids", "risk_flags", "status", "accepted_note_id", "reviewed_by_agent_id", "reviewed_at", "review_reason_code", "review_version", "created_at", "updated_at"],
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "proposed_text": { "type": "string", "minLength": 1, "maxLength": 16384 },
+        "proposed_type": { "type": "string", "enum": ["note", "task", "deal", "contact", "finance", "project", "memory", "rule", "knowledge", "context", "decision"] },
+        "proposed_tags": { "type": "array", "maxItems": 50, "items": { "type": "string", "minLength": 1, "maxLength": 100 } },
+        "proposed_entities": { "type": "array", "maxItems": 100, "items": { "type": "string", "minLength": 1, "maxLength": 512 } },
+        "source_message_ids": { "type": "array", "maxItems": 1000, "items": { "type": "integer", "minimum": 1 } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "dedup_note_id": { "type": ["string", "null"], "minLength": 1 },
+        "conflict_note_ids": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "risk_flags": { "type": "array", "maxItems": 50, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 100 } },
+        "status": { "type": "string", "enum": ["pending", "accepted", "edited", "rejected", "expired", "failed"] },
+        "accepted_note_id": { "type": ["string", "null"], "minLength": 1 },
+        "reviewed_by_agent_id": { "type": ["string", "null"], "minLength": 1 },
+        "reviewed_at": { "type": ["string", "null"], "format": "date-time" },
+        "review_reason_code": { "type": ["string", "null"], "maxLength": 100 },
+        "review_version": { "type": "integer", "minimum": 0 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ExtractionPreviewResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "status", "reused"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/definitions/ExtractionRunStatus" },
+        "reused": { "type": "boolean" }
+      }
+    },
+    "ExtractionRunGetResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "candidates", "next_cursor"],
+      "properties": {
+        "run": { "$ref": "#/definitions/ExtractionRun" },
+        "candidates": { "type": "array", "maxItems": 100, "items": { "$ref": "#/definitions/ExtractionCandidate" } },
+        "next_cursor": { "$ref": "#/definitions/Cursor" }
+      }
+    },
+    "ExtractionRunListResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runs", "next_cursor"],
+      "properties": {
+        "runs": { "type": "array", "maxItems": 100, "items": { "$ref": "#/definitions/ExtractionRun" } },
+        "next_cursor": { "$ref": "#/definitions/Cursor" }
+      }
+    },
+    "ExtractionReviewResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "status", "review_version", "accepted_note_id"],
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["accepted", "edited", "rejected"] },
+        "review_version": { "type": "integer", "minimum": 1 },
+        "accepted_note_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "RecallTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trace_id", "caller_agent_id", "query_hash", "mode", "options", "pipeline_version", "duration_ms", "result_count", "created_at", "expires_at"],
+      "properties": {
+        "trace_id": { "type": "string", "minLength": 1 },
+        "caller_agent_id": { "type": "string", "minLength": 1 },
+        "query_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "mode": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "options": { "type": "object", "additionalProperties": false, "properties": { "scope": { "type": ["string", "null"] }, "limit": { "type": "integer", "minimum": 1, "maximum": 50 }, "latest_only": { "type": "boolean" }, "include_archived": { "type": "boolean" }, "include_history": { "type": "boolean" }, "lifecycle": { "type": "boolean" } } },
+        "pipeline_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "result_count": { "type": "integer", "minimum": 0 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "RecallTraceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result_kind", "result_id", "note_id", "source_channel", "fts_rank", "vector_rank", "fts_score", "vector_score", "rrf_score", "rerank_score", "lifecycle_factor", "governance_factor", "relation_factor", "final_score", "final_rank", "reason_codes"],
+      "properties": {
+        "result_kind": { "type": "string", "enum": ["note", "entity", "activity", "session_message"] },
+        "result_id": { "type": "string", "minLength": 1 },
+        "note_id": { "type": ["string", "null"], "minLength": 1 },
+        "source_channel": { "type": "string", "enum": ["fts5", "vector", "both", "activity_fts", "session_fts"] },
+        "fts_rank": { "type": ["integer", "null"], "minimum": 1 },
+        "vector_rank": { "type": ["integer", "null"], "minimum": 1 },
+        "fts_score": { "type": ["number", "null"] },
+        "vector_score": { "type": ["number", "null"] },
+        "rrf_score": { "type": "number" },
+        "rerank_score": { "type": ["number", "null"] },
+        "lifecycle_factor": { "type": "number", "minimum": 0.85, "maximum": 1.15 },
+        "governance_factor": { "type": "number", "minimum": 1, "maximum": 1.05 },
+        "relation_factor": { "type": "number", "minimum": 0.9, "maximum": 1 },
+        "final_score": { "type": "number" },
+        "final_rank": { "type": "integer", "minimum": 1 },
+        "reason_codes": { "type": "array", "maxItems": 50, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 100 } }
+      }
+    },
+    "RecallTraceGetResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trace", "items", "next_cursor"],
+      "properties": {
+        "trace": { "$ref": "#/definitions/RecallTrace" },
+        "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/definitions/RecallTraceItem" } },
+        "next_cursor": { "$ref": "#/definitions/Cursor" }
+      }
+    },
+    "RecallFeedbackResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feedback_id", "note_id", "feedback", "trace_attached", "lifecycle_update_deferred"],
+      "properties": {
+        "feedback_id": { "type": "string", "minLength": 1 },
+        "note_id": { "type": "string", "minLength": 1 },
+        "feedback": { "type": "string", "enum": ["helpful", "not_helpful", "stale", "incorrect", "confirm", "pin", "unpin"] },
+        "trace_attached": { "type": "boolean" },
+        "lifecycle_update_deferred": { "type": "boolean" }
+      }
+    },
+    "ExportPlanResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "schema_version", "counts", "policies", "estimated_bytes", "plan_hash", "expires_at"],
+      "properties": {
+        "format": { "const": "qoopia-v4-export/1" },
+        "schema_version": { "const": 32 },
+        "counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "policies": { "type": "object", "additionalProperties": { "type": "string", "enum": ["required", "optional_ephemeral", "derived", "forbidden", "manifest_only", "local_config"] } },
+        "estimated_bytes": { "type": "integer", "minimum": 0 },
+        "plan_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ExportBundleResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "format", "schema_version", "manifest_sha256", "archive_sha256", "signature_key_id", "created_at"],
+      "properties": {
+        "artifact_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "format": { "const": "qoopia-v4-export/1" },
+        "schema_version": { "const": 32 },
+        "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "archive_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "signature_key_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ImportConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "row_id", "code", "source_hash", "target_hash"],
+      "properties": {
+        "table": { "type": "string", "minLength": 1 },
+        "row_id": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "enum": ["ROW_HASH_MISMATCH", "WORKSPACE_MISMATCH", "IDENTITY_MAPPING_REQUIRED", "MISSING_REFERENCE", "UNSUPPORTED_SCHEMA", "UNSUPPORTED_FORMAT"] },
+        "source_hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "target_hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "AgentDeliveryStatusResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_id", "message_id", "state", "lease_owner", "lease_expires_at", "attempt_count", "last_error_code", "transport_provider", "transport_message_id", "delivered_at", "created_at", "updated_at"],
+      "properties": {
+        "receipt_id": { "type": "string", "minLength": 1 },
+        "message_id": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "enum": ["pending", "leased", "delivered", "failed", "dead_letter"] },
+        "lease_owner": { "type": ["string", "null"] },
+        "lease_expires_at": { "type": ["string", "null"], "format": "date-time" },
+        "attempt_count": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "last_error_code": { "type": ["string", "null"] },
+        "transport_provider": { "type": ["string", "null"] },
+        "transport_message_id": { "type": ["string", "null"] },
+        "delivered_at": { "type": ["string", "null"], "format": "date-time" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "AgentDeliveryLeaseResponse": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["receipt_id", "message_id", "state", "attempt_count", "lease_expires_at"],
+          "properties": {
+            "receipt_id": { "type": "string", "minLength": 1 },
+            "message_id": { "type": "string", "minLength": 1 },
+            "state": { "const": "leased" },
+            "attempt_count": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "lease_expires_at": { "type": "string", "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "AgentDeliveryCompleteResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["receipt_id", "state", "delivered_at"],
+      "properties": {
+        "receipt_id": { "type": "string", "minLength": 1 },
+        "state": { "const": "delivered" },
+        "delivered_at": { "type": ["string", "null"], "format": "date-time" },
+        "noop": { "type": "boolean" }
+      }
+    },
+    "AgentDeliveryFailResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["receipt_id", "state"],
+      "properties": {
+        "receipt_id": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "enum": ["failed", "dead_letter"] },
+        "noop": { "type": "boolean" }
+      }
+    },
+    "ImportPlanResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "format", "schema_version", "signature_key_id", "valid", "noops", "inserts", "conflicts", "missing_references", "apply_allowed"],
+      "properties": {
+        "artifact_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "format": { "const": "qoopia-v4-export/1" },
+        "schema_version": { "const": 32 },
+        "signature_key_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "valid": { "type": "boolean" },
+        "noops": { "type": "integer", "minimum": 0 },
+        "inserts": { "type": "integer", "minimum": 0 },
+        "conflicts": { "type": "array", "items": { "$ref": "#/definitions/ImportConflict" } },
+        "missing_references": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "apply_allowed": { "const": false }
+      }
+    }
+  }
+}

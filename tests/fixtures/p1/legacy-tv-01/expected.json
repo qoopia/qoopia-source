@@ -1,0 +1,5 @@
+{
+  "vector": "TV-01",
+  "description": "valid signed package",
+  "expected_verdict": "valid"
+}

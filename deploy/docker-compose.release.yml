@@ -1,0 +1,47 @@
+name: qoopia-corsair
+
+services:
+  qoopia:
+    image: ${QOOPIA_IMAGE_REF:?set QOOPIA_IMAGE_REF to an immutable sha256 image reference}
+    container_name: qoopia-corsair
+    restart: unless-stopped
+    user: "1000:1000"
+    working_dir: /app
+    env_file:
+      - ${QOOPIA_ROOT:?set QOOPIA_ROOT to the canonical absolute root}/.env
+    environment:
+      NODE_ENV: production
+      QOOPIA_EXPECTED_RELEASE_SHA: ${QOOPIA_RELEASE_SHA:?set the reviewed full commit SHA}
+      QOOPIA_SERVER_ROLE: ${QOOPIA_SERVER_ROLE:?set QOOPIA_SERVER_ROLE explicitly}
+      QOOPIA_PORT: ${QOOPIA_PORT:?set the canonical service port explicitly}
+      QOOPIA_ROOT: ${QOOPIA_ROOT}
+      QOOPIA_DATA_DIR: ${QOOPIA_ROOT}/data
+      QOOPIA_LOG_DIR: ${QOOPIA_ROOT}/logs
+      QOOPIA_BACKUP_DIR: ${QOOPIA_ROOT}/backups
+      QOOPIA_AUTO_MIGRATE: "false"
+      QOOPIA_RELEASE_STAMP_PATH: /app/release.json
+    network_mode: host
+    volumes:
+      - ${QOOPIA_ROOT}/data:${QOOPIA_ROOT}/data
+      - ${QOOPIA_ROOT}/logs:${QOOPIA_ROOT}/logs
+      - ${QOOPIA_ROOT}/backups:${QOOPIA_ROOT}/backups
+      - ${QOOPIA_ROOT}/config:${QOOPIA_ROOT}/config
+      - ${QOOPIA_ROOT}/native-runtimes:${QOOPIA_ROOT}/native-runtimes
+      - ${QOOPIA_ROOT}/native-logins:${QOOPIA_ROOT}/native-logins
+      - ${QOOPIA_ROOT}/native-login-home:${QOOPIA_ROOT}/native-login-home
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - >-
+          fetch(`http://127.0.0.1:$${process.env.QOOPIA_PORT}/ready`).then(async r => {
+            const body = await r.json();
+            if (!r.ok ||
+                body.release_sha !== process.env.QOOPIA_EXPECTED_RELEASE_SHA ||
+                body.server_role !== process.env.QOOPIA_SERVER_ROLE) process.exit(1);
+          }).catch(() => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

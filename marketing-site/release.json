@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "version": "V1",
+  "tag": "v5.0.0-v1.20260914",
+  "date": "2026-09-14",
+  "source": "e250748e8f71383d89425ca6214cac6b21a2cfec",
+  "availability": "public",
+  "packages": {
+    "mac": {
+      "label": "macOS Apple Silicon",
+      "format": "DMG",
+      "file": "qoopia-v1-e250748-darwin-arm64.dmg",
+      "bytes": 141548842,
+      "sha256": "ec8001c47587f19f3a563ebd02eb860eec7c26555636fd62c3628aaf2b70fdae",
+      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.0-v1.20260914/qoopia-v1-e250748-darwin-arm64.dmg",
+      "requirements": "Apple Silicon Mac, macOS 15.0 or newer. Intel Macs and Windows are not supported."
+    },
+    "linux": {
+      "label": "Linux x64",
+      "format": "TAR.GZ",
+      "file": "qoopia-v1-e250748-linux-x64.tar.gz",
+      "bytes": 148923184,
+      "sha256": "52bd705827f2239714b4e4a53e05e1fd5894893348cb6b4806b04ea32359af2d",
+      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.0-v1.20260914/qoopia-v1-e250748-linux-x64.tar.gz",
+      "requirements": "Linux x64 with glibc 2.34 or newer. Not every Linux distribution is supported."
+    }
+  }
+}

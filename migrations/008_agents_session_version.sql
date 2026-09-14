@@ -1,0 +1,23 @@
+-- migrations/008_agents_session_version.sql
+-- QDASHCOOKIE-002 follow-up: bind the dashboard session cookie to a
+-- per-agent `session_version` integer.
+--
+-- Background: ADR-015 (PR #12) shipped the dashboard cookie with payload
+-- {agent_id, exp}. Verification only checked agents.active and type, so
+-- rotating an agent's api_key did NOT invalidate outstanding cookies —
+-- only deactivation, restart, or QOOPIA_SESSION_SECRET rotation did.
+--
+-- After this migration:
+--   * cookie payload carries `sv` (the agent's session_version at login),
+--   * cookie auth requires `payload.sv === agents.session_version`,
+--   * rotateAgentKey() and deleteAgent() bump session_version by 1,
+-- so api_key rotation now revokes outstanding cookies on the next
+-- dashboard request.
+--
+-- Default value 0 means: every agent that exists on upgrade keeps its
+-- still-valid cookies until they expire under their issued TTL or rotation
+-- bumps the version. No forced sign-out at deploy time.
+--
+-- Created: 2026-04-27
+
+ALTER TABLE agents ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;

@@ -1,0 +1,542 @@
+{
+  "activity": [
+    "id",
+    "workspace_id",
+    "agent_id",
+    "action",
+    "entity_type",
+    "entity_id",
+    "project_id",
+    "summary",
+    "details",
+    "created_at",
+    "visibility",
+    "origin_host"
+  ],
+  "activity_fts": [
+    "summary"
+  ],
+  "activity_fts_config": [
+    "k",
+    "v"
+  ],
+  "activity_fts_data": [
+    "id",
+    "block"
+  ],
+  "activity_fts_docsize": [
+    "id",
+    "sz"
+  ],
+  "activity_fts_idx": [
+    "segid",
+    "term",
+    "pgno"
+  ],
+  "agent_comm_messages": [
+    "id",
+    "workspace_id",
+    "session_id",
+    "sender_agent_id",
+    "recipient_agent_id",
+    "kind",
+    "body",
+    "metadata",
+    "delivered_at",
+    "parent_message_id",
+    "created_at",
+    "idempotency_key"
+  ],
+  "agent_comm_sessions": [
+    "id",
+    "workspace_id",
+    "topic",
+    "status",
+    "created_by_agent_id",
+    "metadata",
+    "created_at",
+    "updated_at",
+    "closed_at",
+    "idempotency_key"
+  ],
+  "agent_wake_events": [
+    "id",
+    "workspace_id",
+    "target_agent_id",
+    "session_id",
+    "message_id",
+    "channel",
+    "status",
+    "payload",
+    "created_at",
+    "delivered_at",
+    "attempt_count",
+    "last_attempt_at",
+    "next_attempt_at",
+    "last_error"
+  ],
+  "agents": [
+    "id",
+    "workspace_id",
+    "name",
+    "type",
+    "api_key_hash",
+    "active",
+    "last_seen",
+    "metadata",
+    "created_at",
+    "session_version",
+    "tool_profile"
+  ],
+  "claude_code_agents": [
+    "id",
+    "workspace_id",
+    "agent_id",
+    "cwd_prefix",
+    "autosession_enabled",
+    "created_at"
+  ],
+  "consent_tickets": [
+    "id",
+    "client_id",
+    "workspace_id",
+    "redirect_uri",
+    "code_challenge",
+    "code_challenge_method",
+    "scope",
+    "state",
+    "approved_by_agent_id",
+    "denied",
+    "redeemed",
+    "approve_nonce",
+    "created_at",
+    "expires_at"
+  ],
+  "entity_embeddings": [
+    "entity_id",
+    "workspace_id",
+    "embedding",
+    "dim",
+    "model",
+    "embedded_at",
+    "text_hash"
+  ],
+  "entity_links": [
+    "id",
+    "source_entity_id",
+    "target_entity_id",
+    "relation_type",
+    "confidence",
+    "source",
+    "created_at"
+  ],
+  "entity_pages": [
+    "id",
+    "workspace_id",
+    "type",
+    "slug",
+    "title",
+    "summary",
+    "status",
+    "metadata",
+    "created_at",
+    "updated_at"
+  ],
+  "entity_pages_fts": [
+    "title",
+    "summary",
+    "slug"
+  ],
+  "entity_pages_fts_config": [
+    "k",
+    "v"
+  ],
+  "entity_pages_fts_data": [
+    "id",
+    "block"
+  ],
+  "entity_pages_fts_docsize": [
+    "id",
+    "sz"
+  ],
+  "entity_pages_fts_idx": [
+    "segid",
+    "term",
+    "pgno"
+  ],
+  "extraction_candidates": [
+    "id",
+    "workspace_id",
+    "run_id",
+    "proposed_text",
+    "proposed_type",
+    "proposed_tags",
+    "proposed_entities",
+    "source_message_ids",
+    "confidence",
+    "dedup_note_id",
+    "conflict_note_ids",
+    "risk_flags",
+    "status",
+    "accepted_note_id",
+    "reviewed_by_agent_id",
+    "reviewed_at",
+    "review_reason_code",
+    "review_version",
+    "created_at",
+    "updated_at"
+  ],
+  "extraction_runs": [
+    "id",
+    "workspace_id",
+    "session_id",
+    "source_start_id",
+    "source_end_id",
+    "source_range_hash",
+    "extractor_version",
+    "prompt_hash",
+    "status",
+    "initiated_by_agent_id",
+    "candidate_count",
+    "accepted_count",
+    "rejected_count",
+    "error_code",
+    "created_at",
+    "updated_at",
+    "completed_at"
+  ],
+  "files": [
+    "id",
+    "workspace_id",
+    "owner_agent_id",
+    "folder",
+    "filename",
+    "mime",
+    "size",
+    "sha256",
+    "content",
+    "text_excerpt",
+    "uploaded_by_agent_id",
+    "created_at"
+  ],
+  "idempotency_keys": [
+    "key_hash",
+    "workspace_id",
+    "response",
+    "created_at",
+    "expires_at"
+  ],
+  "memory_event_outbox": [
+    "id",
+    "workspace_id",
+    "event_type",
+    "aggregate_kind",
+    "aggregate_id",
+    "payload",
+    "destination_id",
+    "state",
+    "lease_owner",
+    "lease_expires_at",
+    "attempt_count",
+    "next_attempt_at",
+    "last_error_code",
+    "idempotency_key",
+    "created_at",
+    "updated_at",
+    "delivered_at"
+  ],
+  "memory_lifecycle": [
+    "workspace_id",
+    "note_id",
+    "last_recalled_at",
+    "recall_count",
+    "last_confirmed_at",
+    "confirmation_count",
+    "owner_pinned",
+    "updated_at"
+  ],
+  "note_provenance": [
+    "id",
+    "workspace_id",
+    "note_id",
+    "source_kind",
+    "source_id",
+    "source_locator",
+    "source_hash",
+    "confidence",
+    "created_by_agent_id",
+    "metadata",
+    "created_at"
+  ],
+  "note_relations": [
+    "id",
+    "workspace_id",
+    "source_note_id",
+    "target_note_id",
+    "relation_type",
+    "created_by_agent_id",
+    "metadata",
+    "created_at"
+  ],
+  "note_temporal_provenance": [
+    "note_id",
+    "workspace_id",
+    "invalidated_at_source",
+    "valid_until_source",
+    "valid_until_inferred",
+    "backfill_class",
+    "skipped_reason",
+    "created_at"
+  ],
+  "notes": [
+    "id",
+    "workspace_id",
+    "agent_id",
+    "type",
+    "text",
+    "metadata",
+    "project_id",
+    "task_bound_id",
+    "session_id",
+    "source",
+    "tags",
+    "deleted_at",
+    "created_at",
+    "updated_at",
+    "visibility",
+    "updated_at_ms",
+    "valid_from",
+    "valid_until",
+    "invalidated_at",
+    "subject_key",
+    "supersedes_id",
+    "created_at_ms",
+    "valid_from_ms",
+    "valid_until_ms",
+    "invalidated_at_ms"
+  ],
+  "notes_embeddings": [
+    "note_id",
+    "workspace_id",
+    "embedding",
+    "dim",
+    "model",
+    "embedded_at",
+    "text_hash"
+  ],
+  "notes_fts": [
+    "text"
+  ],
+  "notes_fts_config": [
+    "k",
+    "v"
+  ],
+  "notes_fts_data": [
+    "id",
+    "block"
+  ],
+  "notes_fts_docsize": [
+    "id",
+    "sz"
+  ],
+  "notes_fts_idx": [
+    "segid",
+    "term",
+    "pgno"
+  ],
+  "oauth_clients": [
+    "id",
+    "name",
+    "agent_id",
+    "client_secret_hash",
+    "redirect_uris",
+    "created_at",
+    "workspace_id"
+  ],
+  "oauth_tokens": [
+    "token_hash",
+    "client_id",
+    "agent_id",
+    "workspace_id",
+    "token_type",
+    "code_challenge",
+    "code_challenge_method",
+    "redirect_uri",
+    "expires_at",
+    "revoked",
+    "created_at",
+    "granted_scope"
+  ],
+  "recall_feedback": [
+    "id",
+    "workspace_id",
+    "note_id",
+    "trace_id",
+    "actor_agent_id",
+    "feedback",
+    "reason_code",
+    "reason_text",
+    "idempotency_key",
+    "created_at"
+  ],
+  "recall_log": [
+    "id",
+    "created_at",
+    "caller_agent",
+    "workspace_id",
+    "query_text",
+    "top_k",
+    "result_ids",
+    "result_scores",
+    "latency_ms",
+    "backend_path",
+    "scope",
+    "deep_used",
+    "error_class"
+  ],
+  "recall_trace_items": [
+    "id",
+    "workspace_id",
+    "trace_id",
+    "result_kind",
+    "result_id",
+    "note_id",
+    "source_channel",
+    "fts_rank",
+    "vector_rank",
+    "fts_score",
+    "vector_score",
+    "rrf_score",
+    "rerank_score",
+    "lifecycle_factor",
+    "governance_factor",
+    "relation_factor",
+    "final_score",
+    "final_rank",
+    "reason_codes"
+  ],
+  "recall_traces": [
+    "id",
+    "workspace_id",
+    "caller_agent_id",
+    "query_hash",
+    "mode",
+    "options",
+    "pipeline_version",
+    "duration_ms",
+    "result_count",
+    "created_at",
+    "expires_at"
+  ],
+  "schema_versions": [
+    "version",
+    "description",
+    "applied_at"
+  ],
+  "session_messages": [
+    "id",
+    "workspace_id",
+    "session_id",
+    "agent_id",
+    "role",
+    "content",
+    "metadata",
+    "token_count",
+    "created_at",
+    "ingest_uuid"
+  ],
+  "session_messages_fts": [
+    "content"
+  ],
+  "session_messages_fts_config": [
+    "k",
+    "v"
+  ],
+  "session_messages_fts_data": [
+    "id",
+    "block"
+  ],
+  "session_messages_fts_docsize": [
+    "id",
+    "sz"
+  ],
+  "session_messages_fts_idx": [
+    "segid",
+    "term",
+    "pgno"
+  ],
+  "sessions": [
+    "id",
+    "workspace_id",
+    "agent_id",
+    "title",
+    "metadata",
+    "task_bound_id",
+    "created_at",
+    "last_active"
+  ],
+  "summaries": [
+    "id",
+    "workspace_id",
+    "session_id",
+    "agent_id",
+    "content",
+    "msg_start_id",
+    "msg_end_id",
+    "level",
+    "token_count",
+    "created_at"
+  ],
+  "sync_applied_hashes": [
+    "hash",
+    "table_name",
+    "row_id",
+    "applied_at",
+    "direction"
+  ],
+  "sync_conflict_queue": [
+    "id",
+    "created_at",
+    "table_name",
+    "row_id",
+    "direction",
+    "local_updated_at_ms",
+    "remote_updated_at_ms",
+    "local_hash",
+    "remote_hash",
+    "field_diff_summary",
+    "status",
+    "resolved_at",
+    "resolved_by",
+    "resolution_note"
+  ],
+  "users": [
+    "id",
+    "workspace_id",
+    "name",
+    "email",
+    "role",
+    "api_key_hash",
+    "created_at"
+  ],
+  "wake_slo_probes": [
+    "probe_id",
+    "direction",
+    "started_at",
+    "wake_attempted",
+    "wake_ok",
+    "delivery_latency_ms",
+    "reply_latency_ms",
+    "status",
+    "error_class",
+    "session_id"
+  ],
+  "workspaces": [
+    "id",
+    "name",
+    "slug",
+    "settings",
+    "created_at",
+    "updated_at"
+  ]
+}

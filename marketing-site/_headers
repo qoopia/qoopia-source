@@ -1,0 +1,4 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Content-Security-Policy: default-src 'self'; img-src 'self'; style-src 'self' 'sha256-eoc7pH8qQn+wRJqD3BcdmRCQIalPJ2OIvE+bNZORW+k='; script-src 'self'; connect-src 'self' https://auth.qoopia.ai; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'

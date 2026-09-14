@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Qoopia public release every minute
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+AccuracySec=5
+Unit=qoopia-release-health.service
+
+[Install]
+WantedBy=timers.target

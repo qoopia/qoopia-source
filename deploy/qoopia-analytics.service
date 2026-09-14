@@ -1,0 +1,19 @@
+[Unit]
+Description=Qoopia analytical snapshots and event import
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=askhat
+Group=askhat
+UMask=0077
+WorkingDirectory=/srv/qoopia-analytics
+ExecStart=/usr/bin/python3 /srv/qoopia-analytics/code/analytics.py --db /srv/qoopia-analytics/analytics.sqlite --auth-db /srv/qoopia-auth/data/login.sqlite --memory-db /srv/qoopia/data/qoopia.db --events-db /srv/qoopia-auth/data/analytics.sqlite --github --provider-import /srv/qoopia-analytics/providers.json --operations --backup-directory /srv/qoopia-analytics/backups --export /srv/qoopia-analytics/latest.json
+TimeoutStartSec=180
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/qoopia-analytics

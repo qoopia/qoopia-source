@@ -1,0 +1,37 @@
+node_modules/
+bun.lockb
+*.log
+*.bak*
+*.tmp*
+*.swp
+*.swo
+*~
+.DS_Store
+dist/
+.env
+.env.local
+deploy/*.env
+!deploy/*.env.example
+.release/
+.worktrees/
+
+# V4.1: evidence bundles must keep their .log artifacts (§12).
+!release-evidence/**/*.log
+
+# Isolated P1 execution cache, never an artifact
+.p1-tmp/
+!artifacts/p1/**/*.log
+
+# Verified build inputs, fetched by prepare-memory-model.ts
+/models/
+/.cache/
+
+# Installation data and credentials must never enter source control.
+/data/
+/logs/
+/backups/
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.qoopia.tailer.plist — Phase 7a
+  Ingest daemon: tails ~/.claude/projects/**/*.jsonl and posts to Qoopia.
+
+  DO NOT load this plist until Phase 7.5.
+  To load (Phase 7.5 step):
+    cp templates/com.qoopia.tailer.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.qoopia.tailer.plist
+  To unload:
+    launchctl unload ~/Library/LaunchAgents/com.qoopia.tailer.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.qoopia.tailer</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{BUN_PATH}}</string>
+        <string>run</string>
+        <string>{{QOOPIA_SRC_DIR}}/ingest/tailer.ts</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>QOOPIA_URL</key>
+        <string>http://localhost:{{QOOPIA_PORT}}</string>
+        <key>QOOPIA_INGEST_KEY_PATH</key>
+        <string>{{HOME}}/.qoopia/ingest.key</string>
+        <key>CLAUDE_PROJECTS_DIR</key>
+        <string>{{HOME}}/.claude/projects</string>
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/qoopia.tailer.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/qoopia.tailer.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>{{WORKING_DIR}}</string>
+</dict>
+</plist>

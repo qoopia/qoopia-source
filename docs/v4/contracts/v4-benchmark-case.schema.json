@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://qoopia.local/contracts/v4-benchmark-case.schema.json",
+  "title": "Qoopia V4 materialized recall benchmark case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["case_id", "index", "split", "primary_stratum", "workspace_id", "caller_agent_id", "environment", "request", "records", "relations", "provenance", "labels"],
+  "properties": {
+    "case_id": { "type": "string", "pattern": "^v4-r[0-9]{3}$" },
+    "index": { "type": "integer", "minimum": 1, "maximum": 200 },
+    "split": { "type": "string", "enum": ["train", "dev", "holdout"] },
+    "primary_stratum": { "type": "string", "enum": ["ru_exact", "ru_semantic", "en_exact_semantic", "mixed_ru_en", "supersede_temporal_conflict", "entity_provenance", "workspace_private_secret_poisoning", "archive_zero_result_fallback"] },
+    "workspace_id": { "type": "string", "const": "bench-ws-visible" },
+    "caller_agent_id": { "type": "string", "const": "bench-agent-caller" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["embedding_available", "reranker_available", "extractor_available"],
+      "properties": {
+        "embedding_available": { "type": "boolean" },
+        "reranker_available": { "type": "boolean" },
+        "extractor_available": { "type": "boolean" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "limit", "scope", "include_archived", "latest_only", "include_history", "explain"],
+      "properties": {
+        "query": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "limit": { "type": "integer", "const": 5 },
+        "scope": { "type": "string", "enum": ["notes", "all"] },
+        "include_archived": { "type": "boolean" },
+        "latest_only": { "type": "boolean" },
+        "include_history": { "type": "boolean" },
+        "explain": { "type": "boolean", "const": true }
+      }
+    },
+    "records": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id", "workspace_id", "visibility", "owner_agent_id", "type", "text", "metadata", "created_at", "updated_at_ms"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["note", "entity", "activity", "session_message"] },
+          "id": { "type": "string", "minLength": 1 },
+          "workspace_id": { "type": "string", "enum": ["bench-ws-visible", "bench-ws-forbidden"] },
+          "visibility": { "type": "string", "enum": ["workspace", "private"] },
+          "owner_agent_id": { "type": ["string", "null"] },
+          "type": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1, "maxLength": 16384 },
+          "metadata": { "type": "object", "additionalProperties": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at_ms": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_note_id", "target_note_id", "relation_type"],
+        "properties": {
+          "source_note_id": { "type": "string", "minLength": 1 },
+          "target_note_id": { "type": "string", "minLength": 1 },
+          "relation_type": { "type": "string", "enum": ["supersedes", "conflicts_with", "supports", "derived_from"] }
+        }
+      }
+    },
+    "provenance": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["note_id", "source_id", "confidence", "source_visible_to_caller"],
+        "properties": {
+          "note_id": { "type": "string", "minLength": 1 },
+          "source_id": { "type": "string", "minLength": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "source_visible_to_caller": { "type": "boolean" }
+        }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relevant", "stale_ids", "conflict_groups", "forbidden_ids", "canary_tokens", "expected_zero", "exact_fact"],
+      "properties": {
+        "relevant": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "gain"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "gain": { "type": "integer", "minimum": 1, "maximum": 3 }
+            }
+          }
+        },
+        "stale_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "conflict_groups": { "type": "array", "items": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } },
+        "forbidden_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "canary_tokens": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 8 } },
+        "expected_zero": { "type": "boolean" },
+        "exact_fact": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["source_id", "json_pointer", "expected_value"],
+          "properties": {
+            "source_id": { "type": "string", "minLength": 1 },
+            "json_pointer": { "type": "string", "minLength": 1 },
+            "expected_value": {}
+          }
+        }
+      }
+    }
+  }
+}

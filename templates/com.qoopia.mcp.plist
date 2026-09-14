@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.qoopia.mcp</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{BUN_PATH}}</string>
+        <string>run</string>
+        <string>{{QOOPIA_ENTRY}}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>QOOPIA_ROOT</key>
+        <string>{{QOOPIA_ROOT}}</string>
+        <key>QOOPIA_DATA_DIR</key>
+        <string>{{QOOPIA_DATA_DIR}}</string>
+        <key>QOOPIA_PORT</key>
+        <string>{{QOOPIA_PORT}}</string>
+        <key>QOOPIA_LOG_LEVEL</key>
+        <string>info</string>
+        <key>QOOPIA_LOG_DIR</key>
+        <string>{{LOG_DIR}}</string>
+        <key>QOOPIA_BACKUP_DIR</key>
+        <string>{{BACKUP_DIR}}</string>
+        <key>QOOPIA_PUBLIC_URL</key>
+        <string>{{QOOPIA_PUBLIC_URL}}</string>
+        <key>QOOPIA_SERVER_ROLE</key>
+        <string>canonical</string>
+        <key>QOOPIA_AUTO_MIGRATE</key>
+        <string>false</string>
+        <!-- QRERUN-001: required. /oauth/authorize will refuse to start without it. -->
+        <key>QOOPIA_ADMIN_SECRET</key>
+        <string>{{QOOPIA_ADMIN_SECRET}}</string>
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/qoopia.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/qoopia.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>{{WORKING_DIR}}</string>
+</dict>
+</plist>
