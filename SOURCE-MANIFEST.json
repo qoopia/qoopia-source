@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "73b7d152f52eea5bc79819bb74dbabd05834ad6f",
+  "source_snapshot": "2b4035d97dfd04315c88d49d947b1763f3e2955c",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": false,
   "files": [
@@ -291,11 +291,11 @@
     },
     {
       "path": "docs/analytics/README.md",
-      "sha256": "285d620455080b29ac19d99265d1eefd81bde02ee2c5f7f9d5e10f1fd8a1dd63",
-      "bytes": 7206,
+      "sha256": "646d2b6eebb46c9b76e64e854e8a5656b9d6045aa1e027b00bc575e48a893ee3",
+      "bytes": 9192,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
-      "original_blob": "33db0b08b6ecb082b86e4797ab66adfd19a9fc22"
+      "original_blob": "313e0dc553750e8502ee936b783d2a8d36963bdf"
     },
     {
       "path": "docs/operations/connections.md",
@@ -315,8 +315,8 @@
     },
     {
       "path": "docs/operations/news-and-owner.md",
-      "sha256": "0394ca1d891b4e8956517883540a6e86f608327dcf97c313eda4898bee507cc6",
-      "bytes": 8410,
+      "sha256": "cf5bf159ea40ad11b21b20916bbbe3e4d20685488058ddd8b478d17bdb2361ef",
+      "bytes": 9096,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "c5b9596ae91dc5b2b1da89616fac3edf4ffc0bbd"
@@ -1490,6 +1490,13 @@
       "original_blob": "dbe9deaeeb07a6ead19902e7a31d7ee2864c5e45"
     },
     {
+      "path": "scripts/analytics-github.py",
+      "sha256": "97175bb465fb844b73a3e6da2fabb1ad764c45411dc716d4162cfe3d2d5dbaa7",
+      "bytes": 7377,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "scripts/analytics-providers.py",
       "sha256": "1f5cd106aa403d7a4ed2436244ecb8b70c024512f2b8cbfc805a6f77bb7e546c",
       "bytes": 5526,
@@ -1499,11 +1506,11 @@
     },
     {
       "path": "scripts/analytics.py",
-      "sha256": "318e28be72c25befd7362d408907e29f04b2ab4d8a3501fcd45814451a0e077d",
-      "bytes": 19070,
+      "sha256": "4034616e2a9473d13133ac2a273cef6bb33427f05e3c14e82385e2108b1dca12",
+      "bytes": 22117,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
-      "original_blob": "93cf12f21406b63bb7ceb54e27da4d3145c5b0a3"
+      "original_blob": "bc0f752007cc0efa2a3f29edf008211f8adeea9e"
     },
     {
       "path": "scripts/archive-batch-2026-05-13.ts",
@@ -3138,9 +3145,16 @@
       "original_blob": "389fa58f7480105681197cb65f76369a184dd993"
     },
     {
+      "path": "src/identity/owner-github.ts",
+      "sha256": "fe5dba6e397d67b8899ef5c7975d57f0038dfba149ce070128ef2d048df8ab41",
+      "bytes": 10831,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "src/identity/owner.ts",
-      "sha256": "157cb12265236993dd3eaafacecdd5383178e28807e304aa5a6195e24f512b11",
-      "bytes": 11544,
+      "sha256": "e92e13f996517da4b5c00fd810a4983f771730e2830f3c3d47aee12290c68eb5",
+      "bytes": 14362,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "8a22e41b15bd89d3112a010185ed9afce571b322"
@@ -3299,11 +3313,11 @@
     },
     {
       "path": "src/public/brand/base.css",
-      "sha256": "bb56bdd970415d9f76bc1677f955184ce97893218b3ae3f6a5795a6e61127f12",
-      "bytes": 10768,
+      "sha256": "35801185d6a5dc0d3eeeaffbf8bcce1e4e0c4a0077d2877bbea1a90927b8a5f2",
+      "bytes": 10932,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
-      "original_blob": "dd37ba6017a8e8d3e3395034db0a69e6644dadde"
+      "original_blob": "77afd85f3203b506818275fcbbbaa46d34091d6b"
     },
     {
       "path": "src/public/brand/email-lockup.png",
@@ -4601,10 +4615,10 @@
     },
     {
       "path": "tests/helpers/analytics_collector_test.py",
-      "sha256": "8f339ea83228281c30ecce0ae872ac8cc661d0ecc5088f03e27d27d83fb21ced",
-      "bytes": 3314,
+      "sha256": "76e501842f8b5bd095b5c52e717c96de7872c53c276ba7597d81d93a0bc1be41",
+      "bytes": 6382,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "b11ec7aad3b37d20a47a2440c9259009cf1617d5"
     },
     {
@@ -4641,11 +4655,18 @@
     },
     {
       "path": "tests/helpers/news-browser.ts",
-      "sha256": "c33160f7907073b198761ec56061b478933151c7c0b551c13a8f7b3f75a616f0",
-      "bytes": 2750,
+      "sha256": "360f41648f98628d675f53c32174de0dd992fc3ee7586f8fd3cb00d24d262668",
+      "bytes": 2877,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "36918ad8ae6e3c3ecfbd65c8fa903f7c3ea6c293"
+    },
+    {
+      "path": "tests/helpers/owner-github-fixture.ts",
+      "sha256": "387379232a79039d00a29e4b6a604aeb5d98d8cd3229e891462c107dd0e39d21",
+      "bytes": 913,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "tests/helpers/p1-concurrent-client.ts",
@@ -5062,6 +5083,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "d42107aa56e1009c07d0799e2b88b53a4a90f6a6"
+    },
+    {
+      "path": "tests/owner-github.test.ts",
+      "sha256": "dc16af41ab34b46f0e53ac99f68274196299c41b01ad4079d970710f43716794",
+      "bytes": 1531,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "tests/p1-api.test.ts",
@@ -5808,5 +5836,5 @@
       "original_blob": "66b4e061c5d4bd71c1ea8d1864da17fc8ce1b906"
     }
   ],
-  "account_service_source": "73b7d152f52eea5bc79819bb74dbabd05834ad6f"
+  "account_service_source": "2b4035d97dfd04315c88d49d947b1763f3e2955c"
 }
