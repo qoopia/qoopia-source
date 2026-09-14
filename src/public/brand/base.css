@@ -127,3 +127,7 @@ h1,h2,h3{text-wrap:balance;scroll-margin-top:96px}
 .q-owner table:has(th:nth-child(5)) td,.q-owner table:has(th:nth-child(5)) th{overflow-wrap:normal;min-width:140px}
 .q-owner table:has(th:nth-child(5)) td:first-child,.q-owner table:has(th:nth-child(5)) th:first-child{min-width:260px;overflow-wrap:anywhere}
 @media(max-width:600px){.q-owner .owner-scroll{display:block;font-size:14px;margin-bottom:12px}}
+
+.q-owner .profile-nav{display:flex;flex-wrap:wrap;gap:8px 24px}
+.q-owner #github details details{margin-top:16px}
+.q-owner #github summary{overflow-wrap:anywhere}

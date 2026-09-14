@@ -51,7 +51,11 @@ class Store:
         # Duration is a measure, not a grouping dimension; aggregate it separately.
         events=[dict(r) for r in self.db.execute("SELECT date(received_at/1000,'unixepoch') AS day,source,kind,count(*) AS events,avg(json_extract(data,'$.duration_ms')) AS mean_duration_ms FROM events GROUP BY day,source,kind ORDER BY day DESC,source,kind")]
         freshness=[dict(r) for r in self.db.execute('SELECT source,max(observed_at) AS observed_at FROM provider_snapshots GROUP BY source')]
-        return {'provider_freshness':freshness,'generated_at':utc(),'coverage':'Owned services and provider APIs only; independent user installations are not reporting telemetry. Browser events are untrusted counts, not unique users.','latest':latest,'source_runs':runs,'event_daily':events}
+        ecosystem=self.db.execute("SELECT observed_at,payload FROM provider_snapshots WHERE source='github_ecosystem' ORDER BY observed_at DESC LIMIT 1").fetchone()
+        github=json.loads(ecosystem['payload']).get('report') if ecosystem else None
+        history=[dict(r) for r in self.db.execute("SELECT metric,dimensions,substr(observed_at,1,10) AS day,value FROM (SELECT *,row_number() OVER(PARTITION BY metric,dimensions,substr(observed_at,1,10) ORDER BY observed_at DESC) AS n FROM observations WHERE source='github_ecosystem' AND observed_at>=datetime('now','-90 days')) WHERE n=1 ORDER BY day DESC LIMIT 10000")]
+        for r in history:r['dimensions']=json.loads(r['dimensions'])
+        return {'github_ecosystem':github,'github_history':history,'provider_freshness':freshness,'generated_at':utc(),'coverage':'Owned services and provider APIs only; independent user installations are not reporting telemetry. Browser events are untrusted counts, not unique users.','latest':latest,'source_runs':runs,'event_daily':events}
 
 def get(url,headers=None):
     req=urllib.request.Request(url,headers={'User-Agent':'Qoopia-Analytics/1','Accept':'application/json',**(headers or {})})
@@ -168,11 +172,37 @@ def provider_import(store,file):
     data={}
     if not store.run('provider_bridge',lambda:data.update(provider_file(file))):return False
     for source,item in data['sources'].items():
-        if source not in ['github_traffic','cloudflare','resend']:raise ValueError('unknown provider')
+        if source not in ['github_traffic','github_ecosystem','cloudflare','resend']:raise ValueError('unknown provider')
         def apply():
             if item['status']!='ok':raise PermissionError('provider unavailable')
             for row in item['metrics']:store.observe(source,row['metric'],row['value'],row.get('dimensions'),row.get('kind','gauge'),row.get('at',data['observed_at']))
-            store.snapshot(source,item,data['observed_at'])
+            if source=='github_ecosystem':
+                report=item['report']
+                for repository in report['repositories']:
+                    name=repository['nameWithOwner'];datasets=repository['datasets']
+                    summary=datasets.get('repository',{})
+                    if summary.get('status')=='ok':
+                        for metric in ['stargazers_count','forks_count','subscribers_count','open_issues_count','size']:
+                            store.observe(source,metric,summary['data'][metric],{'repository':name},at=report['observed_at'])
+                    for category in ['issues','pull_requests','discussions']:
+                        dataset=datasets.get(category,{})
+                        if dataset.get('status')=='ok' and not dataset.get('truncated'):
+                            rows=dataset.get('items',[])
+                            if category=='issues':rows=[r for r in rows if r.get('kind')=='issue']
+                            store.observe(source,category+'_total',len(rows),{'repository':name},at=report['observed_at'])
+                            if category!='discussions':
+                                for state in ['open','closed']:store.observe(source,category+'_'+state,sum(r.get('state')==state for r in rows),{'repository':name},at=report['observed_at'])
+                    releases=datasets.get('releases',{})
+                    if releases.get('status')=='ok':
+                        for release in releases.get('items',[]):
+                            for asset in release.get('assets',[]):store.observe(source,'asset_downloads',asset['download_count'],{'repository':name,'tag':release['tag_name'],'asset_id':asset['id'],'file':asset['name']},'cumulative',report['observed_at'])
+                    for metric in ['views','clones']:
+                        dataset=datasets.get('traffic_'+metric,{})
+                        if dataset.get('status')=='ok':
+                            for day in dataset['data'][metric]:
+                                for field in ['count','uniques']:store.observe(source,metric+'_'+field,day[field],{'repository':name,'period':'day'},'period',day['timestamp'])
+                store.snapshot(source,item,report['observed_at'])
+            else:store.snapshot(source,item,data['observed_at'])
         store.run(source,apply)
     return True
 
@@ -213,7 +243,7 @@ def main():
     if a.export:
         dest=Path(a.export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(s.export(),ensure_ascii=False,indent=2)+'\n');temp.replace(dest)
     if a.owner_export:
-        data=s.export();data={k:data[k] for k in ['generated_at','latest','event_daily','source_runs']}
+        data=s.export();data={k:data[k] for k in ['generated_at','latest','event_daily','source_runs','github_ecosystem','github_history']}
         dest=Path(a.owner_export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(data,ensure_ascii=False)+'\n')
         temp.replace(dest)
     if a.backup:
