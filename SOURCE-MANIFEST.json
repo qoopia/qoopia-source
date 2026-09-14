@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "1f827b6a104d52234f8ee5a22cae47c9fedfcb1f",
+  "source_snapshot": "312692bc589bce70187041449dccbf764b07439c",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": true,
   "files": [
@@ -13,8 +13,8 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "949f98c85f7e858c75180a6d08a0c265f150ecadb1bf4fb308a36908babb87e6",
-      "bytes": 2357,
+      "sha256": "bd84ba20a1f8c6cb2b3989a78459ee61ceaddcc50524de5f50d6df55c07624c0",
+      "bytes": 2484,
       "source_snapshot_identical": false
     },
     {
@@ -37,8 +37,8 @@
     },
     {
       "path": "CONTRIBUTING.md",
-      "sha256": "f88677a4910546636257e81b5924723a6652ae9810cd51a9a8fd180bc8406e2f",
-      "bytes": 1534,
+      "sha256": "4ad50dc0864bef00e9a04d194c71b793f9d5727ccdbea3bad9e14fd75636ce5d",
+      "bytes": 1598,
       "source_snapshot_identical": false
     },
     {
@@ -57,8 +57,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "8b6bf74a90323f805534eb850629a079f21517bfc87c43683915c8453d0d90d0",
-      "bytes": 4399,
+      "sha256": "ee1be1a54af6b20a724c9f91b1b3d687646b63cb58971018b50e3c43a6863690",
+      "bytes": 4662,
       "source_snapshot_identical": false
     },
     {
@@ -268,6 +268,13 @@
       "bytes": 5998,
       "source_snapshot_identical": true,
       "original_blob": "58068032811f708988885bcfee6994d631f2dec3"
+    },
+    {
+      "path": "docs/operations/storage-full-check.md",
+      "sha256": "fdb84af174cf98938265afc0a3b3fef9933743afe6c053053a6119a498ddd807",
+      "bytes": 1405,
+      "source_snapshot_identical": true,
+      "original_blob": "d419054ca833fbace2016d120ca815f32fb7718b"
     },
     {
       "path": "docs/v1-setup.md",
@@ -1314,10 +1321,10 @@
     },
     {
       "path": "package.json",
-      "sha256": "f866f7ef300856c2c65fec3d5d8fa50ea3ffb3a1306820c3ea1ba68d8ec39813",
-      "bytes": 2584,
+      "sha256": "aa588940e41777ecc23d89e9815d252feaa024b81bee743d8c60e6772feb2676",
+      "bytes": 2698,
       "source_snapshot_identical": true,
-      "original_blob": "0fdc7ebbeece3a7d9d21757c882bfb70d8d3f730"
+      "original_blob": "15497aea4aba311f9edd16da461b8ca8eff4538b"
     },
     {
       "path": "release-evidence/20260731T165747Z-44fa24666520/explain-current-slice.txt",
@@ -4848,10 +4855,10 @@
     },
     {
       "path": "tests/p3-t27-sqlite-full.test.ts",
-      "sha256": "93bc319235394158c87736700597b82ca818f470bac1150827305d62bc83b20b",
-      "bytes": 5864,
+      "sha256": "90ce58d70cfb07c5ceb0e4e5a86fe9f145893736d5634b2fa330f0bf74d3c6d4",
+      "bytes": 6089,
       "source_snapshot_identical": true,
-      "original_blob": "603de1eef1923cc291e3d390c43d0f991480940d"
+      "original_blob": "cc215a4e9534c758cd1e24b8c1c71bd911666512"
     },
     {
       "path": "tests/product-version.test.ts",

@@ -4,7 +4,7 @@ Use an issue for a reproducible bug or a concrete proposal. Include your platfor
 
 Keep pull requests focused. Explain the user-visible problem, the change and how you verified it. Preserve the existing brand and access boundaries. Distinguish a configured connection from a verified call, and a sent message from confirmed delivery.
 
-Use Bun 1.3.11 and install with `bun install --frozen-lockfile`. Run the checks relevant to your change; CI runs type checking, lint, dependency checks, tests and the bounded V4 qualification. Tests must use disposable data. Never connect tests to a real account or model subscription.
+Use Bun 1.3.11 and install with `bun install --frozen-lockfile`. Run the checks relevant to your change; CI runs type checking, lint, dependency checks, tests, the mandatory isolated `bun run test:storage-full` fault check and the bounded V4 qualification. Tests must use disposable data. Never connect tests to a real account or model subscription.
 
 The source distribution includes a schema-35 code fixture for migration tests. Its source revision and SHA-256 are documented in `tests/fixtures/schema35-source.json`. Do not replace it with a database or import private development history.
 

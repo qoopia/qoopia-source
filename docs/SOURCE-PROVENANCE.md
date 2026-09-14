@@ -5,7 +5,7 @@ This public repository starts a new Git history for the source distribution. Pri
 - Product: **Qoopia V1**, protocol `5.0.0-p3.0`, schema **43**.
 - Original installer/runtime/account-service revision: `e250748e8f71383d89425ca6214cac6b21a2cfec`.
 - Original site/monitor revision: `efb7a9272e137717d0a67925bc53067ec178ad26`.
-- Source snapshot and corrected agent documentation: `1f827b6a104d52234f8ee5a22cae47c9fedfcb1f`.
+- Source snapshot and corrected agent documentation: `312692bc589bce70187041449dccbf764b07439c`.
 - Existing signed packages: [v5.0.0-v1.20260914](https://github.com/qoopia/qoopia-downloads/releases/tag/v5.0.0-v1.20260914).
 
 All files under `src/`, `migrations/` and `sdk/` are byte-identical to the original installer/runtime revision. The machine-readable `SOURCE-MANIFEST.json` lists the public source files, their SHA-256 and original Git blob when present. It excludes itself and this document to avoid self-reference. Build/test helpers and public documentation are identified separately in that manifest.
@@ -15,3 +15,5 @@ Public-only changes are contributor documentation, minimal CI token permissions 
 Historical audit bundles (except two SQL-only query-plan fixtures required by tests), operator state and host-specific analytics synchronization/status helpers are excluded. Source distributions do not contain publisher private keys or Apple signing credentials. A local build is not an official signed installer, and changing Git history does not change the signatures or provenance of the already published binaries.
 
 For future releases, update this provenance record and the file manifest from the reviewed source. Never push private development branches or their history into this repository. Accept public contributions through reviewed pull requests and record their integration in the canonical development checkout.
+
+The CI follow-up requires `bun run test:storage-full` after the ordinary suite. It changes test execution and documentation only; runtime, migrations and SDK still match the original V1 files.
