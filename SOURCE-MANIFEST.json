@@ -19,10 +19,9 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "63fbd54c954723dc3f9347764eba4570c376204177cf1964179ecc27013d306b",
-      "bytes": 401,
-      "source_snapshot_identical": true,
-      "original_blob": "dc3b00e3c3b0dee86528a73840aa56d9a54ca896"
+      "sha256": "7573f8b0e2a6994b77e9fc7c90a683bb565b8468e153bdc8e605c3763f84b7da",
+      "bytes": 537,
+      "source_snapshot_identical": false
     },
     {
       "path": "AGENTS.md",
