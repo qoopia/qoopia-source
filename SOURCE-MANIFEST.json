@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "e9370b309e3fbbaf102e5dc38bf30b054a6d23d3",
+  "source_snapshot": "73b7d152f52eea5bc79819bb74dbabd05834ad6f",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": false,
   "files": [
@@ -315,11 +315,11 @@
     },
     {
       "path": "docs/operations/news-and-owner.md",
-      "sha256": "9b74ad121bda008a390ec71e6055787e4d2aae5b3b77a4d08435f177d8b7662a",
-      "bytes": 7890,
+      "sha256": "0394ca1d891b4e8956517883540a6e86f608327dcf97c313eda4898bee507cc6",
+      "bytes": 8410,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
-      "original_blob": "95bbf686c8edf16bb9bbfc39beaa188a295b8b48"
+      "original_blob": "c5b9596ae91dc5b2b1da89616fac3edf4ffc0bbd"
     },
     {
       "path": "docs/operations/operational-normalization.md",
@@ -3139,19 +3139,19 @@
     },
     {
       "path": "src/identity/owner.ts",
-      "sha256": "0023694a9947f59198ecad1e443dc203c2f1743c3085cbcc377bdacee5cd4817",
-      "bytes": 11511,
+      "sha256": "157cb12265236993dd3eaafacecdd5383178e28807e304aa5a6195e24f512b11",
+      "bytes": 11544,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
-      "original_blob": "4a417bb9e8006f7da806e708c4da2690fa8154d7"
+      "original_blob": "8a22e41b15bd89d3112a010185ed9afce571b322"
     },
     {
       "path": "src/identity/profile-view.ts",
-      "sha256": "de3fc480da3595fbcec5b313901cc176185b239f81aabaa0f6bc0c26233b6e9f",
-      "bytes": 15034,
+      "sha256": "8c4a40aa5a36431648341fef78f16712a6a628133760869c1ef58182ada6adbc",
+      "bytes": 15067,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
-      "original_blob": "77d5bd6236f5b024c4a4a4f63bbd37c9c8aa57e3"
+      "original_blob": "406469d20e351be765260ea7cac92efe9102c60d"
     },
     {
       "path": "src/identity/profile.ts",
@@ -5808,5 +5808,5 @@
       "original_blob": "66b4e061c5d4bd71c1ea8d1864da17fc8ce1b906"
     }
   ],
-  "account_service_source": "e9370b309e3fbbaf102e5dc38bf30b054a6d23d3"
+  "account_service_source": "73b7d152f52eea5bc79819bb74dbabd05834ad6f"
 }
