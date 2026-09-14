@@ -1,0 +1,31 @@
+# 1) subject-chain index probe (history mode: no current-belief predicate).
+
+EXPLAIN QUERY PLAN
+SELECT id FROM notes WHERE workspace_id = ? AND subject_key = ? ORDER BY valid_from_ms;
+
+SEARCH notes USING INDEX idx_notes_subject_valid (workspace_id=? AND subject_key=?)
+
+# 2) the same chain under the Flag-ON default current-belief predicate,
+#    assembled by the production helpers (includes skippedComponentExclusionSql).
+
+EXPLAIN QUERY PLAN
+SELECT n.id FROM notes n
+  WHERE n.workspace_id = ? AND n.subject_key = ?
+    AND n.deleted_at IS NULL
+    AND n.invalidated_at_ms IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM note_temporal_provenance ntp
+       WHERE ntp.note_id = n.id
+         AND ntp.skipped_reason IS NOT NULL
+         AND EXISTS (SELECT 1 FROM note_relations nr
+                      WHERE nr.workspace_id = n.workspace_id
+                        AND nr.target_note_id = n.id
+                        AND nr.relation_type = 'supersedes'))
+  ORDER BY n.valid_from_ms;
+
+SEARCH n USING INDEX idx_notes_subject_valid (workspace_id=? AND subject_key=?)
+CORRELATED SCALAR SUBQUERY 2
+SEARCH nr EXISTS USING COVERING INDEX idx_note_relations_target (workspace_id=? AND target_note_id=? AND relation_type=?)
+SEARCH ntp USING INDEX sqlite_autoindex_note_temporal_provenance_1 (note_id=?)
+
+# no full scan of notes in either plan: true

@@ -1,0 +1,29 @@
+# Flag-ON default current-belief slice (§3.2 / §7.3).
+# The SQL below is assembled by the PRODUCTION helpers
+# temporalDeletedSql() + temporalWhereSql() for the default filter, so it is
+# exactly the predicate the flag-ON read path executes — including
+# skippedComponentExclusionSql, which the previous hand-written artifact
+# omitted. Acceptance: no full scan of notes on the hot current slice.
+
+EXPLAIN QUERY PLAN
+SELECT n.id FROM notes n
+  WHERE n.workspace_id = ?
+    AND n.deleted_at IS NULL
+    AND n.invalidated_at_ms IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM note_temporal_provenance ntp
+       WHERE ntp.note_id = n.id
+         AND ntp.skipped_reason IS NOT NULL
+         AND EXISTS (SELECT 1 FROM note_relations nr
+                      WHERE nr.workspace_id = n.workspace_id
+                        AND nr.target_note_id = n.id
+                        AND nr.relation_type = 'supersedes'))
+  ORDER BY n.created_at_ms DESC LIMIT 10;
+
+SEARCH n USING INDEX idx_notes_current_ws (workspace_id=?)
+CORRELATED SCALAR SUBQUERY 2
+SEARCH nr EXISTS USING COVERING INDEX idx_note_relations_target (workspace_id=? AND target_note_id=? AND relation_type=?)
+SEARCH ntp USING INDEX sqlite_autoindex_note_temporal_provenance_1 (note_id=?)
+
+# no full scan of notes: true
+# contains skippedComponentExclusionSql: true

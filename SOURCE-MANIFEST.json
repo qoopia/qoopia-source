@@ -1320,6 +1320,20 @@
       "original_blob": "0fdc7ebbeece3a7d9d21757c882bfb70d8d3f730"
     },
     {
+      "path": "release-evidence/20260731T165747Z-44fa24666520/explain-current-slice.txt",
+      "sha256": "f906797b673b5ff2355beedd88fcd7d823ced249c15420b6d99f9fd92c0658c2",
+      "bytes": 1322,
+      "source_snapshot_identical": true,
+      "original_blob": "6df552199b17579b3e7c5e4d7d2a5dc7c082fa58"
+    },
+    {
+      "path": "release-evidence/20260731T165747Z-44fa24666520/explain-subject-chain.txt",
+      "sha256": "39cde523797a4bb610ebb8de7ebe638462afa548979f924263168ba55322fc58",
+      "bytes": 1343,
+      "source_snapshot_identical": true,
+      "original_blob": "dbe9deaeeb07a6ead19902e7a31d7ee2864c5e45"
+    },
+    {
       "path": "scripts/analytics-providers.py",
       "sha256": "1f5cd106aa403d7a4ed2436244ecb8b70c024512f2b8cbfc805a6f77bb7e546c",
       "bytes": 5526,
@@ -2604,22 +2618,6 @@
       "original_runtime_identical": true
     },
     {
-      "path": "src/delivery/native/linux-launcher.c",
-      "sha256": "2f0ec9ae29715ac4e7a011c06f40b02dc71359030d9b2a91588ba2e2f637f01c",
-      "bytes": 1375,
-      "source_snapshot_identical": true,
-      "original_blob": "f948d649bc699d39c63bbabf92597a9c87dc6d3a",
-      "original_runtime_identical": true
-    },
-    {
-      "path": "src/delivery/native/owner-peer.c",
-      "sha256": "e7aa6c63c898b1d1e6dcadd976fc2f748c7dc7a1c153f108563f5891f4772c20",
-      "bytes": 3400,
-      "source_snapshot_identical": true,
-      "original_blob": "8a7b103e6466cb53cca266185c4371d2b2ddf99e",
-      "original_runtime_identical": true
-    },
-    {
       "path": "src/delivery/native-client-paths.ts",
       "sha256": "f867bcf5c8c1b1cd372f6b580dcec79730f26a0eba6e08ce72c5ee844b4eb641",
       "bytes": 989,
@@ -2641,6 +2639,22 @@
       "bytes": 10704,
       "source_snapshot_identical": true,
       "original_blob": "0a1f6a1513263e49d3270ad72c9d7e6e221f6cdc",
+      "original_runtime_identical": true
+    },
+    {
+      "path": "src/delivery/native/linux-launcher.c",
+      "sha256": "2f0ec9ae29715ac4e7a011c06f40b02dc71359030d9b2a91588ba2e2f637f01c",
+      "bytes": 1375,
+      "source_snapshot_identical": true,
+      "original_blob": "f948d649bc699d39c63bbabf92597a9c87dc6d3a",
+      "original_runtime_identical": true
+    },
+    {
+      "path": "src/delivery/native/owner-peer.c",
+      "sha256": "e7aa6c63c898b1d1e6dcadd976fc2f748c7dc7a1c153f108563f5891f4772c20",
+      "bytes": 3400,
+      "source_snapshot_identical": true,
+      "original_blob": "8a7b103e6466cb53cca266185c4371d2b2ddf99e",
       "original_runtime_identical": true
     },
     {
@@ -3372,22 +3386,6 @@
       "original_runtime_identical": true
     },
     {
-      "path": "src/services/recall/temporal-filter.ts",
-      "sha256": "4cad376c3f14dbc108c063a229b5f91f79f204eba94afa1179806311dc706b35",
-      "bytes": 6966,
-      "source_snapshot_identical": true,
-      "original_blob": "7561fbc4b1fd2707c2d7cda3809fa47b24da83ec",
-      "original_runtime_identical": true
-    },
-    {
-      "path": "src/services/recall/v4-pipeline.ts",
-      "sha256": "6f531ba1eb201f712803d63b042d57a658406fce2c64c4233ebf71b0e2a88f9f",
-      "bytes": 20065,
-      "source_snapshot_identical": true,
-      "original_blob": "a6ef72435db0452d560101a15a13a24735eaf11c",
-      "original_runtime_identical": true
-    },
-    {
       "path": "src/services/recall-feedback.ts",
       "sha256": "04fd16fdd71affc43d32a9f68fd63cd16db776ab79bde06244cb3b883bc098a1",
       "bytes": 5661,
@@ -3409,6 +3407,22 @@
       "bytes": 66472,
       "source_snapshot_identical": true,
       "original_blob": "221d246cf962a0eb77fbbdff4c0b2aacf5831fc6",
+      "original_runtime_identical": true
+    },
+    {
+      "path": "src/services/recall/temporal-filter.ts",
+      "sha256": "4cad376c3f14dbc108c063a229b5f91f79f204eba94afa1179806311dc706b35",
+      "bytes": 6966,
+      "source_snapshot_identical": true,
+      "original_blob": "7561fbc4b1fd2707c2d7cda3809fa47b24da83ec",
+      "original_runtime_identical": true
+    },
+    {
+      "path": "src/services/recall/v4-pipeline.ts",
+      "sha256": "6f531ba1eb201f712803d63b042d57a658406fce2c64c4233ebf71b0e2a88f9f",
+      "bytes": 20065,
+      "source_snapshot_identical": true,
+      "original_blob": "a6ef72435db0452d560101a15a13a24735eaf11c",
       "original_runtime_identical": true
     },
     {
