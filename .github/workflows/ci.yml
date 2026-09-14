@@ -56,6 +56,11 @@ jobs:
       - name: Release health monitor tests
         run: python3 tests/test_release_health.py
 
+      - name: Public explanation parity and discovery guardrails
+        run: |
+          python3 scripts/discovery-content.py --check
+          python3 tests/test_discovery.py
+
       - name: Tests
         run: bun test
 

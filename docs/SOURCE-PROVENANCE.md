@@ -25,3 +25,7 @@ Revision `73b7d152f52eea5bc79819bb74dbabd05834ad6f` adds explicit optional news 
 ## Unified owner analytics
 
 Revision `2b4035d97dfd04315c88d49d947b1763f3e2955c` adds repository-scoped owner analytics, preserved daily history and explicit unavailable/capped provider states. Metadata collection and the owner service change; signed installers and the memory runtime retain their original source. Private analytics reports and credentials are not included.
+
+## Public explanation and discovery follow-up
+
+Revision `f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d` adds shared RU/EN product answers, public-site corrections and bounded discovery checks. It does not change the signed installers, memory runtime or account service. Editorial review is separate from consumer search visibility. Operator schedules and private observation bundles are excluded.

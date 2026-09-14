@@ -13,6 +13,10 @@
 
 Qoopia gives your agents persistent memory across sessions and clients. Use your own local installation or server, connect agents through MCP, and keep working in the tools you already use.
 
+## Is Qoopia right for you?
+
+[Benefits, requirements and permissions](docs/discovery/UNDERSTAND-EN.md). A phone chat can evaluate Qoopia; installation requires an agent on a supported computer. Evaluating a link does not authorize executing its commands.
+
 ## What you can do
 
 - Keep notes, files and session context accessible to your connected agents.
