@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {z} from 'zod';
-import {hash,privateDirectory,durableWrite,readJsonBytes,safePath} from './files.ts';
+import {hash,privateDirectory,durableWrite,readJsonBytes,safePath} from '../utils/fs.ts';
 import {redactSensitive} from '../utils/secret-guard.ts';
 import {selectedNativeDirectory} from './native-client-paths.ts';
 

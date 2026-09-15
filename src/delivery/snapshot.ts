@@ -6,7 +6,7 @@ import type { Database } from 'bun:sqlite';
 import { openReadonlyDatabase, openWritableDatabase, assertDatabaseIntegrity } from '../db/sqlite.ts';
 import { createVerifiedBackup, sha256File } from '../services/backup.ts';
 import { computeLogicalDatabaseHash } from '../db/v4-migrations.ts';
-import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJsonBytes, MAX_JSON_BYTES, safePath, preflightSpace } from './files.ts';
+import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJsonBytes, MAX_JSON_BYTES, safePath, preflightSpace } from '../utils/fs.ts';
 
 export function inspectSnapshot(database: Database) {
   assertDatabaseIntegrity(database, 'Snapshot');

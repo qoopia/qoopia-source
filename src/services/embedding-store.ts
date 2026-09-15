@@ -92,10 +92,6 @@ export async function upsertNoteEmbedding(
   }
 }
 
-/** Remove an embedding row — used by tests and admin cleanup. */
-export function deleteNoteEmbedding(note_id: string): void {
-  db.prepare(`DELETE FROM notes_embeddings WHERE note_id = ?`).run(note_id);
-}
 
 /**
  * Load all embeddings for a workspace into memory. Returns rows with

@@ -47,29 +47,11 @@ export const SOT_RULES: Record<string, "M" | "C"> = {
   decision: "C",
 };
 
-export const SYNC_TABLES = ["notes", "activity"] as const;
-
-// All tables explicitly EXCLUDED from sync per design doc §"Per-table SoT".
-export const EXCLUDED_TABLES = new Set<string>([
-  "notes_embeddings",
-  "agent_comm_messages",
-  "agent_comm_sessions",
-  "agent_wake_events",
-  "sessions",
-  "session_messages",
-  "wake_slo_probes",
-  "recall_log",
-  "agents",
-  "workspaces",
-  "oauth_clients",
-  "oauth_tokens",
-  "summaries",
-  "idempotency_keys",
-  "consent_tickets",
-  "claude_code_agents",
-  "users",
-  "schema_versions",
-]);
+// Synced tables: notes, activity. Every other table is excluded by design
+// (see §"Per-table SoT"): embeddings, agent_comm_*, agent_wake_events,
+// sessions, session_messages, wake_slo_probes, recall_log, agents,
+// workspaces, oauth_clients, oauth_tokens, summaries, idempotency_keys,
+// consent_tickets, claude_code_agents, users, schema_versions.
 
 /**
  * Canonical JSON serializer (RFC 8785 JCS-style, simplified): sorts object
@@ -195,19 +177,6 @@ function effectiveUpdatedAtMs(row: NoteRow): number {
   if (row.updated_at_ms && row.updated_at_ms > 0) return row.updated_at_ms;
   return parseIsoToMs(row.updated_at);
 }
-
-const NOTES_FIELD_KEYS = [
-  "type",
-  "text",
-  "metadata",
-  "project_id",
-  "task_bound_id",
-  "session_id",
-  "source",
-  "tags",
-  "visibility",
-  "deleted_at",
-];
 
 function notesFieldSet(row: NoteRow): Record<string, unknown> {
   return {
@@ -1260,15 +1229,3 @@ export function checkApplyGate(args: {
 }
 
 // Re-export commonly-needed types for the CLI + tests.
-export const _internal = {
-  effectiveUpdatedAtMs,
-  notesHash,
-  activityHash,
-  notesDiffSummary,
-  activityDiffSummary,
-  NOTES_FIELD_KEYS,
-  hasUpdatedAtMs,
-  hasOriginHost,
-  readNotes,
-  readActivity,
-};

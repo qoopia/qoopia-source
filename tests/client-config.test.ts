@@ -1,7 +1,7 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import {randomUUID} from 'node:crypto';
 import {configureNativeClient} from '../src/delivery/client-config.ts';
-import {privateDirectory,durableWrite} from '../src/delivery/files.ts';
+import {privateDirectory,durableWrite} from '../src/utils/fs.ts';
 import {nativeClientDirectory} from '../src/delivery/native-client-paths.ts';
 
 test('native config supports vendor override directories and resumes the selected file without a shell environment',()=>{

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {z} from 'zod';
 import {verifyBundle} from './bundle.ts';
-import {readJson} from './files.ts';
+import {readJson} from '../utils/fs.ts';
 import {Delivery,readCurrent,dataFile} from './operations.ts';
 import {openWritableDatabase,configureReadonlyDatabase} from '../db/sqlite.ts';
 

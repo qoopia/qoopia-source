@@ -1,4 +1,4 @@
-import { hash, MAX_JSON_BYTES } from '../../src/delivery/files.ts';
+import { hash, MAX_JSON_BYTES } from '../../src/utils/fs.ts';
 import { OPS_JOURNAL_FORMAT, opsPayload, opsSerializedSize, type OpsAlert, type OpsState } from '../../src/delivery/ops-state.ts';
 export const fixtureId=(n:number)=>`00000000-0000-4000-8000-${n.toString(16).padStart(12,'0')}`;
 export function retentionAlert(n:number, confirmed=false, instance='scopeb-fixture'):OpsAlert {

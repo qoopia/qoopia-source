@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { openReadonlyDatabase, openWritableDatabase } from '../db/sqlite.ts';
-import { safePath } from './files.ts';
+import { safePath } from '../utils/fs.ts';
 import { snapshotInfo, verifyBackup, backupMembers } from './snapshot.ts';
 export type Check = { status: 'pass' | 'fail' | 'unknown'; reason: string; action: string; [key: string]: unknown };
 export function inspectScheduledBackups(root: string, instance: string, now = Date.now()) {

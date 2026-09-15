@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { compactOps, mergeRecoveryOps, readRecoveryOps, readOps, writeOps, serializeOps, opsSerializedSize, opsFile, opsSummary, recordMaintenance, RECOVERY_DELIVERY_HOLD, validateRecoveryOps } from '../src/delivery/ops-state.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
-import { durableWrite, hash, MAX_JSON_BYTES, preflightSpace, privateDirectory, inventory } from '../src/delivery/files.ts';
+import { durableWrite, hash, MAX_JSON_BYTES, preflightSpace, privateDirectory, inventory } from '../src/utils/fs.ts';
 import { retentionAlert, retentionState, exactPendingBoundary } from './helpers/p3-retention-fixtures.ts';
 import { journalBundleFixture } from './helpers/p3-journal-bundle.ts';
 import { Delivery, dataFile, operationsDirectory, readCurrent, lockInstallation } from '../src/delivery/operations.ts';

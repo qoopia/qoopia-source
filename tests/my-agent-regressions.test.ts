@@ -10,7 +10,7 @@ import {createAgent} from '../src/admin/agents.ts';
 import {myAgentAction,myAgentState,agentDirectory,stopMyAgents} from '../src/services/my-agent.ts';
 import {saveMessage} from '../src/services/sessions.ts';
 import {checkpointSession} from '../src/services/continuity.ts';
-import {durableWrite,privateDirectory} from '../src/delivery/files.ts';
+import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 beforeAll(()=>runMigrations());
 async function until(predicate:()=>boolean){const end=Date.now()+5000;while(!predicate()){if(Date.now()>end)throw new Error('Regression fixture timed out');await Bun.sleep(10);}}
 function ownerFixture(){

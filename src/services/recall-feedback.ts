@@ -5,6 +5,7 @@ import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
 import { confirmMemory, queueAccessReinforcement, setMemoryPin } from "./memory-lifecycle.ts";
+import { assertWriteScope, isAdmin } from "../auth/principal.ts";
 
 export const RECALL_FEEDBACK_TYPES = [
   "helpful",
@@ -17,7 +18,6 @@ export const RECALL_FEEDBACK_TYPES = [
 ] as const;
 export type RecallFeedbackType = (typeof RECALL_FEEDBACK_TYPES)[number];
 
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 const PIN_TYPES = new Set(["owner", "steward"]);
 
 function featureDisabled(name: string): never {
@@ -26,15 +26,7 @@ function featureDisabled(name: string): never {
   throw error;
 }
 
-function isAdmin(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
-function assertWriteScope(auth: AuthContext): void {
-  if (auth.source === "oauth" && !auth.granted_scope?.includes("mcp:write") && !auth.granted_scope?.includes("mcp:admin")) {
-    throw new QoopiaError("FORBIDDEN", "mcp:write scope is required");
-  }
-}
 
 interface FeedbackRow {
   id: string;

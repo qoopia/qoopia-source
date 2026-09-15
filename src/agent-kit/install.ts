@@ -3,7 +3,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {agentKitFiles,agentKitManifest} from './index.ts';
-import {safePath,privateDirectory,durableWrite,hash} from '../delivery/files.ts';
+import {safePath,privateDirectory,durableWrite,hash} from '../utils/fs.ts';
 const BEGIN='<!-- qoopia:protocol:start -->',END='<!-- qoopia:protocol:end -->';
 const receiptSchema=z.object({format:z.literal('qoopia-instructions/1'),files:z.record(z.object({before:z.string().nullable(),after:z.string()})),blocks:z.array(z.string()),role:z.enum(['client','steward']).optional(),state:z.enum(['pending','installed'])});
 type Change={file:string;before:string|null;after:string;kind:'document'|'instructions'};

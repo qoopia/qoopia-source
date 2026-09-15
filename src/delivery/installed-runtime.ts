@@ -11,7 +11,7 @@ import { configureRuntime, registration, loadoutOf } from '../skills/loop.ts';
 import { nativeOptionsSchema, recordOutcome, runOf } from '../skills/runtime.ts';
 import { bindNativeConnection, connectionRefSchema } from '../skills/connection.ts';
 import { localOwner } from './owner-onboarding.ts';
-import { safePath, readJsonBytes, hash } from './files.ts';
+import { safePath, readJsonBytes, hash } from '../utils/fs.ts';
 import type { AuthContext } from '../auth/middleware.ts';
 import { agentTaskSchema, runAgentTask } from '../skills/agent-task.ts';
 

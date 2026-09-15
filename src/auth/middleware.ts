@@ -1,4 +1,4 @@
-import {resourceConnection} from "../services/client-connections.ts";
+import {resourceConnection} from "../services/connection-identity.ts";
 import { db } from "../db/connection.ts";
 import { verifyApiKey, type AgentRecord } from "./api-keys.ts";
 import type { OAuthScope } from "./oauth.ts";

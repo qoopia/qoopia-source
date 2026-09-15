@@ -9,7 +9,7 @@ import { db } from '../db/connection.ts';
 import { authorize } from '../auth/policy.ts';
 import { localOwner } from './owner-onboarding.ts';
 import { readCurrent } from './operations.ts';
-import { hash, privateDirectory, readJsonBytes, safePath } from './files.ts';
+import { hash, privateDirectory, readJsonBytes, safePath } from '../utils/fs.ts';
 import { nativePackagePreview, nativeProvisionPlan, applyNativeProvisionLocked, nativeRuntimeEnvironment } from './native-provision.ts';
 import { connectInstalled } from './connect.ts';
 import { installedRuntime, reportAuth } from './installed-runtime.ts';

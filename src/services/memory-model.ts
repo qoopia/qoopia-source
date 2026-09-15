@@ -4,7 +4,7 @@ import {spawn} from 'node:child_process';
 import {z} from 'zod';
 import {env} from '../utils/env.ts';
 import {QoopiaError} from '../utils/errors.ts';
-import {privateDirectory,durableWrite,readJsonBytes,hash} from '../delivery/files.ts';
+import {privateDirectory,durableWrite,readJsonBytes,hash} from '../utils/fs.ts';
 import {nativeRuntimeEnvironment} from '../delivery/native-provision.ts';
 import {nativeLaunch,prepareNativeSession,preflightNativeSubscription,nativeModelEvidence} from '../skills/adapter.ts';
 import type {NativeOptions} from '../skills/runtime.ts';

@@ -4,7 +4,7 @@ import connections from './MCP-CONNECTIONS.md' with {type:'text'};
 import soul from './SOUL.md' with {type:'text'};
 import operations from './OPERATIONS.md' with {type:'text'};
 import {PRODUCT_VERSION} from '../utils/product-version.ts';
-import {hash} from '../delivery/files.ts';
+import {hash} from '../utils/fs.ts';
 declare const QOOPIA_BUILD_SHA:string;
 export const AGENT_KIT_REVISION=1;
 export const agentKitFiles={'qoopia-protocol.md':protocol,'MCP-CONNECTIONS.md':connections,'SOUL.md':soul,'OPERATIONS.md':operations};

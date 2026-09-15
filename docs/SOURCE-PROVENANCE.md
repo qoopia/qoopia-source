@@ -37,3 +37,9 @@ Canonical source `a8158244417912f3443891321a0e0ff026bd1e8c` fixes blocking nativ
 Signed old-to-new installer acceptance found a cleanly closed WAL compatibility case. Canonical `890b67154a57e77eabe9809274d5336078cf0e42` initializes SQLite sidecars through a query-only handle during the authorized update, preserves application rows and retains the writer barrier. A regression test covers absent WAL/SHM files.
 
 Release website `359e9e7373e60817d36e78e05b7a335c9782d441` publishes 5.0.1 download hashes, the signed Sparkle feed and first-update instructions. Installer source remains `890b67154a57e77eabe9809274d5336078cf0e42`.
+
+## Release 5.0.3
+
+Canonical product source `279a2d62b576e760ac89d10d02b30b9ab0f96bb7`. Authorization consolidation, dashboard/recall module extraction, route regression coverage and authenticated release package verification. This update includes selected source files only; no private development ancestry or operator records. Installer publication is recorded separately.
+
+The public compose template replaces owner-specific instance names and environment paths with operator parameters. It supplies the file already referenced by the public Dockerfile and rollback check. Public CHANGELOG contains only the current release notes; private historical operational notes are excluded.

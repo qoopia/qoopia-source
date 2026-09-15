@@ -19,9 +19,9 @@ import {
   type TraceResultKind,
   type TraceSourceChannel,
 } from "../recall-traces.ts";
+import { ADMIN_TYPES } from "../../auth/principal.ts";
 
 const RRF_K = 60;
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 
 type BaselineResponse = {
   results: ResultRow[];

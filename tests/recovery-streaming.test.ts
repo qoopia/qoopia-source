@@ -8,7 +8,7 @@ import { ownerFixture } from './helpers/p1-fixtures.ts';
 import { journalBundleFixture } from './helpers/p3-journal-bundle.ts';
 import { backupUnified, verifyBackup } from '../src/delivery/snapshot.ts';
 import { Delivery, dataFile } from '../src/delivery/operations.ts';
-import { durableWrite, hash } from '../src/delivery/files.ts';
+import { durableWrite, hash } from '../src/utils/fs.ts';
 import { computeLogicalDatabaseHash } from '../src/db/v4-migrations.ts';
 
 function legacyLogicalHash(db: Database): string {
@@ -77,7 +77,7 @@ test('failed staged streaming copy publishes no destination and removes its stag
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-stream-copy-failure-')));
   try{
     const source=path.join(root,'source.db'),destination=path.join(root,'final.db'),bytes=Buffer.alloc(1024*1024,7);durableWrite(source,bytes);
-    const {durableCopyFile}=await import('../src/delivery/files.ts');
+    const {durableCopyFile}=await import('../src/utils/fs.ts');
     const original=fs.fsyncSync;(fs as unknown as {fsyncSync:typeof fs.fsyncSync}).fsyncSync=()=>{throw new Error('injected staged fsync failure');};
     try{expect(()=>durableCopyFile(source,destination,bytes.length,hash(bytes))).toThrow('injected staged fsync failure');}
     finally{(fs as unknown as {fsyncSync:typeof fs.fsyncSync}).fsyncSync=original;}

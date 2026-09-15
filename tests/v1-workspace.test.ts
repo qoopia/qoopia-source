@@ -10,7 +10,7 @@ import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {issueLocalLogin} from '../src/delivery/local-login.ts';
 import {enableLocalWorkspace} from '../src/delivery/workspace.ts';
 import {lockInstallation} from '../src/delivery/operations.ts';
-import {hash,safePath} from '../src/delivery/files.ts';
+import {hash,safePath} from '../src/utils/fs.ts';
 import {startHttpServer} from '../src/http.ts';
 import {env} from '../src/utils/env.ts';
 

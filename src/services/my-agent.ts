@@ -10,7 +10,7 @@ import {authorize} from '../auth/policy.ts';
 import {createAgent} from '../admin/agents.ts';
 import {sha256Hex} from '../auth/api-keys.ts';
 import {stewardCommand} from '../delivery/steward.ts';
-import {durableWrite,hash,privateDirectory,readJsonBytes,safePath} from '../delivery/files.ts';
+import {durableWrite,hash,privateDirectory,readJsonBytes,safePath} from '../utils/fs.ts';
 import {nativeRuntimeEnvironment} from '../delivery/native-provision.ts';
 import {RUNTIMES} from '../delivery/runtime-versions.ts';
 import {memoryRoot} from './memory-model.ts';

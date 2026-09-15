@@ -4,7 +4,7 @@ import net from 'node:net';
 import {randomUUID} from 'node:crypto';
 import {spawn,type ChildProcess} from 'node:child_process';
 import {once} from 'node:events';
-import {durableWrite,privateDirectory,hash} from './files.ts';
+import {durableWrite,privateDirectory,hash} from '../utils/fs.ts';
 import {startMcpEdge} from './mcp-edge.ts';
 import type {TransportConfig} from './transport-config.ts';
 

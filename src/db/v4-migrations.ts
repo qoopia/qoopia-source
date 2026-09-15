@@ -6,17 +6,8 @@ import { recordMigrationStatus } from "../utils/observability.ts";
 import { assertMigration033Gate, MIGRATION_033_FILENAME } from "./migration-033-gate.ts";
 import { applyMigration033Sql } from "./migration-033-exec.ts";
 
-export const V4_SOURCE_SCHEMA = 26;
 export const V4_TARGET_SCHEMA = 32;
 
-export const V4_MIGRATION_FILES = [
-  "027-note-relations-provenance.sql",
-  "028-memory-lifecycle.sql",
-  "029-extraction-review.sql",
-  "030-recall-traces-feedback.sql",
-  "031-event-outbox.sql",
-  "032-agentcomm-delivery-receipts.sql",
-] as const;
 
 export interface MigrationFile {
   version: number;

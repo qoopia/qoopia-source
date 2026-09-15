@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { privateDirectory, safePath, durableWrite } from './files.ts';
+import { privateDirectory, safePath, durableWrite } from '../utils/fs.ts';
 
 /** Installation lock is held by the caller. Keep login across process and bundle updates. */
 export function localSessionSecret(root: string): string {

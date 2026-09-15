@@ -6,7 +6,7 @@ import {z} from 'zod';
 import {db} from '../db/connection.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {authorize} from '../auth/policy.ts';
-import {privateDirectory,durableWrite,readJsonBytes,hash,preflightSpace} from '../delivery/files.ts';
+import {privateDirectory,durableWrite,readJsonBytes,hash,preflightSpace} from '../utils/fs.ts';
 import {nativePackagePreview,nativeRuntimeEnvironment,unpackNativePackage,verifyInstalledNativeAsync,vendorDownload} from '../delivery/native-provision.ts';
 import {prepareNativeKeychain,nativeOwnerHome} from '../delivery/native-keychain.ts';
 import {RUNTIMES} from '../delivery/runtime-versions.ts';

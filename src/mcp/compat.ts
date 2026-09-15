@@ -46,13 +46,10 @@ import {
 } from "./tools.ts";
 import { assertInstanceWriteAllowed } from "../utils/instance-role.ts";
 import { currentToolAuth } from "../auth/policy.ts";
+import { isAdmin } from "../auth/principal.ts";
 
 // QRERUN-003 / ADR-014: same admin set as src/mcp/tools.ts. Kept local to
 // avoid a circular import; both modules trust the same enum.
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
-function isAdmin(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
 // V2 plural entity → V3 singular type
 const ENTITY_TO_TYPE: Record<string, string> = {

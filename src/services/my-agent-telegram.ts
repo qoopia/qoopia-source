@@ -3,7 +3,7 @@ import path from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {db} from '../db/connection.ts';
-import {durableWrite,readJsonBytes,hash} from '../delivery/files.ts';
+import {durableWrite,readJsonBytes,hash} from '../utils/fs.ts';
 import {agentDirectory,agentOwner,agentSettings,myAgentAction,myAgentState,type AgentSettings} from './my-agent.ts';
 import {QoopiaError} from '../utils/errors.ts';
 

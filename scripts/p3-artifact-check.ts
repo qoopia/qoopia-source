@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { Database } from 'bun:sqlite';
 import { Delivery, dataFile, readCurrent, operationsDirectory } from '../src/delivery/operations.ts';
-import { hash, durableWrite, inventory } from '../src/delivery/files.ts';
+import { hash, durableWrite, inventory } from '../src/utils/fs.ts';
 import { verifyBundle } from '../src/delivery/bundle.ts';
 import { verifyBackup, snapshotInfo } from '../src/delivery/snapshot.ts';
 import { qoopiaSource, skillonomiaSource } from '../tests/helpers/source-fixtures.ts';

@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {prepareDesktopLauncher} from '../src/delivery/desktop-launcher.ts';import {privateDirectory,durableWrite} from '../src/delivery/files.ts';
+import {prepareDesktopLauncher} from '../src/delivery/desktop-launcher.ts';import {privateDirectory,durableWrite} from '../src/utils/fs.ts';
 
 test('Desktop launcher follows the selected bundle, quotes literal paths, and refuses modified files or pointer traversal',()=>{
   if(process.platform!=='darwin')return; // This adapter uses the official macOS Desktop surface.

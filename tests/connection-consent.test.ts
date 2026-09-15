@@ -8,7 +8,7 @@ import {connectionAction,connectionRegistrationAuth} from '../src/services/clien
 import {registerClient,createConsentTicket,getConsentTicket} from '../src/auth/oauth.ts';
 import {loginBroker} from '../src/identity/broker.ts';
 import {remoteConnectionConsent} from '../src/identity/connection-consent.ts';
-import {durableWrite,privateDirectory} from '../src/delivery/files.ts';import {env} from '../src/utils/env.ts';
+import {durableWrite,privateDirectory} from '../src/utils/fs.ts';import {env} from '../src/utils/env.ts';
 import {startHttpServer} from '../src/http.ts';import {authLimiter} from '../src/utils/rate-limit.ts';
 import {authenticate} from '../src/auth/middleware.ts';
 

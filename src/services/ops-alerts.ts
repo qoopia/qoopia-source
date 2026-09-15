@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { z } from 'zod';
-import { safePath, readJson } from '../delivery/files.ts';
+import { safePath, readJson } from '../utils/fs.ts';
 import { deliverMemoryEvent, type OutboxDestination } from './event-outbox.ts';
 import { readOps, writeOps, opsPayload, OPS_ALERT_BATCH_LIMIT } from '../delivery/ops-state.ts';
 // Shared outbox transport keeps HTTPS allowlisting, DNS pinning, no redirect, size/time bounds.

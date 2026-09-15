@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { ulid } from 'ulid';
-import { hash } from './files.ts';
+import { hash } from '../utils/fs.ts';
 import { localOwner } from './owner-onboarding.ts';
 
 /** Local OS owner operation; caller holds the stopped installation's lock. */

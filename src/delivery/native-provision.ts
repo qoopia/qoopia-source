@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {hash,safePath,privateDirectory,durableWrite,syncDirectory,readJson,preflightSpace,inventory,inventoryAsync} from './files.ts';
+import {hash,safePath,privateDirectory,durableWrite,syncDirectory,readJson,preflightSpace,inventory,inventoryAsync} from '../utils/fs.ts';
 import {readCurrent,lockInstallation} from './operations.ts';
 import {RUNTIMES} from './runtime-versions.ts';
 

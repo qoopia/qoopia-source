@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { durableWrite, privateDirectory, readJsonBytes, MAX_JSON_BYTES, JsonReadError, hash, preflightSpace } from './files.ts';
+import { durableWrite, privateDirectory, readJsonBytes, MAX_JSON_BYTES, JsonReadError, hash, preflightSpace } from '../utils/fs.ts';
 const alertSchema = z.object({
   id: z.string().uuid(), installation: z.string().min(1).max(200), component: z.literal('maintenance'),
   subject: z.literal('daily'), cause: z.string().regex(/^[A-Z_]{1,64}$/), active: z.boolean(),

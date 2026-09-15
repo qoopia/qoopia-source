@@ -8,7 +8,7 @@ import type { z } from 'zod';
 import type { connectInput, connectInstalled } from '../../src/delivery/connect.ts';
 import type { Principal } from '../../src/auth/policy.ts';
 import type { getNote } from '../../src/services/notes.ts';
-import { hash } from '../../src/delivery/files.ts';
+import { hash } from '../../src/utils/fs.ts';
 
 export type ConnectInput = z.infer<typeof connectInput>;
 export type ConnectContext = Parameters<typeof connectInstalled>[1];

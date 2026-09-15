@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { verify } from 'node:crypto';
 import { z } from 'zod';
-import { inventory, readJson, hash } from './files.ts';
+import { inventory, readJson, hash } from '../utils/fs.ts';
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 export const bundleSchema = z.object({
   format: z.literal('qoopia-bundle/1'), version: z.string().regex(/^5\.0\.(?:0|[1-9][0-9]*)(?:-[a-z0-9.-]+)?$/),

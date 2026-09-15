@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import {hash} from '../src/delivery/files.ts';
+import {hash} from '../src/utils/fs.ts';
 
 const materialsDigest='58e26a5f5c683b375133756853f8b4b12011e68823fa7e3820dde4fd819aee04';
 const noticesDigest='ba284661f932abdd1685b7a202224d3c2e8e44d27348d205202560dcd4e82910';

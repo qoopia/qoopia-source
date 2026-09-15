@@ -1,5 +1,5 @@
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import {spawnSync} from 'node:child_process';
-import {hash} from '../src/delivery/files.ts';
+import {hash} from '../src/utils/fs.ts';
 const pool='https://deb.debian.org/debian/pool/';
 const packages=[
  {name:'bubblewrap',url:pool+'main/b/bubblewrap/bubblewrap_0.8.0-2+deb12u1_amd64.deb',sha256:'3cc9134a3286ad01a323dcd924ba123eb634cefaeec82d774257e06308aeaadb',members:{'usr/bin/bwrap':'bwrap.bin'}},

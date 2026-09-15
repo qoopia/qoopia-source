@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 import { loadReleaseAuthorization, packageAndNotarizeDarwin, runPublisherSigner, signAndVerifyDarwin, type CommandRunner } from '../scripts/bundle-signing.ts';
 
 const roots:string[]=[];

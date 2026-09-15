@@ -4,11 +4,13 @@ import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { getNote } from "./notes.ts";
+import { ADMIN_TYPES } from "../auth/principal.ts";
 
 export const RECALL_PIPELINE_VERSION = "v4.0.0-p04.1";
 const TRACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+// Traces are deliberately narrower than the shared admin set: a
+// claude-privileged agent may read every note but not other agents' traces.
 const TRACE_ADMIN_TYPES = new Set(["owner", "steward"]);
-const NOTE_ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 
 export type TraceResultKind = "note" | "entity" | "activity" | "session_message";
 export type TraceSourceChannel = "fts5" | "vector" | "both" | "activity_fts" | "session_fts";
@@ -50,12 +52,12 @@ interface TraceItemRow extends Omit<RecallDiagnosticItem, "reason_codes"> {
   reason_codes: string;
 }
 
-function isAdmin(auth: AuthContext): boolean {
+function isTraceAdmin(auth: AuthContext): boolean {
   return TRACE_ADMIN_TYPES.has(auth.type);
 }
 
 function canReadAllNotes(auth: AuthContext): boolean {
-  return NOTE_ADMIN_TYPES.has(auth.type);
+  return ADMIN_TYPES.has(auth.type);
 }
 
 function round6(value: number): number {
@@ -117,12 +119,12 @@ function resultStillVisible(auth: AuthContext, item: TraceItemRow): boolean {
       `SELECT 1 FROM activity
         WHERE workspace_id = ? AND id = ?
           AND (visibility = 'workspace' OR agent_id = ? OR ? = 1)`,
-    ).get(auth.workspace_id, item.result_id, auth.agent_id, isAdmin(auth) ? 1 : 0);
+    ).get(auth.workspace_id, item.result_id, auth.agent_id, isTraceAdmin(auth) ? 1 : 0);
   }
   return !!db.prepare(
     `SELECT 1 FROM session_messages
       WHERE workspace_id = ? AND id = ? AND (agent_id = ? OR ? = 1)`,
-  ).get(auth.workspace_id, Number(item.result_id), auth.agent_id, isAdmin(auth) ? 1 : 0);
+  ).get(auth.workspace_id, Number(item.result_id), auth.agent_id, isTraceAdmin(auth) ? 1 : 0);
 }
 
 export function createRecallTrace(input: {
@@ -209,7 +211,7 @@ export function getRecallTrace(input: {
   if (
     !row ||
     row.expires_at <= new Date().toISOString() ||
-    (row.caller_agent_id !== input.auth.agent_id && !isAdmin(input.auth))
+    (row.caller_agent_id !== input.auth.agent_id && !isTraceAdmin(input.auth))
   ) {
     throw new QoopiaError("NOT_FOUND", "recall trace not found");
   }

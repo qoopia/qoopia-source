@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { durableWrite, privateDirectory, readJson } from './files.ts';
+import { durableWrite, privateDirectory, readJson } from '../utils/fs.ts';
 
 const targetSchema = z.object({ format: z.literal('qoopia-server-workspace/1'), url: z.string() }).strict();
 const targetFile = (root: string) => path.join(root, 'server-workspace.json');

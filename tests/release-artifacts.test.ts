@@ -16,7 +16,7 @@ describe("release artifact contracts", () => {
     const installer = read("src/admin/install.ts");
     const mcpServer = read("src/mcp/server.ts");
 
-    expect(pkg.version).toBe("5.0.2");
+    expect(pkg.version).toBe("5.0.3");
     for (const source of [http, cli, installer, mcpServer]) {
       expect(source).toContain("PRODUCT_VERSION");
       expect(source).not.toContain('version: "3.0.0"');
@@ -60,6 +60,29 @@ describe("release artifact contracts", () => {
     );
     expect(compose).toContain("$${process.env.QOOPIA_PORT}/ready");
     expect(compose).not.toContain("$${process.env.QOOPIA_PORT}/health");
+  });
+
+  // scripts/v4-rollback-rehearsal.ts asserts that rolling back is an image
+  // swap rather than a code-directory swap, and it reads compose/docker-
+  // compose.v4.yml because that is the only compose baked into the image by
+  // the Dockerfile. Production runs deploy/docker-compose.release.yml, which
+  // the rehearsal cannot see, so the same property is asserted here instead
+  // of trusting that the two files agree.
+  test("no shipped compose can bind a mutable code directory into the container", () => {
+    const composeFiles = [
+      ...fs.readdirSync(path.join(repoRoot, "compose")).map((f) => `compose/${f}`),
+      ...fs.readdirSync(path.join(repoRoot, "deploy")).map((f) => `deploy/${f}`),
+    ].filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
+
+    // A new compose file must be reviewed, not silently exempt from the check.
+    expect(composeFiles.sort()).toEqual([
+      "compose/docker-compose.v4.yml",
+      "deploy/docker-compose.release.yml",
+    ]);
+
+    for (const file of composeFiles) {
+      expect(read(file)).not.toContain("/srv/qoopia/code");
+    }
   });
 
   test("normal startup has no environment-controlled migration bypass", () => {

@@ -1,13 +1,12 @@
 import {z} from 'zod';
 import path from 'node:path';
 import os from 'node:os';
-import {readJson,preflightSpace} from './files.ts';
+import {readJson,preflightSpace} from '../utils/fs.ts';
 const bytes=z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const bootstrapMeasurementSchema=z.object({
  format:z.literal('qoopia-bootstrap-measurement/1'),target:z.enum(['darwin-arm64','linux-x64']),
  os_release:z.string().min(1),initial_database_bytes:bytes.positive(),bootstrap_peak_rss_bytes:bytes.positive(),
 }).strict();
-export type BootstrapMeasurement=z.infer<typeof bootstrapMeasurementSchema>;
 const hostSchema=z.object({target:z.string(),os_release:z.string(),total_memory_bytes:bytes,available_disk_bytes:bytes}).strict();
 /** Call only after verifyBundle: the observation must belong to its signed inventory. */
 export function inspectInstallationRequirements(verified:{root:string;manifest:{members:Record<string,{size:number}>}},destination:string){

@@ -180,20 +180,6 @@ export function leaseMemoryEvent(input: {
   })();
 }
 
-export function markMemoryEventDelivered(input: {
-  workspace_id: string;
-  id: string;
-  lease_owner: string;
-  database?: Database;
-}): void {
-  const database = input.database ?? defaultDb;
-  const result = database.query(
-    `UPDATE memory_event_outbox
-        SET state='delivered', delivered_at=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
-      WHERE id=? AND workspace_id=? AND state='leased' AND lease_owner=?`,
-  ).run(nowIso(), nowIso(), input.id, input.workspace_id, input.lease_owner);
-  if (result.changes !== 1) throw new QoopiaError("CONFLICT", "outbox delivery lease is stale");
-}
 
 export function markMemoryEventFailed(input: {
   workspace_id: string;

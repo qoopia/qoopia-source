@@ -9,11 +9,11 @@ import {sha256Hex} from '../auth/api-keys.ts';
 import {env} from '../utils/env.ts';
 import {nowIso, QoopiaError} from '../utils/errors.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
+import {surfaces, connectionId, type ConnectionRow as Row, connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection} from './connection-identity.ts';
+export {surfaces, connectionId, connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection};
 import {configureNativeClient} from '../delivery/client-config.ts';
 import {desktopAuthStatus,startDesktopAuth,cancelDesktopAuth} from '../delivery/desktop-auth.ts';
 
-export const surfaces = ['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','codex','claude_code'] as const;
-export const connectionId = z.string().uuid();
 const clientDirectory=z.string().startsWith('/').max(4096).optional();
 const selection = {surface:z.enum(surfaces), access_mode:z.enum(['read','read_write']), request_key:z.string().min(1).max(100),transport:z.enum(['auto','local','remote']).default('auto')};
 export const connectionActionSchema = z.discriminatedUnion('action',[
@@ -31,25 +31,6 @@ export const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('client-auth-start'),id:connectionId}).strict(),
   z.object({action:z.literal('client-auth-status'),id:connectionId}).strict(),
 ]);
-type Row = {id:string;workspace_id:string;owner_id:string;agent_id:string;surface:typeof surfaces[number];access_mode:'read'|'read_write';
-  request_key:string;origin:string;state:'awaiting_client'|'verified'|'revoked';challenge_hash:string;challenge_expires_at:string;oauth_client_id:string|null;verified_at:string|null};
-export function connectionOrigin(id:string) {
-  const row=db.query('SELECT origin FROM client_connections WHERE id=?').get(connectionId.parse(id)) as {origin:string}|null;
-  if(!row)throw new QoopiaError('NOT_FOUND','Connection unavailable');return resourceOrigin(row.origin);
-}
-export function connectionResource(id:string) { return connectionOrigin(id)+'/mcp/c/'+id; }
-export function connectionIssuer(id:string) { return connectionOrigin(id)+'/oauth/c/'+id; }
-export function resourceConnection(resource:string):string|undefined {
-  try{
-    const match=/^\/mcp\/c\/([a-f0-9-]{36})$/.exec(new URL(resource).pathname);
-    return match&&resource===connectionResource(match[1]!)?match[1]:undefined;
-  }catch{return;}
-}
-export function publicConnection(id:string):Row {
-  const row=db.query(`SELECT c.* FROM client_connections c JOIN agents a ON a.id=c.agent_id AND a.workspace_id=c.workspace_id
-    WHERE c.id=? AND c.state!='revoked' AND a.active=1`).get(connectionId.parse(id)) as Row|null;
-  if(!row)throw new QoopiaError('NOT_FOUND','Connection unavailable');return row;
-}
 export function connectionRegistrationAuth(id:string):AuthContext {
   const row=publicConnection(id);
   if((db.query('SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?').get(row.agent_id) as {n:number}).n>=20)

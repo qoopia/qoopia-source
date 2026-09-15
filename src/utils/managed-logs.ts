@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { safePath, privateDirectory, durableWrite, readJson, syncDirectory } from '../delivery/files.ts';
+import { safePath, privateDirectory, durableWrite, readJson, syncDirectory } from './fs.ts';
 
 const DAY = 86_400_000;
 const FORMAT = 'qoopia-application-logs/1';

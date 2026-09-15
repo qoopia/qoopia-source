@@ -1,5 +1,5 @@
 import { appendManagedLog } from "./managed-logs.ts";
-import { hash } from "../delivery/files.ts";
+import { hash } from "./fs.ts";
 import { env } from "./env.ts";
 import { detectSecretLabels } from "./secret-guard.ts";
 

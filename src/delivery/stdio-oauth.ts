@@ -7,7 +7,7 @@ import {Database} from 'bun:sqlite';
 import {z} from 'zod/v4';
 import {auth,type OAuthClientProvider,type OAuthDiscoveryState} from '@modelcontextprotocol/sdk/client/auth.js';
 import {OAuthTokensSchema,OAuthClientInformationSchema,type OAuthTokens,type OAuthClientInformationMixed} from '@modelcontextprotocol/sdk/shared/auth.js';
-import {privateDirectory,durableWrite,readJsonBytes,safePath} from './files.ts';
+import {privateDirectory,durableWrite,readJsonBytes,safePath} from '../utils/fs.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
 
 export const stdioBindingSchema=z.object({format:z.literal('qoopia-client-connection/1'),connection_id:z.string().uuid(),
