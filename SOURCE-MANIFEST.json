@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "a8158244417912f3443891321a0e0ff026bd1e8c",
+  "source_snapshot": "890b67154a57e77eabe9809274d5336078cf0e42",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": false,
   "files": [
@@ -2938,8 +2938,8 @@
     },
     {
       "path": "src/delivery/desktop-update.ts",
-      "sha256": "c0b03b4a6347657817addab5310a4ef9101bfbc30e69f455b263d69a91c8ee68",
-      "bytes": 2025,
+      "sha256": "bf9e72a18449c4830c6a7b21609c2fd3190962a2abb7a86b464a2052a0e9b744",
+      "bytes": 2564,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
@@ -4534,8 +4534,8 @@
     },
     {
       "path": "tests/desktop-update.test.ts",
-      "sha256": "ebcb78c51e245ce3be4bd9826936d6b9ceb992edbac66ef853c6a64d36e20432",
-      "bytes": 5922,
+      "sha256": "ddd838ad7e34869290c1e6d54a5783839ff6700e84c2be91279f7f1ff425a516",
+      "bytes": 7027,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
@@ -5985,5 +5985,5 @@
   ],
   "account_service_source": "2b4035d97dfd04315c88d49d947b1763f3e2955c",
   "discovery_source": "f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d",
-  "desktop_release_source": "a8158244417912f3443891321a0e0ff026bd1e8c"
+  "desktop_release_source": "890b67154a57e77eabe9809274d5336078cf0e42"
 }

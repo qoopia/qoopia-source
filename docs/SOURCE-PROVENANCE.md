@@ -33,3 +33,5 @@ Revision `f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d` adds shared RU/EN product an
 ## Native desktop and responsiveness release
 
 Canonical source `a8158244417912f3443891321a0e0ff026bd1e8c` fixes blocking native checks, background subscription setup, Telegram button updates and OAuth consent redirects. It adds the native Mac window, menu-bar controls and signed Sparkle updater. ChatGPT Web and Mac Desktop were qualified through isolated real-client write/read/idempotent replay. Existing apps need one manual app replacement to adopt Sparkle. Private operator state and acceptance conversations are excluded.
+
+Signed old-to-new installer acceptance found a cleanly closed WAL compatibility case. Canonical `890b67154a57e77eabe9809274d5336078cf0e42` initializes SQLite sidecars through a query-only handle during the authorized update, preserves application rows and retains the writer barrier. A regression test covers absent WAL/SHM files.
