@@ -8,6 +8,7 @@ COPY src/analytics ./src/analytics
 COPY src/bridges ./src/bridges
 COPY src/brand.ts ./src/brand.ts
 COPY src/utils/assets.ts ./src/utils/assets.ts
+COPY src/utils/product-version.ts ./src/utils/product-version.ts
 COPY scripts/newsletter.ts ./scripts/newsletter.ts
 RUN bun build src/identity/broker.ts --target=bun --outfile /broker.js
 RUN bun build scripts/newsletter.ts --target=bun --outfile /newsletter.js

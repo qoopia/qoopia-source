@@ -1,3 +1,4 @@
+import {PRODUCT_VERSION} from '../utils/product-version.ts';
 import {persistentAnalytics,browserEvent,noAnalytics,type RecordEvent} from '../analytics/events.ts';
 import {readFileSync,openSync,closeSync,fstatSync,constants} from 'node:fs';
 import {assetPath} from '../utils/assets.ts';
@@ -93,7 +94,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         return devices?await devices.handler(new Request(origin+url.pathname+url.search,req)):json(503,{code:'DEVICE_SERVICE_UNAVAILABLE'});
       }
       if(req.method==='GET'||req.method==='HEAD'){const asset=brandAsset(url.pathname);if(asset)return new Response(req.method==='HEAD'?null:new Uint8Array(asset.body),{headers:{...headers,'content-type':asset.type,'cache-control':'no-cache'}});}
-      if (req.method === 'GET' && url.pathname === '/health') return json(200,{ready:Boolean(config.resendKey&&config.googleClientId&&config.googleClientSecret)});
+      if (req.method === 'GET' && url.pathname === '/health') return json(200,{version:PRODUCT_VERSION,ready:Boolean(config.resendKey&&config.googleClientId&&config.googleClientSecret)});
       if (req.method === 'GET' && url.pathname === '/') return new Response(null,{status:302,headers:{...headers,location:'/profile'+url.search}});
       if(url.pathname==='/news/unsubscribe')return unsubscribePage(req,news,page);
       if(url.pathname==='/owner'||url.pathname.startsWith('/owner/')||url.pathname==='/profile'||url.pathname.startsWith('/profile/'))return profile.handler(req,clientIp);
