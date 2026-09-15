@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {spawnSync} from 'node:child_process';
-import {hash,durableWrite,privateDirectory} from '../src/delivery/files.ts';
+import {hash,durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import {cloudflaredMaterials} from './cloudflared-materials.ts';
 export const CLOUDFLARED_VERSION='2026.9.1';
 const packages={

@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { Database } from 'bun:sqlite';
 import { Delivery, dataFile, readCurrent, lockInstallation } from '../src/delivery/operations.ts';
 import { bootstrapOwner } from '../src/auth/pairings.ts';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 import { verifyBundle } from '../src/delivery/bundle.ts';
 import { connectRuntimes, connectConfigFixture, connectState, assertConnectOutput, assertConnectPreview, assertConfiguredConnect,
   type ConnectResult, type ConfiguredConnect, type ConnectInput } from '../tests/helpers/p3-connect-fixtures.ts';

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { durableWrite, inventory, hash, privateDirectory } from '../../src/delivery/files.ts';
+import { durableWrite, inventory, hash, privateDirectory } from '../../src/utils/fs.ts';
 import { OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../../src/delivery/bundle.ts';
 
 /** Signed inert bundle for engine tests only; executable dispatch is checked separately. */

@@ -38,6 +38,9 @@ jobs:
       - name: Validate repository instruction paths
         run: bun run ops:validate-agent-paths -- --workspace . --instruction CLAUDE.md
 
+      - name: Module boundaries
+        run: bun run ops:check-boundaries
+
       - name: Lint
         run: bun run lint
 

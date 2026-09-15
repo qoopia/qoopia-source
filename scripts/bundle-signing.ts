@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { verify } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 
 const hex=z.string().regex(/^[a-f0-9]{64}$/),sha=z.string().regex(/^[a-f0-9]{40}$/);
 const authorizationSchema=z.object({

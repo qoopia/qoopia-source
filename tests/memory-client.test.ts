@@ -2,7 +2,7 @@ import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {installMemoryClient,runMemoryHook,transcriptMessages} from '../src/delivery/memory-client.ts';
-import {hash} from '../src/delivery/files.ts';
+import {hash} from '../src/utils/fs.ts';
 
 test('native hooks preserve settings, resume unacknowledged UTF-8 events, and reject paths outside the selected native home',async()=>{
  const root=fs.mkdtempSync('/var/tmp/qoopia-client-test-');

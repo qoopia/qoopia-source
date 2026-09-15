@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {Database} from 'bun:sqlite';
-import { durableWrite, hash, privateDirectory, readJson, safePath, syncDirectory } from './files.ts';
+import { durableWrite, hash, privateDirectory, readJson, safePath, syncDirectory } from '../utils/fs.ts';
 
 const ledgerSchema=z.object({format:z.literal('qoopia-autostart-ledger/1'),installation:z.string().min(1),platform:z.enum(['darwin','linux']),
   native_config:z.string(),config_sha256:z.string().regex(/^[a-f0-9]{64}$/),executable_sha256:z.string().regex(/^[a-f0-9]{64}$/),state:z.enum(['pending','enabled'])}).strict();

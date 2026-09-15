@@ -5,7 +5,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { ownerFixture } from './helpers/p1-fixtures.ts';
 import { Delivery, dataFile, readCurrent, operationsDirectory, lockInstallation, type Current } from '../src/delivery/operations.ts';
-import { durableWrite, privateDirectory, hash, inventory, MAX_JSON_BYTES } from '../src/delivery/files.ts';
+import { durableWrite, privateDirectory, hash, inventory, MAX_JSON_BYTES } from '../src/utils/fs.ts';
 import { opsFile, readOps, writeOps, recordMaintenance, opsSummary, RECOVERY_DELIVERY_HOLD, mergeRecoveryOps } from '../src/delivery/ops-state.ts';
 import { backupUnified, verifyBackup } from '../src/delivery/snapshot.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';

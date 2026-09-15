@@ -34,9 +34,9 @@ import {
   materializeExportBundle,
   validateImportPlan,
 } from "../services/export.ts";
+import { ADMIN_TYPES } from "../auth/principal.ts";
 
 const CURSOR_KEY = randomBytes(32);
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 const REVIEWER_TYPES = new Set(["owner", "steward"]);
 
 function requireExportAdmin(auth: AuthContext): void {

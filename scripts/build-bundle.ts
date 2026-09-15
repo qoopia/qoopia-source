@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
-import { hash, inventory, privateDirectory, durableWrite } from '../src/delivery/files.ts';
+import { hash, inventory, privateDirectory, durableWrite } from '../src/utils/fs.ts';
 import { bundleSchema, verifyBundle, OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../src/delivery/bundle.ts';
 import pkg from '../package.json';
 import { buildOwnerPeer } from './build-owner-peer.ts';

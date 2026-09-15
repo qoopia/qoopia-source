@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "f647faff39c21f0556d757c6398f32e4c8301849",
+  "source_snapshot": "279a2d62b576e760ac89d10d02b30b9ab0f96bb7",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": false,
   "files": [
@@ -14,8 +14,8 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "1bdb23066ec100592daead11948fa3bc5a2d8f4c4c8557ee59a231a0be008a60",
-      "bytes": 2662,
+      "sha256": "0a1e5334bcca9205e8b62e8281207c14db05cbbc912bbc4c4cbbd622d46418d4",
+      "bytes": 2737,
       "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "2b5776d0b8418f8d8a01960f7a9183b7efa4cb1b"
@@ -35,6 +35,13 @@
       "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "60d3478976b9b29908ae12c84af92f8983c9391a"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "cf7d9fd6646a647011c36f47c23d168e2ba34e976bfced65b041f99e3e65c731",
+      "bytes": 1068,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "CLAUDE.md",
@@ -542,10 +549,10 @@
     },
     {
       "path": "docs/v4/runbooks/backup-restore.md",
-      "sha256": "eb08218a50a294ccfd19f27e2c26ab78ccc0f74cc33b5b1e31415bb6e4697b29",
-      "bytes": 19420,
+      "sha256": "e2a207b40eaf39e2ae9483c6252d640934da1a08ffb879102a7941bf2658a7a6",
+      "bytes": 19414,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "5fc8f9e3eda750e23947ba36feb80dbe4b03e7b5"
     },
     {
@@ -1008,7 +1015,7 @@
       "path": "marketing-site/release.json",
       "sha256": "a217028f2ba659dbb467e15c8ea4bea6bfc3021c3b80464576184b4ebed9f38b",
       "bytes": 1095,
-      "source_snapshot_identical": false,
+      "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "0ee6c34668eb99d19ee4d0ddb919fb51fbd2cb79"
     },
@@ -1070,7 +1077,7 @@
       "path": "marketing-site/updates/macos/appcast.xml",
       "sha256": "58f532925f0f4f3e63394254a19d1d116ff34bd04ac5bd30526142f5c77796c2",
       "bytes": 765,
-      "source_snapshot_identical": false,
+      "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
     {
@@ -1523,8 +1530,8 @@
     },
     {
       "path": "package.json",
-      "sha256": "f7bd9088791eb4c69500a62b59522377f9769722987b565551b2c391911b2c2f",
-      "bytes": 2693,
+      "sha256": "d234d9c79bdcb94dd9b1ef05a8c592259431b530b26f7be6718e2076d0b6d1cb",
+      "bytes": 2972,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "15497aea4aba311f9edd16da461b8ca8eff4538b"
@@ -1618,8 +1625,8 @@
     },
     {
       "path": "scripts/build-bundle.ts",
-      "sha256": "8b65195126a2150c33661292c3146f7bc9c5dab6e78ab01d0579509740524e72",
-      "bytes": 19502,
+      "sha256": "e1668327649b409e89a8efd5242f9d2a6221db740c59cb5b36a71d5600d66602",
+      "bytes": 19496,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "b5302c3be9d1ccb5d080ad034b4fb1572283689e"
@@ -1641,6 +1648,13 @@
       "original_blob": "94471cd5fa0a50e39b3107661e4a8e8e1b56cb20"
     },
     {
+      "path": "scripts/build-release-manifest.ts",
+      "sha256": "03940b9b7839d8648f6641462ebf274293cd78fd45638a40642d9f3f9175159a",
+      "bytes": 7022,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "scripts/build-release.ts",
       "sha256": "2cdb88be149f192f5a4a8371c0cbdfb46d77398fb4ec66966aa6492b5cfca82e",
       "bytes": 2750,
@@ -1658,8 +1672,8 @@
     },
     {
       "path": "scripts/bundle-signing.ts",
-      "sha256": "66c4607ceb94e6529ba1088948b4410abc60a6087ecdf93d8e30b92494c41c42",
-      "bytes": 15428,
+      "sha256": "58963e8322359a36224bda639f66497ee5e62d2455581dc2b43b3df528700697",
+      "bytes": 15422,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "38620ffa0e99ed3ceed5fa13ab6d46ca7b6c5b84"
@@ -1687,6 +1701,13 @@
       "original_blob": "b24ee5b032e082ea35b37f3803291ecd381983ed"
     },
     {
+      "path": "scripts/check-module-boundaries.ts",
+      "sha256": "a889688b55e015fc7e5b8031e9b80ebcae1e74d357f0d2399a622815bd832bec",
+      "bytes": 7060,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "scripts/check-vendored-pdfjs.ts",
       "sha256": "b83026bbf2aa4e1703b0caa207738d060b9aa4925cc38e8d25679a442ee3dbe2",
       "bytes": 3036,
@@ -1711,10 +1732,10 @@
     },
     {
       "path": "scripts/cloudflared-materials.ts",
-      "sha256": "6944ea411b376cc0b62761f5c3ff9b6cc9207e31ed81ab0cd55ab26d60b334f6",
-      "bytes": 1461,
+      "sha256": "f812577a669b5002593f8daba4da6a79e42be762295dbaeaee7475005c9a989e",
+      "bytes": 1455,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "f9b579eaf67d21f687c29cdfbcd4397ff36c3d48"
     },
     {
@@ -1914,10 +1935,10 @@
     },
     {
       "path": "scripts/p3-artifact-check.ts",
-      "sha256": "d021cbe3cc38ed61af557b0362151b0a34f6d7ece4ddcd724f3782eb0173a125",
-      "bytes": 13905,
+      "sha256": "ec32553239068b0c2c8dcbffaf9d001cc0e20bbf0956ae8e552f1ba7f9b56b3b",
+      "bytes": 13899,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "f92fcaf65c0d2155db7c99c4ae23c50057d7f039"
     },
     {
@@ -1930,35 +1951,19 @@
     },
     {
       "path": "scripts/p3-connect-check.ts",
-      "sha256": "946c1d557a50608baa2733af7d78045c6df325d22e6022bc7a5fda8fbdc567c2",
-      "bytes": 9308,
+      "sha256": "a7562329a112b6d42a9fcc1be7a93ce963ae8339e48c0c3be628562794a994b8",
+      "bytes": 9302,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "2c5b6f2f0c2277e1d388ac647c4fe2ffa29c021e"
     },
     {
       "path": "scripts/p3-installed-native-check.ts",
-      "sha256": "70ab1728c20c468d5bc20fb59c852922d00f5bb7a1b9d6949d9b471636878850",
-      "bytes": 22371,
+      "sha256": "3347447039ad3cb5edf609f81955fbb60e3d08a9fa2feeb5a01993b4bc4391ef",
+      "bytes": 22365,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "64c763a4260871aeef1a6042c35f692aa482eb6f"
-    },
-    {
-      "path": "scripts/p3-journal-capacity.ts",
-      "sha256": "dfc1086c4db22e8274ed28470915cbd9f9f85b3b6c77749c5e60d3527b2f8925",
-      "bytes": 2715,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": true,
-      "original_blob": "d47b1adcf5a6be19c889d51bf9c3176e3435b7db"
-    },
-    {
-      "path": "scripts/p3-journal-version-check.ts",
-      "sha256": "c74710d7bdc9d9ddea958114709462520af5a8cad51fbfda9c3242ffdaa92767",
-      "bytes": 5079,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": true,
-      "original_blob": "1b03b7c2c5da640bc76800e78a05032e02dfd482"
     },
     {
       "path": "scripts/p3-native-auth.ts",
@@ -1985,52 +1990,12 @@
       "original_blob": "812a476ebe0441507bbab319e524cd416a9cbd7c"
     },
     {
-      "path": "scripts/p3-recovery-owner-go-check.ts",
-      "sha256": "74a19f80a53bb467c4c36130ab9a5cdefb772811acb77882b48dba4340ce6a16",
-      "bytes": 6403,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": true,
-      "original_blob": "d86a7510ec445ade25b982fb8edb9c2eac0da1fc"
-    },
-    {
-      "path": "scripts/p3-recovery-streaming-measure.ts",
-      "sha256": "8f13f33d5f195c0bf762294f3336964b8d9b55e91353241eb79e4991cc296a44",
-      "bytes": 7498,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": true,
-      "original_blob": "9373706c1dd8d41ce8181e7edc2a0563ad5a720f"
-    },
-    {
-      "path": "scripts/p3-retention-boundary.ts",
-      "sha256": "f0dde508f5386ef7c32af3334b98107dadd3672edec3ac0d52f5f6325d1ad4f0",
-      "bytes": 5537,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": true,
-      "original_blob": "b44d84a0d355d9cdb4ea527fce62f7bb1701050e"
-    },
-    {
-      "path": "scripts/p3-retention-cli-check.ts",
-      "sha256": "011a4bf1a9d5c0ca3e33a92f44242018ee54b942616133b7625411a67953c5be",
-      "bytes": 5406,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": true,
-      "original_blob": "9710e3799ed0207e1c2d6607120120b6c8e8c6d7"
-    },
-    {
       "path": "scripts/p3-supply-check.py",
       "sha256": "bc444cce9063d0af294e9be8c16deb249bb2d9ea1d3de68b1e6950e566e2925c",
       "bytes": 1478,
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "b7139ea9d0a11d2d66af03e6b7fcc3284b7005fc"
-    },
-    {
-      "path": "scripts/p3-t24-compiled.ts",
-      "sha256": "5a4b12fad79b207b0fb1b1348f46588f4d060dca3fe215a1131ad6e1ac1aa537",
-      "bytes": 6771,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": true,
-      "original_blob": "39109c1cc7aec75b63c8bfdb70f7451a02ca2800"
     },
     {
       "path": "scripts/p3-test-files.py",
@@ -2058,18 +2023,18 @@
     },
     {
       "path": "scripts/prepare-cloudflared.ts",
-      "sha256": "fc41d1f9cc5d713f57596e027f9b10318d4003eb6bcdf6ca03b2513b4fd293e7",
-      "bytes": 3730,
+      "sha256": "21f44e9fc2a6821fc2272a9f24e4ace818d114c46e346355849083398c454aae",
+      "bytes": 3724,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "2e35729762d37421e68dfd10f91d3c8d7e3021ee"
     },
     {
       "path": "scripts/prepare-linux-support.ts",
-      "sha256": "143b98fcdb2410fb6213ef591933ee5ee460b99de93ff2d758bf9e54341a948e",
-      "bytes": 4063,
+      "sha256": "adf96f2c3f05490f8b0715765f25ae77577205498284d65019475077e7f4c268",
+      "bytes": 4057,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "2bd5f00aa3e7616c14441e83d17126994af05cd4"
     },
     {
@@ -2089,8 +2054,8 @@
     },
     {
       "path": "scripts/qualify-memory.ts",
-      "sha256": "1170c49bfe266738f73cc7283e3e2ff3e8e89b0170e7a8731438f6753a882ce4",
-      "bytes": 5851,
+      "sha256": "f38fb67299d46dccd8517534f556372d24df6ca3ebba926349e2327abdf7aad6",
+      "bytes": 5845,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "ca021578320362e65fbf199045c808d9b9168c1d"
@@ -2115,7 +2080,7 @@
       "path": "scripts/release-health.py",
       "sha256": "aa6cf46b36cd3197c2d48a9efa2880378ba8349a1ef94d323f396ba9cc9d19cf",
       "bytes": 4504,
-      "source_snapshot_identical": false,
+      "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "e64a4c5543e7473ee27d05b248b7d0fbcb22f306"
     },
@@ -2640,18 +2605,18 @@
     },
     {
       "path": "src/agent-kit/index.ts",
-      "sha256": "591746ce9e80749ddf9239701ee8724981c6285505deaa4cad5435d624999685",
-      "bytes": 1809,
+      "sha256": "2e9ace7459f0fd50fcbe0de23ef74de47b4a04dc21721ec7cd6d5a66a2b3bde8",
+      "bytes": 1803,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "7ea20d75c6a02183d6806e17fcf0817757303dbc"
     },
     {
       "path": "src/agent-kit/install.ts",
-      "sha256": "b72266027a766859b48b33e50bf0f0f9d38b5b0fcc9d702cf6055e4d23322ea6",
-      "bytes": 6939,
+      "sha256": "3523155dff5eeb5d90fe08c010be38da885d0cc0db8e31ef0308df748ea1f1be",
+      "bytes": 6933,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "93dbd7eda32f9d2a4e4503c9441b95a606cff5ef"
     },
     {
@@ -2696,18 +2661,18 @@
     },
     {
       "path": "src/auth/middleware.ts",
-      "sha256": "f30946131da77c6ab51f13b8b5c7068459231035494b392b198968e556bd0e7b",
-      "bytes": 3864,
+      "sha256": "18ef31ae08b302d779167a6adb259b99f3b058c1503d8c95733317971ad41cdf",
+      "bytes": 3865,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "1e3f677d1a741be6aca30733160eb49d31c20f6e"
     },
     {
       "path": "src/auth/oauth.ts",
-      "sha256": "6c0f1b6825f47ff18f28fa8534406a12e47116449e226b25c29528d6bbaa1e85",
-      "bytes": 30927,
+      "sha256": "fe7b547a219bffb4a2d14816dfbaaea46414b0524a84084d0d261c1cd8e726dc",
+      "bytes": 30705,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "8eece0f79ea9a1a94fd20a39d7229fe6cadd1668"
     },
     {
@@ -2725,6 +2690,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "56dfa2879af22168a4ed5d45f1b6c85f29142404"
+    },
+    {
+      "path": "src/auth/principal.ts",
+      "sha256": "d586182f86578c4d03e8e82bcb0630cd67ef513a90adf1ae5a660540c5fa6b24",
+      "bytes": 1480,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "src/auth/resource-origin.ts",
@@ -2784,11 +2756,18 @@
     },
     {
       "path": "src/dashboard-api.ts",
-      "sha256": "56f40bd71b44e90b817e53a81bbef79208a00410805b9857a218f752c4e335d0",
-      "bytes": 74133,
+      "sha256": "32a430cb77afa73162efebf4ec02b3ba411046a85f7880fe35dd8ad23140eb75",
+      "bytes": 55656,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "a97afb8b7a8b72916416117d8defcf21fb6e1efd"
+    },
+    {
+      "path": "src/dashboard-session.ts",
+      "sha256": "a242c395bc6cc1b95fcacaea01205f7868c40e733f59777d6b41e651d72531e2",
+      "bytes": 22451,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "src/db/connection.ts",
@@ -2864,10 +2843,10 @@
     },
     {
       "path": "src/db/v4-migrations.ts",
-      "sha256": "0fdd211526950d8020b5999125bcd57312831a0034873397238e3c78a9a24022",
-      "bytes": 7413,
+      "sha256": "136176a2af164654eccec83a76753332ced8d79ddba6498fb509a919ed8a9554",
+      "bytes": 7126,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "3dec0dd06385cbd4c692d65e064b04d90a42e1e1"
     },
     {
@@ -2888,10 +2867,10 @@
     },
     {
       "path": "src/delivery/autostart.ts",
-      "sha256": "9de3f847b3ee4a5e63745cda639a31d8ee29ecd3fb77030a1c13b5251fb4fc37",
-      "bytes": 8299,
+      "sha256": "81be7ae67b5155c7eb41c1fba4a0fbb926fc73a9d0a9b80f965ee510cd065871",
+      "bytes": 8303,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "f7985ee97339d69cd53c29a398bd7b23e03f694c"
     },
     {
@@ -2904,26 +2883,26 @@
     },
     {
       "path": "src/delivery/bundle.ts",
-      "sha256": "7b0613d4a2de785b078c03f8c80e815b648ef0c0db0f48b6f850652cb3056bef",
-      "bytes": 4202,
+      "sha256": "a84e6a44fee201ea01622aa89a2fab428f5b2dba49f2b3eac455418b8cb04f70",
+      "bytes": 4206,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "c87421015468d8528ea2e8e54a8f9f00be620f42"
     },
     {
       "path": "src/delivery/client-config.ts",
-      "sha256": "9d92b1d91f4773ec04e7f245d2cfddec0071c9d5eef3947346c913c0c54bf74e",
-      "bytes": 10807,
+      "sha256": "9b5277f91d47c8e2a971653bd72f78206911b0b1fd2bd5f87c39a28c9c89f4af",
+      "bytes": 10811,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "8b11f7d70844f03c626847417b29d8f548a2688e"
     },
     {
       "path": "src/delivery/connect.ts",
-      "sha256": "44e382f172b7bac1699217ad5baf2a396632e83ff25fdb222887b633a9eb534c",
-      "bytes": 11339,
+      "sha256": "fb55680161a5c3b92f39186628997bdda61dfb5c7e24b3c09a46b0b3ba89648e",
+      "bytes": 11343,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "47005fe95b7dc26635f3b194f4d769fe113b5bc8"
     },
     {
@@ -2944,31 +2923,31 @@
     },
     {
       "path": "src/delivery/desktop-launcher.ts",
-      "sha256": "a9cb3c6f09d1489c945a1260d7782682dec4271e7378b4fdd19f10733c171bd8",
-      "bytes": 3445,
+      "sha256": "45fac98cfcf7b6a24939d6869b80e051f01854be4e59259c2f1206b9b48073e5",
+      "bytes": 3449,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "90c510f7b76badba22489ee47d5be0a12a8ab491"
     },
     {
       "path": "src/delivery/desktop-update.ts",
-      "sha256": "bf9e72a18449c4830c6a7b21609c2fd3190962a2abb7a86b464a2052a0e9b744",
-      "bytes": 2564,
+      "sha256": "45c84a29fbab6943ef1e5aefcc4928e1ff7795111022464b6566e9b1d7e80b3b",
+      "bytes": 2568,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
     {
       "path": "src/delivery/doctor-checks.ts",
-      "sha256": "c0de4cb2fe3a67f511050695c1fd5ec945d44250946ab95b63d82dbe807e67b9",
-      "bytes": 3562,
+      "sha256": "ee929aeb8334d895f95865f78d8e29de0d647f01515d7f08e91f821e68106391",
+      "bytes": 3566,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "7d2d923f4db13900c0692e04a81599811edd1f1d"
     },
     {
       "path": "src/delivery/entry.ts",
-      "sha256": "f1446b96375207e8d1ce93e2a809c70efab4c72525bde92dccad61e7eaa19b02",
-      "bytes": 35401,
+      "sha256": "7ba3fb64bfff64d0c2b54463df9d064463b6f6149ada369e46319374508d23b8",
+      "bytes": 35409,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "35a892cbc4468670719630b2ce447fde0e2fc202"
@@ -2977,32 +2956,32 @@
       "path": "src/delivery/files.ts",
       "sha256": "d8d280c16870a8e270a165691c6f9f6cc7c1dedf48e23eba4e05e184fef0ff09",
       "bytes": 10138,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "811c78090bd3e96a3c97b6a1f1f1688551a9d287"
     },
     {
       "path": "src/delivery/functional-diagnostic.ts",
-      "sha256": "ceed8470ee943081de1ae1919460d50362d38a692557ca944776c1f5fdbf0b99",
-      "bytes": 4678,
+      "sha256": "1eb82118dd8af68317090d239c629925cd7ce651badd804a631c1386901873cf",
+      "bytes": 4682,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "57da9820f0cb7c005ce9bbf9037fd83de8504ba1"
     },
     {
       "path": "src/delivery/installed-runtime.ts",
-      "sha256": "69b4039c79ac116c17923ab8386c0909753fd7427c974e96b5b77686ee9cd893",
-      "bytes": 10824,
+      "sha256": "f6c09cfecbcb11355b7caa962afc74ea92abf1a14a555d1eca262e7aa0115ee5",
+      "bytes": 10828,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "548ddf55adf8cc02e9d18950be3fbccdf768837b"
     },
     {
       "path": "src/delivery/local-login.ts",
-      "sha256": "8271466a73b9d239a2e7f77f025fa1e641cdfcdf407e030b7add3a48c3c48a62",
-      "bytes": 2765,
+      "sha256": "7471d64f7b511ac59cbe2292835b4f1a8204bf3e1ba8a65769cb775d31323b1d",
+      "bytes": 2769,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "d8ef37a2da72ab4e23efe59c96b06ba939ade703"
     },
     {
@@ -3023,32 +3002,32 @@
     },
     {
       "path": "src/delivery/memory-client.ts",
-      "sha256": "603e5a23582164e4a5b2779724b44f9dbbffc813dbdd948aa7c17347c99a25db",
-      "bytes": 18002,
+      "sha256": "85848508f9ac93e75b6679915fcb8fd3c13d7b8e27373d6553c31b51eeb8aca8",
+      "bytes": 18006,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "35e1db381d3bf857f012ef800bca75d025a169e8"
     },
     {
       "path": "src/delivery/native-client-paths.ts",
-      "sha256": "f867bcf5c8c1b1cd372f6b580dcec79730f26a0eba6e08ce72c5ee844b4eb641",
-      "bytes": 989,
+      "sha256": "889b76c11284f4682f28f30ea7a066c9d44df09df10712f4c2093a2f3fc05e27",
+      "bytes": 993,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "5418eabd5acef6d4991453a659dc0ad5f03cee70"
     },
     {
       "path": "src/delivery/native-keychain.ts",
-      "sha256": "398344045ec634c562361f90f832e7813e2d36d866fb9932b8bf511c6f800275",
-      "bytes": 1869,
+      "sha256": "d32360e513a046e68e213c2742f2b0130fbf7c6a3dbbe6ef211ec79db0ed0130",
+      "bytes": 1873,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "508da030c6c48ea8da6aee6f49a0984d842443f3"
     },
     {
       "path": "src/delivery/native-provision.ts",
-      "sha256": "4153f2f534c65c79e29d5f7e663e0bc038b377ff65a1deba24ddfdf878521859",
-      "bytes": 11466,
+      "sha256": "178fb0c668f9f4982f209bd8045388bad495e9b7c4dcff45a63ded2cedfc17aa",
+      "bytes": 11470,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "0a1f6a1513263e49d3270ad72c9d7e6e221f6cdc"
@@ -3071,18 +3050,18 @@
     },
     {
       "path": "src/delivery/operations.ts",
-      "sha256": "9fb8d836112f05c49a6d73f57334cf6b8b75896ccae36e2fb35c6d9f96809719",
-      "bytes": 32629,
+      "sha256": "9c0c8a99a7039f3d1e03fa69b96252527deb7fea388b99007952607273def4cd",
+      "bytes": 32633,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "9197e87acf2096c638a7ebbd0b105ca5f76f9465"
     },
     {
       "path": "src/delivery/ops-state.ts",
-      "sha256": "68ab7963beb70fe0d409dde301d4d496414685962e26cb1041fb06539c807cfd",
-      "bytes": 12995,
+      "sha256": "a51e74d58f77866b657e92d4122292e17d5a5283b831b16fba120a62afabc212",
+      "bytes": 12999,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "4d0aacb91cb320ac3ab9d9dae0276124a1407f93"
     },
     {
@@ -3103,26 +3082,26 @@
     },
     {
       "path": "src/delivery/platform-paths.ts",
-      "sha256": "6565120e8e02ba999bd1780361bef20b21de637242277a669b334fd195f17c98",
-      "bytes": 2147,
+      "sha256": "43d51421f19548da418f25dcd9e65c031e6e569edd5020038f83ae77dfe99f59",
+      "bytes": 2151,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "be1f412fd6fad938d71f25bcea4f8f7e241741a7"
     },
     {
       "path": "src/delivery/remote.ts",
-      "sha256": "97cfeb812b5782746de8a6ece12abe9eed2051f307dc8ab390477c82ab6ae08e",
-      "bytes": 1385,
+      "sha256": "5e4b7d5daae6aff3bc829ecf92fc987e11dfef3421f2d19f0988e0338532c240",
+      "bytes": 1389,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "66d3ef0bcc7f17f224c502905cb88ba03e540386"
     },
     {
       "path": "src/delivery/requirements.ts",
-      "sha256": "bad8dc72d5da0f15c2fa81b84a37d4732112b14d142e0a8d9a949ffdadf68ae5",
-      "bytes": 3196,
+      "sha256": "afabc3fc0ab017ff59c05c1ecb520195d2059f47ac47f212a9e1eea7193c2963",
+      "bytes": 3123,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "cf637a7806bae2d93f98686dd2750dec0a65366f"
     },
     {
@@ -3135,18 +3114,18 @@
     },
     {
       "path": "src/delivery/setup.ts",
-      "sha256": "b9920f39937667dbecaaabd2ab454c8668e974a6f8eac047e744b9ec6fa55cc2",
-      "bytes": 5012,
+      "sha256": "4518225526712a020df5ba15fb5e8f8ca28e09d4ee8fdf9b93dfedf30c5d6314",
+      "bytes": 5016,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "e496de9b4007676618fcac852b6f549eeb29d96c"
     },
     {
       "path": "src/delivery/snapshot.ts",
-      "sha256": "26f54cccbe9f5b38a0497c406d4d00ccd7b00ae22b82074db8621a8eaa996acd",
-      "bytes": 10092,
+      "sha256": "5220737e9d768473db64dd42f9763293f81b909bb839189dfb108e2b25416c37",
+      "bytes": 10096,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "275499af6e1a0e4f3668ab81d1a2e9c1da34471d"
     },
     {
@@ -3159,48 +3138,48 @@
     },
     {
       "path": "src/delivery/stdio-oauth.ts",
-      "sha256": "7b3d716f62b79012852847312b0d3c1833c596f4a9d4624a7481e908a16e77e3",
-      "bytes": 12731,
+      "sha256": "e54696595d2607ba8773aa56867e7a0a133ae275b829d175519af378ed7c8d76",
+      "bytes": 12735,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "0ecbb8ead46ebdad5c681f3848ffdeba70a048f7"
     },
     {
       "path": "src/delivery/steward.ts",
-      "sha256": "cd28ec293d42e08fc13a7f7a41ced757d4ede902754b1e1c23c23e80e3050892",
-      "bytes": 2857,
+      "sha256": "ed39417fe2972577e0dcc69333319b27c4ba63d9207ea9559f89f7818803055c",
+      "bytes": 2861,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "5cdce2982279fa253609b0fe90c1cd481ab057f7"
     },
     {
       "path": "src/delivery/transport-config.ts",
-      "sha256": "13478158f7d83024e327b5838cf103dfad87747487d8aed3391b2a0490c7401d",
-      "bytes": 2410,
+      "sha256": "bf26e28179b4e56635c23a1e490489d59e2466c40996019a4687256da3afb84a",
+      "bytes": 2414,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "d5a876a1b571a21632ee85415faefbf49cdd9bb4"
     },
     {
       "path": "src/delivery/transport-supervisor.ts",
-      "sha256": "618f9386c651c08c730411adb089be86bf8961cdf9cb99e5276d9f2476a39752",
-      "bytes": 6059,
+      "sha256": "39dbc1d24e994f995cedab6c4ce4104e3273b48ef98e98d3b0d3e9f0c286deab",
+      "bytes": 6063,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "67ba95d072868c4c12d757266cb6710f5924ced5"
     },
     {
       "path": "src/delivery/workspace.ts",
-      "sha256": "284fd9dcb6e978f6f6ec1e96c304451638974ba4836e126e76e52473255e8cf1",
-      "bytes": 13672,
+      "sha256": "63aef95af47c4509570378fed1263501bb2b65389fa8ad1b2d986db3b306c0bb",
+      "bytes": 13676,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "d8056a05b0dbe0ae9a3290963549dfc25e03d64f"
     },
     {
       "path": "src/http.ts",
-      "sha256": "2f0a412de6c5607f4fb9cd88a444105a2921b322312d1128f36bf19b0a735d50",
-      "bytes": 104171,
+      "sha256": "69d091aa7cd96a4442cdf1bd2cb120a076fc00ca17018d98846f21ed050dbd90",
+      "bytes": 104221,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "4b0f5c03ad5f6bc6b269760f38059916b550d508"
@@ -3231,10 +3210,10 @@
     },
     {
       "path": "src/identity/connection-consent.ts",
-      "sha256": "f1db7d476c1958f1aef68418040b476d43f905912dcdd40456714eaace46fe99",
-      "bytes": 15677,
+      "sha256": "8842aaaa600859a9b23b3a043aaf72458787ebe0553d41f7b80700b2e0c3268e",
+      "bytes": 15678,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "91e9086f354c8c730cd03db885b2e8c8c81ab256"
     },
     {
@@ -3247,10 +3226,10 @@
     },
     {
       "path": "src/identity/local.ts",
-      "sha256": "4f5751bf79291db7242213826c8e72e465cf4c8dbad011e1769a49683eadc1ba",
-      "bytes": 7096,
+      "sha256": "f4c7072bad72e02547973a5b2081fa5ddba63759605c34c5bc9d9e92b8774f06",
+      "bytes": 7090,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "476f038050d7badc56a4531061cc4f1785d8ad26"
     },
     {
@@ -3334,10 +3313,10 @@
     },
     {
       "path": "src/mcp/compat.ts",
-      "sha256": "0e92cf89a8209fa6e683f95805dea92719367c159127a3bdfb8ceda720f822b7",
-      "bytes": 24927,
+      "sha256": "d14ad649ce991f6e7b86db6213be1bb831bf66b916798117abe1792a1c682b6c",
+      "bytes": 24817,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "4985ee58a84c5a86aac8e824d0f9012c394d2945"
     },
     {
@@ -3366,18 +3345,18 @@
     },
     {
       "path": "src/mcp/tools.ts",
-      "sha256": "9cf20c2c56f383ae45e7e93b8a03e9ec0dbff3e112190cf4b938e5d3cfff4e12",
-      "bytes": 40388,
+      "sha256": "e01ec9d4d39f386aaddbc02437945b5d8e1289b3180d7a17d55c1252ac0684c3",
+      "bytes": 40278,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "75be2c406d5f01ed2d73536d0dc02fcd6edee388"
     },
     {
       "path": "src/mcp/v4-tools.ts",
-      "sha256": "a8fc7b1067d30bb2ee01717f443e66e21b99058f3cd4975f2a8e7a1f7d1e9600",
-      "bytes": 25864,
+      "sha256": "b8468af50a54fd9e07d10428bd38ea34461b7688f33dbacb6d8a4281b5bcae30",
+      "bytes": 25844,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "b313586961598d1059369a6ac9622be844cd91df"
     },
     {
@@ -3622,10 +3601,10 @@
     },
     {
       "path": "src/services/backup.ts",
-      "sha256": "f52c5a1188e650365a4babc515fd5e40213d5e7c5a559182eb7db6f20949e3a7",
-      "bytes": 5571,
+      "sha256": "a417c70d8cba9f8ba2b5a4e239757b6666d5395dc245e9e5de0fdf8b4e9db613",
+      "bytes": 5565,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "f993b82ac1a76409c987f34679fa6f63cc7c4e28"
     },
     {
@@ -3646,10 +3625,10 @@
     },
     {
       "path": "src/services/builtin-embeddings.ts",
-      "sha256": "74cab0354b07bcae3edd398e6d3b9d6003b43212efd86ff76080dcdd79fd073e",
-      "bytes": 3866,
+      "sha256": "d5cf4e164fdcae63923bc92624e72406b0936f163049f42d25055a81a3a21a30",
+      "bytes": 3788,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "898966a618e1cccac50ea2a0f351845936d81c5e"
     },
     {
@@ -3662,8 +3641,8 @@
     },
     {
       "path": "src/services/client-connections.ts",
-      "sha256": "899bc3f5e7d43d3c502998096e29205749fba35bf929eee3094a2057dd4ebac2",
-      "bytes": 14817,
+      "sha256": "f6ed04d7ce587e5615600ad9fef235898a9ee396ce7bcf04035baebfb68d4d96",
+      "bytes": 13562,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "f67b1d650b9930ed9b5a81a240343f0e84f092b8"
@@ -3677,6 +3656,13 @@
       "original_blob": "8f7e144d6ccc4a79d5f7203f4510e2ba5809ba95"
     },
     {
+      "path": "src/services/connection-identity.ts",
+      "sha256": "0879e2613e9acc101146cee78a030f024ed05aeedd7d6f806044953968b5958e",
+      "bytes": 2519,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "src/services/continuity.ts",
       "sha256": "0e92e65fab5f1515f2dfd56b735dcac640d2a245090c5bab631f12d874fd1a14",
       "bytes": 13177,
@@ -3686,10 +3672,10 @@
     },
     {
       "path": "src/services/embedding-store.ts",
-      "sha256": "9f39330a8157990dbed956bfdc4232d0d372e8c705c023287ea27fbd3b7dada9",
-      "bytes": 12561,
+      "sha256": "cf0ebb77b94b63da20cbdf8a3c9e7f63e3ae8b5eb45c19bc41b4fdbfee40cf1b",
+      "bytes": 12353,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "2451e732894442900787ff333a9be41654584186"
     },
     {
@@ -3702,34 +3688,34 @@
     },
     {
       "path": "src/services/entities.ts",
-      "sha256": "9633912189bf7c92e34d68fec4eba194a97f819204474dad15ca72e0019f811a",
-      "bytes": 21999,
+      "sha256": "f3165be845c6252b32233a58235f492b6f78ec1ae8abed01e9fdf2bd91e9018e",
+      "bytes": 20255,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "792c292427dbff440bb06b861392d3505a061f2a"
     },
     {
       "path": "src/services/event-outbox.ts",
-      "sha256": "727d3867eb6f9bbd107545a79ffdae02f1100d378a49baad000704032de6fded",
-      "bytes": 13985,
+      "sha256": "541984d6305a9ffcf6d7de2c599bcbd6ae7931a0e3eb77fe56280eb5f0f1ae35",
+      "bytes": 13374,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "8f4ee545a5995dc3dd6d25b67f5b68c2245c9883"
     },
     {
       "path": "src/services/export.ts",
-      "sha256": "d21e42d6aa677a00c01fa787fd82201d27dfa08ab969f3490d7add9c5aaba51a",
-      "bytes": 41518,
+      "sha256": "c26077333feca05b2cab2401e6fff7078c06da776383c8e1e06d22e82218a52b",
+      "bytes": 41442,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "85d98971901e2171fad9bbbe74d1965849923f5b"
     },
     {
       "path": "src/services/extraction.ts",
-      "sha256": "2e1a3d3599223ba15cc537bd6041b799a8f797abe1d82e286626a009baea5e89",
-      "bytes": 29763,
+      "sha256": "12aa9fa4db98c824bb8af8f3e9d9bab5fb6e7b7d6fc9e9a365f783593fdf8f0c",
+      "bytes": 29462,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "e44724f1bd0ac197709e2572776a19db76424b11"
     },
     {
@@ -3742,40 +3728,40 @@
     },
     {
       "path": "src/services/memory-lifecycle.ts",
-      "sha256": "a32d8de962103a5b82482ea0e80a079d3da6dce4caad9017f8e20270a634bc20",
-      "bytes": 10141,
+      "sha256": "027e21c7cef4896e2b1d21f931767dd29ff0ac8e0a52176aee2e4725982ed587",
+      "bytes": 9840,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "cc814baaf5bee457e125ea24af60d463bcf50807"
     },
     {
       "path": "src/services/memory-model.ts",
-      "sha256": "ba23d737bccdd782497769dc7fb6930cb4cb7f53265ccd7c02b6084998bf488a",
-      "bytes": 11986,
+      "sha256": "e60f4069f8d2d638d70a0b1bbce1d944a8121f5a05c2796011a59409013b6165",
+      "bytes": 11980,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "6b6fe7e559a44689b7d9307921492b42deb0732e"
     },
     {
       "path": "src/services/memory-setup.ts",
-      "sha256": "d2e51997adeab92935982012c35bdc1ee6c755968f0615bf3eee0014d5fab4b4",
-      "bytes": 9964,
+      "sha256": "0d482b94f5e8274da81cdd842990d2644486760866284ba2f04d4188f12bbd0b",
+      "bytes": 9958,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "e8759acd9d979442451eee77c2484fca09594a20"
     },
     {
       "path": "src/services/my-agent-telegram.ts",
-      "sha256": "239cbd07c38adbe91b16fffb274602cb4f97ce52b352bd3c90f322c49ee6d243",
-      "bytes": 13221,
+      "sha256": "a57beac0341aafae6c0acee26b1c3800b2f3baa6ae4a8a5a94f67372093759c7",
+      "bytes": 13215,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "d84b44289d9f91e42828d85d38f13ab903742ecc"
     },
     {
       "path": "src/services/my-agent.ts",
-      "sha256": "4b7ba9f84c9c86e7b484396c23da62bde1ba51382ce1658e105d3e9a3430d3dd",
-      "bytes": 31472,
+      "sha256": "46d4c1ea54e81addbdef950e62db7afc3eabf644a5c1fb3f6305a441a237a9e3",
+      "bytes": 31466,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "e8b30f6095ff3c28d5ac5dd0314803fa585a8f3f"
@@ -3790,10 +3776,10 @@
     },
     {
       "path": "src/services/note-relations.ts",
-      "sha256": "972069044c5ec136c578a5154577ca137a56249d3065c97710841cac112ac3ee",
-      "bytes": 14899,
+      "sha256": "b4c4bad2e5f4b5e4369cd357edd8070e509ba0cf60ae70d4bcb0793cb842f83e",
+      "bytes": 14598,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "2a9c5c32b36c1a11141f235c0ee08b24b0dbff4c"
     },
     {
@@ -3806,51 +3792,58 @@
     },
     {
       "path": "src/services/notes.ts",
-      "sha256": "35ecfa4e6327acce3645779f7f2828575c2ae90d0748ecbb6dbb11f836db802a",
-      "bytes": 32030,
+      "sha256": "c6f9c8dc3b7406f5d3de8c4dbbe724d0746bc1197c01230fc45db75c7d98b3c8",
+      "bytes": 31978,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "6e4f11263a9e81864ea77fa49daa64333c987120"
     },
     {
       "path": "src/services/ops-alerts.ts",
-      "sha256": "9212d230f2a76e44ba2313a3680039f2588d6f57221adcc35393abdce66ded27",
-      "bytes": 3762,
+      "sha256": "f0c3817bd8f97b69e12535ad3e8e3e36f6b1c8d9bfea2f272bd86bfb99c1138a",
+      "bytes": 3756,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "4f2adb413ddf4c4c38017f4478b0aebd541e641f"
     },
     {
       "path": "src/services/provenance.ts",
-      "sha256": "0fa9d1e2e6df832b81ac94bd695c3e77277b898210e00b9c33f148982f70776b",
-      "bytes": 8230,
+      "sha256": "3bfc62c9efa21704070ba6a85a8891c99a266f6a7262807f05f34f7959c738c1",
+      "bytes": 7711,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "8a400279a5a88022398215f06a140913f9373337"
     },
     {
       "path": "src/services/recall-feedback.ts",
-      "sha256": "04fd16fdd71affc43d32a9f68fd63cd16db776ab79bde06244cb3b883bc098a1",
-      "bytes": 5661,
+      "sha256": "6ce16ebf3238851e34026a2a245675f1036e3cd8e48fd5f6b5708497aefb73c2",
+      "bytes": 5314,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "f6a80538e048eb92c80d4b82c6eed9e9c7393a74"
     },
     {
       "path": "src/services/recall-traces.ts",
-      "sha256": "60299b18b457d6ee7761e3970fd4bfa47b34949a7230d8dc28219a16e4b03cb9",
-      "bytes": 7934,
+      "sha256": "472e499ea327ea110227d4be5bb195aa19e37b61bd888be664b1fbad188b6564",
+      "bytes": 8066,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "64ee9b6bdf591ebfd5225cd3da29aa72ff235499"
     },
     {
       "path": "src/services/recall.ts",
-      "sha256": "66d7244ed76baa9805f9269deaea4339f9b809318e639791452f3b2202675bb8",
-      "bytes": 66472,
+      "sha256": "7c7080768b88aa2efcd0a278bee3d21916e69b499045db47c5191c9087163009",
+      "bytes": 57389,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "221d246cf962a0eb77fbbdff4c0b2aacf5831fc6"
+    },
+    {
+      "path": "src/services/recall/config.ts",
+      "sha256": "010a82e20f5d3b98c6f2178292d16f3029e12d66c70ffc7104885a96fb88bc7d",
+      "bytes": 8979,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "src/services/recall/temporal-filter.ts",
@@ -3862,10 +3855,10 @@
     },
     {
       "path": "src/services/recall/v4-pipeline.ts",
-      "sha256": "6f531ba1eb201f712803d63b042d57a658406fce2c64c4233ebf71b0e2a88f9f",
-      "bytes": 20065,
+      "sha256": "ec9671a9e9057a3ff3b4b5c2c06e55027d5f9146457f66f8c1783230e2b804cf",
+      "bytes": 20048,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "a6ef72435db0452d560101a15a13a24735eaf11c"
     },
     {
@@ -3878,10 +3871,10 @@
     },
     {
       "path": "src/services/retention.ts",
-      "sha256": "cd582015e15c5c01d3ad09f74f9a84a793bdf84a5a8f1711d4684665ac8ddd93",
-      "bytes": 13236,
+      "sha256": "ccdbf48ccdfd8496b3d55d38f665069b1898ce9a48a58c77770745a920811a04",
+      "bytes": 13230,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "7ff18b5ac5b734d8b87549a3586e93aa88f355bd"
     },
     {
@@ -3894,10 +3887,10 @@
     },
     {
       "path": "src/services/shadow_sync.ts",
-      "sha256": "73ac595d1a9788ed7127c9e83074902fbbbe4f27f24315f0a8feea505c63e5dd",
-      "bytes": 42857,
+      "sha256": "fbf58bf509fbfdcc13c34fb69a13e702c2367bb9f5eb88bbcdbc9e9332d34788",
+      "bytes": 42292,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "ae56c88fce7b08f08949dc32d660fa216e9d5d7d"
     },
     {
@@ -3926,8 +3919,8 @@
     },
     {
       "path": "src/skills/adapter.ts",
-      "sha256": "c6a9844215e44e4083e3e9bcedab355a0b5326b544267bcb88c6433d0862a051",
-      "bytes": 54350,
+      "sha256": "9ae24a1e25e25bd0626fb84427259e65c267c854ef54572528a752f4681e6063",
+      "bytes": 54344,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "0498cc5726c0c52ec4695c818bdfaceb8b28352c"
@@ -3974,10 +3967,10 @@
     },
     {
       "path": "src/skills/connection.ts",
-      "sha256": "a7fd250b1756f46a3cd2e9aa71d9b5e15c636a0fe513b589de11723ae11994b1",
-      "bytes": 9953,
+      "sha256": "e20abecb47b50fde368767c26bb1218f91152605c829d0152ab6efefed53b422",
+      "bytes": 9947,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "41e33cc456156cbb1c19e7aaa66f6ec58307dd46"
     },
     {
@@ -4126,11 +4119,18 @@
     },
     {
       "path": "src/utils/fs-perms.ts",
-      "sha256": "dd5779b580f2a3dae5d7e6d0a7fdd028beec4fdbd04bbef1125cf2606b1ea820",
-      "bytes": 2798,
+      "sha256": "b177ca0a885cd2b86878ad201eb81cb9c55758c7355f9d9b281f43e3cb453616",
+      "bytes": 2383,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "931abe837037f5d2601f63c1c6f4f1645ead123b"
+    },
+    {
+      "path": "src/utils/fs.ts",
+      "sha256": "d8d280c16870a8e270a165691c6f9f6cc7c1dedf48e23eba4e05e184fef0ff09",
+      "bytes": 10138,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "src/utils/health-metadata.ts",
@@ -4139,6 +4139,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "316522f0239b17605f321ae035d2a3725ecf563a"
+    },
+    {
+      "path": "src/utils/http-json.ts",
+      "sha256": "8a4c5d71b702c92f4ba2754e2ed9ca9dd48fc03a518455bcb09949e5d3620d7d",
+      "bytes": 470,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "src/utils/instance-role.ts",
@@ -4150,18 +4157,18 @@
     },
     {
       "path": "src/utils/logger.ts",
-      "sha256": "0d1dfa265a3cf7620d9649c43ec6902c4ac7b8da4dff0da332e46dca075b590f",
-      "bytes": 2887,
+      "sha256": "17b997ff49b4149ef12091aa17bc395a3e4af71a6b8aa814750b81f39f230cc0",
+      "bytes": 2874,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "e8034e61ae210f09830b8b2e8e0eee9a09da9841"
     },
     {
       "path": "src/utils/managed-logs.ts",
-      "sha256": "c6bb676379c156d2a67d67c1ce83cbf7009cc64e5d3b34fb3de175bdd2c17ade",
-      "bytes": 5989,
+      "sha256": "35385158c7355698a885138a289f595484f61a8590aab1f184f104ef443799fa",
+      "bytes": 5976,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "ca15163c28ddb5140ebedad6eb883240c7e2ea0a"
     },
     {
@@ -4269,10 +4276,10 @@
     },
     {
       "path": "tests/agent-kit.test.ts",
-      "sha256": "fe3ed0398a86677aa685ed04eb70ec22ca8545e261cd648a55ae635001411206",
-      "bytes": 6188,
+      "sha256": "8cdaed7cc2a5b38ac2f008094d47fb6f300448463a8a633bac1609696065f1c3",
+      "bytes": 6182,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "a7fbef7185f92f60fe651c0ff4c3a26fde9dd79f"
     },
     {
@@ -4348,6 +4355,13 @@
       "original_blob": "16f6ffb765660486d73a1f4de3e54d1e48438cc0"
     },
     {
+      "path": "tests/auth-principal.test.ts",
+      "sha256": "3ce6b43bcce1a042d8b0571bbd4d20c0962e4c3b80f6f2e383aef237eb9027e0",
+      "bytes": 2704,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "tests/auth.test.ts",
       "sha256": "aa71be00002022bb9c09a083463bbbf3511684527c1d836df755891a85e26990",
       "bytes": 2650,
@@ -4397,26 +4411,26 @@
     },
     {
       "path": "tests/bundle-signing.test.ts",
-      "sha256": "59f10562312f0999737b07e9975c42fe045b137c01f23064fd32aab1f1c3e546",
-      "bytes": 8087,
+      "sha256": "f794e3105d231776166fd88fffb0b7c8e73c4fea373a013bbe9144e12dd408ac",
+      "bytes": 8081,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "04fb1b4830de63a627064d5503b3f1c7fed0c39d"
     },
     {
       "path": "tests/claude-agent-runtime.test.ts",
-      "sha256": "ad70fab6a78060052079f5392688c26241b6c7376cd21e281ad1591b88860eac",
-      "bytes": 7326,
+      "sha256": "681140224b0b9d9be25a76d5f27a32d656b78c83df4ea239bed6db450c0f5bb9",
+      "bytes": 7320,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "3b8115c1ab293df8f17893d01004743a6d31aad8"
     },
     {
       "path": "tests/client-config.test.ts",
-      "sha256": "a59cab2b4a4db34a47e88fa63d904355b94f75c5513eb56f9b65895698c87287",
-      "bytes": 8304,
+      "sha256": "f66b3428664decf910f54023d8d2ccbc041255b837c1e69ea0102a690bd5a06e",
+      "bytes": 8298,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "846fdbe3de932c32b3e27c0522183dd6c793325e"
     },
     {
@@ -4453,10 +4467,10 @@
     },
     {
       "path": "tests/connection-consent.test.ts",
-      "sha256": "8d8044cc33933ffb3a3b1e1843d449080c249f0ad0b67d1abd2a8e9a279b676a",
-      "bytes": 11893,
+      "sha256": "2bd34d4b5b60e0146c4712768e2fc1c8ec2095199b1165c08993dd497424ca0a",
+      "bytes": 11887,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "96b6f53cb464fe7a8a96aa766a7ad03028b43a31"
     },
     {
@@ -4469,10 +4483,10 @@
     },
     {
       "path": "tests/corrupt-live-restore.test.ts",
-      "sha256": "b55796a38886384a71dfb8ce30b61b05589663e9728eb5459344856b1a87fa25",
-      "bytes": 12169,
+      "sha256": "77b20e1a9f94620487d61baf2ca27d2008a10f27754ebacb643e0323c604da81",
+      "bytes": 12163,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "3f1d19ba4d04b905b899faf012a607bd2d0dd594"
     },
     {
@@ -4508,8 +4522,8 @@
     },
     {
       "path": "tests/dashboard-performance.test.ts",
-      "sha256": "ee6c82fcaadda33a83fded2782f38b2544310ff67eb7c002a3284404753e58bd",
-      "bytes": 5548,
+      "sha256": "2b0eda272418bf0264145c311e8309a19cabdbc6a783f9c8d5319ace7fbbe348",
+      "bytes": 5542,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
@@ -4547,16 +4561,16 @@
     },
     {
       "path": "tests/desktop-launcher.test.ts",
-      "sha256": "4c30ecc165f11ac8359de32634b06746b0796f7f595a0b6e3709a1b8fbbda2ae",
-      "bytes": 2546,
+      "sha256": "7cc7cdeca60a0625902710c58e427548f0b9031aa92104696526af001ee3b76b",
+      "bytes": 2540,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "02544e11eaa2f416b192bed2c3c0ad143eec0143"
     },
     {
       "path": "tests/desktop-update.test.ts",
-      "sha256": "ddd838ad7e34869290c1e6d54a5783839ff6700e84c2be91279f7f1ff425a516",
-      "bytes": 7027,
+      "sha256": "e7d0aafb138fae4f971270a6b1cb112580f77279fb3fcb2ff5de3cc9370853db",
+      "bytes": 7021,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
@@ -4887,10 +4901,10 @@
     },
     {
       "path": "tests/helpers/p3-connect-fixtures.ts",
-      "sha256": "e27632fec3a9aa3c0bb2d221a50b5436130d6636a918ffa65f0bbb59c8622501",
-      "bytes": 5610,
+      "sha256": "35bd3c8f3fad5dc0f541aedfd7cdda2f0724e656d36419d1724113c84038adb7",
+      "bytes": 5604,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "f73dac9c7ccc7d0db5025da1acac86670ecbd87e"
     },
     {
@@ -4903,10 +4917,10 @@
     },
     {
       "path": "tests/helpers/p3-journal-bundle.ts",
-      "sha256": "b0d59dd04b4fa740242e70007044adc4ce9f4d6f7c53c5a3f402b433ef5c9a3a",
-      "bytes": 1658,
+      "sha256": "2172df86e1565a05f8ea12435c598316b7eeb89ee1978ca1a7b7b238750796ed",
+      "bytes": 1652,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "87c1ac4552c5f0c3487dfc081727fda76d3e7e44"
     },
     {
@@ -4927,10 +4941,10 @@
     },
     {
       "path": "tests/helpers/p3-retention-fixtures.ts",
-      "sha256": "dcfaa92f2712c6b1c95a55b1ce14d95b1ca8b740cc7b24f4bc483b0cb019eddd",
-      "bytes": 1734,
+      "sha256": "39b7e659f5d91cd00234548e03a11cabccab5e5cd19d08bac4a4dc469348f07e",
+      "bytes": 1728,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "6c538bf3bc77365b910729579b6725264a3a5ab3"
     },
     {
@@ -5039,8 +5053,8 @@
     },
     {
       "path": "tests/managed-transport.test.ts",
-      "sha256": "4ed673265ac7ad4a02ea162136a1cc9328d46625b133c710ebc47be67a3941d0",
-      "bytes": 10713,
+      "sha256": "082999066a410ef4e013518898c38db5e151f85506a3d2961356bdce9a938dd9",
+      "bytes": 10707,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "93aa9ed2128c4d3af8f4e8c52eb3c7cc604aecc0"
@@ -5071,10 +5085,10 @@
     },
     {
       "path": "tests/memory-client.test.ts",
-      "sha256": "9f8ea1e28d0450e0520250e24d0946c9e97880c004c3286074c44c3459484839",
-      "bytes": 7803,
+      "sha256": "cc096ab7f1bcaa3c9a905b30d84ce26448ebc7967c5a1f14ec7ca739c2d42378",
+      "bytes": 7797,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "c00d6ac2953c1b4bad9b8aebbd4149765751cb6a"
     },
     {
@@ -5102,6 +5116,13 @@
       "original_blob": "bc79a92465c15f54e6ca72f691f08221ec5bdf61"
     },
     {
+      "path": "tests/migration-036-drift.test.ts",
+      "sha256": "db18e4e09e93a214fa57d6ffece567ff281554c21ea89f4b7624b36f785817b8",
+      "bytes": 2804,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "tests/migrations-gate.test.ts",
       "sha256": "c3f4c83db8491ae0e9a3a5b700f087f0097ba6fdf7122049e1b27150887373be",
       "bytes": 4342,
@@ -5126,25 +5147,32 @@
       "original_blob": "1f18c6c74e7669eafb3e034eb0b21e58c91f8aec"
     },
     {
+      "path": "tests/module-boundaries.test.ts",
+      "sha256": "ee80142c48a5334fb9335206be49308cd0053c0fcc0c2545a3b66be73ca1f7fd",
+      "bytes": 1710,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "tests/my-agent-http.test.ts",
-      "sha256": "2198b9d30eb34505e17b2919cb008e524b54f4b2f13c37f9aa21779c613f6ea3",
-      "bytes": 3439,
+      "sha256": "ea66630df8f71f545ebe925fe3ed3c74c2b54773c74a155c76d8770a8eca42a7",
+      "bytes": 3433,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "e02b65aa4a2e558cffbf7467e3871ec6cfb355ae"
     },
     {
       "path": "tests/my-agent-regressions.test.ts",
-      "sha256": "e00849043563cee680dc909b7ab86112d035183bd20a81f2b86959ece44b1fa9",
-      "bytes": 9164,
+      "sha256": "815ec75a51cde5b5272707296dea90126c88e1d7ca42ad6ceb97184cec3098ce",
+      "bytes": 9158,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "b453d8d21824fecab8c50d07d07d9e2018df980c"
     },
     {
       "path": "tests/my-agent.test.ts",
-      "sha256": "c36d7443167611f581ba83de7d6446d8dda4428fdbe25e4183b38016b2a1d207",
-      "bytes": 21234,
+      "sha256": "6eb9d68d473ac26be4a64125039ed30de48efe2bceabbd178247982e05f30ca7",
+      "bytes": 21222,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "19c641fd1ff1e7bbdbad733ef415cb0e6a99ebbb"
@@ -5175,10 +5203,10 @@
     },
     {
       "path": "tests/notice-coverage.test.ts",
-      "sha256": "806704b64d8b3103063017c8137996b5d6919f8d705d9604b2148aa44f58a510",
-      "bytes": 2006,
+      "sha256": "9bd0f9e4534fb943ba9e93aef0bdccd9f45c38c055a9b24cbc5b69c9717efa27",
+      "bytes": 2000,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "f54501b5448c526e92f606f34c09e4bf61aa6d2c"
     },
     {
@@ -5366,34 +5394,34 @@
     },
     {
       "path": "tests/p3-connect.test.ts",
-      "sha256": "46e08fade4144cf005aedc51b17443e15402bfcd89e57cb20fadeddb61c9f1fb",
-      "bytes": 13532,
+      "sha256": "2dbce7b7e969af1d8318336042d3619f2dea17522ee8ae251fdc6fe1bfffaa68",
+      "bytes": 13526,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "dc845b4004ec95ceec37a1e841dfb7b1926122da"
     },
     {
       "path": "tests/p3-delivery.test.ts",
-      "sha256": "6123d4b8e2d57f3df4521dad65ec62744cb16eb3fbad11c4ae20e9cb673ed570",
-      "bytes": 36412,
+      "sha256": "baf1cfec148bd64b6f3702487894c471e0725d242811eec4b3bbb58fc3d55e2a",
+      "bytes": 36394,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "a89f8469c12f6bb496e1420053cbc4d6778d7718"
     },
     {
       "path": "tests/p3-journal-retention.test.ts",
-      "sha256": "5db048766af874c393c3b5a6bd9b65eac86425e2058f04b23545edd11de1017b",
-      "bytes": 11463,
+      "sha256": "dfb26682fa8b9566d6d8e8977cc5b1c22b6a9bdca59038fbb255d91c5cd7b410",
+      "bytes": 11457,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "749dd2e91d86789011447ade312e0d3257df1619"
     },
     {
       "path": "tests/p3-journal-version.test.ts",
-      "sha256": "e0fef92bd02a057545eebdc4315e0ec066a6bec8ed4c65066bd34727760ddca1",
-      "bytes": 3594,
+      "sha256": "ec13604b6a7d12d6d5c846037fd437843f94f7e74417f8035ea95262becbeaf5",
+      "bytes": 3588,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "fd9e5a4cbc7d17c7e80540b2030de7fb6bb6a4a2"
     },
     {
@@ -5422,18 +5450,18 @@
     },
     {
       "path": "tests/p3-ops-receiver.test.ts",
-      "sha256": "b19e98526a4860e89e24c27fe945e4e7a5ecd0b8a0221e766d0e9c079e618cc7",
-      "bytes": 5136,
+      "sha256": "a5c605a460f0e9ad2c7016d773d2f39e79862bed4759434773483406d45bb455",
+      "bytes": 5130,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "ec3b0c2e238209e2770fa2f8c66f6b21d8949829"
     },
     {
       "path": "tests/p3-ops.test.ts",
-      "sha256": "d92a35c8f718a0475a77f1970e180d5d705cb565b73b0331b447c01a0c41808b",
-      "bytes": 7871,
+      "sha256": "07b240403cee956e2d8a4c1d7be95bfe0a8720633a0ac893be147c8e1faf2a6c",
+      "bytes": 7865,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "27fd9a8b0a2a5f4375ba8ca844dddbfde451f498"
     },
     {
@@ -5454,18 +5482,18 @@
     },
     {
       "path": "tests/p3-recovery-owner-go.test.ts",
-      "sha256": "59cb17bca757bd3cf00f14f94aab32a402ea70e1fc861eb6fb5c677cc1f1c5af",
-      "bytes": 18650,
+      "sha256": "7e2c198106e03f95a600d69534d7c8bb40661fbe545a9cb105ee8821e4983b7d",
+      "bytes": 18644,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "6d9f97d6619946fd6c45e7f16d9ffada3faffd94"
     },
     {
       "path": "tests/p3-recovery-round1.test.ts",
-      "sha256": "d8985d43209617cb8e639dab5bbf05cebb084cc7aa8baaf16378c3546b4395a7",
-      "bytes": 8864,
+      "sha256": "6141590a697bc981a40a93dd5b7e0284110c40edc925c1c2e55995c7cf36fba7",
+      "bytes": 8858,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "62507038176d70176b77cafb4f61612d9d92d415"
     },
     {
@@ -5486,10 +5514,10 @@
     },
     {
       "path": "tests/p3-t24-cutover.test.ts",
-      "sha256": "b179d414fefc7e9dcf51ecccafc2c245f5873f688c26607198dc9a24d191b49b",
-      "bytes": 6598,
+      "sha256": "30fa1f79aace662e5863663ee618e6273a70847f30d96658ddb8fd843d4506e6",
+      "bytes": 6592,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "16d4ab593eaa71833f65530c412de55467f9ff10"
     },
     {
@@ -5518,8 +5546,8 @@
     },
     {
       "path": "tests/product-version.test.ts",
-      "sha256": "d6b4f252daec4e80ed3399833d7ecabd3f5eb390c1c81dad33da28fcdea22b73",
-      "bytes": 819,
+      "sha256": "322aa80e93d8c25acc443485de8adfa99df96ece25a969aab7da078ef9957df0",
+      "bytes": 828,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "8b7a41614729ede2a1c054c123880eb616755016"
@@ -5606,16 +5634,16 @@
     },
     {
       "path": "tests/recovery-streaming.test.ts",
-      "sha256": "8d6984b2075dacc1c2ae68f2b47df1b29d1dd34cf6b02b9c717ac3d8839cb538",
-      "bytes": 6009,
+      "sha256": "3918c2c4f6e865303cf15e0e299e0b10c316c2e3351833ade859467337299ae0",
+      "bytes": 5997,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "782414fdadeb67037097e85df5ef9873196e7a82"
     },
     {
       "path": "tests/release-artifacts.test.ts",
-      "sha256": "48e56f63c918dd7567b3f152190a97f5b666e9ddccd9d8c84e7f1051fb84acbc",
-      "bytes": 4859,
+      "sha256": "075f2fecdc0b51444c2046baf8e1b95993e9e4bb4579fee57b35d852e0178ec2",
+      "bytes": 5957,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "04aface56a2a93426e21a0edb14e6ca5dd329d2b"
@@ -5629,12 +5657,26 @@
       "original_blob": "374c08cfcd6bdd4c859ff1f74d3b920ba73ea9c8"
     },
     {
+      "path": "tests/release-manifest.test.ts",
+      "sha256": "f5ec9bc35e9aefb5e8d2cdb75a3be1e342930b9e9f98a4fbc7843d0264011762",
+      "bytes": 3751,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "tests/rollout-v4.test.ts",
       "sha256": "5896cb7ecbb2c3686601e14eae0ffb728c8e58b3c109a19d8580668f305e1dd8",
       "bytes": 4261,
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "6bb5f4028fd4a6bc0f4ae608bebbf6c725faffca"
+    },
+    {
+      "path": "tests/route-coverage-wave0.test.ts",
+      "sha256": "457eb897b7257ff3f51333f8f297ee8ca0614100229edb1dbf0066a8becf9137",
+      "bytes": 12810,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "tests/rrf-fusion.test.ts",
@@ -5893,10 +5935,10 @@
     },
     {
       "path": "tests/v1-data-safety.test.ts",
-      "sha256": "8e2152cf8b6a3373c23983390aa7003e950594a4bcb87bd860794728f8edd7b2",
-      "bytes": 9478,
+      "sha256": "541b4ee8937f91efd02d18f919741ce53fbef6e32be99a54242e61abab4715df",
+      "bytes": 9472,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "b951a90d5684159796cc3f0b0023c0333668388d"
     },
     {
@@ -5909,10 +5951,10 @@
     },
     {
       "path": "tests/v1-install-requirements.test.ts",
-      "sha256": "f95691f1706f578094f6183d81359b5531ca6b630cf2c6cfa6feb19c5fc6d5ed",
-      "bytes": 2705,
+      "sha256": "25d25f97505ebf2405843f78e859650f2e1b2b5d010c47e85b1006b42471dc81",
+      "bytes": 2699,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "b52afea4fe3df5af9133a26c442d22a7e6b70310"
     },
     {
@@ -5933,10 +5975,10 @@
     },
     {
       "path": "tests/v1-runtime.test.ts",
-      "sha256": "bc475e35e93a19beb46e0b599a1038c9acaeddcfaa20b9c1e807ce605200e354",
-      "bytes": 15319,
+      "sha256": "c6862249de3dd24b61e4c3f56957704272db312a70f0ba48d09bc5c02fcfa9e2",
+      "bytes": 15313,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "e0542dbfe169e5a8e1aa0b01cce6df1e38236541"
     },
     {
@@ -5949,10 +5991,10 @@
     },
     {
       "path": "tests/v1-workspace.test.ts",
-      "sha256": "a207ee53f09506b4da27e3d02ce35311d4df685783eeaf1f79dc7748bb57c722",
-      "bytes": 7988,
+      "sha256": "32b3a7430fa3a39ac9c38077e994ed651b4ec91a229ea73f9fc527c676dc6fae",
+      "bytes": 7982,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "3bc1bedbbf487a4b440d265a706b7ef72388dd4a"
     },
     {
@@ -6009,5 +6051,6 @@
   "desktop_release_source": "f647faff39c21f0556d757c6398f32e4c8301849",
   "website_source": "363d40855200a4abdef195f9b10ed2c012fa8b80",
   "monitoring_source": "50cf27204ffaf969450ce10163f2da3e698237d0",
-  "product_version": "5.0.2"
+  "product_version": "5.0.2",
+  "release_503_source": "279a2d62b576e760ac89d10d02b30b9ab0f96bb7"
 }

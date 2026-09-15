@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {z} from 'zod';
 import {publicIdentity,type Identity} from '../bridges/protocol.ts';
-import {durableWrite,privateDirectory,readJson,safePath} from './files.ts';
+import {durableWrite,privateDirectory,readJson,safePath} from '../utils/fs.ts';
 const coordinate=z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const publicDevice=z.object({id:z.string().uuid(),installation_id:z.string().uuid(),workspace_id:z.string().min(1).max(128),label:z.string().min(1).max(120),
   public_origin:z.string().url(),state:z.enum(['provisioning','active','revoked']),created_at:z.number(),revoked_at:z.number().nullable()}).strict();

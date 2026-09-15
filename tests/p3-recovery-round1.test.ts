@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readRecoveryOps, recordMaintenance, opsSummary, opsFile, writeOps, opsPayload, mergeRecoveryOps, type OpsState, type OpsAlert } from '../src/delivery/ops-state.ts';
 import { backupOperations } from '../src/delivery/snapshot.ts';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 const budget=16*1024*1024;
 const fixture=()=>fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'p3-round1-')));
 const alert=(confirmed=false):OpsAlert=>{

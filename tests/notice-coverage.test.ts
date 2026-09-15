@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 
 describe('generated third-party notice coverage', () => {
   test('covers the complete production graph with authentic notice bodies', () => {

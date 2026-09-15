@@ -8,10 +8,10 @@ import { createNote, getNote, NOTE_TYPES, type NoteVisibility } from "./notes.ts
 import { createNoteProvenance, hashProvenanceFragment } from "./provenance.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict, recordExtractionOutcome } from "../utils/observability.ts";
+import { assertWriteScope, isAdmin } from "../auth/principal.ts";
 
 const MAX_CANDIDATES = 200;
 const MAX_CANDIDATE_TEXT = 16_384;
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 const REVIEWER_TYPES = new Set(["owner", "steward"]);
 const PROMPT_INJECTION_PATTERNS = [
   /ignore\s+(?:all\s+)?(?:previous|prior|system)\s+instructions?/i,
@@ -91,15 +91,7 @@ function metricRiskClass(row: Pick<CandidateRow, "risk_flags" | "conflict_note_i
   return "normal";
 }
 
-function isAdmin(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
-function assertWriteScope(auth: AuthContext): void {
-  if (auth.source === "oauth" && !auth.granted_scope?.includes("mcp:write")) {
-    throw new QoopiaError("FORBIDDEN", "mcp:write scope is required");
-  }
-}
 
 function normalizeText(text: string): string {
   return text.normalize("NFKC").toLocaleLowerCase("en-US").trim().replace(/\s+/g, " ");

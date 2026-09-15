@@ -4,7 +4,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import {safePath,privateDirectory,readJsonBytes,durableWrite,hash} from './files.ts';
+import {safePath,privateDirectory,readJsonBytes,durableWrite,hash} from '../utils/fs.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
 import {nativeOwnerHome} from './native-keychain.ts';
 import {selectedNativeDirectory} from './native-client-paths.ts';

@@ -17,7 +17,6 @@ import { recordConflict, v4Metrics } from "../utils/observability.ts";
 
 export const EXPORT_FORMAT = "qoopia-v4-export/1" as const;
 export const EXPORT_SCHEMA_VERSION = 32 as const;
-export const EXPORT_SCOPE = "legacy-schema-32-workspace-transfer" as const;
 const PLAN_TTL_MS = 15 * 60 * 1_000;
 const PLAN_CACHE_MAX = 256;
 const MANIFEST_MAX_BYTES = 8 * 1024 * 1024;

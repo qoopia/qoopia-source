@@ -2,7 +2,7 @@ import { retainManagedLogs } from "../utils/managed-logs.ts";
 import { recordMaintenance, opsSummary } from "../delivery/ops-state.ts";
 import { deliverOpsAlerts, readOwnerAlertChannels } from "./ops-alerts.ts";
 import { backupUnified, verifyBackup, backupMembers } from "../delivery/snapshot.ts";
-import { safePath, syncDirectory } from "../delivery/files.ts";
+import { safePath, syncDirectory } from "../utils/fs.ts";
 import { createVerifiedBackup } from "./backup.ts";
 import { expireRecallTraceBatch } from "../db/v4-trace-retention.ts";
 import fs from "node:fs";

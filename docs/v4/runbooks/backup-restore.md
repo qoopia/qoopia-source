@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import {readCurrent,operationsDirectory} from './src/delivery/operations.ts';
 import {opsFile,readRecoveryOps,OpsJournalError} from './src/delivery/ops-state.ts';
 import {verifyBackup} from './src/delivery/snapshot.ts';
-import {safePath,MAX_JSON_BYTES} from './src/delivery/files.ts';
+import {safePath,MAX_JSON_BYTES} from './src/utils/fs.ts';
 const [root,backup]=process.argv.slice(2);
 let current;
 try { current=readCurrent(root); }

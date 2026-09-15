@@ -8,7 +8,7 @@ import { runMigrations } from '../src/db/migrate.ts';
 import { bootstrapOwner } from '../src/auth/pairings.ts';
 import { connectInstalled } from '../src/delivery/connect.ts';
 import { lockInstallation } from '../src/delivery/operations.ts';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 import { connectRuntimes, connectConfigFixture, connectState, assertConnectOutput, assertConnectPreview,
   assertConfiguredConnect, type ConnectContext, type ConnectInput } from './helpers/p3-connect-fixtures.ts';
 

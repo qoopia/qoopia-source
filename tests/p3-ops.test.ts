@@ -5,7 +5,7 @@ import os from 'node:os';
 import { appendManagedLog, retainManagedLogs } from '../src/utils/managed-logs.ts';
 import { recordMaintenance, readOps, opsSummary, opsFile } from '../src/delivery/ops-state.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 const fixture = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'p3-ops-')));
 const day=86400000;
 const destination={id:'disposable-receiver',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:new Uint8Array(32).fill(17)};

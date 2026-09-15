@@ -6,7 +6,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { ownerFixture } from './helpers/p1-fixtures.ts';
 import { Delivery, readCurrent, dataFile, lockInstallation } from '../src/delivery/operations.ts';
-import { inventory, hash, durableWrite, privateDirectory, safePath } from '../src/delivery/files.ts';
+import { inventory, hash, durableWrite, privateDirectory, safePath } from '../src/utils/fs.ts';
 import { verifyBundle, OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../src/delivery/bundle.ts';
 import { backupUnified, verifyBackup, snapshotInfo } from '../src/delivery/snapshot.ts';
 import { issueLocalLogin, consumeLocalLogin } from '../src/delivery/local-login.ts';
@@ -318,7 +318,7 @@ test('round1 actual doctor bounds projection and reports journal refusal without
 test('Scope B formerly over-budget full recovery union fits after lossless compaction',()=>{
  const {operationsDirectory}=require('../src/delivery/operations.ts') as typeof import('../src/delivery/operations.ts');
  const {opsFile,writeOps,opsPayload}=require('../src/delivery/ops-state.ts') as typeof import('../src/delivery/ops-state.ts');
- const {MAX_JSON_BYTES}=require('../src/delivery/files.ts') as typeof import('../src/delivery/files.ts');
+ const {MAX_JSON_BYTES}=require('../src/utils/fs.ts') as typeof import('../src/utils/fs.ts');
  const f=fixture();try{
   const c=f.delivery.install(f.bundle('merge-limit'),3737),ops=operationsDirectory(f.install,c);
   const seed:import('../src/delivery/ops-state.ts').OpsAlert={id:crypto.randomUUID(),installation:c.instance,component:'maintenance',subject:'daily',cause:'BACKUP_FAILED',active:false,state:'pending',attempts:0,next_attempt_at:1000,last_error:'NO_CHANNEL',receipt:null};

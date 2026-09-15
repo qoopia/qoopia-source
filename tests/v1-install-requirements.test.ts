@@ -3,7 +3,7 @@ import {installationRequirements,inspectInstallationRequirements} from '../src/d
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {inventory} from '../src/delivery/files.ts';
+import {inventory} from '../src/utils/fs.ts';
 
 const sample={format:'qoopia-bootstrap-measurement/1' as const,target:'darwin-arm64',os_release:'25.1.0',initial_database_bytes:1048576,bootstrap_peak_rss_bytes:67108864};
 const host={target:'darwin-arm64',os_release:'25.2.0',total_memory_bytes:8*1024**3,available_disk_bytes:10*1024**3};

@@ -1,7 +1,7 @@
 import { assetPath } from "../utils/assets.ts";
 import {nativeCommand} from '../utils/native-command.ts';
 import { prepareNativeKeychain } from '../delivery/native-keychain.ts';
-import { readJsonBytes } from '../delivery/files.ts';
+import { readJsonBytes } from '../utils/fs.ts';
 import { z } from 'zod';
 import type { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';

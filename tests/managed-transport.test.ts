@@ -6,7 +6,7 @@ import {readTransport} from '../src/delivery/transport-config.ts';
 import {loginBroker} from '../src/identity/broker.ts';
 import {db} from '../src/db/connection.ts';import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';import {env} from '../src/utils/env.ts';
-import {durableWrite,privateDirectory} from '../src/delivery/files.ts';
+import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import {startMcpEdge} from '../src/delivery/mcp-edge.ts';
 import http from 'node:http';import {once} from 'node:events';
 import {transportSupervisor} from '../src/delivery/transport-supervisor.ts';

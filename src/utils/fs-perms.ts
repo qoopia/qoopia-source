@@ -69,19 +69,3 @@ export function auditDirMode(dir: string): boolean {
   }
 }
 
-export function auditFileMode(file: string): boolean {
-  try {
-    const st = fs.statSync(file);
-    const mode = st.mode & 0o777;
-    if ((mode & 0o077) !== 0) {
-      logger.warn(
-        `permission audit: ${file} mode is 0${mode.toString(8)}, expected 0600 — ` +
-          `chmod 0600 ${file} to restrict to owner only.`,
-      );
-      return false;
-    }
-    return true;
-  } catch {
-    return true;
-  }
-}

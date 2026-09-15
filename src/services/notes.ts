@@ -64,7 +64,6 @@ export const NOTE_TYPES = [
   "context",
   "decision",
 ] as const;
-export type NoteType = (typeof NOTE_TYPES)[number];
 
 export interface NoteRow {
   id: string;

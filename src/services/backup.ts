@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { openReadonlyDatabase } from "../db/sqlite.ts";
 import { computeLogicalDatabaseHash } from "../db/v4-migrations.ts";
-import { privateDirectory, safePath } from "../delivery/files.ts";
+import { privateDirectory, safePath } from "../utils/fs.ts";
 const ensureSafeDir = privateDirectory;
 const ensureSafeFile = (file: string) => fs.chmodSync(safePath(file), 0o600);
 

@@ -5,7 +5,6 @@ import {pathToFileURL} from 'node:url';
 import {setImmediate} from 'node:timers/promises';
 import {assetPath} from '../utils/assets.ts';
 
-export const BUILTIN_MODEL='multilingual-e5-small:761b726dd34f:q8:chunks-v1';
 export const BUILTIN_DIM=384;
 let loaded:Promise<{tokenizer:Tokenizer;session:Ort.InferenceSession}>|undefined;
 function runtime() {

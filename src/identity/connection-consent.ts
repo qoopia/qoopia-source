@@ -4,7 +4,7 @@ import {LOGIN_ORIGIN,ownerIdentity} from './local.ts';
 import {brandHead,brandLockup} from '../brand.ts';
 import {loginEmail} from './broker.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
-import {connectionOrigin,publicConnection,resourceConnection} from '../services/client-connections.ts';
+import {connectionOrigin,publicConnection,resourceConnection} from '../services/connection-identity.ts';
 import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket} from '../auth/oauth.ts';
 
 export const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';

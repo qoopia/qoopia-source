@@ -5,7 +5,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {nativeCommand} from '../src/utils/native-command.ts';
-import {inventory,inventoryAsync} from '../src/delivery/files.ts';
+import {inventory,inventoryAsync} from '../src/utils/fs.ts';
 import {db} from '../src/db/connection.ts';
 import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';

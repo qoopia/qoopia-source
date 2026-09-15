@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
-import { privateDirectory, safePath, readJson, durableWrite } from '../delivery/files.ts';
+import { privateDirectory, safePath, readJson, durableWrite } from '../utils/fs.ts';
 import { consumeLocalLogin } from '../delivery/local-login.ts';
 import { localOwner } from '../delivery/owner-onboarding.ts';
 import { isHttps, localOwnerLoginHandler } from '../dashboard-api.ts';

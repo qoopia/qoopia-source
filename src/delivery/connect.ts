@@ -10,7 +10,7 @@ import { authorize } from '../auth/policy.ts';
 import { issuePairing, redeemPairing, revokePrincipal } from '../auth/pairings.ts';
 import { createMcpServer } from '../mcp/server.ts';
 import { localOwner } from './owner-onboarding.ts';
-import { hash, readJsonBytes, safePath, durableWrite } from './files.ts';
+import { hash, readJsonBytes, safePath, durableWrite } from '../utils/fs.ts';
 import { assertNoSecrets } from '../utils/secret-guard.ts';
 import { publishNativeConnection } from '../skills/connection.ts';
 

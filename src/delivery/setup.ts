@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {Database} from 'bun:sqlite';
 import {dataFile,readCurrent} from './operations.ts';
-import {readJson,safePath} from './files.ts';
+import {readJson,safePath} from '../utils/fs.ts';
 import {nativePackageSchema} from './native-provision.ts';
 
 export type SetupRuntime='codex'|'claude_code';

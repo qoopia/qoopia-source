@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { Delivery, readCurrent, dataFile } from '../src/delivery/operations.ts';
 import { verifyBundle } from '../src/delivery/bundle.ts';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 import { bootstrapOwner } from '../src/auth/pairings.ts';
 import { csvContent } from '../tests/helpers/p2-fixtures.ts';
 import { connectConfigFixture, assertConnectOutput } from '../tests/helpers/p3-connect-fixtures.ts';

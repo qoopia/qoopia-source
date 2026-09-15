@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {z} from 'zod';
-import {hash,safePath,readJsonBytes,durableWrite,privateDirectory} from './files.ts';
+import {hash,safePath,readJsonBytes,durableWrite,privateDirectory} from '../utils/fs.ts';
 import {stdioBindingSchema,stdioFolder} from './stdio-oauth.ts';
 
 const receiptSchema=z.object({format:z.literal('qoopia-desktop-launcher/1'),binding_hash:z.string().regex(/^[a-f0-9]{64}$/),

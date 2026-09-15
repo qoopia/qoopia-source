@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readOps, readRecoveryOps, writeOps, validateRecoveryOps, opsFile, opsSummary, recordMaintenance, RECOVERY_DELIVERY_HOLD, OPS_JOURNAL_FORMAT, type OpsState } from '../src/delivery/ops-state.ts';
 import { backupOperations } from '../src/delivery/snapshot.ts';
-import { durableWrite, hash } from '../src/delivery/files.ts';
+import { durableWrite, hash } from '../src/utils/fs.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
 
 const fixture=()=>fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'p3-journal-version-')));

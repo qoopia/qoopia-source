@@ -9,7 +9,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { ownerFixture } from './helpers/p1-fixtures.ts';
 import { Delivery, readCurrent, dataFile, lockInstallation } from '../src/delivery/operations.ts';
-import { inventory, hash, durableWrite, privateDirectory } from '../src/delivery/files.ts';
+import { inventory, hash, durableWrite, privateDirectory } from '../src/utils/fs.ts';
 import { OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../src/delivery/bundle.ts';
 
 function fixture() {

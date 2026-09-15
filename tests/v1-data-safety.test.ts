@@ -6,7 +6,7 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { Delivery, dataFile, readCurrent } from "../src/delivery/operations.ts";
 import { OPS_READER_CAPABILITY, OPS_READER_MEMBER } from "../src/delivery/bundle.ts";
-import { durableWrite, hash, inventory, privateDirectory } from "../src/delivery/files.ts";
+import { durableWrite, hash, inventory, privateDirectory } from "../src/utils/fs.ts";
 import { snapshotInfo, verifyBackup } from "../src/delivery/snapshot.ts";
 import { createExportPlan } from "../src/services/export.ts";
 import { ownerFixture } from "./helpers/p1-fixtures.ts";

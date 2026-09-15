@@ -4,6 +4,7 @@ import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { recordLifecycleChange } from "../utils/observability.ts";
 import { getNote } from "./notes.ts";
 import { resolveNoteProvenance } from "./provenance.ts";
+import { assertWriteScope, isAdmin } from "../auth/principal.ts";
 
 interface LifecycleRow {
   workspace_id: string;
@@ -15,18 +16,9 @@ interface LifecycleRow {
   owner_pinned: number;
   updated_at: string;
 }
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 const PIN_TYPES = new Set(["owner", "steward"]);
 
-function isAdmin(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
-function assertWriteScope(auth: AuthContext): void {
-  if (auth.source === "oauth" && !auth.granted_scope?.includes("mcp:write")) {
-    throw new QoopiaError("FORBIDDEN", "mcp:write scope is required");
-  }
-}
 
 function rowOrDefault(workspaceId: string, noteId: string): LifecycleRow {
   const row = db.prepare(

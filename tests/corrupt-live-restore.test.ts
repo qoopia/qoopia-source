@@ -7,7 +7,7 @@ import { Database } from 'bun:sqlite';
 import { ownerFixture } from './helpers/p1-fixtures.ts';
 import { journalBundleFixture } from './helpers/p3-journal-bundle.ts';
 import { Delivery, dataFile, lockInstallation, readCurrent, type Current } from '../src/delivery/operations.ts';
-import { durableWrite, hash, inventory, privateDirectory } from '../src/delivery/files.ts';
+import { durableWrite, hash, inventory, privateDirectory } from '../src/utils/fs.ts';
 import { verifyBackup } from '../src/delivery/snapshot.ts';
 
 const inspect = (file:string) => {

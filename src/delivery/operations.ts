@@ -7,7 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { verifyBundle, requireOpsJournalV3 } from './bundle.ts';
-import { safePath, privateDirectory, readJson, readJsonBytes, durableWrite, durableCopyFile, inventory, copyInventory, hash, syncDirectory, preflightSpace, MAX_JSON_BYTES } from './files.ts';
+import { safePath, privateDirectory, readJson, readJsonBytes, durableWrite, durableCopyFile, inventory, copyInventory, hash, syncDirectory, preflightSpace, MAX_JSON_BYTES } from '../utils/fs.ts';
 import { backupUnified, verifyBackup, snapshotInfo, invalidateRestoredAccess, backupOperations, snapshotExtent } from './snapshot.ts';
 import { disabledAutostart, type AutostartLifecycle } from './autostart.ts';
 const hex=z.string().regex(/^[a-f0-9]{64}$/),generationId=z.string().regex(/^generation-[a-f0-9-]{36}$/);

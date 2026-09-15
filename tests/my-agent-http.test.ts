@@ -8,7 +8,7 @@ import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {startHttpServer} from '../src/http.ts';
 import {agentDirectory} from '../src/services/my-agent.ts';
-import {durableWrite,privateDirectory} from '../src/delivery/files.ts';
+import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 function cookie(id:string){
   const row=db.query('SELECT session_version FROM agents WHERE id=?').get(id) as {session_version:number};
   const payload=Buffer.from(JSON.stringify({agent_id:id,sv:row.session_version,exp:Math.floor(Date.now()/1000)+600})).toString('base64url');

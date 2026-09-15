@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import {spawn} from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
-import {privateDirectory,durableWrite} from '../src/delivery/files.ts';
+import {privateDirectory,durableWrite} from '../src/utils/fs.ts';
 
 async function until(predicate:()=>boolean){for(let i=0;i<200;i++){if(predicate())return;await new Promise(r=>setTimeout(r,10));}throw new Error('Fixture did not finish');}
 const fixture=`

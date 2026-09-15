@@ -42,6 +42,7 @@ import { enabledV4Tools } from "./v4-tools.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
 import { db } from "../db/connection.ts";
 import { bootstrapToolAllowed, currentToolAuth } from "../auth/policy.ts";
+import { isAdmin } from "../auth/principal.ts";
 
 export type ToolProfile = "memory" | "full";
 
@@ -167,10 +168,6 @@ const noteTypeEnum = z.enum(NOTE_TYPES);
 // QRERUN-003 / ADR-014: agent types that bypass the per-note `private`
 // visibility filter on MCP read paths (recall, brief, note_get, note_list).
 // Mirrors the admin set used by dashboard-api.ts.
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
-function isAdmin(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
 // -------- Tool definitions --------
 

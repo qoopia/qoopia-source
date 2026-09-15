@@ -5,6 +5,7 @@ import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
+import { assertWriteScope, isAdmin } from "../auth/principal.ts";
 
 export const PROVENANCE_SOURCE_KINDS = [
   "session_message",
@@ -30,18 +31,9 @@ interface ProvenanceRow {
   metadata: string;
   created_at: string;
 }
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
-function isAdmin(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
-function assertWriteScope(auth: AuthContext): void {
-  if (auth.source === "oauth" && !auth.granted_scope?.includes("mcp:write")) {
-    throw new QoopiaError("FORBIDDEN", "mcp:write scope is required");
-  }
-}
 
 export function normalizeProvenanceFragment(fragment: string): string {
   return fragment.replace(/\r\n?/g, "\n").trim().replace(/[\t ]+/g, " ");
@@ -238,10 +230,3 @@ export function resolveNoteProvenance(input: { auth: AuthContext; note_id: strin
   };
 }
 
-export function isProvenanceSourceVisible(input: {
-  auth: AuthContext;
-  source_kind: ProvenanceSourceKind;
-  source_id: string;
-}): boolean {
-  return sourceVisible(input.auth, input.source_kind, input.source_id);
-}

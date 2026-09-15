@@ -8,7 +8,7 @@ import { bindManagedRoot, nativeLaunch } from '../src/skills/adapter.ts';
 import { bindNativeConnection, publishNativeConnection, refreshNativeConnection } from '../src/skills/connection.ts';
 import { principalAuth } from './helpers/p1-fixtures.ts';
 import { agentTaskSchema, runAgentTask, nativeTaskFailure, type NativeTaskExecutor } from '../src/skills/agent-task.ts';
-import { hash } from '../src/delivery/files.ts';
+import { hash } from '../src/utils/fs.ts';
 
 function history(database: ReturnType<typeof loopFixture>['database'], session:string) {
   return database.query('SELECT role,content FROM session_messages WHERE session_id=? ORDER BY id').all(session) as {role:string;content:string}[];

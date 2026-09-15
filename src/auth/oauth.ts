@@ -1,4 +1,4 @@
-import {connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection} from "../services/client-connections.ts";
+import {connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection} from "../services/connection-identity.ts";
 import crypto from "node:crypto";
 import { db } from "../db/connection.ts";
 import { sha256Hex } from "./api-keys.ts";
@@ -410,13 +410,6 @@ export function refreshTokens(opts: {
   })();
 }
 
-export function revokeToken(token: string): boolean {
-  const hash = sha256Hex(token);
-  const info = db
-    .prepare(`UPDATE oauth_tokens SET revoked = 1 WHERE token_hash = ?`)
-    .run(hash);
-  return info.changes > 0;
-}
 
 /**
  * Revoke a token only if it belongs to the specified client.

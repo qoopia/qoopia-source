@@ -46,20 +46,11 @@ export const ENTITY_STATUSES = ["active", "archived", "deprecated"] as const;
 export type EntityStatus = (typeof ENTITY_STATUSES)[number];
 
 /**
- * Reserved relation vocabulary. Free-form strings are accepted at the
- * service boundary (relation_type is plain TEXT) — this set is the
- * documented vocabulary for the first wave of entities and is what
- * recall, the orphan sweeper, and renderers know how to handle. New
- * relation types are added here, not via a migration.
+ * Relation vocabulary note: relation_type is plain TEXT and free-form
+ * strings are accepted at the service boundary. The documented first-wave
+ * vocabulary that recall and the renderers understand is: participants,
+ * depends_on, supersedes, related_to, documents, triggers.
  */
-export const RESERVED_RELATIONS = new Set([
-  "participants",
-  "depends_on",
-  "supersedes",
-  "related_to",
-  "documents",
-  "triggers",
-]);
 
 
 
@@ -704,46 +695,3 @@ export function renderEntityPage(p: RenderParams): RenderResult {
   };
 }
 
-/**
- * List outgoing or incoming links — exposed for tests and the future
- * orphan sweeper. MCP surface uses renderEntityPage which embeds both.
- */
-export function listLinks(
-  workspace_id: string,
-  entity_id: string,
-  direction: "outgoing" | "incoming",
-): Array<{
-  relation_type: string;
-  confidence: number;
-  source: string | null;
-  other_id: string;
-  other_slug: string;
-  other_title: string;
-  other_type: string;
-}> {
-  const sql =
-    direction === "outgoing"
-      ? `SELECT l.relation_type, l.confidence, l.source,
-                t.id AS other_id, t.slug AS other_slug, t.title AS other_title, t.type AS other_type
-           FROM entity_links l
-           JOIN (SELECT * FROM entity_pages WHERE authority_private=0) t
-             ON t.id = l.target_entity_id AND t.workspace_id = ?
-          WHERE l.source_entity_id = ?
-          ORDER BY l.relation_type, t.slug`
-      : `SELECT l.relation_type, l.confidence, l.source,
-                s.id AS other_id, s.slug AS other_slug, s.title AS other_title, s.type AS other_type
-           FROM entity_links l
-           JOIN (SELECT * FROM entity_pages WHERE authority_private=0) s
-             ON s.id = l.source_entity_id AND s.workspace_id = ?
-          WHERE l.target_entity_id = ?
-          ORDER BY l.relation_type, s.slug`;
-  return db.prepare(sql).all(workspace_id, entity_id) as Array<{
-    relation_type: string;
-    confidence: number;
-    source: string | null;
-    other_id: string;
-    other_slug: string;
-    other_title: string;
-    other_type: string;
-  }>;
-}

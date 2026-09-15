@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {installAgentInstructions,planAgentInstructions} from '../src/agent-kit/install.ts';
 import {agentKitFiles,agentKitManifest,agentProtocol,managedAgentInstructions} from '../src/agent-kit/index.ts';
-import {hash,privateDirectory,durableWrite} from '../src/delivery/files.ts';
+import {hash,privateDirectory,durableWrite} from '../src/utils/fs.ts';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {createMcpServer} from '../src/mcp/server.ts';

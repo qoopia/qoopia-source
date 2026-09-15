@@ -1,4 +1,5 @@
-import {connectionOrigin, connectionAction, connectionRegistrationAuth, connectionResource, connectionIssuer, resourceConnection, publicConnection} from "./services/client-connections.ts";
+import {connectionAction, connectionRegistrationAuth} from "./services/client-connections.ts";
+import {connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection} from "./services/connection-identity.ts";
 import {brandAsset,brandHead,brandLockup} from './brand.ts';
 import {browserAgent,browserConnectionState} from './services/browser-connections.ts';
 import { localOwnerLoginHandler, renewLocalOwnerSession, ownerIdentityEnabled, ownerIdentityRequestAllowed } from "./dashboard-api.ts";

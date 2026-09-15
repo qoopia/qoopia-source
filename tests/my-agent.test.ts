@@ -5,7 +5,7 @@ import {db} from '../src/db/connection.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {myAgentState,myAgentAction,recoverMyAgentRuns,agentDirectory,agentArtifact,readAgentArtifact,safeAgentAnswer} from '../src/services/my-agent.ts';
 import {createAgent} from '../src/admin/agents.ts';
-import {durableWrite,privateDirectory} from '../src/delivery/files.ts';
+import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -153,7 +153,7 @@ test('switching the dashboard to Claude retains Codex history, verifies selected
   const {stopMyAgents}=await import('../src/services/my-agent.ts');
   const {memoryRoot}=await import('../src/services/memory-model.ts');
   const {unpackNativePackage}=await import('../src/delivery/native-provision.ts');
-  const {hash}=await import('../src/delivery/files.ts');
+  const {hash}=await import('../src/utils/fs.ts');
   const slug='provider-switch';db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
   const owner=bootstrapOwner(db,'Provider owner',undefined,slug),agent=createAgent({name:'Provider steward',workspaceSlug:slug,type:'steward'});
   db.query("INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,created_at) VALUES(?,?,?,'now')").run(owner.agent_id,slug,agent.id);

@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { privateDirectory, safePath } from './files.ts';
+import { privateDirectory, safePath } from '../utils/fs.ts';
 export function platformPaths(explicitRoot?: string, platform = process.platform, environment = process.env, home = os.homedir()) {
   if (!['darwin', 'linux'].includes(platform)) throw new Error('Unsupported owner platform');
   const base = (key: string, fallback: string) => safePath(environment[key] || fallback);

@@ -1,7 +1,7 @@
 /** Bounded synthetic retrieval/continuity qualification; never uses a user's database. */
 import fs from 'node:fs';
 import path from 'node:path';
-import {hash} from '../src/delivery/files.ts';
+import {hash} from '../src/utils/fs.ts';
 const root=fs.mkdtempSync('/var/tmp/qoopia-memory-qualification-');
 Object.assign(process.env,{QOOPIA_ROOT:root,QOOPIA_DATA_DIR:path.join(root,'data'),QOOPIA_LOG_DIR:path.join(root,'logs'),QOOPIA_BACKUP_DIR:path.join(root,'backups'),QOOPIA_LOG_LEVEL:'error',QOOPIA_SERVER_ROLE:'canonical',QOOPIA_EMBED_PROVIDER:'builtin',QOOPIA_AUTO_EMBED:'false'});
 const {db,closeDb}=await import('../src/db/connection.ts');

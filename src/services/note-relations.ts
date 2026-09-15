@@ -6,6 +6,7 @@ import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict } from "../utils/observability.ts";
+import { assertWriteScope, isAdmin } from "../auth/principal.ts";
 
 export const NOTE_RELATION_TYPES = [
   "supersedes",
@@ -27,17 +28,8 @@ interface RelationRow {
   created_at: string;
 }
 
-const ADMIN_TYPES = new Set(["owner", "steward", "claude-privileged"]);
 
-function isAdmin(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
-function assertWriteScope(auth: AuthContext): void {
-  if (auth.source === "oauth" && !auth.granted_scope?.includes("mcp:write")) {
-    throw new QoopiaError("FORBIDDEN", "mcp:write scope is required");
-  }
-}
 
 function relationOut(row: RelationRow) {
   return {

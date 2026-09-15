@@ -6,7 +6,7 @@ import type { AuthContext } from '../auth/middleware.ts';
 import { authorize, currentToolAuth, requireAgent } from '../auth/policy.ts';
 import { localOwner } from '../delivery/owner-onboarding.ts';
 import { readCurrent } from '../delivery/operations.ts';
-import { safePath, readJsonBytes, privateDirectory, durableWrite, hash } from '../delivery/files.ts';
+import { safePath, readJsonBytes, privateDirectory, durableWrite, hash } from '../utils/fs.ts';
 
 const id = z.string().min(1).max(200), sha = z.string().regex(/^[a-f0-9]{64}$/);
 const absolute = z.string().max(4096).refine(value=>value.startsWith('/')&&value.length>1&&[...value].every(c=>c.charCodeAt(0)>=32&&c.charCodeAt(0)!==127));

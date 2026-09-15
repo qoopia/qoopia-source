@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {nativeCommand} from '../utils/native-command.ts';
-import {privateDirectory,safePath} from './files.ts';
+import {privateDirectory,safePath} from '../utils/fs.ts';
 
 let desktopHome:string|undefined;
 // Bun derives os.userInfo().homedir from HOME too. Capture the desktop home

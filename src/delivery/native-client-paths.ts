@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {safePath} from './files.ts';
+import {safePath} from '../utils/fs.ts';
 
 type Surface='codex'|'claude_code';
 let captured:Partial<Record<Surface,string>>|undefined;

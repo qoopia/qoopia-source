@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
 import { z } from 'zod';
 import { bindNativeConnection, connectionLaunch, connectionRefSchema } from '../skills/connection.ts';
-import { hash } from './files.ts';
+import { hash } from '../utils/fs.ts';
 
 const inputSchema=z.object({runtime_kind:z.enum(['codex','claude_code']),connection:connectionRefSchema}).strict();
 type Expected={root:string;instance:string;bundle:string;generation:string;port:number;build:string;version:string;schema:number};
