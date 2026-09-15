@@ -65,3 +65,23 @@ test('desktop appcast signs exact archive bytes and rejects a different key or n
   expect(()=>updateFeed(metadata,'https://evil.example/Qoopia.dmg',archive,signature,pem)).toThrow('URL');
   expect(()=>updateFeed(metadata,url.replace('github.com','name@github.com'),archive,signature,pem)).toThrow('URL');
 });
+
+ test('desktop upgrade accepts a cleanly closed WAL database without sidecars',()=>{
+  const f=fixture();try{
+    const file=dataFile(f.root,readCurrent(f.root));
+    const database=new Database(file);
+    database.exec("PRAGMA journal_mode=WAL");
+    database.query("UPDATE workspaces SET name=?").run('Closed WAL workspace');
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    database.close();
+    // Other SQLite clients remove empty sidecars on clean close (e.g. Python).
+    if(fs.existsSync(file+'-wal'))expect(fs.statSync(file+'-wal').size).toBe(0);
+    fs.rmSync(file+'-wal',{force:true});fs.rmSync(file+'-shm',{force:true});
+    expect(fs.existsSync(file+'-wal')).toBe(false);
+    expect(fs.existsSync(file+'-shm')).toBe(false);
+    const result=prepareDesktopUpdate(f.delivery,f.next,f.trust,true);
+    expect(result.state).toBe('updated');
+    const next=new Database(dataFile(f.root,readCurrent(f.root)));
+    try{expect((next.query('SELECT name FROM workspaces LIMIT 1').get() as {name:string}).name).toBe('Closed WAL workspace');}finally{next.close();}
+  }finally{f.cleanup();}
+});
