@@ -1,0 +1,44 @@
+services:
+  qoopia:
+    image: "${QOOPIA_IMAGE:?set exact reviewed immutable image}"
+    container_name: qoopia
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: "2.0"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=0700,uid=1000,gid=1000
+    env_file:
+      - ${QOOPIA_ENV_FILE:?set private environment file}
+    environment:
+      NODE_ENV: production
+      QOOPIA_SERVER_ROLE: canonical
+      QOOPIA_INSTANCE_ID: "${QOOPIA_INSTANCE_ID:?set unique instance id}"
+      QOOPIA_DATA_DIR: /data
+      QOOPIA_LOG_DIR: /logs
+      QOOPIA_BACKUP_DIR: /backups
+      QOOPIA_V4_EXPORT_ROOT: /exports
+      QOOPIA_V4_EXPORT_SIGNING_KEY_FILE: /run/qoopia-export/signing-key.pem
+      QOOPIA_V4_EXPORT_TRUST_STORE: /run/qoopia-export/trust-store.json
+    ports:
+      - "127.0.0.1:3738:3738"
+    volumes:
+      - ${QOOPIA_ROOT:-/srv/qoopia}/data:/data:rw
+      - ${QOOPIA_ROOT:-/srv/qoopia}/logs:/logs:rw
+      - ${QOOPIA_ROOT:-/srv/qoopia}/backups:/backups:rw
+      - ${QOOPIA_ROOT:-/srv/qoopia}/exports:/exports:rw
+      - ${QOOPIA_ROOT:-/srv/qoopia}/export-keys:/run/qoopia-export:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:3738/ready'); if(!r.ok) process.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

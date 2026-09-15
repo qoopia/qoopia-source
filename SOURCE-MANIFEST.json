@@ -38,9 +38,9 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "cf7d9fd6646a647011c36f47c23d168e2ba34e976bfced65b041f99e3e65c731",
-      "bytes": 1068,
-      "source_snapshot_identical": true,
+      "sha256": "03e5a635e55a2226a2719e52120084d65d32eba370fb36ffce137e688a792992",
+      "bytes": 386,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
@@ -175,6 +175,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "8370a0154a62bcc247a0a211d376458a7751d717"
+    },
+    {
+      "path": "compose/docker-compose.v4.yml",
+      "sha256": "7b9396c7d17b5344bd82f30be5196c9b3dd10b1e5b8741c1fc247e0ff78710ba",
+      "bytes": 1476,
+      "source_snapshot_identical": false,
+      "original_runtime_identical": false
     },
     {
       "path": "deploy/docker-compose.release.yml",
