@@ -26,7 +26,7 @@ export type NativeTaskExecutor=(launch:Launch,kind:RuntimeKind)=>Promise<NativeT
 
 /** The only production executor. argv/env are produced by the existing pinned native launcher. */
 export const executeNativeTask:NativeTaskExecutor=async(launch,kind)=>{
-  if(launch.options.auth_mode==='subscription-store'&&!launch.options.configured_profile_functional)preflightNativeSubscription(kind,launch);
+  if(launch.options.auth_mode==='subscription-store'&&!launch.options.configured_profile_functional)await preflightNativeSubscription(kind,launch);
   const child=spawn(launch.binary,launch.args,{cwd:launch.cwd,env:launch.env,stdio:['ignore','pipe','pipe']});
   let stdout='',stderr='',overflow=false;
   const collect=(which:'stdout'|'stderr',chunk:Buffer)=>{

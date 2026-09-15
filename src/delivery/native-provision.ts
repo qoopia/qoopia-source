@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {hash,safePath,privateDirectory,durableWrite,syncDirectory,readJson,preflightSpace,inventory} from './files.ts';
+import {hash,safePath,privateDirectory,durableWrite,syncDirectory,readJson,preflightSpace,inventory,inventoryAsync} from './files.ts';
 import {readCurrent,lockInstallation} from './operations.ts';
 import {RUNTIMES} from './runtime-versions.ts';
 
@@ -35,19 +35,19 @@ export async function applyNativeProvisionLocked(root:string,input:unknown,appro
   const plan=nativeProvisionPlan(root,saved.package);
   if(approval!==saved.plan_digest||approval!==plan.plan_digest)throw new Error('Native install approval changed; preview again');
   preflightSpace(root,[plan.package.size,1024*1024*1024]);
-  const installed=fs.existsSync(plan.destination)?verifyInstalledNative(plan.package,plan.destination):
+  const installed=fs.existsSync(plan.destination)?await verifyInstalledNativeAsync(plan.package,plan.destination):
    await unpackNativePackage(plan.package,await vendorDownload(plan.package.url,plan.package.size),plan.destination);
   // Selection is published only after complete verified extraction; old versions are not removed.
   durableWrite(path.join(root,'native-runtimes',plan.package.runtime+'.json'),JSON.stringify(plan.package));
   return {...installed,state:'INSTALLED_NOT_AUTHENTICATED',login_required:true,model_verified:false};
 }
 /** Only explicit Qoopia-local selections precede PATH; no global installation/profile modification. */
-export function nativeRuntimeEnvironment(root:string,source:NodeJS.ProcessEnv){
+export async function nativeRuntimeEnvironment(root:string,source:NodeJS.ProcessEnv){
  const bins:string[]=[];
  for(const runtime of ['codex','claude_code'] as const){
   const record=path.join(root,'native-runtimes',runtime+'.json');if(!fs.existsSync(record))continue;
   const pkg=nativePackageSchema.parse(readJson(record));if(pkg.runtime!==runtime||pkg.target!==`${process.platform}-${process.arch}`)throw new Error('Invalid selected native runtime');
-  const {binary}=verifyInstalledNative(pkg,path.join(root,'native-runtimes',runtime,pkg.version));
+  const {binary}=await verifyInstalledNativeAsync(pkg,path.join(root,'native-runtimes',runtime,pkg.version));
   const st=fs.lstatSync(binary);if(!st.isFile()||st.uid!==process.getuid?.()||(st.mode&0o077))throw new Error('Selected native runtime is not private and owned');
   bins.push(path.dirname(binary));
  }
@@ -103,6 +103,13 @@ export function verifyInstalledNative(input:unknown,destination:string){
  if(JSON.stringify(saved.members)!==JSON.stringify(members))throw new Error('Installed native package contents changed');
  return {binary:path.join(dest,p.binary),installed_bytes:Object.values(members).reduce((n,m)=>n+m.size,0)};
 }
+export async function verifyInstalledNativeAsync(input:unknown,destination:string){
+ const p=nativePackageSchema.parse(input),dest=safePath(destination),saved=readJson<{package:unknown;members:unknown}>(path.join(dest,'qoopia-native-package.json'));
+ if(JSON.stringify(nativePackageSchema.parse(saved.package))!==JSON.stringify(p))throw new Error('Installed native package identity changed');
+ const members=await inventoryAsync(dest,new Set(['qoopia-native-package.json']));
+ if(JSON.stringify(saved.members)!==JSON.stringify(members))throw new Error('Installed native package contents changed');
+ return {binary:path.join(dest,p.binary),installed_bytes:Object.values(members).reduce((n,m)=>n+m.size,0)};
+}
 export async function unpackNativePackage(input:unknown,bytes:Uint8Array,destination:string){
  const p=nativePackageSchema.parse(input);
  if(bytes.length!==p.size||hash(bytes)!==p.sha256)throw new Error('Native package checksum/size mismatch');
@@ -123,7 +130,7 @@ export async function unpackNativePackage(input:unknown,bytes:Uint8Array,destina
   for(const [name,file] of normalized){const filename=path.join(staging,name);privateDirectory(path.dirname(filename));durableWrite(filename,new Uint8Array(await file.arrayBuffer()));
    if(name===p.binary||name==='bin/codex-code-mode-host'||name==='codex-path/rg'||name==='codex-resources/bwrap')fs.chmodSync(filename,0o700);
   }
-  durableWrite(path.join(staging,'qoopia-native-package.json'),JSON.stringify({package:p,members:inventory(staging)}));
+  durableWrite(path.join(staging,'qoopia-native-package.json'),JSON.stringify({package:p,members:await inventoryAsync(staging)}));
   if(fs.existsSync(dest))throw new Error('Native package destination changed');
   fs.renameSync(staging,dest);syncDirectory(path.dirname(dest));
  }finally{if(fs.existsSync(staging))fs.rmSync(staging,{recursive:true,force:true});}

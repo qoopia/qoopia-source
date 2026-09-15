@@ -479,6 +479,24 @@ describe("ADR-017: /api/dashboard/oauth-consent GET", () => {
 });
 
 describe("ADR-017: /api/dashboard/oauth-consent/approve guards", () => {
+  test("desktop consent keeps finalize on its origin when the public MCP origin differs", async () => {
+    const previous = env.PUBLIC_URL;
+    env.PUBLIC_URL = "https://public-mcp.example";
+    try {
+      const { ticketId } = await startAuthorize({clientId: CLIENT_A_ID, redirectUri: REDIRECT_URI_A});
+      const consent = await getConsent(ticketId, STEWARD_A_KEY);
+      expect(consent.headers.get("content-security-policy")).toContain("form-action 'self' https://example.com");
+      const nonce = extractNonce(await consent.text());
+      const approved = await postApprove(ticketId, nonce, STEWARD_A_KEY);
+      expect(approved.status).toBe(302);
+      const location = approved.headers.get("location")!;
+      expect(location).toBe("/oauth/authorize/finalize?ticket=" + ticketId);
+      const finalized = await fetch(new URL(location, baseUrl), {redirect: "manual"});
+      expect(finalized.status).toBe(302);
+      expect(new URL(finalized.headers.get("location")!).origin).toBe(new URL(REDIRECT_URI_A).origin);
+    } finally { env.PUBLIC_URL = previous; }
+  });
+
   test("workspace mismatch on approve POST → 403 (defense in depth)", async () => {
     // Mint a ticket as A, then try to approve while presenting B's Bearer.
     const { ticketId } = await startAuthorize({

@@ -31,6 +31,19 @@ type Run={id:string;conversation_id:string;request_id:string;prompt:string;answe
 type Approval={id:string;rpcId:number|string;method:string;params:any;expires:number;runId:string};
 type Live={rpc:CodexAppServer|ClaudeAgentRuntime;provider:AgentProvider;run?:Run;rawAnswer?:string;approvals:Map<string,Approval>;progress:string;account?:boolean;login?:{url:string;code?:string};ready:Set<string>};
 const live=new Map<string,Live>(),starting=new Map<string,Promise<Live>>(),busy=new Set<string>();
+type SetupOperation={action:string;state:'running'|'completed'|'failed';error?:string};
+const setupOperations=new Map<string,SetupOperation>();
+/** Return immediately; the dashboard observes progress through its authenticated state endpoint. */
+export function submitMyAgentAction(ownerId:string,raw:unknown){
+  agentOwner(ownerId);const input=actions.parse(raw);
+  if(!['setup','provider','start'].includes(input.action))return myAgentAction(ownerId,input);
+  if(setupOperations.get(ownerId)?.state==='running'||busy.has(ownerId))throw new QoopiaError('CONFLICT','Please wait for the current action');
+  const operation:SetupOperation={action:input.action,state:'running'};setupOperations.set(ownerId,operation);
+  void Promise.resolve().then(()=>myAgentAction(ownerId,input)).then(()=>{operation.state='completed';},error=>{
+    operation.state='failed';operation.error=error instanceof QoopiaError?error.message:'Agent setup failed. Check your connection and try again.';
+  });
+  return {accepted:true};
+}
 let accessTimer:ReturnType<typeof setInterval>|undefined;
 const now=()=>new Date().toISOString();
 export function safeAgentAnswer(text:string){try{assertNoSecrets(text,'agent response');return text;}catch{return 'A credential was detected in this response and was not saved. Ask the agent to reply without secrets.';}}
@@ -56,7 +69,17 @@ export function readAgentArtifact(ownerId:string,relative:string) {
 }
 function artifacts(ownerId:string) {
   const root=path.join(agentDirectory(ownerId),'workspace'),files:{path:string;size:number}[]=[];
-  function walk(folder:string,depth:number){if(depth>4||files.length>=100||!fs.existsSync(folder))return;for(const entry of fs.readdirSync(folder,{withFileTypes:true})){if(entry.name.startsWith('.')||entry.isSymbolicLink()||files.length>=100)continue;const full=path.join(folder,entry.name);if(entry.isDirectory())walk(full,depth+1);else if(entry.isFile()){const relative=path.relative(root,full);try{files.push({path:relative,size:agentArtifact(ownerId,relative).size});}catch{}}}}
+  let visited=0;
+  function walk(folder:string,depth:number){
+    if(depth>4||files.length>=100||visited>=300||!fs.existsSync(folder))return;
+    const directory=fs.opendirSync(folder);
+    try{let entry;while(visited<300&&files.length<100&&(entry=directory.readSync())){
+      visited++;if(entry.name.startsWith('.')||entry.name==='node_modules'||entry.isSymbolicLink())continue;
+      const full=path.join(folder,entry.name);
+      if(entry.isDirectory())walk(full,depth+1);
+      else if(entry.isFile()){const relative=path.relative(root,full);try{files.push({path:relative,size:agentArtifact(ownerId,relative).size});}catch{}}
+    }}finally{directory.closeSync();}
+  }
   walk(root,0);return files;
 }
 export function agentOwner(ownerId:string){let auth;try{auth=localOwner(db,ownerId);}catch{throw new QoopiaError('FORBIDDEN','Sign in as an active human owner');}authorize(db,auth,'owner');return auth;}
@@ -138,7 +161,7 @@ async function runtime(ownerId:string):Promise<Live> {
     const cwd=privateDirectory(path.join(folder,'workspace')),profile=privateDirectory(path.join(folder,settings.provider));
     installAgentInstructions(profile,settings.provider,'steward');
     durableWrite(path.join(profile,'qoopia','INSTALLATION.json'),JSON.stringify({root:memoryRoot(),workspace_directory:cwd,knowledge_directory:profile,cli_argv:agentKitManifest().source==='development'?null:[process.execPath],mcp_url:new URL('/mcp',env.PUBLIC_URL).href,owner_home:nativeOwnerHome(),external_profile_access:'Select the intended native profile explicitly; modifications outside the agent working folder require user-authorized runtime access. Never read or copy other profiles’ credentials.'},null,2));
-    const native=nativeRuntimeEnvironment(memoryRoot(),{PATH:process.env.PATH});
+    const native=await nativeRuntimeEnvironment(memoryRoot(),{PATH:process.env.PATH});
     const rpc=settings.provider==='claude_code'?new ClaudeAgentRuntime({binary:RUNTIMES.claude_code.binary,cwd,mcpConfig:path.join(profile,'qoopia-mcp.json'),env:{PATH:native.PATH,HOME:home,CLAUDE_CONFIG_DIR:profile,DISABLE_AUTOUPDATER:'1',QOOPIA_AGENT_KEY:secrets.key}}):new CodexAppServer({binary:RUNTIMES.codex.binary,cwd,env:{PATH:native.PATH,HOME:home,CODEX_HOME:profile,QOOPIA_AGENT_KEY:secrets.key}});
     const session:Live={rpc,provider:settings.provider,approvals:new Map(),progress:'',ready:new Set()};
     rpc.on('closed',()=>{finish(session,'interrupted','Agent stopped. Start a new turn to continue.');if(live.get(ownerId)===session)live.delete(ownerId);});
@@ -188,7 +211,7 @@ export function myAgentState(ownerId:string,conversationId?:string,paging:{runBe
   const runs=selected?db.query('SELECT id,prompt,answer,state,error,created_at FROM qoopia_agent_runs WHERE conversation_id=?'+(before?' AND (created_at<? OR (created_at=? AND id<?))':'')+' ORDER BY created_at DESC,id DESC LIMIT 51')
     .all(...(before?[selected,before.created_at,before.created_at,before.id]:[selected])) as (Run&{created_at:string})[]:[];
   const hasOlderRuns=runs.length>50;if(hasOlderRuns)runs.pop();runs.reverse();
-  return {provider:settings?.provider??'codex',selected_provider:selected?conversation(ownerId,selected).provider:null,access_error:accessError,configured:!!settings,enabled:!!settings?.enabled,steward,can_adopt:!settings&&!!adoptableConnection(ownerId),adoptable_providers:!settings?(['codex','claude_code'] as const).filter(p=>adoptableConnection(ownerId,p)):[],channel:settings?.channel??'dashboard',running:!!session&&!accessError,account:!accessError&&(session?.account??false),login:session?.login??null,
+  return {operation:setupOperations.get(ownerId)??null,provider:settings?.provider??'codex',selected_provider:selected?conversation(ownerId,selected).provider:null,access_error:accessError,configured:!!settings,enabled:!!settings?.enabled,steward,can_adopt:!settings&&!!adoptableConnection(ownerId),adoptable_providers:!settings?(['codex','claude_code'] as const).filter(p=>adoptableConnection(ownerId,p)):[],channel:settings?.channel??'dashboard',running:!!session&&!accessError,account:!accessError&&(session?.account??false),login:session?.login??null,
     telegram:{username:settings?.telegram_username,verified:!!settings?.telegram_verified,linked:!!settings?.telegram_user_id},
     conversations,selected,selected_title:selected?conversation(ownerId,selected).title:null,more_conversations:moreConversations,next_conversation_offset:offset+100,has_older_runs:hasOlderRuns,files:settings?artifacts(ownerId):[],working_directory:settings?path.join(agentDirectory(ownerId),'workspace'):null,
     runs,
@@ -258,11 +281,11 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
     }
     if(input.action==='select-conversation'){credentials(ownerId);conversation(ownerId,input.conversation);db.query('UPDATE qoopia_agent_settings SET active_conversation_id=? WHERE owner_id=?').run(input.conversation,ownerId);return {ok:true};}
     if(input.action==='start'&&agentSettings(ownerId)&&!agentSettings(ownerId)!.enabled)db.query('UPDATE qoopia_agent_settings SET enabled=1 WHERE owner_id=?').run(ownerId);
-    const session=await runtime(ownerId);
-    if(input.action==='start'){const result=await session.rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');return myAgentState(ownerId);}
+    const alreadyRunning=live.has(ownerId),session=await runtime(ownerId);
+    if(input.action==='start'){if(alreadyRunning){const result=await session.rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');}return myAgentState(ownerId);}
     if(input.action==='login-code'){if(session.provider!=='claude_code'||!session.login)throw new QoopiaError('NOT_READY','Start Claude sign-in first');await session.rpc.call('account/login/code',{code:input.code});return {ok:true};}
     if(input.action==='login') {
-      if(session.provider==='claude_code')prepareNativeKeychain(privateDirectory(path.join(agentDirectory(ownerId),'home')));
+      if(session.provider==='claude_code')await prepareNativeKeychain(privateDirectory(path.join(agentDirectory(ownerId),'home')));
       const result=await session.rpc.call('account/login/start',{type:session.provider==='codex'?'chatgpt':'claude'});
       const url=new URL(result.authUrl);if(session.provider==='claude_code')claudeLoginUrl(result.authUrl);else if(url.protocol!=='https:'||url.hostname!=='auth.openai.com'||url.username||url.password)throw new Error('Unexpected login URL');
       session.login={url:url.href};return session.login;

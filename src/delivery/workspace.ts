@@ -1,7 +1,8 @@
+import {nativeCommand} from '../utils/native-command.ts';
 import {enableMemoryRoot} from '../services/memory-model.ts';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import { db } from '../db/connection.ts';
@@ -81,14 +82,14 @@ export const workspaceActionSchema=z.discriminatedUnion('action',[
     model:z.string().regex(/^(?:gpt|claude)-[a-z0-9][a-z0-9.-]{0,100}$/),effort:z.enum(['low','medium','high'])}).strict(),
 ]);
 async function provision(root:string,kind:RuntimeKind,source:NodeJS.ProcessEnv) {
-  const environment=nativeRuntimeEnvironment(root,source);
-  const version=spawnSync(RUNTIMES[kind].binary,['--version'],{env:{PATH:environment.PATH},encoding:'utf8',timeout:10_000,maxBuffer:65536});
+  const environment=await nativeRuntimeEnvironment(root,source);
+  const version=await nativeCommand(RUNTIMES[kind].binary,['--version'],{env:{PATH:environment.PATH},timeout:10_000,maxBuffer:65536});
   const expected=kind==='codex'?`codex-cli ${RUNTIMES[kind].version}`:`${RUNTIMES[kind].version} (Claude Code)`;
   if(version.status!==0||version.stdout.trim()!==expected){
     const plan=nativeProvisionPlan(root,await nativePackagePreview(kind));
     await applyNativeProvisionLocked(root,plan,plan.plan_digest);
   }
-  return nativeRuntimeEnvironment(root,source);
+  return await nativeRuntimeEnvironment(root,source);
 }
 export async function workspaceAction(ownerId:string,raw:unknown) {
   const input=workspaceActionSchema.parse(raw),c=context(ownerId),kind=input.runtime;
@@ -126,13 +127,13 @@ export async function workspaceAction(ownerId:string,raw:unknown) {
       const probe=privateDirectory(path.join(runtime.managed_root,'login-check'));
       const launch=nativeLaunch(kind,probe,'',native,source,probe);
       for(const directory of [launch.home,launch.env.TMPDIR!,launch.env.XDG_CONFIG_HOME!,launch.env.XDG_CACHE_HOME!,launch.env.XDG_DATA_HOME!])privateDirectory(directory);
-      try{preflightNativeSubscription(kind,launch);return {state:'ready',message:'Subscription login found. Your provider verifies it when you run a task.'};}
+      try{await preflightNativeSubscription(kind,launch);return {state:'ready',message:'Subscription login found. Your provider verifies it when you run a task.'};}
       catch(error){if(error instanceof QoopiaError&&error.code==='UNAUTHENTICATED')return {state:'login_required',message:'Connected. Sign in to your subscription to start working.'};throw error;}
     }
     if(input.action==='login') {
       const source=await provision(c.root,kind,c.source);
       const home=privateDirectory(path.join(c.root,'native-login-home',kind));
-      if(kind==='claude_code')prepareNativeKeychain(home);
+      if(kind==='claude_code')await prepareNativeKeychain(home);
       const env={PATH:source.PATH,HOME:home,...(native.login_store?{[RUNTIMES[kind].env]:native.login_store}:{})};
       const args=kind==='codex'?['-c','cli_auth_credentials_store="file"','login']:['auth','login','--claudeai'];
       const child=spawn(RUNTIMES[kind].binary,args,{cwd:home,env,stdio:['pipe','pipe','pipe']});
@@ -159,7 +160,7 @@ export async function workspaceAction(ownerId:string,raw:unknown) {
     const ref=connection(c.root,ownerId,kind);
     if(!ref)throw new QoopiaError('NOT_READY','Connect your agent first');
     const result=await runAgentTask(db,reportAuth(c.owner,ref.runtime_id),{runtime_id:ref.runtime_id,session:input.session,task:input.task,
-      native:{...native,model:input.model,effort:input.effort,connection:ref}},nativeRuntimeEnvironment(c.root,c.source));
+      native:{...native,model:input.model,effort:input.effort,connection:ref}},await nativeRuntimeEnvironment(c.root,c.source));
     const artifacts:{id:string;filename:string}[]=[],warnings:string[]=[];
     if(result.status==='completed'){
       // ponytail: flat task outputs, at most 20 files / 16 MiB each. Zip directory outputs when needed.

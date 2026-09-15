@@ -1,9 +1,10 @@
 import { assetPath } from "../utils/assets.ts";
+import {nativeCommand} from '../utils/native-command.ts';
 import { prepareNativeKeychain } from '../delivery/native-keychain.ts';
 import { readJsonBytes } from '../delivery/files.ts';
 import { z } from 'zod';
 import type { Database } from 'bun:sqlite';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, realpathSync, readdirSync } from 'node:fs';
 import { join, relative, isAbsolute, dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -236,15 +237,15 @@ export function nativeSubscriptionStatus(kind:RuntimeKind,code:number|null,stdou
     (s.apiKeySource===undefined||s.apiKeySource==='none')&&['pro','max','team','enterprise'].includes(s.subscriptionType);
   }catch{return false;}
 }
-function checkNativeVersion(kind:RuntimeKind,launch:ReturnType<typeof nativeLaunch>){
+async function checkNativeVersion(kind:RuntimeKind,launch:ReturnType<typeof nativeLaunch>){
   const env={...launch.env,[RUNTIMES[kind].env]:launch.home};
   for(const key of ['CODEX_ACCESS_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','CODEX_API_KEY','ANTHROPIC_API_KEY'])delete env[key];
   const command=nativeProcess(kind,launch.options,['--version']);
-  const probe=spawnSync(command.binary,command.args,{cwd:launch.cwd,env,encoding:'utf8',timeout:10_000,maxBuffer:64*1024});
+  const probe=await nativeCommand(command.binary,command.args,{cwd:launch.cwd,env,timeout:10_000,maxBuffer:64*1024});
   const expected=kind==='codex'?`codex-cli ${RUNTIMES.codex.version}`:`${RUNTIMES.claude_code.version} (Claude Code)`;
   if(probe.status!==0||probe.stdout?.trim()!==expected)throw new QoopiaError('UNSUPPORTED','Installed runtime version changed or executable is unavailable');
 }
-export function preflightNativeSubscription(kind:RuntimeKind,launch:ReturnType<typeof nativeLaunch>){
+export async function preflightNativeSubscription(kind:RuntimeKind,launch:ReturnType<typeof nativeLaunch>){
   if(launch.options.auth_mode!=='subscription-store')throw new QoopiaError('INVALID_INPUT','Native login preflight requires subscription-store');
   if(launch.options.configured_profile_functional)throw new QoopiaError('UNSUPPORTED','Configured profile uses exec forced ChatGPT auth, not login status: status cannot ignore user config; auth source remains unverified');
   checkNativeHostPolicy(kind,true);
@@ -258,13 +259,13 @@ export function preflightNativeSubscription(kind:RuntimeKind,launch:ReturnType<t
         .parse(Bun.TOML.parse(readJsonBytes(join(launch.options.login_store!,'config.toml')).toString('utf8')));
     }catch{throw new QoopiaError('UNSUPPORTED','Codex login status cannot ignore selected config.toml; only native project-trust records are supported');}
   }
-  if(kind==='claude_code')prepareNativeKeychain(launch.env.HOME!);
-  checkNativeVersion(kind,launch);
+  if(kind==='claude_code')await prepareNativeKeychain(launch.env.HOME!);
+  await checkNativeVersion(kind,launch);
   const args=kind==='codex'?['-c',`cli_auth_credentials_store="${launch.options.login_backend}"`,'login','status']:
     // auth status does not run a task. It uses the already isolated cwd/HOME and explicit login store.
     // Root --mcp-config is variadic and consumes trailing "auth status" as config paths.
     ['auth','status'];
-  const status=spawnSync(launch.binary,args,{cwd:launch.cwd,env:launch.env,encoding:'utf8',timeout:10_000,maxBuffer:64*1024});
+  const status=await nativeCommand(launch.binary,args,{cwd:launch.cwd,env:launch.env,timeout:10_000,maxBuffer:64*1024});
   if(!nativeSubscriptionStatus(kind,status.status,status.stdout??'',status.stderr??''))
     throw new QoopiaError('UNAUTHENTICATED','Selected native login is not a confirmed subscription; no task, login, logout or billing fallback');
   return {status:'subscription_source_confirmed',runtime:kind,actual_model:'unknown',native_task_invocations:0} as const;
@@ -461,8 +462,8 @@ export function prepareCsvTask(database:Database,auth:AuthContext,input:CsvTaskI
 export async function runCsvTask(database:Database,auth:AuthContext,input:CsvTaskInput,source:NodeJS.ProcessEnv=process.env){
   const {l,root,homeRoot,entry,permission,sessionRoot,attempt,taskDir,options,evaluator,launch,snapshot:initialSnapshot,connectionExpected}=prepareCsvTask(database,auth,input,source);
   const r=registration(database,auth.workspace_id,l.runtime_id);
-  if(options.auth_mode==='subscription-store'&&!options.configured_profile_functional)preflightNativeSubscription(l.runtime_kind,launch);
-  else checkNativeVersion(l.runtime_kind,launch);
+  if(options.auth_mode==='subscription-store'&&!options.configured_profile_functional)await preflightNativeSubscription(l.runtime_kind,launch);
+  else await checkNativeVersion(l.runtime_kind,launch);
   let snapshot=initialSnapshot;
   if(l.runtime_kind==='codex'&&!options.configured_profile_functional&&existsSync(join(homeRoot,'.codex/tmp/arg0'))){
     const installed=codexBookkeepingBinary(homeRoot);

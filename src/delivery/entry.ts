@@ -138,7 +138,9 @@ async function main(){
    emit(flag('commit')?selectServerWorkspace(root,url):{state:'PREVIEW',url,requires:'--commit',local_data_preserved:true});return;
  }
  const remote=readServerWorkspace(root);
+ if(remote && cmd==='desktop-prepare'){emit({state:'server_workspace',binary:process.execPath});return;}
  if(remote && cmd==='open'){
+   if(flag('desktop')){emit({event:'workspace',url:remote});return;}
    if(!openBrowser(remote,browserEnvironment))throw new Error('Could not open your Qoopia server in the browser');
    emit({url:remote,data_location:'server'});return;
  }
@@ -178,11 +180,11 @@ async function main(){
    path.join(process.env.XDG_CONFIG_HOME??path.join(os.homedir(),'.config'),'systemd/user/qoopia.service');
  const executeService=(command:string,args:string[])=>{const result=spawnSync(command,args,{encoding:'utf8',env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,...linuxUserManagerEnvironment(process.platform,process.env)}});if(result.error||result.status!==0)throw new Error('User service command failed; native config and ownership ledger were preserved');};
  const autostart=(installation:string)=>new UserAutostart({root,installation,platform:process.platform as 'darwin'|'linux',configFile:nativeConfig,execute:executeService,allowTestFixture:allow});
- const dispatchInstalled=(requiresOpsV3=false,nativeSource:NodeJS.ProcessEnv={},localNative=false)=>{
+ const dispatchInstalled=async (requiresOpsV3=false,nativeSource:NodeJS.ProcessEnv={},localNative=false)=>{
    const current=readCurrent(root),bundle=path.join(root,'bundles',current.bundle);
    const verified=verifyBundle(bundle,QOOPIA_PINNED_KEY,allow);
    if(requiresOpsV3)requireOpsJournalV3(verified);
-   const source=localNative?nativeRuntimeEnvironment(root,{...nativeSource,PATH:nativeSource.PATH??process.env.PATH}):nativeSource;
+   const source=localNative?await nativeRuntimeEnvironment(root,{...nativeSource,PATH:nativeSource.PATH??process.env.PATH}):nativeSource;
    if(path.resolve(self)!==path.resolve(bundle)){
      // Keep the desktop session across first-install dispatch, before configure isolates the server environment.
      const child=spawnSync(path.join(bundle,'qoopia'),argv,{stdio:'inherit',env:{TMPDIR:process.env.TMPDIR,HOME:process.env.HOME,CODEX_HOME:process.env.CODEX_HOME,CLAUDE_CONFIG_DIR:process.env.CLAUDE_CONFIG_DIR,XDG_DATA_HOME:process.env.XDG_DATA_HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,XDG_STATE_HOME:process.env.XDG_STATE_HOME,...(cmd==='open'?browserEnvironment:{}),...source,PATH:source.PATH??process.env.PATH},timeout:cmd==='start'||cmd==='open'?undefined:cmd==='runtime'&&argv[1]==='task'?330_000:120_000});process.exit(child.status??1);
@@ -196,15 +198,27 @@ async function main(){
      if(option==='--allow-test-fixture')continue;
      if(!['--root','--runtime'].includes(option)||!argv[i+1]||argv[i+1]!.startsWith('--'))throw new Error('Invalid setup option');i++;
    }
-   if(fs.existsSync(path.join(root,'current.json')))dispatchInstalled();
+   if(fs.existsSync(path.join(root,'current.json')))await dispatchInstalled();
    const {inspectSetup}=await import('./setup.ts');emit(inspectSetup(root,arg('runtime')));return;
  }
  const delivery=new Delivery(root,QOOPIA_PINNED_KEY,allow,migrate,undefined,autostart);
+ if(cmd==='desktop-prepare'){
+   if(!flag('commit'))throw new Error('Desktop upgrade requires --commit');
+   const {prepareDesktopUpdate}=await import('./desktop-update.ts');
+   const prepared=prepareDesktopUpdate(delivery,self,QOOPIA_PINNED_KEY,allow);
+   if(prepared.state==='first_install'){
+     const requirements=inspectInstallationRequirements(verifyBundle(self,QOOPIA_PINNED_KEY,allow),root);
+     if(!requirements.ok)throw new Error('Installation requirements not met: '+requirements.blockers.join(','));
+     const reserved=await reservePort(0);try{delivery.install(self,reserved.port);}finally{await reserved.close();}
+     emit(prepareDesktopUpdate(delivery,self,QOOPIA_PINNED_KEY,allow));
+   }else emit(prepared);
+   return;
+ }
  if(cmd==='support-preview'){emit(delivery.supportPreview(layout.logs));return;}
  if(cmd==='doctor'){const report=delivery.doctor(layout.logs);emit(report);if(!report.ok)process.exitCode=1;return;}
  if(cmd==='diagnostic'){
    if(!flag('commit')){emit({state:'PREVIEW',command:'diagnostic',requires:'--commit --input ABSOLUTE_JSON',write:false,doctor_read_only:true});return;}
-   const selected=dispatchInstalled(),current=readCurrent(root);
+   const selected=await dispatchInstalled(),current=readCurrent(root);
    if(JSON.stringify(current)!==JSON.stringify(selected.current))throw new Error('Installation changed; retry diagnostic');
    configure(path.dirname(path.dirname(dataFile(root,current))),selected.bundle,current.port,undefined,current.instance);
    const {db}=await import('../db/connection.ts');const {assertSchemaCurrent}=await import('../db/migrate.ts');assertSchemaCurrent('functional diagnostic');
@@ -213,12 +227,12 @@ async function main(){
    emit(await functionalDiagnostic(db,readJson<unknown>(safePath(need('input'))),{root,instance:current.instance,bundle:current.bundle,generation:current.generation,port:current.port,build:QOOPIA_BUILD_SHA,version:PRODUCT_VERSION,schema}));return;
  }
  if(cmd==='recover-ops'){
-   dispatchInstalled(true);
+   await dispatchInstalled(true);
    const backup=safePath(need('backup'));
    emit(flag('commit')?delivery.recoverOps(backup,need('confirm-recovery')):delivery.previewOpsRecovery(backup));return;
  }
  if(cmd==='authorize-ops-replay'){
-   dispatchInstalled(true);
+   await dispatchInstalled(true);
    emit(flag('commit')?delivery.authorizeOpsReplay(need('confirm-replay')):delivery.previewOpsReplay());return;
  }
  if(cmd==='update'){
@@ -229,7 +243,7 @@ async function main(){
  }
  if(cmd==='service'){
    if(!['install','uninstall'].includes(argv[1]??''))throw new Error('service install|uninstall required');
-   const selected=dispatchInstalled(false,linuxUserManagerEnvironment(process.platform,process.env));
+   const selected=await dispatchInstalled(false,linuxUserManagerEnvironment(process.platform,process.env));
    if(!flag('commit')){emit({state:'PREVIEW',command:`service ${argv[1]}`,requires:'--commit',autostart_default:'disabled'});return;}
    // The running service owns the workspace lock. Autostart has a separate
    // OS-backed control lock so repeat-enable and stop can reach the user manager.
@@ -249,7 +263,7 @@ async function main(){
      i++;
    }
    if(flag('commit')!==!!arg('approve'))throw new Error('Connect requires both --commit and --approve EXACT_PREVIEW_DIGEST to apply');
-   const selected=dispatchInstalled();
+   const selected=await dispatchInstalled();
    const release=lockInstallation(root);
    try{
      const current=readCurrent(root);
@@ -269,7 +283,7 @@ async function main(){
      if(['--commit','--allow-test-fixture'].includes(option))continue;
      if(!['--root','--runtime','--plan','--approve'].includes(option)||!argv[i+1]||argv[i+1]!.startsWith('--'))throw new Error('Invalid runtime provision option');i++;
    }
-   dispatchInstalled();
+   await dispatchInstalled();
    const {nativePackagePreview,nativeProvisionPlan,applyNativeProvision}=await import('./native-provision.ts');
    if(!flag('commit')){
      if(arg('plan')||arg('approve'))throw new Error('Runtime provision preview accepts --runtime only');
@@ -295,7 +309,7 @@ async function main(){
    if(cmd==='runtime'&&['run','inspect','task'].includes(argv[1]!)&&flag('commit')&&
       (input as {native?:{auth_mode?:unknown}}|null)?.native?.auth_mode==='subscription')
      nativeSource.CLAUDE_CODE_OAUTH_TOKEN=process.env.CLAUDE_CODE_OAUTH_TOKEN;
-   const selected=dispatchInstalled(false,nativeSource,cmd==='runtime'&&['run','inspect','task'].includes(argv[1]!)),release=lockInstallation(root);
+   const selected=await dispatchInstalled(false,nativeSource,cmd==='runtime'&&['run','inspect','task'].includes(argv[1]!)),release=lockInstallation(root);
    try{
      const current=readCurrent(root);
      if(JSON.stringify(current)!==JSON.stringify(selected.current))throw new Error('Installation changed');
@@ -345,9 +359,10 @@ async function main(){
      const reserved=await reservePort(0);try{delivery.install(self,reserved.port);}finally{await reserved.close();}
    }
  }
- const {current,bundle}=dispatchInstalled();
+ const {current,bundle}=await dispatchInstalled();
  const showWorkspace=(code:string,browserPath=process.env.PATH)=>{
    const url=`http://127.0.0.1:${current.port}/dashboard`;
+   if(flag('desktop')){emit({event:'workspace',url:url+'#setup='+code});return;}
    console.log('\nWelcome to Qoopia. Complete sign-in in your browser.\n'+url+'\n');
    // The single-use OS capability is cleared from browser history before any request.
    if(!openBrowser(url+'#setup='+code,{...browserEnvironment,PATH:browserPath}))throw new Error('Could not open your browser. Run Open Qoopia again from your desktop.');

@@ -1,3 +1,5 @@
+import {SPARKLE} from './prepare-sparkle.ts';
+import {desktopReleaseSchema,DESKTOP_RELEASE} from '../src/delivery/desktop-update.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -72,7 +74,7 @@ function assertDeveloperId(binary:string,identity:string,runner:CommandRunner) {
 const bunRuntimeEntitlements=fileURLToPath(new URL('./darwin-runtime-entitlements.plist',import.meta.url));
 const bunRuntimeEntitlementKeys=['com.apple.security.cs.allow-jit','com.apple.security.cs.allow-unsigned-executable-memory','com.apple.security.cs.disable-executable-page-protection','com.apple.security.cs.allow-dyld-environment-variables','com.apple.security.cs.disable-library-validation'].sort();
 
-export function signAndVerifyDarwin(libraries:string[],bunExecutable:string,authorization:NonNullable<ReleaseAuthorization['darwin']>,runner:CommandRunner=systemRunner) {
+export function signAndVerifyDarwin(libraries:string[],bunExecutable:string,authorization:NonNullable<ReleaseAuthorization['darwin']>,runner:CommandRunner=systemRunner,sparkleArchive={file:path.resolve('.cache/sparkle-'+SPARKLE.version+'/archive.tar.xz'),sha256:SPARKLE.sha256}) {
   if(process.platform!=='darwin')throw new Error('Darwin platform signing requires a Darwin build host');
   if(authorization.codesign_identity==='-'||!authorization.codesign_identity.startsWith('Developer ID Application:'))throw new Error('Darwin release requires an explicit Developer ID Application identity');
   for(const binary of [...libraries,bunExecutable]){
@@ -87,7 +89,7 @@ export function signAndVerifyDarwin(libraries:string[],bunExecutable:string,auth
   if(JSON.stringify(keys)!==JSON.stringify(bunRuntimeEntitlementKeys)||bunRuntimeEntitlementKeys.some(key=>!new RegExp(`<key>\\s*${key.replaceAll('.','\\.')}\\s*</key>\\s*<true\\s*/>`).test(entitlements)))throw new Error('Bun executable runtime entitlements are missing or unexpected');
 }
 
-export function packageAndNotarizeDarwin(directory:string,dmg:string,authorization:NonNullable<ReleaseAuthorization['darwin']>,runner:CommandRunner=systemRunner) {
+export function packageAndNotarizeDarwin(directory:string,dmg:string,authorization:NonNullable<ReleaseAuthorization['darwin']>,runner:CommandRunner=systemRunner,sparkleArchive={file:path.resolve('.cache/sparkle-'+SPARKLE.version+'/archive.tar.xz'),sha256:SPARKLE.sha256}) {
   if(process.platform!=='darwin')throw new Error('Darwin release packaging requires a Darwin build host');
   if(fs.existsSync(dmg))throw new Error('Darwin distributable path must be new');
   const work=path.join(path.dirname(dmg),`.${path.basename(dmg)}.building-${process.pid}.dmg`);
@@ -96,13 +98,23 @@ export function packageAndNotarizeDarwin(directory:string,dmg:string,authorizati
     const app=path.join(stage,'Qoopia.app'),contents=path.join(app,'Contents'),resources=path.join(contents,'Resources');
     fs.mkdirSync(path.join(contents,'MacOS'),{recursive:true});fs.mkdirSync(resources);
     fs.cpSync(directory,path.join(resources,'bundle'),{recursive:true});
-    fs.writeFileSync(path.join(contents,'Info.plist'),'<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>ai.qoopia.desktop</string><key>CFBundleName</key><string>Qoopia</string><key>CFBundleExecutable</key><string>Qoopia</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>5.0.0</string><key>CFBundleVersion</key><string>5.0.0</string><key>LSMinimumSystemVersion</key><string>15.0</string><key>CFBundleIconFile</key><string>Qoopia</string><key>NSHighResolutionCapable</key><true/><key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>Qoopia memory connection</string><key>CFBundleTypeRole</key><string>Editor</string><key>LSHandlerRank</key><string>Owner</string><key>CFBundleTypeExtensions</key><array><string>qoopia-memory</string><string>qoopia-connection</string></array></dict></array></dict></plist>');
+    const desktop=desktopReleaseSchema.parse(JSON.parse(fs.readFileSync(path.join(directory,DESKTOP_RELEASE),'utf8')));
+    if(hash(fs.readFileSync(sparkleArchive.file))!==sparkleArchive.sha256)throw new Error('Sparkle archive checksum mismatch');
+    const sparkle=path.join(stage,'sparkle');fs.mkdirSync(sparkle);
+    checked('/usr/bin/tar',['-xJf',sparkleArchive.file,'-C',sparkle],'Sparkle extraction failed',runner);
+    fs.mkdirSync(path.join(contents,'Frameworks'));
+    const framework=path.join(contents,'Frameworks','Sparkle.framework');
+    checked('/usr/bin/ditto',[path.join(sparkle,'Sparkle.framework'),framework],'Sparkle copy failed',runner);
+    for(const nested of ['Versions/B/XPCServices/Installer.xpc','Versions/B/XPCServices/Downloader.xpc','Versions/B/Autoupdate','Versions/B/Updater.app',''])checked('/usr/bin/codesign',['--force','--options','runtime','--timestamp','--sign',authorization.codesign_identity,path.join(framework,nested)],'Sparkle signing failed',runner);
+    fs.writeFileSync(path.join(contents,'Info.plist'),'<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>ai.qoopia.desktop</string><key>CFBundleName</key><string>Qoopia</string><key>CFBundleExecutable</key><string>Qoopia</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>'+desktop.version+'</string><key>CFBundleVersion</key><string>'+desktop.build+'</string><key>SUFeedURL</key><string>'+desktop.feed_url+'</string><key>SUPublicEDKey</key><string>'+desktop.public_ed_key+'</string><key>SUEnableAutomaticChecks</key><true/><key>SUAllowsAutomaticUpdates</key><true/><key>SUAutomaticallyUpdate</key><true/><key>SUVerifyUpdateBeforeExtraction</key><true/><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>LSMinimumSystemVersion</key><string>15.0</string><key>CFBundleIconFile</key><string>Qoopia</string><key>NSHighResolutionCapable</key><true/><key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>Qoopia memory connection</string><key>CFBundleTypeRole</key><string>Editor</string><key>LSHandlerRank</key><string>Owner</string><key>CFBundleTypeExtensions</key><array><string>qoopia-memory</string><string>qoopia-connection</string></array></dict></array></dict></plist>');
     const iconset=path.join(stage,'Qoopia.iconset');
     checked('/usr/bin/xcrun',['swift',fileURLToPath(new URL('./darwin-icon.swift',import.meta.url)),iconset,path.join(directory,'assets/src/public/brand/qoopia-app-icon-1024.png')],'Desktop icon creation failed',runner);
     checked('/usr/bin/iconutil',['-c','icns',iconset,'-o',path.join(resources,'Qoopia.icns')],'Desktop icon packaging failed',runner);
     fs.rmSync(iconset,{recursive:true,force:true});
+    checked('/usr/bin/ditto',[path.join(sparkle,'LICENSE'),path.join(contents,'Resources','Sparkle-LICENSE.txt')],'Sparkle license copy failed',runner);
+    fs.rmSync(sparkle,{recursive:true,force:true});
     // Match the bundled tunnel's minimum OS, independent of the builder's SDK.
-    checked('/usr/bin/xcrun',['swiftc',fileURLToPath(new URL('./darwin-launcher.swift',import.meta.url)),'-target','arm64-apple-macos15.0','-O','-framework','AppKit','-o',path.join(contents,'MacOS','Qoopia')],'Desktop launcher compilation failed',runner);
+    checked('/usr/bin/xcrun',['swiftc',fileURLToPath(new URL('./darwin-launcher.swift',import.meta.url)),'-target','arm64-apple-macos15.0','-O','-framework','AppKit','-framework','WebKit','-framework','ServiceManagement','-F',path.join(contents,'Frameworks'),'-framework','Sparkle','-Xlinker','-rpath','-Xlinker','@executable_path/../Frameworks','-o',path.join(contents,'MacOS','Qoopia')],'Desktop launcher compilation failed',runner);
     checked('/usr/bin/codesign',['--force','--options','runtime','--timestamp','--sign',authorization.codesign_identity,app],'Desktop app signing failed',runner);
     checked('/usr/bin/codesign',['--verify','--deep','--strict','--verbose=2',app],'Desktop app signature verification failed',runner);
     assertDeveloperId(app,authorization.codesign_identity,runner);
@@ -119,7 +131,7 @@ export function packageAndNotarizeDarwin(directory:string,dmg:string,authorizati
     checked('/usr/sbin/spctl',['-a','-t','execute','-v',app],'Gatekeeper app verification failed',runner);
     fs.rmSync(appArchive,{force:true});
     fs.symlinkSync('/Applications',path.join(stage,'Applications'));
-    fs.writeFileSync(path.join(stage,'START-HERE.txt'),'Drag Qoopia to Applications, then open Qoopia.\nChoose Google or enter your email in the browser and confirm the sign-in email.\nYour data stays in your local Application Support/Qoopia folder.\n');
+    fs.writeFileSync(path.join(stage,'START-HERE.txt'),'Drag Qoopia to Applications, then open Qoopia.\nYour dashboard opens inside Qoopia. Close its window to keep running in the menu bar. Use Check for Updates from the Qoopia menu. Updates preserve your data and connections.\nYour data stays in your local Application Support/Qoopia folder.\n');
     checked('/usr/bin/hdiutil',['create','-srcfolder',stage,'-volname','Qoopia','-format','UDZO','-ov',work],'DMG creation failed',runner);
     checked('/usr/bin/codesign',['--force','--timestamp','--sign',authorization.codesign_identity,work],'DMG signing failed',runner);
     checked('/usr/bin/codesign',['--verify','--strict','--verbose=2',work],'DMG signature verification failed',runner);

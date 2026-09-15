@@ -7,7 +7,7 @@ import {authLimiter,dashboardLimiter} from '../src/utils/rate-limit.ts';
 import {cancelDesktopAuth} from '../src/delivery/desktop-auth.ts';
 import {lockStdioCredentials,stdioFolder} from '../src/delivery/stdio-oauth.ts';
 
-test('Desktop wizard HTTP handoff awaits OAuth, resumes one pending URL, saves consent and cancels revoked access',async()=>{
+test('Desktop wizard HTTP handoff returns immediately, polls OAuth, resumes one pending URL, saves consent and cancels revoked access',async()=>{
   if(process.platform!=='darwin')return;
   runMigrations();authLimiter.resetForTests();dashboardLimiter.resetForTests();
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-desktop-http-'))),slug=randomUUID();
@@ -28,7 +28,16 @@ test('Desktop wizard HTTP handoff awaits OAuth, resumes one pending URL, saves c
     connection=(await action({action:'apply',surface:'claude_desktop',access_mode:'read',request_key:slug})).connection;
     expect((await action({action:'client-auth-start',id:connection.id})).code).toBe('CLIENT_CONFIG_REQUIRED');
     await action({action:'client-apply',id:connection.id,config_directory:path.join(root,'isolated Claude profile')});
-    const started=await action({action:'client-auth-start',id:connection.id});
+    const waitForHandoff=async()=>{
+      for(let i=0;i<100;i++){
+        const status=await action({action:'client-auth-status',id:connection.id});
+        if(status.open_url)return status;await Bun.sleep(10);
+      }
+      throw new Error('Synthetic OAuth handoff did not become ready');
+    };
+    const before=performance.now(),pending=await action({action:'client-auth-start',id:connection.id});
+    expect(pending.code).toBe('CLIENT_AUTH_STARTING');expect(performance.now()-before).toBeLessThan(1000);
+    const started=await waitForHandoff();
     expect(started.code).toBe('CLIENT_AUTHORIZATION_REQUIRED');expect(new URL(started.open_url).origin).toBe(base);
     expect((await action({action:'client-auth-start',id:connection.id})).open_url).toBe(started.open_url);
     const state=await action({action:'status',id:connection.id});
@@ -38,7 +47,7 @@ test('Desktop wizard HTTP handoff awaits OAuth, resumes one pending URL, saves c
     const consent=await fetch(consentUrl,{headers:{cookie}}),nonce=(await consent.text()).match(/name="nonce" value="([^"]+)"/)![1]!;
     const approved=await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',redirect:'manual',headers:{cookie,origin:base,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket,nonce})});
     expect(approved.status).toBe(302);
-    const finalized=await fetch(approved.headers.get('location')!,{redirect:'manual'});
+    const finalized=await fetch(new URL(approved.headers.get('location')!,base),{redirect:'manual'});
     expect((await fetch(finalized.headers.get('location')!)).status).toBe(200);
     let saved:any;
     for(let i=0;i<100;i++){
@@ -47,11 +56,12 @@ test('Desktop wizard HTTP handoff awaits OAuth, resumes one pending URL, saves c
     }
     expect(saved.credentials_present).toBe(true);expect(saved.verified).toBe(false);expect(saved.code).toBe('CLIENT_CALL_REQUIRED');
     expect(JSON.stringify(saved)).not.toMatch(/access_token|refresh_token|client_secret/);
-    expect((await action({action:'client-auth-start',id:connection.id})).credentials_present).toBe(true);
+    await action({action:'client-auth-start',id:connection.id});
+    await Bun.sleep(20);expect((await action({action:'client-auth-status',id:connection.id})).credentials_present).toBe(true);
     // Another pending handoff can be interrupted by per-client revocation. The listener and lock must close.
     connection=(await action({action:'apply',surface:'claude_desktop',access_mode:'read',request_key:slug+'-cancel'})).connection;
     await action({action:'client-apply',id:connection.id,config_directory:path.join(root,'isolated Claude profile')});
-    const second=await action({action:'client-auth-start',id:connection.id});
+    await action({action:'client-auth-start',id:connection.id});const second=await waitForHandoff();
     const callback=new URL(second.open_url).searchParams.get('redirect_uri')!;
     await action({action:'disconnect',id:connection.id});
     const binding={format:'qoopia-client-connection/1',connection_id:connection.id,workspace_id:owner.workspace_id,surface:'claude_desktop' as const,access_mode:'read' as const,mcp_url:connection.mcp_url};

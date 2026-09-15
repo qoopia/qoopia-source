@@ -1,6 +1,7 @@
 import {agentProtocol} from '../agent-kit/index.ts';
 import {z} from "zod";
 import {verifyClientConnection} from "../services/client-connections.ts";
+import {QoopiaError} from "../utils/errors.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   registerTools,
@@ -41,7 +42,8 @@ export function createMcpServer(
   },async({connection_id,challenge})=>{
     try {const auth=authProvider();if(!auth)throw new Error('UNAUTHENTICATED');
       return {content:[{type:'text' as const,text:JSON.stringify(verifyClientConnection(auth,connection_id,challenge))}]};
-    }catch{return {isError:true,content:[{type:'text' as const,text:'VERIFICATION_REFUSED: Check the connection and request a fresh verification prompt.'}]};}
+    }catch(error){return {isError:true,content:[{type:'text' as const,text:error instanceof QoopiaError&&error.code==='VERIFICATION_ALREADY_COMPLETED'
+      ?error.toString():'VERIFICATION_REFUSED: Check the connection and request a fresh verification prompt.'}]};}
   });
   registerTools(server, authProvider, profile, opts);
   registerAuthorityTools(server, authProvider, new Set(toolNames(profile).filter((name) => bootstrapToolAllowed(name, opts?.bootstrapProfile))));

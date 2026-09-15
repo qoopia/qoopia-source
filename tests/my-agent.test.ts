@@ -9,7 +9,7 @@ import {durableWrite,privateDirectory} from '../src/delivery/files.ts';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
-import {isBoundTelegramMessage,telegramState,telegramCall,pollTelegramOwner} from '../src/services/my-agent-telegram.ts';
+import {isBoundTelegramMessage,telegramState,telegramCall,pollTelegramOwner,telegramAction,stopTelegramChannels} from '../src/services/my-agent-telegram.ts';
 import {inspectSnapshot} from '../src/delivery/snapshot.ts';
 beforeAll(()=>runMigrations());
 
@@ -162,7 +162,7 @@ test('switching the dashboard to Claude retains Codex history, verifies selected
   const bytes=Buffer.from('#!'+process.execPath+'\n'+`
    import readline from 'node:readline';
    const args=process.argv.slice(2),send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
-   if(args[0]==='auth'){send({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'pro'});process.exit(0);}
+   if(args[0]==='auth'){(await import('node:fs')).appendFileSync(process.cwd()+'/.auth-probes','1');send({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'pro'});process.exit(0);}
    const id=args.find(a=>a.startsWith('--session-id=')||a.startsWith('--resume=')).split('=')[1];
    for await(const line of readline.createInterface({input:process.stdin})){
     const m=JSON.parse(line);
@@ -177,6 +177,9 @@ test('switching the dashboard to Claude retains Codex history, verifies selected
     privateDirectory(path.dirname(dest));await unpackNativePackage(pkg,bytes,dest);durableWrite(selected,JSON.stringify(pkg));
     const state=await myAgentAction(owner.agent_id,{action:'provider',provider:'claude_code'});
     expect(state.provider).toBe('claude_code');expect(state.account).toBe(true);expect(state.selected).toBeUndefined();
+    const probes=path.join(folder,'workspace','.auth-probes');expect(fs.readFileSync(probes,'utf8')).toBe('1');
+    await stopMyAgents();await myAgentAction(owner.agent_id,{action:'start'});expect(fs.readFileSync(probes,'utf8')).toBe('11');
+    await myAgentAction(owner.agent_id,{action:'start'});expect(fs.readFileSync(probes,'utf8')).toBe('111');
     await expect(myAgentAction(owner.agent_id,{action:'send',conversation:old.id,requestId:'foreign',text:'Must stay in Codex'})).rejects.toThrow('another subscription');
     const c=await myAgentAction(owner.agent_id,{action:'new',title:'Claude history'});
     const request={action:'send',conversation:c.id,requestId:'once',text:'Synthetic instruction'};
@@ -188,4 +191,33 @@ test('switching the dashboard to Claude retains Codex history, verifies selected
     expect(myAgentState(owner.agent_id).conversations.length).toBe(2);
     expect(fs.readFileSync(path.join(folder,'claude_code','CLAUDE.md'),'utf8')).toContain('@qoopia-protocol.md');
   }finally{await stopMyAgents();fs.rmSync(selected,{force:true});fs.rmSync(path.join(base,'claude_code'),{recursive:true,force:true});}
+});
+
+test('Telegram setup checks in parallel and a failed greeting preserves account confirmation for retry',async()=>{
+  const slug='tg-retry-'+randomUUID();db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
+  const owner=bootstrapOwner(db,'Telegram retry owner',undefined,slug),agent=createAgent({name:'Retry steward',workspaceSlug:slug,type:'steward'});
+  db.query('INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,created_at) VALUES(?,?,?,?)').run(owner.agent_id,slug,agent.id,'now');
+  durableWrite(path.join(agentDirectory(owner.agent_id),'credentials.json'),JSON.stringify({key:agent.api_key}));
+  const original=globalThis.fetch;let checks=0,peak=0,failGreeting=true,code='',person=123;
+  try{
+    globalThis.fetch=(async(url:any)=>{
+      const method=String(url).split('/').at(-1);
+      if(method==='getMe'||method==='getWebhookInfo'){
+        checks++;peak=Math.max(peak,checks);await Bun.sleep(20);checks--;
+        return Response.json({ok:true,result:method==='getMe'?{is_bot:true,username:'retry_fixture_bot'}:{url:''}});
+      }
+      if(method==='getUpdates')return Response.json({ok:true,result:[{update_id:1,message:{from:{id:person,first_name:'Fixture'},chat:{id:person,type:'private'},text:'/start '+code}}]});
+      if(method==='sendMessage'&&failGreeting)return Response.json({ok:false},{status:503});
+      if(method==='sendMessage'&&!failGreeting){person=456;await pollTelegramOwner(owner.agent_id);}
+      return Response.json({ok:true,result:{message_id:1}});
+    }) as typeof fetch;
+    const connected=await telegramAction(owner.agent_id,{action:'telegram-connect',token:'12345:'+ 'a'.repeat(24)});stopTelegramChannels();
+    expect(peak).toBe(2);code=new URL(connected.url!).searchParams.get('start')!;
+    await pollTelegramOwner(owner.agent_id);expect(telegramState(owner.agent_id).pending?.user?.id).toBe('123');
+    await expect(telegramAction(owner.agent_id,{action:'telegram-confirm',userId:'123',chatId:'123'})).rejects.toThrow('Telegram did not accept');
+    expect(telegramState(owner.agent_id).pending?.user?.id).toBe('123');expect(myAgentState(owner.agent_id).telegram.linked).toBe(false);
+    failGreeting=false;expect(await telegramAction(owner.agent_id,{action:'telegram-confirm',userId:'123',chatId:'123'})).toEqual({linked:true});
+    expect(telegramState(owner.agent_id).pending).toBeNull();expect(myAgentState(owner.agent_id).telegram.linked).toBe(true);
+    expect(db.query('SELECT telegram_user_id FROM qoopia_agent_settings WHERE owner_id=?').get(owner.agent_id)).toEqual({telegram_user_id:'123'});
+  }finally{stopTelegramChannels();globalThis.fetch=original;}
 });

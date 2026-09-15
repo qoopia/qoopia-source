@@ -25,15 +25,15 @@ test('provision preview is installation-bound; wrong approval and non-vendor URL
   await expect(applyNativeProvision(root,plan,'0'.repeat(64))).rejects.toThrow();
   expect(fs.existsSync(path.join(root,'native-runtimes'))).toBe(false);
   await expect(vendorDownload('http://127.0.0.1:1/',100)).rejects.toThrow();
-  const env={PATH:'/usr/bin:/bin',HOME:'/fixture-home'};expect(nativeRuntimeEnvironment(root,env)).toEqual(env);
+  const env={PATH:'/usr/bin:/bin',HOME:'/fixture-home'};expect(await nativeRuntimeEnvironment(root,env)).toEqual(env);
   const directory=path.join(root,'native-runtimes','claude_code',pkg.version);
   await unpackNativePackage(pkg,bytes,directory);
   fs.writeFileSync(path.join(root,'native-runtimes','claude_code.json'),JSON.stringify(pkg),{mode:0o600});
-  expect(nativeRuntimeEnvironment(root,env).PATH).toBe(directory+':'+env.PATH);
+  expect((await nativeRuntimeEnvironment(root,env)).PATH).toBe(directory+':'+env.PATH);
   fs.writeFileSync(path.join(directory,'claude'),'tampered fixture');
-  expect(()=>nativeRuntimeEnvironment(root,env)).toThrow();
+  await expect(nativeRuntimeEnvironment(root,env)).rejects.toThrow();
   fs.writeFileSync(path.join(directory,'claude'),bytes);
-  fs.chmodSync(path.join(directory,'claude'),0o755);expect(()=>nativeRuntimeEnvironment(root,env)).toThrow();
+  fs.chmodSync(path.join(directory,'claude'),0o755);await expect(nativeRuntimeEnvironment(root,env)).rejects.toThrow();
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 

@@ -147,6 +147,8 @@ export function verifyClientConnection(auth:AuthContext,id:string,challenge:stri
   if(!auth.oauth_client_id)throw new QoopiaError('FORBIDDEN','Use the client OAuth connection');
   if(!db.query('SELECT 1 FROM oauth_clients WHERE id=? AND agent_id=? AND workspace_id=?').get(auth.oauth_client_id,row.agent_id,row.workspace_id))
     throw new QoopiaError('FORBIDDEN','OAuth client does not belong to this connection');
+  if(row.state==='verified'&&!row.challenge_hash&&row.oauth_client_id===auth.oauth_client_id)
+    throw new QoopiaError('VERIFICATION_ALREADY_COMPLETED',`A previous authenticated call verified this connection at ${row.verified_at}. The one-use challenge was consumed. This repeated call creates no new verification and does not undo the earlier result.`);
   if(row.challenge_expires_at<=new Date().toISOString()||!row.challenge_hash||sha256Hex(challenge)!==row.challenge_hash)
     throw new QoopiaError('EXPIRED','Request a fresh verification prompt in Qoopia');
   db.query("UPDATE client_connections SET state='verified',verified_at=?,oauth_client_id=?,challenge_hash='' WHERE id=?")

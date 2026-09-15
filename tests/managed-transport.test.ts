@@ -101,3 +101,20 @@ test('pausing or stopping during an in-flight registry lease never reopens a pub
     }finally{supervisor.stop();fs.rmSync(root,{recursive:true,force:true});}
   }
 });
+
+test('network setup acknowledges before provider response, rejects duplicates and exposes resumable state',async()=>{
+  runMigrations();const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-managed-async-')),workspace=randomUUID();
+  db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(workspace,'Async network fixture',workspace);
+  const owner=bootstrapOwner(db,'Async network owner',undefined,workspace);
+  privateDirectory(path.join(root,'config'));durableWrite(path.join(root,'config/owner-identity.json'),JSON.stringify({ownerId:owner.agent_id,email:'fixture@example.test'}));
+  let release!:()=>void;const blocked=new Promise<void>(r=>release=r);
+  const transport=managedTransport(root,db,'/nonexistent-fixture',(async()=>{await blocked;return Response.json({id:'a'.repeat(43)});}) as typeof fetch,'https://auth.example.test');
+  try{
+    const start=performance.now();expect(transport.submit(owner.agent_id,{action:'network-start',method:'google'})).toEqual({accepted:true,code:'ACTION_IN_PROGRESS'});expect(performance.now()-start).toBeLessThan(100);
+    expect(transport.status().operation).toMatchObject({state:'running'});
+    expect(()=>transport.submit(owner.agent_id,{action:'network-start',method:'google'})).toThrow('running');
+    release();for(let i=0;i<100&&(transport.status().operation as any)?.state==='running';i++)await Bun.sleep(10);
+    expect(transport.status().operation).toMatchObject({state:'completed',result:{code:'ACCOUNT_CONFIRMATION_REQUIRED',open_url:'https://auth.example.test/google?request='+'a'.repeat(43)}});
+    expect(()=>JSON.stringify(transport.status())).not.toThrow();
+  }finally{release();transport.stop();fs.rmSync(root,{recursive:true,force:true});}
+});

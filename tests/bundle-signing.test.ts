@@ -1,3 +1,4 @@
+import {desktopRelease} from '../scripts/desktop-release.ts';
 import { afterEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -48,6 +49,8 @@ describe('publisher bundle signing mechanics (test key only; not production qual
   test('signs only the Bun executable with runtime entitlements and uses a temporary .dmg filename',()=>{
     if(process.platform!=='darwin')return;
     const root=temp(),directory=path.join(root,'bundle'),dmg=path.join(root,'bundle.dmg');fs.mkdirSync(directory);
+    const archive=path.join(root,'sparkle.tar.xz');fs.writeFileSync(archive,'synthetic archive');
+    fs.writeFileSync(path.join(directory,'DESKTOP-RELEASE.json'),JSON.stringify(desktopRelease(generateKeyPairSync('ed25519').publicKey.export({format:'pem',type:'spki'}).toString(),100)));
     const calls:string[]=[];let signedEntitlements='';
     const runner:CommandRunner=(command,args)=>{
       calls.push([command,...args].join(' '));
@@ -60,10 +63,10 @@ describe('publisher bundle signing mechanics (test key only; not production qual
     };
     const authorization={codesign_identity:'Developer ID Application: Example (TEAM123)',notary_keychain_profile:'owner-profile',notary_keychain:'/Users/example/Library/Keychains/login.keychain-db'};
     signAndVerifyDarwin(['/native/owner-peer.dylib'],'/bin/qoopia',authorization,runner);
-    const receipt=packageAndNotarizeDarwin(directory,dmg,authorization,runner);
+    const receipt=packageAndNotarizeDarwin(directory,dmg,authorization,runner,{file:archive,sha256:hash(fs.readFileSync(archive))});
     expect(receipt).toEqual({status:'Accepted',id:'test-request',sha256:hash(fs.readFileSync(dmg)),app:{status:'Accepted',id:'test-request',stapled:true}});
     const signs=calls.filter(call=>call.startsWith('/usr/bin/codesign --force'));
-    expect(signs).toHaveLength(4);
+    expect(signs).toHaveLength(9);
     expect(signs[0]).not.toContain('--entitlements');
     expect(signs[1]).toContain('--options runtime --timestamp --sign Developer ID Application: Example (TEAM123) --entitlements ');
     expect(signs[1]).toEndWith(' /bin/qoopia');

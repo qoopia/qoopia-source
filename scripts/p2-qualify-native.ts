@@ -52,7 +52,7 @@ for(const kind of kinds){
   if(preflight){
    prepareNativeSession(session,home);
    for(const dir of [launch.home,launch.env.TMPDIR!,launch.env.XDG_CONFIG_HOME!,launch.env.XDG_CACHE_HOME!,launch.env.XDG_DATA_HOME!])mkdirSync(dir,{mode:0o700});
-   record.auth_preflight=preflightNativeSubscription(kind,launch);
+   record.auth_preflight=await preflightNativeSubscription(kind,launch);
    record.reason='Native auth source preflight only; model/useful task NOT RUN';continue;
   }
   if(!execute){record.reason='No --execute-real-native flag; selected auth not verified';continue;}
