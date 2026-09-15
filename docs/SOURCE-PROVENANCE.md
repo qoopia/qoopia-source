@@ -35,3 +35,5 @@ Revision `f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d` adds shared RU/EN product an
 Canonical source `a8158244417912f3443891321a0e0ff026bd1e8c` fixes blocking native checks, background subscription setup, Telegram button updates and OAuth consent redirects. It adds the native Mac window, menu-bar controls and signed Sparkle updater. ChatGPT Web and Mac Desktop were qualified through isolated real-client write/read/idempotent replay. Existing apps need one manual app replacement to adopt Sparkle. Private operator state and acceptance conversations are excluded.
 
 Signed old-to-new installer acceptance found a cleanly closed WAL compatibility case. Canonical `890b67154a57e77eabe9809274d5336078cf0e42` initializes SQLite sidecars through a query-only handle during the authorized update, preserves application rows and retains the writer barrier. A regression test covers absent WAL/SHM files.
+
+Release website `359e9e7373e60817d36e78e05b7a335c9782d441` publishes 5.0.1 download hashes, the signed Sparkle feed and first-update instructions. Installer source remains `890b67154a57e77eabe9809274d5336078cf0e42`.
