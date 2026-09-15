@@ -1020,7 +1020,7 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "a217028f2ba659dbb467e15c8ea4bea6bfc3021c3b80464576184b4ebed9f38b",
+      "sha256": "60bb5087218efe924e7b2258175037d18d4019abcb10e871a194b9a2a5984cf1",
       "bytes": 1095,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -1082,7 +1082,7 @@
     },
     {
       "path": "marketing-site/updates/macos/appcast.xml",
-      "sha256": "58f532925f0f4f3e63394254a19d1d116ff34bd04ac5bd30526142f5c77796c2",
+      "sha256": "580b7fd6dd9f9bc7cc6ccbc3243c947cd2c46631acbe56dd21467491d2b6d87b",
       "bytes": 765,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
@@ -6051,5 +6051,6 @@
   "website_source": "363d40855200a4abdef195f9b10ed2c012fa8b80",
   "monitoring_source": "50cf27204ffaf969450ce10163f2da3e698237d0",
   "product_version": "5.0.2",
-  "release_503_source": "279a2d62b576e760ac89d10d02b30b9ab0f96bb7"
+  "release_503_source": "279a2d62b576e760ac89d10d02b30b9ab0f96bb7",
+  "website_503_source": "4e92f3c"
 }
