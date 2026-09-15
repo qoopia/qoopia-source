@@ -9,14 +9,14 @@ function read(relativePath: string): string {
 }
 
 describe("release artifact contracts", () => {
-  test("active product markers identify the unified P3 candidate", () => {
+  test("active product markers identify the current stable release", () => {
     const pkg = JSON.parse(read("package.json")) as { version: string };
     const http = read("src/http.ts");
     const cli = read("src/cli.ts");
     const installer = read("src/admin/install.ts");
     const mcpServer = read("src/mcp/server.ts");
 
-    expect(pkg.version).toBe("5.0.0-p3.0");
+    expect(pkg.version).toBe("5.0.2");
     for (const source of [http, cli, installer, mcpServer]) {
       expect(source).toContain("PRODUCT_VERSION");
       expect(source).not.toContain('version: "3.0.0"');

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { inventory, readJson, hash } from './files.ts';
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 export const bundleSchema = z.object({
-  format: z.literal('qoopia-bundle/1'), version: z.string().regex(/^5\.0\.0(?:-[a-z0-9.-]+)?$/),
+  format: z.literal('qoopia-bundle/1'), version: z.string().regex(/^5\.0\.(?:0|[1-9][0-9]*)(?:-[a-z0-9.-]+)?$/),
   horizon: z.literal('QOOPIA-V-1'), api_version: z.literal(1), build_sha: z.string().regex(/^[a-f0-9]{40}$/),
   source_digest: hex, target: z.enum(['darwin-arm64', 'linux-x64']), bun_version: z.string(),
   schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43)]),

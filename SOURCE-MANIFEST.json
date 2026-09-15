@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "4406f46aacf97dac3e69746f8c6d0d23808dff82",
+  "source_snapshot": "f647faff39c21f0556d757c6398f32e4c8301849",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": false,
   "files": [
@@ -187,8 +187,8 @@
     },
     {
       "path": "deploy/identity.Dockerfile",
-      "sha256": "f5e36db449cd8a7521b63d4cfa8c85ccbf326cefb256023eabba8801094f0c83",
-      "bytes": 1354,
+      "sha256": "4d831e0e90a9ad853626c99805659fc973494383a3bae43441ef20ffd2c3ad6a",
+      "bytes": 1419,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "680db1875207b3164c63208b2d680fa6219c2682"
@@ -1523,8 +1523,8 @@
     },
     {
       "path": "package.json",
-      "sha256": "aa588940e41777ecc23d89e9815d252feaa024b81bee743d8c60e6772feb2676",
-      "bytes": 2698,
+      "sha256": "f7bd9088791eb4c69500a62b59522377f9769722987b565551b2c391911b2c2f",
+      "bytes": 2693,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "15497aea4aba311f9edd16da461b8ca8eff4538b"
@@ -1750,8 +1750,8 @@
     },
     {
       "path": "scripts/desktop-release.ts",
-      "sha256": "d33c9891715b62dd833191a8097841a32773ef5b29eacf72392e86c52fbee3b7",
-      "bytes": 638,
+      "sha256": "429e0fba98349f3235142ff01198e0689570c699d1960769e75089b0d19d6c1f",
+      "bytes": 711,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
@@ -2904,10 +2904,10 @@
     },
     {
       "path": "src/delivery/bundle.ts",
-      "sha256": "2b749fff4e70ec1d258bd87a8d13dff41da08a7546f437cf416fd473deb2ff79",
-      "bytes": 4186,
+      "sha256": "7b0613d4a2de785b078c03f8c80e815b648ef0c0db0f48b6f850652cb3056bef",
+      "bytes": 4202,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "c87421015468d8528ea2e8e54a8f9f00be620f42"
     },
     {
@@ -3215,8 +3215,8 @@
     },
     {
       "path": "src/identity/broker.ts",
-      "sha256": "6095d86f3eca17bc772c377482f280839adc1f437c176368162edef197c7ea52",
-      "bytes": 24403,
+      "sha256": "9a0892b04c82bd97d0c23dc3d4bc89412eceae398e99afe587fc318af649a63d",
+      "bytes": 24488,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "80616b9fd56eeb40b8830e9e027ca82e5da5010e"
@@ -5518,10 +5518,10 @@
     },
     {
       "path": "tests/product-version.test.ts",
-      "sha256": "fec56571330e594dc3c3682dd2404c67640d6058510ad4c44e26356701c951a7",
-      "bytes": 392,
+      "sha256": "d6b4f252daec4e80ed3399833d7ecabd3f5eb390c1c81dad33da28fcdea22b73",
+      "bytes": 819,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "8b7a41614729ede2a1c054c123880eb616755016"
     },
     {
@@ -5614,10 +5614,10 @@
     },
     {
       "path": "tests/release-artifacts.test.ts",
-      "sha256": "a65131331badd500816e66f08ba0a718bcb83b4ebcf7df22d8410f076cd59177",
-      "bytes": 4862,
+      "sha256": "48e56f63c918dd7567b3f152190a97f5b666e9ddccd9d8c84e7f1051fb84acbc",
+      "bytes": 4859,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "04aface56a2a93426e21a0edb14e6ca5dd329d2b"
     },
     {
@@ -6006,7 +6006,8 @@
   ],
   "account_service_source": "2b4035d97dfd04315c88d49d947b1763f3e2955c",
   "discovery_source": "f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d",
-  "desktop_release_source": "4406f46aacf97dac3e69746f8c6d0d23808dff82",
+  "desktop_release_source": "f647faff39c21f0556d757c6398f32e4c8301849",
   "website_source": "0c67b34de669d50fe32ad8da600d77901fd17a72",
-  "monitoring_source": "50cf27204ffaf969450ce10163f2da3e698237d0"
+  "monitoring_source": "50cf27204ffaf969450ce10163f2da3e698237d0",
+  "product_version": "5.0.2"
 }
