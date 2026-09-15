@@ -43,3 +43,5 @@ Release website `359e9e7373e60817d36e78e05b7a335c9782d441` publishes 5.0.1 downl
 Canonical product source `279a2d62b576e760ac89d10d02b30b9ab0f96bb7`. Authorization consolidation, dashboard/recall module extraction, route regression coverage and authenticated release package verification. This update includes selected source files only; no private development ancestry or operator records. Installer publication is recorded separately.
 
 The public compose template replaces owner-specific instance names and environment paths with operator parameters. It supplies the file already referenced by the public Dockerfile and rollback check. Public CHANGELOG contains only the current release notes; private historical operational notes are excluded.
+
+5.0.3 website metadata and signed Sparkle feed match canonical website merge `4e92f3c`. Packaged product source remains `279a2d62b576e760ac89d10d02b30b9ab0f96bb7`.
