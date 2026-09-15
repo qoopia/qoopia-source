@@ -1006,9 +1006,9 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "a8db398af4f6608d2e28d5d997d35fc5ab8d3d2c842508345bd72edc45904f8a",
+      "sha256": "a217028f2ba659dbb467e15c8ea4bea6bfc3021c3b80464576184b4ebed9f38b",
       "bytes": 1095,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "0ee6c34668eb99d19ee4d0ddb919fb51fbd2cb79"
     },
@@ -1068,9 +1068,9 @@
     },
     {
       "path": "marketing-site/updates/macos/appcast.xml",
-      "sha256": "9713cfd702fdc4eca3f9adf6734b027532b241044d4a155bc91d60014b61bbf2",
+      "sha256": "58f532925f0f4f3e63394254a19d1d116ff34bd04ac5bd30526142f5c77796c2",
       "bytes": 765,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
@@ -6007,7 +6007,7 @@
   "account_service_source": "2b4035d97dfd04315c88d49d947b1763f3e2955c",
   "discovery_source": "f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d",
   "desktop_release_source": "f647faff39c21f0556d757c6398f32e4c8301849",
-  "website_source": "0c67b34de669d50fe32ad8da600d77901fd17a72",
+  "website_source": "363d40855200a4abdef195f9b10ed2c012fa8b80",
   "monitoring_source": "50cf27204ffaf969450ce10163f2da3e698237d0",
   "product_version": "5.0.2"
 }
