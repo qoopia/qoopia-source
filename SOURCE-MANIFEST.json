@@ -2953,14 +2953,6 @@
       "original_blob": "35a892cbc4468670719630b2ce447fde0e2fc202"
     },
     {
-      "path": "src/delivery/files.ts",
-      "sha256": "d8d280c16870a8e270a165691c6f9f6cc7c1dedf48e23eba4e05e184fef0ff09",
-      "bytes": 10138,
-      "source_snapshot_identical": false,
-      "original_runtime_identical": false,
-      "original_blob": "811c78090bd3e96a3c97b6a1f1f1688551a9d287"
-    },
-    {
       "path": "src/delivery/functional-diagnostic.ts",
       "sha256": "1eb82118dd8af68317090d239c629925cd7ce651badd804a631c1386901873cf",
       "bytes": 4682,
