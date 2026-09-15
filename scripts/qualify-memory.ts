@@ -22,7 +22,7 @@ try {
  const runtime=process.argv.includes('--codex')?'codex':'claude_code',selected=process.argv.indexOf('--subscription-root'),subscriptionRoot=selected>=0?process.argv[selected+1]:undefined;
  let native:any={status:'NOT_RUN'};
  if(subscriptionRoot){
-  process.env.PATH=nativeRuntimeEnvironment(subscriptionRoot,{PATH:process.env.PATH}).PATH;
+  process.env.PATH=(await nativeRuntimeEnvironment(subscriptionRoot,{PATH:process.env.PATH})).PATH;
   const profile=memoryProfilePath(ws.id);fs.mkdirSync(path.dirname(profile),{recursive:true,mode:0o700});fs.writeFileSync(profile,JSON.stringify({runtime,model:runtime==='codex'?'gpt-5.6-luna':'claude-haiku-4-5',login_backend:runtime==='codex'?'file':'config-dir',login_store:path.join(subscriptionRoot,'native-logins',runtime)}),{mode:0o600});
   const judged=[];for(const c of cases.slice(0,6)){const t=performance.now();const r=await recall({workspace_id:ws.id,caller_agent_id:agent.id,is_admin:false,query:c.queries[2]!,limit:5});console.error('Judged '+c.id+': '+r.judging?.applied+' '+(r.judging?.error??''));judged.push({expected:c.id,rank:r.results.findIndex(n=>n.id===ids.get(c.id))+1,judging:r.judging,ms:performance.now()-t});}
   continuityEvent(ws.id,agent.id,{session_id:'qualification-first',project:'/qualification',runtime,event:'progress',messages:[{id:'1',role:'user',content:'Цель: обновить Qoopia. База должна остаться на Corsair.'},{id:'2',role:'assistant',content:'Создана проверенная резервная копия /backups/before.db.'}]});

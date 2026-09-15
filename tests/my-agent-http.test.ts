@@ -30,6 +30,8 @@ test('managed agent HTTP requires owner cookie, same-origin CSRF and an authoriz
     expect((await fetch(url,{...post,headers:{...headers,origin}})).status).toBe(403);
     expect((await fetch(url,{...post,headers:{...headers,origin:'https://foreign.test','x-qoopia-csrf':'1'}})).status).toBe(403);
     expect((await fetch(url,{...post,headers:{...headers,origin,'x-qoopia-csrf':'1'}})).status).toBe(200);
+    const accepted=await fetch(url,{method:'POST',headers:{...headers,origin,'x-qoopia-csrf':'1'},body:JSON.stringify({action:'setup',provider:'codex',acceptPermissions:true})});
+    expect(accepted.status).toBe(202);expect(await accepted.json()).toEqual({accepted:true});
     const file=await fetch(url+'/file?path=result.txt',{headers});expect(file.status).toBe(200);expect(file.headers.get('content-disposition')).toContain('attachment');expect(file.headers.get('cache-control')).toBe('no-store');expect(await file.text()).toBe('Synthetic HTTP artifact');
     expect((await fetch(url+'/file?path=../credentials.json',{headers})).status).toBe(403);
     expect((await fetch(url+'/file?path=result.txt',{headers:{cookie:cookie(agent.id)}})).status).toBe(403);

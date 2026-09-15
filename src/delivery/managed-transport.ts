@@ -23,6 +23,9 @@ export function enableManagedTransport(root:string,database:Database,bundle:stri
   installed=managedTransport(root,database,path.join(bundle,'assets/native/cloudflared'));
   void installed.refresh();process.once('exit',()=>installed?.stop());return installed;
 }
+export function submitManagedNetworkAction(ownerId:string,input:unknown) {
+  return installed?installed.submit(ownerId,input):managedNetworkAction(ownerId,input);
+}
 export function managedNetworkAction(ownerId:string,input:unknown) {
   if(!installed)return {format:'qoopia-connections/1',state:'unsupported',code:'MANAGED_INSTALLATION_REQUIRED',
     next_action:'Use the installed Qoopia service on the machine holding this workspace.'};
@@ -32,6 +35,7 @@ export function managedNetworkAction(ownerId:string,input:unknown) {
 /** The wizard and UID-authenticated CLI use this same resumable, owner-scoped workflow. */
 export function managedTransport(root:string,database:Database,binary:string,request:typeof fetch=fetch,loginOrigin=LOGIN_ORIGIN) {
   let busy=false;
+  let operation: {state:'running'|'completed'|'failed';result?:Record<string,unknown>}|undefined;
   const result=(state:string,code:string,extra:Record<string,unknown>={})=>({format:'qoopia-connections/1',state,code,...extra});
   const post=async(route:string,body:unknown)=>{
     const response=await request(loginOrigin+route,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),
@@ -74,7 +78,7 @@ export function managedTransport(root:string,database:Database,binary:string,req
         next_action:'The account confirmation expired. Start sign-in again; the saved installation identity and local memory are preserved.'});
     return result(c?.device?.state==='revoked'?'error':!c?.device?'requires_user_action':c.enabled?health.reachable?'ready':'temporarily_unavailable':'requires_user_action',
       c?.device?.state==='revoked'?'DEVICE_REVOKED':!c?.device?c?.flow?'ACCOUNT_CONFIRMATION_REQUIRED':'NETWORK_SETUP_REQUIRED':c.enabled?health.reachable?'NETWORK_ONLINE':'NETWORK_CONNECTING':'NETWORK_DISABLED',
-      {transport:health,device:c?.device??null,enabled:c?.enabled??false,account_login_pending:!!c?.flow,
+      {operation,transport:health,device:c?.device??null,enabled:c?.enabled??false,account_login_pending:!!c?.flow,
         next_action:!c?.device?'Confirm the installation account, then resume setup.':!c.enabled?'Enable external access when needed.':'The installation reconnects automatically while awake and online.'});
   };
   const action=async(ownerId:string,raw:unknown)=>{
@@ -145,6 +149,17 @@ export function managedTransport(root:string,database:Database,binary:string,req
       return result('temporarily_unavailable','NETWORK_SERVICE_UNAVAILABLE',{next_action:'Keep this setup and resume later. Local memory remains available.'});
     }finally{busy=false;}
   };
+  const submit=(ownerId:string,raw:unknown)=>{
+    const input=networkActionSchema.parse(raw),owner=localOwner(database,ownerId);authorize(database,owner,'owner');
+    const config=readTransport(root);if(config&&(config.owner_id!==ownerId||config.workspace_id!==owner.workspace_id))throw new QoopiaError('FORBIDDEN','Transport belongs to another workspace');
+    if(['network-plan','network-status','network-devices'].includes(input.action))return action(ownerId,input);
+    if(operation?.state==='running'||busy)throw new QoopiaError('CONFLICT','A connection action is running');
+    const current:{state:'running'|'completed'|'failed';result?:Record<string,unknown>}={state:'running'};operation=current;
+    void action(ownerId,input).then(value=>{current.result={...value};delete current.result.operation;current.state='completed';},()=>{
+      current.state='failed';current.result=result('temporarily_unavailable','NETWORK_SERVICE_UNAVAILABLE',{next_action:'Keep this setup and try again. Local memory remains available.'});
+    });
+    return {accepted:true,code:'ACTION_IN_PROGRESS'};
+  };
   const existing=readTransport(root);if(existing?.device)env.PUBLIC_URL=existing.device.public_origin;
-  return {action,status,refresh:supervisor.refresh,stop:supervisor.stop};
+  return {action,submit,status,refresh:supervisor.refresh,stop:supervisor.stop};
 }

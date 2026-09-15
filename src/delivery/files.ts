@@ -138,3 +138,31 @@ export function copyInventory(source: string, target: string, members: ReturnTyp
     const to = memberPath(target, name); privateDirectory(path.dirname(to)); durableWrite(to, bytes, record.mode);
   }
 }
+
+/** Full byte verification in bounded chunks, yielding between filesystem reads. */
+export async function inventoryAsync(root:string,exclude=new Set<string>()) {
+  const result:ReturnType<typeof inventory>={};let total=0,count=0;
+  async function walk(dir:string,prefix='',depth=0):Promise<void>{
+    if(depth>24)throw new Error('Artifact depth exceeded');
+    for(const n of (await fs.promises.readdir(dir)).sort()){
+      const name=prefix+n,p=memberPath(root,name),s=await fs.promises.lstat(p);
+      if(s.isDirectory()){await walk(p,name+'/',depth+1);continue;}
+      if(exclude.has(name))continue;
+      if(!s.isFile()||s.nlink!==1)throw new Error('Artifact must be a regular unlinked file');
+      if(++count>10000||(total+=s.size)>750*1024*1024)throw new Error('Artifact size exceeded');
+      const handle=await fs.promises.open(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+      try{
+        const before=await handle.stat();
+        if(before.dev!==s.dev||before.ino!==s.ino)throw new Error('Artifact changed while reading');
+        const digest=new Bun.CryptoHasher('sha256'),buffer=Buffer.alloc(256*1024);let size=0;
+        while(true){const {bytesRead}=await handle.read(buffer,0,buffer.length,null);if(!bytesRead)break;
+          size+=bytesRead;if(size>s.size)throw new Error('Artifact changed while reading');digest.update(buffer.subarray(0,bytesRead));
+        }
+        const after=await handle.stat(),current=await fs.promises.lstat(memberPath(root,name));
+        if(size!==s.size||after.mtimeMs!==s.mtimeMs||after.ctimeMs!==s.ctimeMs||current.ino!==s.ino||current.dev!==s.dev)throw new Error('Artifact changed while reading');
+        result[name]={size,sha256:digest.digest('hex'),mode:s.mode&0o777};
+      }finally{await handle.close();}
+    }
+  }
+  safePath(root);await walk(root);return result;
+}

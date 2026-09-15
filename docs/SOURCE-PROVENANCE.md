@@ -29,3 +29,7 @@ Revision `2b4035d97dfd04315c88d49d947b1763f3e2955c` adds repository-scoped owner
 ## Public explanation and discovery follow-up
 
 Revision `f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d` adds shared RU/EN product answers, public-site corrections and bounded discovery checks. It does not change the signed installers, memory runtime or account service. Editorial review is separate from consumer search visibility. Operator schedules and private observation bundles are excluded.
+
+## Native desktop and responsiveness release
+
+Canonical source `a8158244417912f3443891321a0e0ff026bd1e8c` fixes blocking native checks, background subscription setup, Telegram button updates and OAuth consent redirects. It adds the native Mac window, menu-bar controls and signed Sparkle updater. ChatGPT Web and Mac Desktop were qualified through isolated real-client write/read/idempotent replay. Existing apps need one manual app replacement to adopt Sparkle. Private operator state and acceptance conversations are excluded.

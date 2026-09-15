@@ -51,7 +51,7 @@ test('local adapter OAuth uses real scoped discovery/PKCE, validates callback st
     const consent=await fetch(consentUrl,{headers:{cookie}});expect(consent.status).toBe(200);
     const nonce=(await consent.text()).match(/name="nonce" value="([^"]+)"/)![1]!;
     const approval=await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',redirect:'manual',headers:{cookie,origin:base,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket,nonce})});expect(approval.status).toBe(302);
-    const finalized=await fetch(approval.headers.get('location')!,{redirect:'manual'});expect(finalized.status).toBe(302);
+    const finalized=await fetch(new URL(approval.headers.get('location')!,base),{redirect:'manual'});expect(finalized.status).toBe(302);
     const approved=new URL(finalized.headers.get('location')!),foreign=new URL(approved);foreign.searchParams.set('iss','https://foreign.example');
     expect((await fetch(foreign)).status).toBe(400);expect((await fetch(approved)).status).toBe(200);
     const result=await pending;expect(result.verified).toBe(false);expect(result.code).toBe('CLIENT_CALL_REQUIRED');

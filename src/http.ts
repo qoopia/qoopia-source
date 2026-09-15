@@ -57,7 +57,7 @@ import {
   validateOAuthResource,
 } from "./auth/oauth.ts";
 import { QoopiaError } from "./utils/errors.ts";
-import {myAgentState,myAgentAction,readAgentArtifact,recoverMyAgentRuns,stopMyAgents} from './services/my-agent.ts';
+import {myAgentState,submitMyAgentAction,readAgentArtifact,recoverMyAgentRuns,stopMyAgents} from './services/my-agent.ts';
 import {telegramState,telegramAction,startTelegramChannels,stopTelegramChannels} from './services/my-agent-telegram.ts';
 import { db } from "./db/connection.ts";
 import { getPendingMigrations } from "./db/migrate.ts";
@@ -547,8 +547,8 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       if(method==='GET'){const query=new URL(rawUrl,'http://local').searchParams;return json(res,200,{...myAgentState(auth.agent_id,query.get('conversation')??undefined,{runBefore:query.get('runBefore')??undefined,conversationOffset:Number(query.get('conversationOffset')??0)}),telegram_setup:telegramState(auth.agent_id)},req);}
       if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
       const body=JSON.parse((await readBodyLimited(req,32*1024)).toString());
-      const result=typeof body?.action==='string'&&body.action.startsWith('telegram-')?await telegramAction(auth.agent_id,body):await myAgentAction(auth.agent_id,body);
-      return json(res,200,result,req);
+      const result=typeof body?.action==='string'&&body.action.startsWith('telegram-')?await telegramAction(auth.agent_id,body):await submitMyAgentAction(auth.agent_id,body);
+      return json(res,'accepted' in result&&result.accepted?202:200,result,req);
     }catch(error){return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,{error_description:error instanceof QoopiaError?error.message:'Agent action failed. Check your connection and try again.'},req);}
   }
   if(url==='/api/dashboard/bridges') {
@@ -570,20 +570,22 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     const auth=checkDashboardAuth(req);
     if(!auth||auth.source!=='cookie')return json(res,401,{error_description:'Sign in as owner'},req);
     if(isReadOnlyInstance())return json(res,403,{error_description:'Canonical workspace required'},req);
-    const {memorySetupState,memorySetupAction}=await import('./services/memory-setup.ts');
+    const {memorySetupState,submitMemorySetupAction}=await import('./services/memory-setup.ts');
     try {
       if(url==='/api/dashboard/connection-setup'){
-        const {managedNetworkAction}=await import('./delivery/managed-transport.ts');
+        const {managedNetworkAction,submitManagedNetworkAction}=await import('./delivery/managed-transport.ts');
         if(method==='GET')return json(res,200,{...connectionAction(auth.agent_id,{action:'status'}),network:await managedNetworkAction(auth.agent_id,{action:'network-status'})},req);
         if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{code:'FORBIDDEN',state:'error'},req);
         const input=JSON.parse((await readBodyLimited(req,4096)).toString());
-        return json(res,200,typeof input?.action==='string'&&input.action.startsWith('network-')?await managedNetworkAction(auth.agent_id,input):await connectionAction(auth.agent_id,input),req);
+        const result=typeof input?.action==='string'&&input.action.startsWith('network-')?await submitManagedNetworkAction(auth.agent_id,input):await connectionAction(auth.agent_id,input);
+        return json(res,'accepted' in result&&result.accepted?202:200,result,req);
       }
       if(url==='/api/dashboard/connections')return json(res,method==='GET'?200:405,method==='GET'?browserConnectionState(auth.agent_id):{error_description:'Read only'},req);
       if(method==='GET')return json(res,200,memorySetupState(auth.agent_id),req);
       if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
       const body=JSON.parse((await readBodyLimited(req,12*1024)).toString());
-      return json(res,200,await memorySetupAction(auth.agent_id,body),req);
+      const result=await submitMemorySetupAction(auth.agent_id,body);
+      return json(res,'accepted' in result&&result.accepted?202:200,result,req);
     } catch(error){return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,
       {state:'error',code:error instanceof QoopiaError?error.code:'INVALID_INPUT',error_description:error instanceof QoopiaError?error.message:'Setup failed; check the selected action'},req);}
   }
@@ -2148,12 +2150,14 @@ function handleDashboardOAuthConsentApprove(
     detail: `client=${ticket!.client_id} ticket_fp=${ticketFp} approved`,
   });
 
-  const resourceId=ticket!.resource?resourceConnection(ticket!.resource):undefined;
-  const target = new URL("/oauth/authorize/finalize", resourceId?connectionOrigin(resourceId):env.PUBLIC_URL);
-  target.searchParams.set("ticket", ticket!.id);
+  // Finalize on the consent page's origin. A desktop dashboard and its public
+  // MCP edge have different origins; sending this form through the public edge
+  // violates the consent page's CSP before the client callback is reached.
+  // The ticket still determines the resource, issuer and registered callback.
+  const target = "/oauth/authorize/finalize?" + new URLSearchParams({ticket: ticket!.id});
   logger.info(`OAuth consent APPROVED → 302 finalize ticket_fp=${fingerprintIdentifier(ticket!.id, 12)}`);
   res.writeHead(302, {
-    location: target.toString(),
+    location: target,
     "cache-control": "no-store",
   });
   res.end();

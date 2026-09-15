@@ -93,8 +93,8 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
   try {
     const base=privateDirectory(`/var/tmp/qoopia-memory-${process.getuid!()}`);
     directory=fs.mkdtempSync(path.join(base,'request-'));fs.chmodSync(directory,0o700);
-    const launch=prepareMemoryLaunch(profile,directory,prompt,nativeRuntimeEnvironment(memoryRoot(),{PATH:process.env.PATH}));
-    preflightNativeSubscription(profile.runtime,launch);
+    const launch=prepareMemoryLaunch(profile,directory,prompt,await nativeRuntimeEnvironment(memoryRoot(),{PATH:process.env.PATH}));
+    await preflightNativeSubscription(profile.runtime,launch);
     const result=await new Promise<{code:number|null;stdout:string;stderr:string}>((resolve,reject)=>{
       const child=spawn(launch.binary,launch.args,{cwd:launch.cwd,env:launch.env,stdio:['pipe','pipe','pipe']});
       let stdout='',stderr='',failed=false;

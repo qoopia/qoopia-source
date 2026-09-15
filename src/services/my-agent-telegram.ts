@@ -35,7 +35,7 @@ export async function telegramAction(owner:string,raw:unknown) {
   try {
   if(input.action==='telegram-connect') {
     if(polling.has(owner)||settings.telegram_user_id)throw new QoopiaError('CONFLICT','Disconnect the current bot before changing it');
-    const bot=await telegramCall(input.token,'getMe',{}),webhook=await telegramCall(input.token,'getWebhookInfo',{});
+    const [bot,webhook]=await Promise.all([telegramCall(input.token,'getMe',{}),telegramCall(input.token,'getWebhookInfo',{})]);
     if(!bot.is_bot||!/^\w{5,32}$/.test(bot.username??''))throw new QoopiaError('INVALID_INPUT','Telegram bot has no valid username');
     if(webhook.url)throw new QoopiaError('CONFLICT','This bot has a webhook. Use a separate bot or disconnect its current application.');
     if(db.query('SELECT owner_id FROM qoopia_agent_settings WHERE telegram_username=? AND owner_id<>?').get(bot.username,owner))throw new QoopiaError('CONFLICT','This bot is already connected to another owner in this installation');
@@ -47,8 +47,8 @@ export async function telegramAction(owner:string,raw:unknown) {
   if(input.action==='telegram-confirm') {
     const p=pending.get(owner);
     if(!p||p.expires<Date.now()||!p.user||p.user.id!==input.userId||p.user.chat!==input.chatId)throw new QoopiaError('CONFLICT','Link expired or account changed. Connect again.');
-    db.query('UPDATE qoopia_agent_settings SET telegram_user_id=?,telegram_chat_id=? WHERE owner_id=?').run(p.user.id,p.user.chat,owner);pending.delete(owner);
-    await telegramCall(token(owner),'sendMessage',{chat_id:p.user.chat,text:'Qoopia подключена. Напишите вашему агенту. /new — новая задача, /stop — остановить. Подтверждения действий доступны в дашборде.\nQoopia is connected. Send your agent a message. /new starts a task; /stop stops it. Review approvals in your dashboard.'});
+    await telegramCall(token(owner),'sendMessage',{chat_id:input.chatId,text:'Qoopia подключена. Напишите вашему агенту. /new — новая задача, /stop — остановить. Подтверждения действий доступны в дашборде.\nQoopia is connected. Send your agent a message. /new starts a task; /stop stops it. Review approvals in your dashboard.'});
+    db.query('UPDATE qoopia_agent_settings SET telegram_user_id=?,telegram_chat_id=? WHERE owner_id=?').run(input.userId,input.chatId,owner);pending.delete(owner);
     return {linked:true};
   }
   pending.delete(owner);errors.delete(owner);

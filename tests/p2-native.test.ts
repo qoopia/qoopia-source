@@ -339,7 +339,7 @@ test('Native auth modes fail closed; billing compatibility requires explicit API
  }
 });
 
-test('Explicit native stores retain project discovery without reading credentials or inheriting billing/customizations',()=>{
+test('Explicit native stores retain project discovery without reading credentials or inheriting billing/customizations',async()=>{
  const root=realpathSync(mkdtempSync(join(tmpdir(),'p2-store-fixture-'))),selected=join(root,'selected'),home=join(root,'disposable');mkdirSync(selected);
  try{
   // Synthetic content only. No official CLI is invoked by these launch checks.
@@ -354,15 +354,15 @@ test('Explicit native stores retain project discovery without reading credential
    for(const flag of ['skills.include_instructions=true','skills.bundled.enabled=false','features.plugins=false','features.hooks=false','features.apps=false','features.multi_agent=false','project_doc_max_bytes=0',`cli_auth_credentials_store="${backend}"`])expect(launch.args).toContain(flag);
    expect(launch.args).toContain('forced_login_method="chatgpt"');
    expect(JSON.stringify(launch)).not.toContain('synthetic-unread-credential');
-   expect(()=>preflightNativeSubscription('codex',launch)).toThrow('config.toml');
+   await expect(preflightNativeSubscription('codex',launch)).rejects.toThrow('config.toml');
    expect(nativeModelStatus(launch.options.model,nativeModelEvidence('codex',''))).toBe('unknown');
   }
   expect(hashTree(selected)).toEqual(before);
   const codex=nativeLaunch('codex',root,'prompt',{auth_mode:'subscription-store',...QUALIFICATION_MODELS.codex,login_store:selected,login_backend:'file'},source,home);
   writeFileSync(join(selected,'config.toml'),'[projects."/fixture/generated-task"]\ntrust_level = "trusted"\n');
-  expect(()=>preflightNativeSubscription('codex',codex)).toThrow('executable is unavailable');
+  await expect(preflightNativeSubscription('codex',codex)).rejects.toThrow('executable is unavailable');
   writeFileSync(join(selected,'config.toml'),'[projects."/fixture/generated-task"]\ntrust_level = "trusted"\n[profiles.unexpected]\nmodel_provider = "fixture"\n');
-  expect(()=>preflightNativeSubscription('codex',codex)).toThrow('config.toml');
+  await expect(preflightNativeSubscription('codex',codex)).rejects.toThrow('config.toml');
   // A dangling link also blocks discovery: existsSync alone would miss it.
   symlinkSync(join(root,'absent'),join(selected,'skills'));
   expect(()=>nativeLaunch('codex',root,'prompt',{auth_mode:'subscription-store',...QUALIFICATION_MODELS.codex,login_store:selected,login_backend:'file'},source,home)).toThrow('skills directory');
@@ -386,7 +386,7 @@ test('Explicit native stores retain project discovery without reading credential
  }finally{rmSync(root,{recursive:true,force:true});}
 });
 
-test('Store selection fails closed on missing, ambiguous and linked contexts; unavailable CLI cannot start a task',()=>{
+test('Store selection fails closed on missing, ambiguous and linked contexts; unavailable CLI cannot start a task',async()=>{
  const root=realpathSync(mkdtempSync(join(tmpdir(),'p2-store-unavailable-')));
  try{
   const base={auth_mode:'subscription-store',...QUALIFICATION_MODELS.codex},source={PATH:'/nonexistent-p2-fixture'};
@@ -397,7 +397,7 @@ test('Store selection fails closed on missing, ambiguous and linked contexts; un
   expect(()=>nativeLaunch('codex',root,'prompt',{...base,login_store:join(root,'link'),login_backend:'file'},source)).toThrow('symlink');
   expect(()=>nativeLaunch('codex',root,'prompt',{...base,auth_mode:'api-key',login_store:root,login_backend:'file'},source)).toThrow('requires subscription-store');
   const launch=nativeLaunch('codex',root,'prompt',{...base,login_store:root,login_backend:'file'},source);
-  expect(()=>preflightNativeSubscription('codex',launch)).toThrow('executable is unavailable');
+  await expect(preflightNativeSubscription('codex',launch)).rejects.toThrow('executable is unavailable');
   expect(readdirSync(root)).toEqual(['link']);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
@@ -519,7 +519,7 @@ test('Qualification CLI keeps distinct models and NOT RUN with missing auth or w
 });
 
 
-test('Configured-profile Codex is explicit, permits existing skills without credential reads and retains strict defaults',()=>{
+test('Configured-profile Codex is explicit, permits existing skills without credential reads and retains strict defaults',async()=>{
  const root=realpathSync(mkdtempSync(join(tmpdir(),'p2-configured-'))),selected=join(root,'selected'),home=join(root,'native');mkdirSync(selected);
  try{
   mkdirSync(join(selected,'skills'));
@@ -541,7 +541,7 @@ test('Configured-profile Codex is explicit, permits existing skills without cred
   symlinkSync(join(root,'no-dotenv'),join(selected,'.env'));
   expect(()=>nativeLaunch('codex',root,'prompt',{...native,configured_profile_functional:true},source,home)).toThrow('startup cannot ignore');
   rmSync(join(selected,'.env'));
-  expect(()=>preflightNativeSubscription('codex',launch)).toThrow('status cannot ignore user config');
+  await expect(preflightNativeSubscription('codex',launch)).rejects.toThrow('status cannot ignore user config');
   for(const change of [{auth_mode:'api-key'},{auth_mode:'subscription'},{login_backend:'keyring'}])
    expect(()=>nativeLaunch('codex',root,'prompt',{...native,...change,configured_profile_functional:true},source,home)).toThrow('requires Codex subscription-store');
   expect(()=>nativeLaunch('claude_code',root,'prompt',{...native,...QUALIFICATION_MODELS.claude_code,login_backend:'config-dir',configured_profile_functional:true},source,home)).toThrow('requires Codex subscription-store');

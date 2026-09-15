@@ -1,3 +1,6 @@
+import {prepareSparkle} from './prepare-sparkle.ts';
+import {updateFeed} from './update-feed.ts';
+import {desktopRelease} from './desktop-release.ts';
 import {agentKitFiles,agentKitManifest} from '../src/agent-kit/index.ts';
 import {prepareMemoryModel} from './prepare-memory-model.ts';
 import {prepareLinuxSupport} from './prepare-linux-support.ts';
@@ -13,7 +16,7 @@ import { buildOwnerPeer } from './build-owner-peer.ts';
 import { buildLinuxLauncher, LINUX_GUI_LAUNCHER } from './build-linux-launcher.ts';
 import { measureBootstrap } from './measure-bootstrap.ts';
 import { assertCleanSource, loadReleaseAuthorization, packageAndNotarizeDarwin, runPublisherSigner, signAndVerifyDarwin } from './bundle-signing.ts';
-const args=process.argv.slice(2), value=(name:string)=>args[args.indexOf(name)+1], noticeCheck=args.includes('--notice-check'),fixture=args.includes('--test-fixture'),publisher=args.includes('--publisher');
+const args=process.argv.slice(2), value=(name:string)=>{const i=args.indexOf(name);return i>=0?args[i+1]:undefined;}, noticeCheck=args.includes('--notice-check'),fixture=args.includes('--test-fixture'),publisher=args.includes('--publisher');
 if(!noticeCheck&&fixture===publisher)throw new Error('Select exactly one signing mode: --test-fixture or --publisher');
 if(!noticeCheck&&(!args.includes('--out')||!path.isAbsolute(value('--out')??'')))throw new Error('--out absolute new directory required');
 const finalOut=value('--out')!;
@@ -82,6 +85,7 @@ for(const name of ['connections-guide-en.html','connections-guide-ru.html','conn
 privateDirectory(path.join(out,'agent-guide'));
 for(const [name,text] of Object.entries(agentKitFiles))durableWrite(path.join(out,'agent-guide',name),text);
 durableWrite(path.join(out,'agent-guide','manifest.json'),JSON.stringify({...agentKitManifest(),source:git.stdout.trim()},null,2)+'\n');
+if(target==='darwin-arm64'){const stamp=spawnSync('git',['show','-s','--format=%ct','HEAD'],{encoding:'utf8'});if(stamp.status!==0)throw new Error('Desktop build timestamp unavailable');durableWrite(path.join(out,'DESKTOP-RELEASE.json'),JSON.stringify(desktopRelease(publicPem,Number(stamp.stdout.trim()))));}
 const launcher=target==='darwin-arm64'?'Open Qoopia.command':'open-qoopia.sh';
 durableWrite(path.join(out,launcher),'#!/bin/sh\ncd -- "$(dirname -- "$0")" || exit 1\nexec ./qoopia open "$@"\n');
 if(target==='linux-x64')buildLinuxLauncher(out);
@@ -130,8 +134,11 @@ fs.renameSync(out,finalOut);finalized=true;
 const sealedDirectory=JSON.stringify(inventory(finalOut));
 let notarization:{status:string,id:string|null,sha256:string}|undefined;
 if(publisher&&target==='darwin-arm64'){
+ const downloadUrl=value('--update-download-url');if(!downloadUrl)throw new Error('Darwin release requires --update-download-url for the signed appcast');
+ await prepareSparkle();
  const dmg=`${finalOut}.dmg`;
  notarization=packageAndNotarizeDarwin(finalOut,dmg,authorization!.darwin!);
+ const archive=fs.readFileSync(dmg);durableWrite(`${finalOut}.appcast.xml`,updateFeed(JSON.parse(fs.readFileSync(path.join(finalOut,'DESKTOP-RELEASE.json'),'utf8')),downloadUrl,archive,runPublisherSigner(value('--signer')!,archive,publicPem),publicPem));
  if(JSON.stringify(inventory(finalOut))!==sealedDirectory)throw new Error('Final bundle directory changed after manifest signing');
  durableWrite(`${finalOut}.notarization.json`,JSON.stringify({format:'qoopia-apple-notarization/1',artifact:path.basename(dmg),...notarization}));
  assertCleanSource();

@@ -996,5 +996,14 @@
   "Sign in to your selected subscription in the dashboard first": "Сначала войдите в выбранную подписку в дашборде",
   "This conversation belongs to another subscription. Switch back or start a new conversation.": "Этот разговор связан с другой подпиской. Переключитесь обратно или начните новый разговор.",
   "Finish or stop the current task and sign-in before switching subscription": "Завершите текущую задачу и вход перед сменой подписки",
-  "If Claude shows a sign-in code, paste it here": "Если Claude покажет код входа, вставьте его сюда"
+  "If Claude shows a sign-in code, paste it here": "Если Claude покажет код входа, вставьте его сюда",
+  "Saved.": "Сохранено.",
+  "Preparing your agent. You can use other pages while it starts.": "Подготавливаем агента. Пока он запускается, можно пользоваться другими разделами.",
+  "The server has not confirmed this action yet. Check its status before trying again.": "Сервер пока не подтвердил действие. Проверьте его состояние перед повторной попыткой.",
+  "Connect your Telegram bot below, then confirm your account.": "Подключите Telegram-бота ниже, затем подтвердите свой аккаунт.",
+  "Agent setup failed. Check your connection and try again.": "Не удалось подготовить агента. Проверьте подключение и попробуйте снова.",
+  "Open your bot and send a message": "Откройте бота и отправьте сообщение",
+  "Preparing your subscription. You can use other pages.": "Подготавливаем подписку. Можно пользоваться другими разделами.",
+  "Subscription setup failed. Check your connection and try again.": "Не удалось подключить подписку. Проверьте соединение и попробуйте снова.",
+  "Cancel sign-in": "Отменить вход"
 }

@@ -641,7 +641,7 @@ button:disabled{cursor:not-allowed}
 @media(max-width:600px){.connection-line{align-items:start;gap:12px;flex-wrap:wrap}.connections h1{font-size:1.65rem}}
 
 </style>
-<script src="/brand/i18n.js?v=535a01de38a4"></script></head>
+<script src="/brand/i18n.js?v=637728cb47e1"></script></head>
 <body>
 <!-- Login -->
 <div class="login-wrap" id="loginView">
@@ -728,7 +728,7 @@ button:disabled{cursor:not-allowed}
 
   // ---------- API ----------
   async function api(path) {
-    const r = await fetch(BASE + path, { credentials: 'same-origin' });
+    const r = await fetch(BASE + path, { credentials: 'same-origin', signal: AbortSignal.timeout(15000) });
     if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error_description || data.error?.message || data.error || ('HTTP ' + r.status));
@@ -736,7 +736,7 @@ button:disabled{cursor:not-allowed}
   }
   async function apiWrite(path, body) {
     const r = await fetch(BASE + path, {
-      method: 'POST', credentials: 'same-origin',
+      method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(45000),
       headers: { 'content-type': 'application/json', 'X-Qoopia-CSRF': '1' },
       body: JSON.stringify(body),
     });
@@ -944,14 +944,30 @@ button:disabled{cursor:not-allowed}
   async function renderMyAgent() {
     pollFn=null;setCrumb(QI.msg('My Qoopia agent'));
     main.innerHTML='<section class="my-agent work" id="myAgent"><header class="agent-heading"><h1>'+esc(QI.msg('My Qoopia agent'))+'</h1><p>'+esc(QI.msg('Ask, follow the work, and keep what matters.'))+'</p></header><p id="agentFeedback" role="status" aria-live="polite"></p><div id="agentSetup"></div><div id="agentWorkspace" hidden><div class="agent-toolbar"><label for="agentConversation">'+esc(QI.msg('Conversation'))+'</label><select id="agentConversation"></select><button id="agentOlderConversations" hidden>'+esc(QI.msg('Older conversations'))+'</button><button id="agentNew">'+esc(QI.msg('New conversation'))+'</button><button id="agentStop">'+esc(QI.msg('Stop'))+'</button></div><button id="agentOlderMessages" hidden>'+esc(QI.msg('Earlier messages'))+'</button><div id="agentMessages" class="agent-messages" role="log" aria-label="'+esc(QI.msg('Conversation'))+'" aria-live="off"></div><div id="agentFiles"></div><p id="agentProgress" role="status"></p><div id="agentApprovals"></div><form id="agentCompose"><label for="agentText">'+esc(QI.msg('Message your agent'))+'</label><textarea id="agentText" rows="3" maxlength="16000" required></textarea><div class="work-actions"><button class="primary" id="agentSend">'+esc(QI.msg('Send'))+'</button></div></form></div><details id="agentChannel" hidden><summary>'+esc(QI.msg('Where to talk'))+'</summary><p>'+esc(QI.msg('Use this chat or connect your own Telegram bot. Qoopia must stay running on your computer.'))+'</p><div class="work-actions"><button id="agentUseDashboard">'+esc(QI.msg('Use dashboard chat'))+'</button><button id="agentUseTelegram">'+esc(QI.msg('Use Telegram'))+'</button></div><div id="telegramConnected"></div><form id="telegramForm"><p><a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">'+esc(QI.msg('Create a bot with BotFather'))+'</a>. '+esc(QI.msg('Send /newbot, choose a name, then paste its token below. Use a bot that is not connected to another application.'))+'</p><label for="telegramToken">'+esc(QI.msg('Bot token'))+'</label><input id="telegramToken" type="password" autocomplete="off" spellcheck="false" required><div class="work-actions"><button type="submit">'+esc(QI.msg('Connect Telegram'))+'</button></div></form><div id="telegramLink"></div><div id="telegramConfirm"></div></details></section>';
-    const root=$('#myAgent');let data,selected=null,busy=false,requestId=crypto.randomUUID(),lastMessages='',lastApprovals='',lastSetup='',lastOptions='',lastFiles='',olderRuns=[],allConversations=[],conversationOffset=0;
+    const root=$('#myAgent');let setupChannel=null,actionRevision=0,lastOperation=null;let data,selected=null,busy=false,requestId=crypto.randomUUID(),lastMessages='',lastApprovals='',lastSetup='',lastOptions='',lastFiles='',olderRuns=[],allConversations=[],conversationOffset=0;
     const here=()=>root.isConnected,feedback=text=>{if(here())$('#agentFeedback').textContent=text;};
-    async function action(body){if(busy)throw Error(QI.msg('Please wait for the current action'));busy=true;root.setAttribute('aria-busy','true');try{const response=await fetch('/api/dashboard/my-agent',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(QI.resolve(result.error_description||'Agent action failed'));return result;}finally{busy=false;if(here())root.removeAttribute('aria-busy');}}
+    async function action(body){
+      if(busy)throw Error(QI.msg('Please wait for the current action'));
+      busy=true;actionRevision++;root.setAttribute('aria-busy','true');feedback(QI.msg('Working…'));
+      try{
+        const response=await fetch('/api/dashboard/my-agent',{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(35000),headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body)});
+        const result=await response.json();if(!response.ok)throw Error(QI.resolve(result.error_description||'Agent action failed'));
+        feedback(result.accepted?QI.msg('Preparing your agent. You can use other pages while it starts.'):QI.msg('Saved.'));return result;
+      }catch(error){
+        if(error.name==='TimeoutError'||error.name==='AbortError')throw Error(QI.msg('The server has not confirmed this action yet. Check its status before trying again.'));
+        throw error;
+      }finally{busy=false;if(here())root.removeAttribute('aria-busy');}
+    }
     async function perform(body){try{const result=await action(body);await load();return result;}catch(e){feedback(e.message);}}
     async function load(){
-      if(!here()||busy||root.dataset.loading)return;root.dataset.loading='true';
+      if(!here()||busy||root.dataset.loading)return;root.dataset.loading='true';const revision=actionRevision;
       try{
-        data=await api('/api/dashboard/my-agent');if(!here())return;
+        const next=await api('/api/dashboard/my-agent');if(!here()||busy||revision!==actionRevision)return;data=next;
+        const preparing=data.operation?.state==='running';
+        const operationKey=JSON.stringify(data.operation);if(operationKey!==lastOperation){lastOperation=operationKey;
+        if(preparing)feedback(QI.msg('Preparing your agent. You can use other pages while it starts.'));
+        else if(data.operation?.state==='failed')feedback(QI.msg(data.operation.error));
+        else if(data.operation?.state==='completed')feedback(QI.msg('Saved.'));}
         if(selected!==data.selected){olderRuns=[];lastMessages='';}
         selected=data.selected??null;
         const nextTelegramUrl=data.channel==='telegram'&&data.telegram.verified&&/^[A-Za-z0-9_]+$/.test(data.telegram.username)?'https://t.me/'+data.telegram.username:null;if(nextTelegramUrl!==agentTelegramUrl){agentTelegramUrl=nextTelegramUrl;renderNav();}
@@ -967,8 +983,10 @@ button:disabled{cursor:not-allowed}
         if(data.login&&data.provider==='claude_code')setupHtml+='<form id="agentLoginCodeForm"><label for="agentLoginCode">'+esc(QI.msg('If Claude shows a sign-in code, paste it here'))+'</label><input id="agentLoginCode" type="password" autocomplete="off" maxlength="2048" required><button>'+esc(QI.msg('Complete sign-in'))+'</button></form>';
         if(data.configured&&!data.access_error)setupHtml+='<details><summary>'+esc(QI.msg('Subscription'))+': '+(data.provider==='claude_code'?'Claude':'ChatGPT')+'</summary><p>'+esc(QI.msg('Each conversation stays with its original subscription. You can return to it later.'))+'</p><form id="agentProviderForm"><label for="agentProvider">'+esc(QI.msg('Subscription'))+'</label><select id="agentProvider"><option value="codex"'+(data.provider==='codex'?' selected':'')+'>ChatGPT · Codex</option><option value="claude_code"'+(data.provider==='claude_code'?' selected':'')+'>Claude · Claude Code</option></select><button'+(data.active_conversation||data.login?' disabled':'')+'>'+esc(QI.msg('Switch subscription'))+'</button></form></details>';
         if(data.selected_provider&&data.selected_provider!==data.provider)setupHtml+='<p role="status">'+esc(QI.msg('This conversation uses another subscription. Switch back or start a new conversation.'))+'</p>';
-        if(lastSetup!==setupHtml){lastSetup=setupHtml;setup.innerHTML=setupHtml;if($('#agentSetupForm'))$('#agentSetupForm').onsubmit=async e=>{e.preventDefault();const channel=root.querySelector('[name=firstChannel]:checked').value;const result=await perform({action:'setup',provider:$('#agentFirstProvider').value,acceptPermissions:true});if(result&&channel==='telegram'){$('#agentChannel').open=true;$('#telegramToken').focus();}};if($('#agentLoginCodeForm'))$('#agentLoginCodeForm').onsubmit=async e=>{e.preventDefault();const input=$('#agentLoginCode'),code=input.value;input.value='';await perform({action:'login-code',code});};if($('#agentProviderForm'))$('#agentProviderForm').onsubmit=async e=>{e.preventDefault();await perform({action:'provider',provider:$('#agentProvider').value});};if($('#agentStart'))$('#agentStart').onclick=()=>perform({action:'start'});if($('#agentLogin'))$('#agentLogin').onclick=()=>perform({action:'login'});}
-        $('#agentSend').disabled=!data.account||!!data.active_conversation||!!data.selected_provider&&data.selected_provider!==data.provider;$('#agentStop').disabled=!data.active_conversation;
+        if(lastSetup!==setupHtml+preparing){lastSetup=setupHtml+preparing;setup.innerHTML=setupHtml;if($('#agentSetupForm'))$('#agentSetupForm').onsubmit=async e=>{e.preventDefault();setupChannel=root.querySelector('[name=firstChannel]:checked').value;const result=await perform({action:'setup',provider:$('#agentFirstProvider').value,acceptPermissions:true});if(!result)setupChannel=null;};if($('#agentLoginCodeForm'))$('#agentLoginCodeForm').onsubmit=async e=>{e.preventDefault();const input=$('#agentLoginCode'),code=input.value;input.value='';await perform({action:'login-code',code});};if($('#agentProviderForm'))$('#agentProviderForm').onsubmit=async e=>{e.preventDefault();await perform({action:'provider',provider:$('#agentProvider').value});};if($('#agentStart'))$('#agentStart').onclick=()=>perform({action:'start'});if($('#agentLogin'))$('#agentLogin').onclick=()=>perform({action:'login'});}
+        setup.querySelectorAll('button').forEach(button=>{if(preparing)button.disabled=true;});
+        if(!preparing&&data.configured&&setupChannel==='telegram'){setupChannel=null;$('#agentChannel').open=true;$('#telegramToken').focus();}
+        $('#agentSend').disabled=preparing||!data.account||!!data.active_conversation||!!data.selected_provider&&data.selected_provider!==data.provider;$('#agentStop').disabled=!data.active_conversation;
         allConversations=[...new Map([...allConversations,...data.conversations].map(c=>[c.id,c])).values()];if(selected&&!allConversations.some(c=>c.id===selected))allConversations.unshift({id:selected,title:data.selected_title});if(conversationOffset===0)$('#agentOlderConversations').hidden=!data.more_conversations;
         const options=allConversations.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.title)+(c.provider?' · '+(c.provider==='claude_code'?'Claude':'ChatGPT'):'')+'</option>').join('');if(lastOptions!==options){lastOptions=options;$('#agentConversation').innerHTML=options;}$('#agentConversation').value=selected||'';
         const runs=[...new Map([...olderRuns,...data.runs].map(r=>[r.id,r])).values()].sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||a.id.localeCompare(b.id));$('#agentOlderMessages').hidden=olderRuns.length?$('#agentOlderMessages').hidden:!data.has_older_runs;
@@ -979,11 +997,13 @@ button:disabled{cursor:not-allowed}
         const approvals=JSON.stringify(data.approvals);
         if(approvals!==lastApprovals){$('#agentApprovals').innerHTML=data.approvals.map(a=>'<section class="agent-approval"><h2>'+esc(QI.msg(a.method.includes('requestUserInput')?'Your answer':'Permission needed'))+'</h2><p>'+esc(a.params.reason||a.params.command||QI.msg('Review the requested access before continuing.'))+'</p><details><summary>'+esc(QI.msg('Details'))+'</summary><pre>'+esc(JSON.stringify(a.params,null,2))+'</pre></details>'+(a.params.questions||[]).map(q=>'<label for="question-'+esc(q.id)+'">'+esc(q.question)+'</label><input id="question-'+esc(q.id)+'" data-question="'+esc(q.id)+'">').join('')+'<div class="work-actions"><button data-approval="'+esc(a.id)+'" data-accept="true">'+esc(QI.msg(a.method.includes('requestUserInput')?'Answer':'Allow once'))+'</button><button data-approval="'+esc(a.id)+'" data-accept="false">'+esc(QI.msg('Decline'))+'</button></div></section>').join('');$('#agentApprovals').querySelectorAll('[data-approval]').forEach(b=>b.onclick=()=>{const answers=Object.fromEntries([...b.closest('section').querySelectorAll('[data-question]')].map(el=>[el.dataset.question,el.value]));perform({action:'approve',id:b.dataset.approval,accept:b.dataset.accept==='true',answers});});lastApprovals=approvals;}
         const filesKey=JSON.stringify(data.files||[]);if(filesKey!==lastFiles){lastFiles=filesKey;$('#agentFiles').innerHTML=(data.files||[]).length?'<details><summary>'+esc(QI.msg('Files in your agent folder'))+'</summary><ul>'+(data.files||[]).map(f=>'<li><a href="/api/dashboard/my-agent/file?path='+encodeURIComponent(f.path)+'" download>'+esc(f.path)+'</a> · '+humanSize(f.size)+'</li>').join('')+'</ul></details>':'';}
-        const tg=data.telegram;$('#agentUseTelegram').disabled=!tg.verified;$('#telegramForm').hidden=!!tg.linked;
-        $('#telegramConnected').innerHTML=tg.username?'<p>'+esc('@'+tg.username)+' · '+esc(QI.msg(tg.verified?'Reply verified':tg.linked?'Linked. Send a message to verify the reply.':'Waiting for your Telegram account'))+'</p><button id="telegramDisconnect">'+esc(QI.msg('Disconnect Telegram'))+'</button>':'';
+        const tg=data.telegram;$('#telegramForm').hidden=!!tg.linked;
+        const connectedHtml=tg.username?'<p>'+esc('@'+tg.username)+' · '+esc(QI.msg(tg.verified?'Reply verified':tg.linked?'Linked. Send a message to verify the reply.':'Waiting for your Telegram account'))+'</p><button id="telegramDisconnect">'+esc(QI.msg('Disconnect Telegram'))+'</button>':'';
+        if($('#telegramConnected').dataset.content!==connectedHtml){$('#telegramConnected').dataset.content=connectedHtml;$('#telegramConnected').innerHTML=connectedHtml;}
         if($('#telegramDisconnect'))$('#telegramDisconnect').onclick=()=>perform({action:'telegram-disconnect'});
         const pending=data.telegram_setup?.pending?.user;
-        $('#telegramConfirm').innerHTML=pending?'<p>'+esc(QI.msg('Confirm your Telegram account'))+': '+esc(pending.name)+' ('+esc(pending.id)+')</p><button id="telegramConfirmOwner">'+esc(QI.msg('This is my account'))+'</button>':'';
+        const confirmHtml=pending?'<p>'+esc(QI.msg('Confirm your Telegram account'))+': '+esc(pending.name)+' ('+esc(pending.id)+')</p><button id="telegramConfirmOwner">'+esc(QI.msg('This is my account'))+'</button>':'';
+        if($('#telegramConfirm').dataset.content!==confirmHtml){$('#telegramConfirm').dataset.content=confirmHtml;$('#telegramConfirm').innerHTML=confirmHtml;}
         if(pending)$('#telegramConfirmOwner').onclick=()=>perform({action:'telegram-confirm',userId:pending.id,chatId:pending.chat});
         if(data.telegram_setup?.error)feedback(QI.msg(data.telegram_setup.error));else if(data.telegram_setup?.uncertain_deliveries)feedback(QI.msg('A Telegram reply could not be confirmed. Your full answer is saved in this chat.'));
       }catch(e){feedback(e.message);}finally{delete root.dataset.loading;}
@@ -994,10 +1014,19 @@ button:disabled{cursor:not-allowed}
     $('#agentOlderMessages').onclick=async()=>{try{const first=olderRuns[0]||data.runs[0];if(!first)return;const page=await api('/api/dashboard/my-agent?conversation='+encodeURIComponent(selected)+'&runBefore='+encodeURIComponent(first.id));olderRuns=[...page.runs,...olderRuns];$('#agentOlderMessages').hidden=!page.has_older_runs;await load();}catch(e){feedback(e.message);}};
     $('#agentStop').onclick=()=>perform({action:'stop'});
     $('#agentUseDashboard').onclick=()=>perform({action:'channel',channel:'dashboard'});
-    $('#agentUseTelegram').onclick=()=>perform({action:'channel',channel:'telegram'});
+    $('#agentUseTelegram').onclick=()=>{
+      $('#agentChannel').open=true;
+      if(data?.telegram?.linked&&/^[A-Za-z0-9_]+$/.test(data.telegram.username)){
+        $('#telegramLink').innerHTML='<a target="_blank" rel="noopener noreferrer" href="https://t.me/'+esc(data.telegram.username)+'">'+esc(QI.msg('Open your bot and send a message'))+'</a>';
+        const link=$('#telegramLink a');link.scrollIntoView({block:'center'});link.focus();
+        if(data.telegram.verified)return perform({action:'channel',channel:'telegram'});
+        feedback(QI.msg('Open your bot and send a message'));return;
+      }
+      $('#telegramToken').scrollIntoView({block:'center'});$('#telegramToken').focus();feedback(QI.msg('Connect your Telegram bot below, then confirm your account.'));
+    };
     $('#agentCompose').onsubmit=async e=>{e.preventDefault();const text=$('#agentText').value.trim();if(!text)return;try{if(!selected){const created=await action({action:'new',title:text.slice(0,80)});selected=created.id;}await action({action:'send',conversation:selected,requestId,text});$('#agentText').value='';requestId=crypto.randomUUID();feedback('');await load();}catch(error){feedback(error.message);}};
     $('#telegramForm').onsubmit=async e=>{e.preventDefault();const input=$('#telegramToken'),secret=input.value;input.value='';try{const result=await action({action:'telegram-connect',token:secret});$('#telegramLink').innerHTML='<a target="_blank" rel="noopener noreferrer" href="'+esc(result.url)+'">'+esc(QI.msg('Open your bot and press Start'))+'</a>';await load();}catch(error){feedback(error.message);}};
-    await load();pollFn=load;
+    await load();if(here())pollFn=load;
   }
 
   // ---------- Navigation ----------
@@ -1076,8 +1105,8 @@ button:disabled{cursor:not-allowed}
   window.route = route;
 
   // single global poll loop, paused when tab hidden
-  let lastPoll=0;setInterval(() => { if (!document.hidden && pollFn && Date.now()-lastPoll>=(state.page==='my-agent'?1000:5000)){lastPoll=Date.now();pollFn();} }, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && pollFn) pollFn(); });
+  let lastPoll=0,pollRunning=false;async function pollPage(){if(pollRunning||!pollFn)return;pollRunning=true;try{await pollFn();}catch{}finally{pollRunning=false;}}setInterval(() => { if (!document.hidden && pollFn && Date.now()-lastPoll>=(state.page==='my-agent'?1000:5000)){lastPoll=Date.now();void pollPage();} }, 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && pollFn) void pollPage(); });
 
   // ================= FILES =================
   function humanSize(n) {
@@ -2012,19 +2041,26 @@ button:disabled{cursor:not-allowed}
   }
 
   // ---------- Memory ----------
-  async function renderWorkspace() {
+  async function renderWorkspace(snapshot) {
     pollFn=null;setCrumb((QI.msg("Memory")));
-    let data;try{data=await api('/api/dashboard/memory');}catch(e){main.innerHTML='<p role="alert">'+esc(e.message)+'</p>';return;}
+    let data;try{data=snapshot||await api('/api/dashboard/memory');}catch(e){if(state.page==='work')main.innerHTML='<p role="alert">'+esc(e.message)+'</p>';return;}
+    if(state.page!=='work')return;
     const names={claude_code:'Claude',codex:'ChatGPT'},model=data.model;
     const messages={not_connected:(QI.msg("Choose the subscription you want Qoopia to use.")),selected:(QI.msg("Sign in if needed, then check the connection.")),ready:(QI.msg("Connected. Ready to organise your memory.")),auth_required:(QI.msg("Sign in again to resume.")),quota:(QI.msg("Your subscription limit was reached. Saved events are waiting safely.")),timeout:(QI.msg("The model took too long. Search and saved events are still available.")),unavailable:(QI.msg("The model is unavailable. Check your subscription connection.")),invalid_response:(QI.msg("The model returned an unusable result. Your last saved context is preserved."))};
     main.innerHTML=("<section class=\"work\"><header><span class=\"eyebrow\" hidden>" + QI.msg("Qoopia / Memory") + "</span><h1>" + QI.msg("Keep the thread.") + "</h1><p>" + QI.msg("Work with your agents as usual. Qoopia keeps the context worth carrying forward.") + "</p></header><div class=\"work-grid\"><div><section class=\"memory-first\"><h2>" + QI.msg("Your agents, connected.") + "</h2><p>" + QI.msg("Connect ChatGPT, Claude and your native agents in one place. Your steward and existing connections stay with this workspace.") + "</p><div class=\"work-actions\"><button id=\"memoryConnections\">" + QI.msg("Open connections →") + "</button></div></section><h2>" + QI.msg("Optional: a model for your memory") + "</h2><p>" + QI.msg("Use your own subscription to organise session notes and assess search results. Text search and built-in semantic search remain available without it.") + "</p><div class=\"work-controls memory-model-controls\"><div><label for=\"memoryProvider\">" + QI.msg("Your subscription") + "</label><select id=\"memoryProvider\"><option value=\"claude_code\">Claude · Haiku</option><option value=\"codex\">ChatGPT · Codex</option></select></div><div class=\"work-actions\"><button id=\"memorySelect\">" + QI.msg("Use this subscription") + "</button></div></div><p class=\"work-status\" role=\"status\" id=\"memoryModelStatus\">")+esc(messages[model.state]||model.state)+(model.model?' · '+esc(model.model):'')+("</p><div class=\"work-actions\"><button id=\"memoryLogin\">" + QI.msg("Sign in to") + " ")+esc(names[model.runtime]||(QI.msg("subscription")))+("</button><button class=\"primary\" id=\"memoryCheck\">" + QI.msg("Check connection") + "</button></div><div id=\"memoryLoginInfo\"></div><p id=\"memoryActionStatus\" role=\"status\" aria-live=\"polite\" class=\"work-status\"></p></div><aside><h2>" + QI.msg("Already in your memory") + "</h2><p><strong>")+esc(data.embedding.embedded)+' / '+esc(data.embedding.total_notes)+("</strong><br>" + QI.msg("notes indexed for semantic search") + "</p><p><strong>")+esc(data.sessions.summarized)+' / '+esc(data.sessions.tracked)+("</strong><br>" + QI.msg("tracked sessions with a context note") + "</p><div class=\"work-result\"><h2>" + QI.msg("How continuity works") + "</h2><p>" + QI.msg("Events are saved as you work. A compact note evolves with the session. When you return, your agent receives the note and recent events that have not yet been summarised.") + "</p><p>" + QI.msg("Everything stays in this workspace. Existing notes, namespaces and connections remain in place.") + "</p><button id=\"memorySessions\">" + QI.msg("Browse agent sessions →") + "</button></div></aside></div></section>");
-    $('#memoryProvider').value=model.runtime||'claude_code';
+    const root=main.firstElementChild;let actionBusy=false,polling=false;
+    let savedProvider;try{savedProvider=sessionStorage.getItem('qoopia.memory.provider');}catch{}$('#memoryProvider').value=['claude_code','codex'].includes(savedProvider)?savedProvider:model.runtime||'claude_code';
+    $('#memoryProvider').onchange=e=>{try{sessionStorage.setItem('qoopia.memory.provider',e.target.value);}catch{}};
+    const op=data.operation;if(op?.state==='running')$('#memoryActionStatus').textContent=QI.msg('Preparing your subscription. You can use other pages.');else if(op?.state==='failed')$('#memoryActionStatus').textContent=QI.msg(op.error);else if(op?.state==='completed'&&op.action==='check')$('#memoryActionStatus').textContent=QI.msg('Connection checked with a real model response.');
     $('#memoryLogin').disabled=!model.runtime||data.busy;$('#memoryCheck').disabled=!model.runtime||data.busy;$('#memorySelect').disabled=data.busy;
     $('#memorySessions').onclick=()=>go('agents');
     $('#memoryConnections').onclick=()=>go('connections');
     const login=data.login;
+    if(login?.state==='cancelled')$('#memoryActionStatus').textContent=QI.pair('Sign-in cancelled.','Вход отменён.');
+    if(login?.state==='failed')$('#memoryActionStatus').textContent=QI.pair('Sign-in did not finish. Try signing in again.','Вход не завершён. Попробуйте войти ещё раз.');
     if(login?.state==='waiting') {
       const box=$('#memoryLoginInfo');box.innerHTML=("<p>" + QI.msg("Waiting for subscription sign-in…") + "</p>");
+      const cancel=document.createElement('button');cancel.textContent=QI.msg('Cancel sign-in');cancel.onclick=()=>action({action:'cancel-login'});box.append(cancel);
       if(login.url){const a=document.createElement('a');a.href=login.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent=(QI.msg("Open secure sign-in →"));box.append(a);}
       if(login.code){const code=document.createElement('p');code.textContent=(QI.msg("Enter this code:") + " ")+login.code;box.append(code);}
       if(model.runtime==='claude_code'){
@@ -2033,28 +2069,31 @@ button:disabled{cursor:not-allowed}
       }
     }
     async function action(payload) {
+      if(actionBusy||!root.isConnected)return;actionBusy=true;
       const status=$('#memoryActionStatus');status.textContent=payload.action==='select'?(QI.msg("Preparing the official client…")):(QI.msg("Working…"));
-      const buttons=[...main.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+      const buttons=[...root.querySelectorAll('button')].filter(b=>!['memoryConnections','memorySessions'].includes(b.id));buttons.forEach(b=>b.disabled=true);
       try{
         const result=await apiWrite('/api/dashboard/memory',payload);
+        if(!root.isConnected||state.page!=='work')return;
         await renderWorkspace();
-        if(result.next)$('#memoryActionStatus').textContent=result.next;
+        if(result.accepted)$('#memoryActionStatus').textContent=QI.msg('Preparing your subscription. You can use other pages.');
+        else if(result.next)$('#memoryActionStatus').textContent=result.next;
         else if(payload.action==='check')$('#memoryActionStatus').textContent=(QI.msg("Connection checked with a real model response."));
-      }catch(e){status.textContent=e.message;buttons.forEach(b=>b.disabled=false);}
+      }catch(e){if(root.isConnected){status.textContent=e.message;buttons.forEach(b=>b.disabled=false);}}finally{actionBusy=false;}
     }
     $('#memorySelect').onclick=()=>action({action:'select',runtime:$('#memoryProvider').value});
     $('#memoryLogin').onclick=()=>action({action:'login'});$('#memoryCheck').onclick=()=>action({action:'check'});
     // Keep inputs stable. Refresh only when a login or background index changes.
-    pollFn=async()=>{const next=await api('/api/dashboard/memory');if(state.page==='work'&&JSON.stringify(next)!==JSON.stringify(data)&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))await renderWorkspace();};
+    pollFn=async()=>{if(polling||actionBusy||!root.isConnected)return;polling=true;try{const next=await api('/api/dashboard/memory');if(root.isConnected&&!actionBusy&&state.page==='work'&&JSON.stringify(next)!==JSON.stringify(data)&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))await renderWorkspace(next);}catch(e){if(root.isConnected)$('#memoryActionStatus').textContent=e.message;}finally{polling=false;}};
   }
 
 
   async function renderConnectionWizard(host,workspaceName,onRefresh) {
     const t=(en,ru)=>QI.pair(en,ru);
-    const names={codex:'Codex CLI',claude_code:'Claude Code',claude_desktop:'Claude Desktop',claude_web:'Claude Web',chatgpt_web:t('ChatGPT Web — experimental','ChatGPT Web — экспериментально'),chatgpt_desktop:t('ChatGPT Desktop — experimental','ChatGPT Desktop — экспериментально')};
+    const names={codex:'Codex CLI',claude_code:'Claude Code',claude_desktop:'Claude Desktop',claude_web:'Claude Web',chatgpt_web:'ChatGPT Web',chatgpt_desktop:'ChatGPT Desktop'};
     const guides={
-      chatgpt_web:{url:'https://chatgpt.com/plugins',text:t('Open Plugins → + → New plugin. Choose OAuth and paste this address. Developer mode may be required in Settings → Security and login.','Откройте Плагины → + → Новый плагин. Выберите OAuth и вставьте адрес. При необходимости включите режим разработчика в Настройки → Безопасность и вход.'),limit:t('Experimental. Reading and adding passed in an isolated prototype; setup verification is not qualified for this release. If the client blocks verification, stop that attempt and keep this connection unverified.','Экспериментально. Чтение и добавление прошли в отдельном прототипе; проверка завершения настройки не принята для выпуска. Если клиент блокирует проверку, остановите попытку и оставьте подключение неподтверждённым.')},
-      chatgpt_desktop:{url:'https://developers.openai.com/apps-sdk/deploy/connect-chatgpt',text:t('Open Plugins in the desktop client and add this address using OAuth. If the desktop app does not offer custom plugins, use another supported client.','Откройте Плагины в настольном клиенте и добавьте адрес с OAuth. Если приложение не позволяет добавлять свои плагины, используйте другой поддерживаемый клиент.'),limit:t('Experimental. Manual memory calls passed in a ChatGPT conversation, but complete setup verification is not qualified. Use New chat → Chat; Try now may open a Codex task. Stop any client-blocked verification.','Экспериментально. Ручные вызовы памяти прошли в чате ChatGPT, но полная проверка настройки не принята. Используйте New chat → Chat; Try now может открыть задачу Codex. Остановите проверку, если клиент её блокирует.')},
+      chatgpt_web:{url:'https://chatgpt.com/plugins',text:t('Open Plugins → + → New plugin. Choose OAuth and paste this address. Developer mode may be required in Settings → Security and login.','Откройте Плагины → + → Новый плагин. Выберите OAuth и вставьте адрес. При необходимости включите режим разработчика в Настройки → Безопасность и вход.'),limit:t('Verified with ChatGPT Pro in the web client: OAuth, connection check, reading, adding and repeat requests. Availability depends on your ChatGPT plan and workspace settings. If a client check is blocked, stop and leave the connection unverified.','Проверено с ChatGPT Pro в браузере: OAuth, проверка подключения, чтение, добавление и повторные запросы. Доступность зависит от плана ChatGPT и настроек пространства. Если клиент блокирует проверку, остановите её и оставьте подключение неподтверждённым.')},
+      chatgpt_desktop:{url:'https://developers.openai.com/apps-sdk/deploy/connect-chatgpt',text:t('Open Plugins in the desktop client and add this address using OAuth. If the desktop app does not offer custom plugins, use another supported client.','Откройте Плагины в настольном клиенте и добавьте адрес с OAuth. Если приложение не позволяет добавлять свои плагины, используйте другой поддерживаемый клиент.'),limit:t('OAuth, authenticated verification, reading, writing and retries without duplicates passed on Mac. Use New chat → Chat. A repeated one-use verification does not undo an earlier success. Stop any client-blocked action.','OAuth, подтверждение подключения, чтение, запись и повтор без дублей проверены на Mac. Используйте Новый чат → Чат. Повтор одноразовой проверки не отменяет прежний успех. Не повторяйте действие, заблокированное клиентом.')},
       claude_web:{url:'https://claude.ai/customize/connectors',text:t('Open Customize → Connectors → + → Add custom connector. Paste this address, add it and choose Connect. Enable it in the conversation.','Откройте Настройка → Коннекторы → + → Добавить свой коннектор. Вставьте адрес, добавьте коннектор и нажмите Подключить. Включите его в беседе.'),limit:t('Free allows one custom connector. Team/Enterprise require an organization owner to add it.','На Free доступен один собственный коннектор. В Team/Enterprise его добавляет владелец организации.')},
       claude_desktop:{url:'https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop',text:t('Add the local adapter on your Mac, or open the downloaded setup file there. Approve this connection in Qoopia, restart Claude Desktop, then verify in a new conversation.','Добавьте локальный адаптер на Mac или откройте там скачанный файл настройки. Подтвердите доступ в Qoopia, перезапустите Claude Desktop и выполните проверку в новой беседе.'),limit:t('The local adapter targets Claude Desktop on macOS. A server workspace still needs its external address to be reachable. Actual Desktop acceptance is reported separately.','Локальный адаптер предназначен для Claude Desktop на macOS. Для памяти на сервере требуется доступный внешний адрес. Приёмка реального приложения учитывается отдельно.')},
       codex:{url:'https://developers.openai.com/codex/mcp',text:t('Add this URL as a Streamable HTTP MCP server in Codex, then use its OAuth login. Complete the verification below inside Codex.','Добавьте адрес как MCP-сервер Streamable HTTP в Codex, затем выполните его OAuth-вход. Проверку ниже выполните внутри Codex.'),limit:t('MCP grants access to memory. Background model authorization remains separate.','MCP даёт доступ к памяти. Авторизация модели для фоновых задач выполняется отдельно.')},
@@ -2062,7 +2101,9 @@ button:disabled{cursor:not-allowed}
     };
     const link=(url,label)=>'<a class="connect-link" href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+label+' ↗</a>';
     host.innerHTML='<p id="setupFeedback" role="status" aria-live="polite"></p><div id="setupConnections"></div><details id="setupNew" class="connection-add"><summary>'+t('Add an application','Добавить приложение')+'</summary><div class="work-controls"><div><label for="setupSurface">'+t('Application','Приложение')+'</label><select id="setupSurface">'+Object.entries(names).map(([id,name])=>'<option value="'+id+'">'+name+'</option>').join('')+'</select></div><div><label for="setupAccess">'+t('Access','Права')+'</label><select id="setupAccess"><option value="read">'+t('Read only','Только чтение')+'</option><option value="read_write">'+t('Read and add','Чтение и добавление')+'</option></select></div><button id="setupApply" class="primary">'+t('Prepare connection','Подготовить подключение')+'</button></div><p class="meta">'+t('A separate connection for this application. Existing agents keep their access.','Отдельное подключение для этого приложения. Доступ существующих агентов сохраняется.')+'</p><p class="meta">'+t('Read and add allows new notes, without editing or deleting existing ones.','Чтение и добавление разрешает создавать заметки, без изменения и удаления существующих.')+'</p></details><button id="setupRefresh">'+t('Refresh status','Обновить статусы')+'</button><details id="setupNetworkDetails" class="connection-options"><summary>'+t('External access settings','Настройки внешнего доступа')+'</summary><div id="setupNetwork"></div><p id="setupNetworkFeedback" role="status" aria-live="polite"></p></details>';
-    const feedback=host.querySelector('#setupFeedback'),networkFeedback=host.querySelector('#setupNetworkFeedback'),call=body=>apiWrite('/api/dashboard/connection-setup',body);
+    const feedback=host.querySelector('#setupFeedback'),networkFeedback=host.querySelector('#setupNetworkFeedback');
+    let actionBusy=false,revision=0,refreshing=false,lastResult='',lastConnections='',lastNetwork='';
+    const call=async body=>{if(actionBusy)throw Error(QI.resolve(QI.msg('Please wait for the current action')));actionBusy=true;revision++;feedback.textContent=QI.msg('Working…');host.setAttribute('aria-busy','true');try{return await apiWrite('/api/dashboard/connection-setup',body);}finally{actionBusy=false;if(host.isConnected)host.removeAttribute('aria-busy');}};
     let networkBusy=false;
     const draftKey='qoopia-connection-draft:'+workspaceName;
     let draft;try{draft=JSON.parse(sessionStorage.getItem(draftKey));}catch{}
@@ -2075,14 +2116,19 @@ button:disabled{cursor:not-allowed}
       try{sessionStorage.setItem(draftKey,JSON.stringify(draft));}catch{}return draft;
     }
     const showResult=(r,target=feedback)=>{
-      const messages={CLIENT_AUTHORIZATION_REQUIRED:t('Open the consent page, review this connection’s permissions, and approve. Then restart Claude Desktop.','Откройте страницу подтверждения, проверьте права этого подключения и подтвердите доступ. Затем перезапустите Claude Desktop.'),CLIENT_CALL_REQUIRED:t('Access is saved. Restart the client and run the verification prompt.','Доступ сохранён. Перезапустите клиент и выполните запрос проверки.'),CLIENT_AUTH_EXPIRED:t('The sign-in expired. Choose Approve access again.','Время входа истекло. Снова нажмите Подтвердить доступ.'),CLIENT_CONFIG_REQUIRED:t('Add the client on this computer first.','Сначала добавьте клиент на этом компьютере.'),SIGN_IN_REQUIRED:t('Account confirmation expired. Start sign-in again; the installation and memory are preserved.','Подтверждение аккаунта истекло. Начните вход заново; установка и память сохранены.'),ACCOUNT_CONFIRMATION_REQUIRED:t('Confirm the email sent to your Qoopia account, then choose Continue setup.','Подтвердите письмо на почте аккаунта Qoopia и нажмите Продолжить настройку.'),OWNER_ACCOUNT_REQUIRED:t('Finish signing in to your Qoopia account first.','Сначала завершите вход в аккаунт Qoopia.'),NETWORK_ONLINE:t('External connection is running.','Внешняя связь работает.'),NETWORK_CONNECTING:t('Reconnecting. Local memory is preserved.','Восстанавливаем связь. Локальная память сохранена.'),NETWORK_SERVICE_UNAVAILABLE:t('The connection service is unavailable. Keep this setup and try Continue setup later.','Сервис подключения недоступен. Сохраните настройку и позднее нажмите Продолжить настройку.'),NETWORK_DISABLED:t('External access is paused.','Внешний доступ приостановлен.'),DEVICE_REVOKED:t('This device was revoked.','Это устройство отозвано.')};
+      const messages={ACTION_IN_PROGRESS:t('Working. You can use other pages.','Выполняем. Можно пользоваться другими страницами.'),CLIENT_AUTH_STARTING:t('Preparing the secure sign-in page…','Подготавливаем защищённую страницу входа…'),CLIENT_AUTHORIZATION_REQUIRED:t('Open the consent page, review this connection’s permissions, and approve. Then restart Claude Desktop.','Откройте страницу подтверждения, проверьте права этого подключения и подтвердите доступ. Затем перезапустите Claude Desktop.'),CLIENT_CALL_REQUIRED:t('Access is saved. Restart the client and run the verification prompt.','Доступ сохранён. Перезапустите клиент и выполните запрос проверки.'),CLIENT_AUTH_EXPIRED:t('The sign-in expired. Choose Approve access again.','Время входа истекло. Снова нажмите Подтвердить доступ.'),CLIENT_CONFIG_REQUIRED:t('Add the client on this computer first.','Сначала добавьте клиент на этом компьютере.'),SIGN_IN_REQUIRED:t('Account confirmation expired. Start sign-in again; the installation and memory are preserved.','Подтверждение аккаунта истекло. Начните вход заново; установка и память сохранены.'),ACCOUNT_CONFIRMATION_REQUIRED:t('Confirm the email sent to your Qoopia account, then choose Continue setup.','Подтвердите письмо на почте аккаунта Qoopia и нажмите Продолжить настройку.'),OWNER_ACCOUNT_REQUIRED:t('Finish signing in to your Qoopia account first.','Сначала завершите вход в аккаунт Qoopia.'),NETWORK_ONLINE:t('External connection is running.','Внешняя связь работает.'),NETWORK_CONNECTING:t('Reconnecting. Local memory is preserved.','Восстанавливаем связь. Локальная память сохранена.'),NETWORK_SERVICE_UNAVAILABLE:t('The connection service is unavailable. Keep this setup and try Continue setup later.','Сервис подключения недоступен. Сохраните настройку и позднее нажмите Продолжить настройку.'),NETWORK_DISABLED:t('External access is paused.','Внешний доступ приостановлен.'),DEVICE_REVOKED:t('This device was revoked.','Это устройство отозвано.')};
       target.textContent=messages[r.code]||r.next_action||r.code||'';
       if(r.open_url){const a=document.createElement('a');a.href=r.open_url;a.target='_blank';a.rel='noopener noreferrer';a.className='connect-link';a.textContent=r.code==='CLIENT_AUTHORIZATION_REQUIRED'?t('Open consent page','Открыть подтверждение'):t('Open account sign-in','Открыть вход в аккаунт');target.append(document.createTextNode(' '),a);}
     };
     async function refresh(showNetworkStatus=false){
-      const result=await api('/api/dashboard/connection-setup'),network=result.network;
-      if(!host.isConnected)return;
-      if(showNetworkStatus&&!networkBusy)showResult(network,networkFeedback);
+      if(refreshing||actionBusy||!host.isConnected)return;refreshing=true;const started=revision;
+      let result;try{result=await api('/api/dashboard/connection-setup');}finally{refreshing=false;}
+      if(!host.isConnected||actionBusy||started!==revision)return;
+      const network=result.network,key=JSON.stringify(result);
+      if(!showNetworkStatus&&key===lastResult)return;lastResult=key;
+      if(!networkBusy&&network?.operation){if(network.operation.result)showResult(network.operation.result,networkFeedback);else if(network.operation.state==='running')showResult({code:'ACTION_IN_PROGRESS'},networkFeedback);}else if(showNetworkStatus&&!networkBusy)showResult(network,networkFeedback);
+      const networkKey=JSON.stringify([network?.code,network?.enabled,network?.device?.state,network?.transport?.reachable,network?.operation?.state,networkBusy]);
+      if(networkKey!==lastNetwork){lastNetwork=networkKey;
       const section=host.querySelector('#setupNetwork');
       host.querySelector('#setupNetworkDetails').hidden=network?.code==='MANAGED_INSTALLATION_REQUIRED';
       if(network?.code==='MANAGED_INSTALLATION_REQUIRED')section.innerHTML='<h3>'+t('External connection','Внешняя связь')+'</h3><p>'+t('The current server manages its external address. Availability is checked when the client connects.','Внешним адресом управляет текущий сервер. Доступность проверяется при обращении клиента.')+'</p>';
@@ -2092,7 +2138,7 @@ button:disabled{cursor:not-allowed}
           (!network?.device?'<button data-network="network-start">'+t('Enable with email confirmation','Включить с подтверждением по почте')+'</button><button data-network="network-start-google">'+t('Confirm with Google','Подтвердить через Google')+'</button>':network.device.state!=='revoked'?'<button data-network="'+(network.enabled?'network-disable':'network-enable')+'">'+(network.enabled?t('Pause external access','Приостановить внешний доступ'):t('Enable external access','Включить внешний доступ'))+'</button>':'')+
           '<button data-network="network-resume">'+t('Continue setup','Продолжить настройку')+'</button></div><p class="meta">'+t('Sleeping or offline machines cannot answer requests. The service reconnects when connectivity returns.','Спящая или отключённая от сети машина не отвечает на запросы. Служба переподключается после восстановления связи.')+'</p>';
         section.querySelectorAll('[data-network]').forEach(b=>{
-          b.disabled=networkBusy;
+          b.disabled=networkBusy||network?.operation?.state==='running';
           b.onclick=async()=>{
             if(networkBusy)return;networkBusy=true;
             section.querySelectorAll('[data-network]').forEach(button=>button.disabled=true);
@@ -2106,6 +2152,8 @@ button:disabled{cursor:not-allowed}
           };
         });
       }
+      }
+      const connectionKey=JSON.stringify(result.connections);if(connectionKey===lastConnections)return;lastConnections=connectionKey;
       const openIds=new Set([...host.querySelectorAll('[data-connection][open]')].map(el=>el.dataset.connection));
       const reconnectIds=new Set([...host.querySelectorAll('[data-reconnect][open]')].map(el=>el.dataset.reconnect));
       const proofs=new Map([...host.querySelectorAll('[data-proof]')].map(el=>[el.dataset.proof,el.textContent]));
@@ -2149,6 +2197,7 @@ button:disabled{cursor:not-allowed}
       feedback.textContent=t('Connection prepared. Finish setup in the selected application.','Подключение подготовлено. Завершите настройку в выбранном приложении.');
     }catch(e){feedback.textContent=e.message;}finally{host.querySelector('#setupApply').disabled=false;}};
     host.querySelector('#setupRefresh').onclick=async()=>{try{await refresh(true);if(onRefresh)await onRefresh();}catch(e){feedback.textContent=e.message;}};await refresh();
+    if(host.isConnected)pollFn=()=>refresh().catch(e=>{if(host.isConnected)feedback.textContent=e.message;});
   }
 
   async function renderConnections() {
@@ -2175,7 +2224,7 @@ button:disabled{cursor:not-allowed}
       $('#connectionAgentList').innerHTML=(next.agents||[]).map(a=>'<div class="connection-line"><strong>'+esc(a.name)+'</strong><span class="meta">'+esc(lastSeen(a.last_seen))+'</span></div>').join('');
     }
     overview(data);
-    await renderConnectionWizard($('#connectionWizard'),data.workspace,async()=>{const next=await api('/api/dashboard/connections');if(state.page==='connections')overview(next);}).catch(e=>{if(state.page==='connections')$('#connectionWizard').textContent=e.message;});
+    void renderConnectionWizard($('#connectionWizard'),data.workspace,async()=>{const next=await api('/api/dashboard/connections');if(state.page==='connections')overview(next);}).catch(e=>{if(state.page==='connections')$('#connectionWizard').textContent=e.message;});
     if(state.page!=='connections')return;
     const status=$('#connectionsStatus');
     $('#connectionsSteward').onclick=()=>go('my-agent');$('#connectionsAgents').onclick=()=>go('agents');$('#connectionsModel').onclick=()=>go('work');
