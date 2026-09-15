@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "890b67154a57e77eabe9809274d5336078cf0e42",
+  "source_snapshot": "4406f46aacf97dac3e69746f8c6d0d23808dff82",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": false,
   "files": [
@@ -1658,8 +1658,8 @@
     },
     {
       "path": "scripts/bundle-signing.ts",
-      "sha256": "9a09291261878ae2cf5a1f8652a5f853f993359ad2e2a46bdb07eb0c6ffd408e",
-      "bytes": 15168,
+      "sha256": "66c4607ceb94e6529ba1088948b4410abc60a6087ecdf93d8e30b92494c41c42",
+      "bytes": 15428,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "38620ffa0e99ed3ceed5fa13ab6d46ca7b6c5b84"
@@ -1727,8 +1727,8 @@
     },
     {
       "path": "scripts/darwin-launcher.swift",
-      "sha256": "d1722a5915ef69798d6b7207948ce5a548d368f6ee8abac29881a4fcc3ebedb8",
-      "bytes": 26259,
+      "sha256": "0c7029e3692a6995047dcc43d4c7d3febaaec893109a450425eafba319b48303",
+      "bytes": 26482,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "51e44e67e23e42765c41d8a770d9b047cab90c4b"
@@ -1742,8 +1742,15 @@
       "original_blob": "890cde4e6e8e66bd983e46c41c97a583632addcd"
     },
     {
+      "path": "scripts/darwin-tray-icon.swift",
+      "sha256": "2a3bfc288169f65574ca98e1aa469c5ff2cc560fa57f8e769d926353537d350b",
+      "bytes": 2394,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "scripts/desktop-release.ts",
-      "sha256": "14312afc26cffa44870d098c9a6ad407bdb337a123a6d1213137688c6d0469b3",
+      "sha256": "d33c9891715b62dd833191a8097841a32773ef5b29eacf72392e86c52fbee3b7",
       "bytes": 638,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
@@ -2106,9 +2113,9 @@
     },
     {
       "path": "scripts/release-health.py",
-      "sha256": "01b102f2c54b0c478c582b4ac6333151842fe951d61c00734be5fd5dcc9743e9",
-      "bytes": 4274,
-      "source_snapshot_identical": true,
+      "sha256": "aa6cf46b36cd3197c2d48a9efa2880378ba8349a1ef94d323f396ba9cc9d19cf",
+      "bytes": 4504,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "e64a4c5543e7473ee27d05b248b7d0fbcb22f306"
     },
@@ -3455,16 +3462,16 @@
     },
     {
       "path": "src/public/brand/i18n.js",
-      "sha256": "637728cb47e1f0acc23bd57e279ed9c212af2566b64d29bd93b47b31e237b727",
-      "bytes": 124654,
+      "sha256": "ba5726b5fbcccaa04b652139145d031cb82fb6a502d0fd7a70c8058851115413",
+      "bytes": 125072,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "952d111780838f8bfef36b6bc548b8ce292d66a4"
     },
     {
       "path": "src/public/brand/i18n.ru.json",
-      "sha256": "12a144627081218d5336e96b014857e39851f4c083c506b32334afb1d4c978b8",
-      "bytes": 121511,
+      "sha256": "d5f6fc20225af0c6c99cc4bcb34fdec7a2f309cc456b60f1dfcc429cc3fd5bf3",
+      "bytes": 121937,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "63339331ba1a0c8eeb8661edb521d9cfa0971c0a"
@@ -3567,8 +3574,8 @@
     },
     {
       "path": "src/public/dashboard.html",
-      "sha256": "7ef4af1a5e512b9559b338d2830ceef6a475a0a6150b258314811cf5204a417c",
-      "bytes": 234760,
+      "sha256": "1120c67a40dbada1f82c16ca65312aa1d24206ed59809b59db28c3b76b31ef5a",
+      "bytes": 235558,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "2b6b886badd349e1789cd8a3deb58d6ae27393cb"
@@ -4491,6 +4498,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "53d665b35452151c04e87595e0cd2f6686a6d064"
+    },
+    {
+      "path": "tests/dashboard-google-login.test.ts",
+      "sha256": "111437a0e813dda20a43b6a35b6ef3e6918c85bed5c555ab947671bb445404f2",
+      "bytes": 3074,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "tests/dashboard-performance.test.ts",
@@ -5992,6 +6006,7 @@
   ],
   "account_service_source": "2b4035d97dfd04315c88d49d947b1763f3e2955c",
   "discovery_source": "f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d",
-  "desktop_release_source": "890b67154a57e77eabe9809274d5336078cf0e42",
-  "website_source": "0c67b34de669d50fe32ad8da600d77901fd17a72"
+  "desktop_release_source": "4406f46aacf97dac3e69746f8c6d0d23808dff82",
+  "website_source": "0c67b34de669d50fe32ad8da600d77901fd17a72",
+  "monitoring_source": "50cf27204ffaf969450ce10163f2da3e698237d0"
 }

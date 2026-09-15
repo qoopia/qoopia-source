@@ -748,6 +748,7 @@ button:disabled{cursor:not-allowed}
 
   // ---------- Auth / boot ----------
   let loginPoll=0;
+  let loginAbort;
   const loginError=e=>{
     const error=$('#loginErr');
     if(!$('#emailLogin').hidden){$('#emailLoginStatus').textContent='';$('#emailLoginStatus').after(error);}
@@ -755,15 +756,17 @@ button:disabled{cursor:not-allowed}
     error.scrollIntoView({block:'nearest'});
   };
   async function identityPost(route,body={}){
-    const r=await fetch(BASE+'/api/dashboard/identity/'+route,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body)});
+    const r=await fetch(BASE+'/api/dashboard/identity/'+route,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body),signal:AbortSignal.any([AbortSignal.timeout(25000),...(loginAbort?[loginAbort.signal]:[])])});
     const data=await r.json();if(!r.ok)throw new Error(data.error||(QI.msg("Sign-in is temporarily unavailable")));return data;
   }
-  async function awaitEmailConfirmation(googleUrl){
+  async function awaitEmailConfirmation(googleUrl,openGoogle=false){
     const poll=++loginPoll;
-    $('#emailLoginStatus').textContent=(QI.msg("Confirm the new email, then return here. This page will open your workspace automatically."));
-    if(googleUrl){const a=document.createElement('a');a.href=googleUrl;a.target='_blank';a.rel='noopener';a.textContent=(QI.msg("Choose your Google account"));$('#emailLoginStatus').append(' ',a);}
+    $('#emailLoginStatus').textContent=QI.msg(googleUrl?"Choose your Google account in the browser, then confirm the email from Qoopia. Return here to finish signing in.":"Confirm the new email, then return here. This page will open your workspace automatically.");
+    if(googleUrl){const a=document.createElement('a');a.href=googleUrl;a.target='_blank';a.rel='noopener';a.textContent=QI.msg("Choose your Google account");$('#emailLoginStatus').append(' ',a);if(openGoogle)a.click();}
+    const cancel=document.createElement('button');cancel.type='button';cancel.textContent=QI.msg("Cancel sign-in");cancel.onclick=()=>{++loginPoll;loginAbort?.abort();$('#emailLoginStatus').textContent=QI.msg("Sign-in cancelled. You can try again.");$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;};$('#emailLoginStatus').append(' ',cancel);
     for(let i=0;i<240&&poll===loginPoll;i++){
       await new Promise(resolve=>setTimeout(resolve,2500));
+      if(poll!==loginPoll)return;
       const data=await identityPost('poll');
       if(poll!==loginPoll)return;
       if(data.ok){$('#emailLoginStatus').textContent='';if(consumeSafeNext())return;showApp();boot();return;}
@@ -773,6 +776,7 @@ button:disabled{cursor:not-allowed}
   async function startEmailLogin(method){
     const email=$('#emailInput').value.trim();
     if(method==='email'&&!$('#emailLoginForm').reportValidity())return;
+    loginAbort?.abort();const controller=loginAbort=new AbortController();
     const popup=method==='google'?window.open('about:blank','qoopia-google'):null;
     let popupNavigated=false;
     if(popup)popup.opener=null;
@@ -780,9 +784,9 @@ button:disabled{cursor:not-allowed}
     try{
       const data=await identityPost('start',{method,language:QI.language,...(method==='email'?{email}:{})});
       if(data.googleUrl&&popup){popup.location.replace(data.googleUrl);popupNavigated=true;}
-      await awaitEmailConfirmation(data.googleUrl&&!popup?data.googleUrl:undefined);
-    }catch(e){if(popup&&!popupNavigated&&!popup.closed)popup.close();loginError(e);}
-    finally{$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;}
+      await awaitEmailConfirmation(data.googleUrl,!!data.googleUrl&&!popup);
+    }catch(e){if(popup&&!popupNavigated&&!popup.closed)popup.close();if(!controller.signal.aborted)loginError(e);}
+    finally{if(loginAbort===controller){$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;}}
   }
   $('#emailLoginForm').onsubmit=e=>{e.preventDefault();startEmailLogin('email');};
   $('#googleLoginBtn').onclick=()=>startEmailLogin('google');

@@ -44,6 +44,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root', required=True)
     p.add_argument('--source', required=True)
+    p.add_argument('--package-source', default=os.environ.get('QOOPIA_PACKAGE_SOURCE'), help='Expected published installer source; defaults to runtime source')
     p.add_argument('--analytics', default='/srv/qoopia-analytics/latest.json')
     a = p.parse_args()
     os.umask(0o077)
@@ -54,7 +55,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         results = dict(pool.map(request, endpoints))
     issues = [name for name, r in results.items() if not r['ok']]
-    for name, validate in [('release', lambda d: d.get('source') == a.source), ('auth', lambda d: d.get('ready') is True), ('memory', lambda d: d.get('release_sha') == a.source and d.get('schema_version') == 43 and d.get('status') == 'ready' and bool(d.get('checks')) and all(v == 'ok' for v in d['checks'].values()))]:
+    for name, validate in [('release', lambda d: d.get('source') == (a.package_source or a.source)), ('auth', lambda d: d.get('ready') is True), ('memory', lambda d: d.get('release_sha') == a.source and d.get('schema_version') == 43 and d.get('status') == 'ready' and bool(d.get('checks')) and all(v == 'ok' for v in d['checks'].values()))]:
         r = results[name]
         if r['ok'] and not validate(r['data']):
             issues.append(name + ':unexpected_state')
@@ -70,7 +71,7 @@ def main():
     disk = shutil.disk_usage(root)
     if disk.free < max(10 * 1024**3, disk.total * 0.05):
         issues.append('disk:low_space')
-    status = {'at': now.isoformat(), 'status': 'ALERT' if issues else 'OK', 'issues': sorted(issues), 'source': a.source, 'http': results, 'disk_free_bytes': disk.free, 'optional_sources': optional}
+    status = {'at': now.isoformat(), 'status': 'ALERT' if issues else 'OK', 'issues': sorted(issues), 'source': a.source, 'package_source': a.package_source or a.source, 'http': results, 'disk_free_bytes': disk.free, 'optional_sources': optional}
     current = root / 'status.json'
     try:
         previous = json.loads(current.read_text())
