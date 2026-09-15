@@ -646,7 +646,7 @@
     },
     {
       "path": "marketing-site/404.html",
-      "sha256": "ffb10b871f204384a8ac2e88c1a71b1819cd747d2ec945248e30eb8cccb635b6",
+      "sha256": "d2977561c39f098ed415c57e56965d1bee2b6ce74714f9ccbcfe58de2b55ce9b",
       "bytes": 1652,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -958,7 +958,7 @@
     },
     {
       "path": "marketing-site/docs.html",
-      "sha256": "3af3647d0dfc33fdeb04b8accfa7e954535bff5f21605fde768349de9da0733c",
+      "sha256": "c120f9c8c9991560ccafe57dc80b05036b0a44c6ee63bafe9db891ce4f9753bd",
       "bytes": 24926,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -966,7 +966,7 @@
     },
     {
       "path": "marketing-site/index.html",
-      "sha256": "4e36e9d31639c0f4fa1e0dc09d19e62eb14346625fb74f51f60c96fe52233949",
+      "sha256": "3e3c657ed40d03671fd647deab4103d900855759b710c6a23da2f2b4f1e0059e",
       "bytes": 20198,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -1014,7 +1014,7 @@
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "2f6971d71fe7db8bfbaf02c06d65749266b645d60c9bdb296c2cbe1db1e7d3f9",
+      "sha256": "5d81313a03c070c0eee88c099057425a5ee8a6a9effa8b0e192693d9c11734c3",
       "bytes": 6531,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -5993,5 +5993,5 @@
   "account_service_source": "2b4035d97dfd04315c88d49d947b1763f3e2955c",
   "discovery_source": "f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d",
   "desktop_release_source": "890b67154a57e77eabe9809274d5336078cf0e42",
-  "website_source": "359e9e7373e60817d36e78e05b7a335c9782d441"
+  "website_source": "0c67b34de669d50fe32ad8da600d77901fd17a72"
 }
