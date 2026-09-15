@@ -646,7 +646,7 @@
     },
     {
       "path": "marketing-site/404.html",
-      "sha256": "ffb10b871f204384a8ac2e88c1a71b1819cd747d2ec945248e30eb8cccb635b6",
+      "sha256": "d2977561c39f098ed415c57e56965d1bee2b6ce74714f9ccbcfe58de2b55ce9b",
       "bytes": 1652,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -862,16 +862,16 @@
     },
     {
       "path": "marketing-site/brand/i18n.js",
-      "sha256": "2d3384ce8064e217d4d243ee64194150dcce4fecab84d5199d0a5b5c5fb9dfba",
-      "bytes": 110691,
+      "sha256": "ca79fd7301870451ab85872529dafd6243ffa4b23f9cd0ee5c242d20c9dfc02d",
+      "bytes": 112490,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "89c298d003d4f087a1e44894e632cb17e80a98ab"
     },
     {
       "path": "marketing-site/brand/i18n.ru.json",
-      "sha256": "4d54326ff667127b50e437f19341443152d039187574489146bf46879ebad726",
-      "bytes": 107084,
+      "sha256": "59c968bd23dfec8900b2a2171ecec35f3ed693a15d08b10f89c228d10a5046bd",
+      "bytes": 108899,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "5db8954e44b15db3f8ed284c86bb807c10aeb7a0"
@@ -958,16 +958,16 @@
     },
     {
       "path": "marketing-site/docs.html",
-      "sha256": "b0b122c4d8304847cf5cde7978a5ada9339ddc21395d5573af2f1041a71c171d",
-      "bytes": 24384,
+      "sha256": "c120f9c8c9991560ccafe57dc80b05036b0a44c6ee63bafe9db891ce4f9753bd",
+      "bytes": 24926,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "d5948a62bb34e9a3f74958d63ee2765e760fd758"
     },
     {
       "path": "marketing-site/index.html",
-      "sha256": "b0495c773621e9d04169d33b47f9ee3877ecf8f4cd401fb675b4c151240adb5e",
-      "bytes": 20228,
+      "sha256": "3e3c657ed40d03671fd647deab4103d900855759b710c6a23da2f2b4f1e0059e",
+      "bytes": 20198,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "9aa7db2ca64de0996e3a51c5866e5f13fc72b89e"
@@ -1006,15 +1006,15 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "6e0c781bf8e1e20da4ecdec7a9c34a8fdb90c4caa42b5a2d9375c96c78ea0ab8",
-      "bytes": 1148,
+      "sha256": "a8db398af4f6608d2e28d5d997d35fc5ab8d3d2c842508345bd72edc45904f8a",
+      "bytes": 1095,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "0ee6c34668eb99d19ee4d0ddb919fb51fbd2cb79"
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "2f6971d71fe7db8bfbaf02c06d65749266b645d60c9bdb296c2cbe1db1e7d3f9",
+      "sha256": "5d81313a03c070c0eee88c099057425a5ee8a6a9effa8b0e192693d9c11734c3",
       "bytes": 6531,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -1063,6 +1063,13 @@
       "path": "marketing-site/understand.html",
       "sha256": "81cd243736880829adb3a2a867e25246583d30a0cd6a56eed9f0f2f7ee659a4e",
       "bytes": 12522,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
+      "path": "marketing-site/updates/macos/appcast.xml",
+      "sha256": "9713cfd702fdc4eca3f9adf6734b027532b241044d4a155bc91d60014b61bbf2",
+      "bytes": 765,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
@@ -5985,5 +5992,6 @@
   ],
   "account_service_source": "2b4035d97dfd04315c88d49d947b1763f3e2955c",
   "discovery_source": "f3fc3be7d109ee74ed956f3dd44ea0c9f2fcc49d",
-  "desktop_release_source": "890b67154a57e77eabe9809274d5336078cf0e42"
+  "desktop_release_source": "890b67154a57e77eabe9809274d5336078cf0e42",
+  "website_source": "0c67b34de669d50fe32ad8da600d77901fd17a72"
 }
