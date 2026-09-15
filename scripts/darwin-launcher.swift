@@ -39,7 +39,9 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         }
         edit.submenu = editMenu; menu.addItem(edit); NSApp.mainMenu = menu
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "q.circle", accessibilityDescription: "Qoopia")
+        statusItem.button?.image = NSImage(contentsOf: Bundle.main.resourceURL!.appendingPathComponent("QoopiaTray.tiff"))
+        statusItem.button?.image?.size = NSSize(width: 20, height: 18)
+        statusItem.button?.setAccessibilityLabel("Qoopia")
         statusItem.button?.image?.isTemplate = true
         statusItem.button?.toolTip = "Qoopia"
         let tray = NSMenu()
@@ -63,6 +65,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         window.title = "Qoopia"; window.minSize = NSSize(width: 720, height: 520); window.isReleasedWhenClosed = false; window.delegate = self
         window.setFrameAutosaveName("QoopiaWorkspace"); window.center()
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         webView = WKWebView(frame: .zero, configuration: configuration); webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         webView.translatesAutoresizingMaskIntoConstraints = false

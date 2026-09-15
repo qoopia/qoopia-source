@@ -1005,5 +1005,7 @@
   "Open your bot and send a message": "Откройте бота и отправьте сообщение",
   "Preparing your subscription. You can use other pages.": "Подготавливаем подписку. Можно пользоваться другими разделами.",
   "Subscription setup failed. Check your connection and try again.": "Не удалось подключить подписку. Проверьте соединение и попробуйте снова.",
-  "Cancel sign-in": "Отменить вход"
+  "Cancel sign-in": "Отменить вход",
+  "Choose your Google account in the browser, then confirm the email from Qoopia. Return here to finish signing in.": "Выберите аккаунт Google в браузере, затем подтвердите письмо от Qoopia. Вернитесь сюда для завершения входа.",
+  "Sign-in cancelled. You can try again.": "Вход отменён. Можно попробовать снова."
 }
