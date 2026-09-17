@@ -673,9 +673,9 @@
     },
     {
       "path": "marketing-site/404.html",
-      "sha256": "d2977561c39f098ed415c57e56965d1bee2b6ce74714f9ccbcfe58de2b55ce9b",
+      "sha256": "19a01cff13ad4e0167cb2b2835706716b10b8dc4adafd7c1808f3113c28674af",
       "bytes": 1652,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "ffe0a990e5f1a9ed2ba8afe16847989d1ba25760"
     },
@@ -889,9 +889,9 @@
     },
     {
       "path": "marketing-site/brand/i18n.js",
-      "sha256": "c02fb5adc50239f8eb01b65e3b54fde7506363059a4caf03c6c9cec5527c3efa",
-      "bytes": 125436,
-      "source_snapshot_identical": true,
+      "sha256": "0d6a78251e69343edd2f55cd6c20c2f4c27a5c681e05e6f42b6709da8c67215c",
+      "bytes": 127053,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "89c298d003d4f087a1e44894e632cb17e80a98ab"
     },
@@ -985,17 +985,17 @@
     },
     {
       "path": "marketing-site/docs.html",
-      "sha256": "c120f9c8c9991560ccafe57dc80b05036b0a44c6ee63bafe9db891ce4f9753bd",
+      "sha256": "73764dc1fe93eaaff0270189e9bff854258cc827110444f86b74662ba4c9d6a8",
       "bytes": 24926,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "d5948a62bb34e9a3f74958d63ee2765e760fd758"
     },
     {
       "path": "marketing-site/index.html",
-      "sha256": "3e3c657ed40d03671fd647deab4103d900855759b710c6a23da2f2b4f1e0059e",
+      "sha256": "8a307dec2dee59deb34f48fcf942d24c5b6efd3c9d72d6588dd5e518a750627b",
       "bytes": 20198,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "9aa7db2ca64de0996e3a51c5866e5f13fc72b89e"
     },
@@ -1033,17 +1033,17 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "60bb5087218efe924e7b2258175037d18d4019abcb10e871a194b9a2a5984cf1",
+      "sha256": "b1cf967288f90fee3a63394ca1bba02f23fc48f3de99977227d5f147be20e61b",
       "bytes": 1095,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "0ee6c34668eb99d19ee4d0ddb919fb51fbd2cb79"
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "fafbd8b8586f8c71c06996490b5664f2eafc4c3387ecbe77dde8b64268d64bde",
-      "bytes": 6554,
-      "source_snapshot_identical": true,
+      "sha256": "443975356305b09fc44a224d248af5eeb7708eaf7eccb87f07ad6856bc93fd5d",
+      "bytes": 7360,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "8f6bf97f3d5b395ea6cc5abe9a0d7a924adcb443"
     },
@@ -1095,9 +1095,9 @@
     },
     {
       "path": "marketing-site/updates/macos/appcast.xml",
-      "sha256": "580b7fd6dd9f9bc7cc6ccbc3243c947cd2c46631acbe56dd21467491d2b6d87b",
+      "sha256": "0c126bb2f3e90bfa31dd5855a0b8a27dc1fd47d30f42b35fdaf14f62185c1246",
       "bytes": 765,
-      "source_snapshot_identical": true,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
@@ -2112,9 +2112,9 @@
     },
     {
       "path": "scripts/release-health.py",
-      "sha256": "aa6cf46b36cd3197c2d48a9efa2880378ba8349a1ef94d323f396ba9cc9d19cf",
-      "bytes": 4504,
-      "source_snapshot_identical": true,
+      "sha256": "9bc7a8189e34de1d96eeecfa6e23fe2218b29a7d4a0843ee87c6b680dd756b4e",
+      "bytes": 4669,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "e64a4c5543e7473ee27d05b248b7d0fbcb22f306"
     },
@@ -3481,17 +3481,17 @@
     },
     {
       "path": "src/public/brand/i18n.js",
-      "sha256": "7c1b7f3294a52b0038f25155dc69d71f00fc096baeeceb27ae0f6b5cae6c235e",
-      "bytes": 125782,
-      "source_snapshot_identical": true,
+      "sha256": "0d6a78251e69343edd2f55cd6c20c2f4c27a5c681e05e6f42b6709da8c67215c",
+      "bytes": 127053,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "952d111780838f8bfef36b6bc548b8ce292d66a4"
     },
     {
       "path": "src/public/brand/i18n.ru.json",
-      "sha256": "89ca151c735337d2bbb48d4d583c00ba63a933849fd9dae15e43ce76aae9d355",
-      "bytes": 122667,
-      "source_snapshot_identical": true,
+      "sha256": "de30368d84bf387904d3802d12192489c5aef48b29963c748cf73acfde1fa8e9",
+      "bytes": 123966,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "63339331ba1a0c8eeb8661edb521d9cfa0971c0a"
     },

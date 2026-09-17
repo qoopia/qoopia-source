@@ -49,3 +49,5 @@ The public compose template replaces owner-specific instance names and environme
 ## Qoopia 5.0.4
 
 Canonical product source `c065704ddfe42e1338881d26d8bc249679b72851`. Telegram subscription recovery, persistent receipts, Stop and native Claude transcript preservation. Public history remains independent. Operator state, host-specific runbooks, private profiles and acceptance artifacts are excluded.
+
+5.0.4 website metadata and signed updater feed use the published package source c065704; website-only locale and release-note updates do not change those package bytes.
