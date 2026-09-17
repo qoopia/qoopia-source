@@ -16,7 +16,7 @@ describe("release artifact contracts", () => {
     const installer = read("src/admin/install.ts");
     const mcpServer = read("src/mcp/server.ts");
 
-    expect(pkg.version).toBe("5.0.3");
+    expect(pkg.version).toBe("5.0.4");
     for (const source of [http, cli, installer, mcpServer]) {
       expect(source).toContain("PRODUCT_VERSION");
       expect(source).not.toContain('version: "3.0.0"');

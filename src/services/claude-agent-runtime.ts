@@ -13,6 +13,7 @@ type Thread={id:string;resume:boolean;instructions:string};
 export class ClaudeAgentRuntime extends EventEmitter {
   private active?:{child:ChildProcessWithoutNullStreams;thread:Thread;turn:string;ended:boolean;completion?:Promise<void>};
   private login?:ChildProcessWithoutNullStreams;
+  private probes=new Set<ChildProcessWithoutNullStreams>();
   private stopped=false;
   private stopping?:Promise<void>;
   private threads=new Map<string,Thread>();
@@ -21,14 +22,24 @@ export class ClaudeAgentRuntime extends EventEmitter {
   async start(){if(this.stopping)await this.stopping;this.stopping=undefined;this.stopped=false;}
   private spawn(args:string[]){return spawn(this.options.binary,args,{cwd:this.options.cwd,env:this.options.env,stdio:'pipe'});}
   private kill(child:ChildProcessWithoutNullStreams){const result=terminateAgentProcess(child);void result.catch(()=>this.emit('stopFailed'));return result;}
+  private finish(child:ChildProcessWithoutNullStreams):Promise<void>{
+    if(child.exitCode!==null||child.signalCode!==null)return Promise.resolve();
+    // A result precedes the native transcript flush. EOF lets Claude persist the
+    // assistant response before exit; forced termination loses resume context.
+    return new Promise((resolve,reject)=>{
+      const closed=()=>{clearTimeout(timer);resolve();};
+      const timer=setTimeout(()=>{child.removeListener('close',closed);this.kill(child).then(resolve,reject);},3000);
+      child.once('close',closed);child.stdin.end();
+    });
+  }
   private async account():Promise<any>{
     return new Promise((resolve,reject)=>{
-      const child=this.spawn(['auth','status','--json']);let output='';
+      const child=this.spawn(['auth','status','--json']);this.probes.add(child);let output='';
       const timer=setTimeout(()=>{this.kill(child);reject(new Error('Claude sign-in check timed out'));},15_000);
       child.stdout.setEncoding('utf8');child.stdout.on('data',(s:string)=>{output+=s;if(output.length>65536){this.kill(child);output='';}});child.stderr.on('data',()=>{});
-      child.once('error',()=>{clearTimeout(timer);reject(new Error('Claude Code could not start'));});
-      child.once('close',(code)=>{clearTimeout(timer);let a:any;try{a=JSON.parse(output);}catch{return resolve({account:null});}
-        resolve({account:code===0&&a.loggedIn===true&&a.authMethod==='claude.ai'&&a.apiProvider==='firstParty'&&(!a.apiKeySource||a.apiKeySource==='none')&&['pro','max','team','enterprise'].includes(a.subscriptionType)?{type:'claude'}:null});});
+      child.once('error',()=>{this.probes.delete(child);clearTimeout(timer);reject(new Error('Claude Code could not start'));});
+      child.once('close',(code)=>{this.probes.delete(child);clearTimeout(timer);let a:any;try{a=JSON.parse(output);}catch{return resolve({account:null});}
+        resolve({account:!this.stopped&&code===0&&a.loggedIn===true&&a.authMethod==='claude.ai'&&a.apiProvider==='firstParty'&&(!a.apiKeySource||a.apiKeySource==='none')&&['pro','max','team','enterprise'].includes(a.subscriptionType)?{type:'claude'}:null});});
     });
   }
   private async startLogin():Promise<any>{
@@ -109,7 +120,7 @@ export class ClaudeAgentRuntime extends EventEmitter {
   private complete(active:NonNullable<ClaudeAgentRuntime['active']>,status:string){
     if(active.completion)return active.completion;
     active.ended=true;this.permissions.clear();
-    active.completion=this.kill(active.child).then(()=>{
+    active.completion=(status==='completed'?this.finish(active.child):this.kill(active.child)).then(()=>{
       if(this.active===active)this.active=undefined;
       this.emit('notification',{method:'turn/completed',params:{threadId:active.thread.id,turnId:active.turn,turn:{id:active.turn,status,...(status==='failed'?{error:true}:{})}}});
     }).catch(error=>{active.completion=undefined;throw error;});
@@ -125,7 +136,7 @@ export class ClaudeAgentRuntime extends EventEmitter {
   stop():Promise<void>{
     if(this.stopping)return this.stopping;
     this.stopped=true;
-    this.stopping=Promise.all([this.active?this.complete(this.active,'interrupted'):Promise.resolve(),this.login?this.kill(this.login):Promise.resolve()]).then(()=>{this.login=undefined;this.emit('closed');}).catch(error=>{this.stopping=undefined;throw error;});
+    this.stopping=Promise.all([this.active?this.complete(this.active,'interrupted'):Promise.resolve(),this.login?this.kill(this.login):Promise.resolve(),...[...this.probes].map(child=>this.kill(child))]).then(()=>{this.login=undefined;this.emit('closed');}).catch(error=>{this.stopping=undefined;throw error;});
     void this.stopping.catch(()=>{});return this.stopping;
   }
 }

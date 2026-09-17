@@ -12,7 +12,7 @@ export function inspectSnapshot(database: Database) {
   assertDatabaseIntegrity(database, 'Snapshot');
   const tables = new Set((database.query("SELECT name FROM sqlite_master WHERE type='table'").all() as {name:string}[]).map(r => r.name));
   const schema = (database.query('SELECT max(version) n FROM schema_versions').get() as {n:number}).n;
-  if (![37,38,39,40,41,42,43].includes(schema)) throw new Error('Unified snapshot requires schema 37, 38, 39, 40, 41, 42 or 43; use versioned source migration for 32/35');
+  if (![37,38,39,40,41,42,43,44].includes(schema)) throw new Error('Unified snapshot requires schema 37, 38, 39, 40, 41, 42, 43 or 44; use versioned source migration for 32/35');
   const instance = (database.query("SELECT instance_id FROM authority_instance WHERE id='local'").get() as {instance_id:string}).instance_id;
   let bytes = 0, packages = 0;
   for (const row of database.query('SELECT sha256,content,size FROM files').iterate() as IterableIterator<{sha256:string;content:Uint8Array;size:number}>) {
@@ -128,6 +128,11 @@ export function invalidateRestoredAccess(file: string) {
       if(d.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qoopia_agent_settings'").get()) {
         d.query("UPDATE qoopia_agent_settings SET enabled=0,channel='dashboard',telegram_user_id=NULL,telegram_chat_id=NULL,telegram_username=NULL,telegram_verified=0").run();
         d.query('UPDATE qoopia_agent_conversations SET native_thread_id=NULL').run();
+      }
+      if(d.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qoopia_telegram_channels'").get()) {
+        d.query("UPDATE qoopia_telegram_channels SET generation=lower(hex(randomblob(16))),pairing_code=NULL,pairing_expires=NULL,candidate_id=NULL,candidate_chat=NULL,candidate_name=NULL,paused=1,conversation_id=NULL").run();
+        d.query("UPDATE qoopia_telegram_inbox SET state='cancelled' WHERE state IN ('queued','starting','running')").run();
+        d.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE state IN ('queued','sending')").run();
       }
     }).immediate();
     assertDatabaseIntegrity(d);

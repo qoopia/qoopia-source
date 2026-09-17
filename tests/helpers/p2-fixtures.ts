@@ -5,7 +5,7 @@ import { captureSkill } from '../../src/skills/capture.ts';
 import { compileDraft, versionOf } from '../../src/skills/authority.ts';
 import { configureRuntime, acceptLocalSkill, assignSkill, sessionOpen, entriesOf, type RuntimeKind, RUNTIMES } from '../../src/skills/loop.ts';
 export function loopFixture(kind:RuntimeKind='codex'){
-  const database=p1Database(43),owner=bootstrapOwner(database,'Owner','P2 fixture'),auth=principalAuth(database,owner.agent_id);
+  const database=p1Database(44),owner=bootstrapOwner(database,'Owner','P2 fixture'),auth=principalAuth(database,owner.agent_id);
   const pair=(profile:string,name:string,target_agent_id?:string)=>redeemPairing(issuePairing(auth,{profile,name,runtime_id:kind,...(target_agent_id?{target_agent_id}:{}),expected_revision:1,idempotency_key:randomUUID()},database).one_time_code!,database);
   const target=pair('memory-worker','Runtime target'),rep=pair('runtime-reporter','Reporter',target.data.agent_id),runtimeId=target.data.runtime_registration_id;
   const reportAuth=principalAuth(database,rep.data.agent_id);

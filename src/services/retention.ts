@@ -156,13 +156,13 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     // P3: verified online snapshot; never unlink the last good backup before replacement.
     stage = 'BACKUP';
     const schema = (db.query('SELECT max(version) n FROM schema_versions').get() as {n:number}).n;
-    const backupName = `qoopia-${new Date().toISOString().replace(/[:.]/g, '-')}${[37,38,39,40,41,42,43].includes(schema) ? '.backup' : '.db'}`;
+    const backupName = `qoopia-${new Date().toISOString().replace(/[:.]/g, '-')}${[37,38,39,40,41,42,43,44].includes(schema) ? '.backup' : '.db'}`;
     const backupPath = path.join(env.BACKUP_DIR, backupName);
     ensureSafeDir(env.BACKUP_DIR);
     // Scheduled unified backups use the SAME recovery manifest as the local restore command.
-    const backup = [37,38,39,40,41,42,43].includes(schema) ? backupUnified(path.join(env.DATA_DIR,'qoopia.db'),backupPath,installation,env.OPS_STATE_DIR)
+    const backup = [37,38,39,40,41,42,43,44].includes(schema) ? backupUnified(path.join(env.DATA_DIR,'qoopia.db'),backupPath,installation,env.OPS_STATE_DIR)
       : createVerifiedBackup({ source: path.join(env.DATA_DIR, 'qoopia.db'), output: backupPath });
-    report.backup = { sha256: backup.sha256, schema, verified: true, unified_restore: [37,38,39,40,41,42,43].includes(schema) };
+    report.backup = { sha256: backup.sha256, schema, verified: true, unified_restore: [37,38,39,40,41,42,43,44].includes(schema) };
     const backups = fs.readdirSync(env.BACKUP_DIR).filter(f => /^qoopia-\d{4}-\d{2}-\d{2}T[0-9Z-]+\.(db|backup)$/.test(f)).sort().reverse();
     const days = new Set<string>(), weeks = new Set<string>(), keep = new Set<string>();
     for (const name of backups) {

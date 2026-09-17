@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "279a2d62b576e760ac89d10d02b30b9ab0f96bb7",
+  "source_snapshot": "c065704ddfe42e1338881d26d8bc249679b72851",
   "original_runtime": "e250748e8f71383d89425ca6214cac6b21a2cfec",
   "runtime_files_identical": false,
   "files": [
@@ -14,16 +14,15 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "0a1e5334bcca9205e8b62e8281207c14db05cbbc912bbc4c4cbbd622d46418d4",
-      "bytes": 2737,
+      "sha256": "81f7e93ab90677ffa8822f53e4c55902b6375fb2980f9971f6da1be54fd8d7dd",
+      "bytes": 2838,
       "source_snapshot_identical": false,
-      "original_runtime_identical": false,
-      "original_blob": "2b5776d0b8418f8d8a01960f7a9183b7efa4cb1b"
+      "original_runtime_identical": false
     },
     {
       "path": ".gitignore",
-      "sha256": "7573f8b0e2a6994b77e9fc7c90a683bb565b8468e153bdc8e605c3763f84b7da",
-      "bytes": 537,
+      "sha256": "38384b849b6abe0cd056171ae7ca6731cc3d9e602d1158108331e6efd811a5a7",
+      "bytes": 588,
       "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "dc3b00e3c3b0dee86528a73840aa56d9a54ca896"
@@ -76,16 +75,16 @@
     },
     {
       "path": "README.md",
-      "sha256": "6183d0f934417337b1e28f87472dc048ed64f45c63ac4745cf78d8be57942a3d",
-      "bytes": 4918,
+      "sha256": "56280b5042db2d9d21520f79d6ae16942eda3277b13e55013d54bc37bdec5378",
+      "bytes": 5007,
       "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "f791598ef9e9514f8d26d57d2407e64fe29b8a9e"
     },
     {
       "path": "README.ru.md",
-      "sha256": "ace2cb619ba3993ea262fc6d3a3dabe3156f957801d6c2a9eb8e46cec8842504",
-      "bytes": 4848,
+      "sha256": "f2e44a8f34af7ce88dc9c3af47e96373ab41757eeb0c65ccfe48390f35877ee8",
+      "bytes": 5010,
       "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
@@ -320,23 +319,23 @@
     },
     {
       "path": "docs/discovery/UNDERSTAND-EN.md",
-      "sha256": "94d27ebe9d10ecc35619381f22d99726d6f7977f23135c8c984d4920abaf88ad",
-      "bytes": 8399,
-      "source_snapshot_identical": true,
+      "sha256": "55cb1a971a187ae84f05bb6e23a51c1e8a4accb2d201db29e8508792280cf5e3",
+      "bytes": 8605,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
       "path": "docs/discovery/UNDERSTAND-RU.md",
-      "sha256": "61192ad98407bc76d508f2c9d56f10d1532cad4e423b8aa15b76899ecd4b52b3",
-      "bytes": 12665,
-      "source_snapshot_identical": true,
+      "sha256": "92ab3a77a25cd595b43aabe6dd793dc3f9ed2fd0ac243bb2143ebc304362d975",
+      "bytes": 12911,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
       "path": "docs/discovery/answers.json",
-      "sha256": "0cdafffd65ad3d0f9a7e4232e6ead1e3af94ddef302105285e37ccf8f3c667eb",
-      "bytes": 18989,
-      "source_snapshot_identical": true,
+      "sha256": "c9e2db7f1dcdb70ca27c7e08d34d950c8ce77e656faf9e7db89dbf1d34816b45",
+      "bytes": 19251,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
@@ -385,6 +384,20 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "d419054ca833fbace2016d120ca815f32fb7718b"
+    },
+    {
+      "path": "docs/operations/telegram-subscription-runtime.md",
+      "sha256": "7e2fe781538f672e9105af872a38dde9f5873f44691409cb2e971e42417725ae",
+      "bytes": 12130,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
+      "path": "docs/operations/unified-release-503-20260915.md",
+      "sha256": "52103136519468f5c976d6d5a624b4e05e131ffd7d10a9aacc91f242327200ab",
+      "bytes": 4087,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "docs/v1-setup.md",
@@ -876,8 +889,8 @@
     },
     {
       "path": "marketing-site/brand/i18n.js",
-      "sha256": "ca79fd7301870451ab85872529dafd6243ffa4b23f9cd0ee5c242d20c9dfc02d",
-      "bytes": 112490,
+      "sha256": "c02fb5adc50239f8eb01b65e3b54fde7506363059a4caf03c6c9cec5527c3efa",
+      "bytes": 125436,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "89c298d003d4f087a1e44894e632cb17e80a98ab"
@@ -1028,8 +1041,8 @@
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "5d81313a03c070c0eee88c099057425a5ee8a6a9effa8b0e192693d9c11734c3",
-      "bytes": 6531,
+      "sha256": "fafbd8b8586f8c71c06996490b5664f2eafc4c3387ecbe77dde8b64268d64bde",
+      "bytes": 6554,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "8f6bf97f3d5b395ea6cc5abe9a0d7a924adcb443"
@@ -1068,16 +1081,16 @@
     },
     {
       "path": "marketing-site/understand-ru.html",
-      "sha256": "f0ddba8b8192a3a6de9ad78e806f93e10787f4713d5dcc9eb4a9cab46896b9e4",
-      "bytes": 17246,
-      "source_snapshot_identical": true,
+      "sha256": "fb2ff41c262ec1dd907c7e728763adf09aae666be04d6a166db849fd5efdd4c7",
+      "bytes": 17510,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
       "path": "marketing-site/understand.html",
-      "sha256": "81cd243736880829adb3a2a867e25246583d30a0cd6a56eed9f0f2f7ee659a4e",
-      "bytes": 12522,
-      "source_snapshot_identical": true,
+      "sha256": "e13ef209acafb0b6f87ffca35a2e9ba8e8189eeb6a64877ea9619e8715d35226",
+      "bytes": 12746,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
@@ -1432,6 +1445,13 @@
       "original_blob": "ef418fa43f12f0ec1709ab638e482e08cdc5cace"
     },
     {
+      "path": "migrations/044-telegram-recovery.sql",
+      "sha256": "b29f9de00ad5efe05d615b26a63e84c2dc5529618e19a7743e954def9134af48",
+      "bytes": 2239,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "migrations/rollback/015-recall-log.rollback.sql",
       "sha256": "05a8c6bc2d0781a55273b7f2b5c70ba39952cfa4d757d93d6712bd20fcd3817b",
       "bytes": 723,
@@ -1537,7 +1557,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "d234d9c79bdcb94dd9b1ef05a8c592259431b530b26f7be6718e2076d0b6d1cb",
+      "sha256": "13f56208e12838da860490a09bd6ad889b89f9987fd1329f8b5b2a7d43e18a66",
       "bytes": 2972,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -1632,8 +1652,8 @@
     },
     {
       "path": "scripts/build-bundle.ts",
-      "sha256": "e1668327649b409e89a8efd5242f9d2a6221db740c59cb5b36a71d5600d66602",
-      "bytes": 19496,
+      "sha256": "4a8b1e4844d560eabb3678afdf16cbf79169f02057d3e80ae1c902873d80c746",
+      "bytes": 19556,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "b5302c3be9d1ccb5d080ad034b4fb1572283689e"
@@ -1794,6 +1814,13 @@
       "path": "scripts/discovery-content.py",
       "sha256": "7ef2333762e6c30b7c6d5eca4d4f178ddf312bc261ddce679cda71f12f48769c",
       "bytes": 4363,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
+      "path": "scripts/discovery-cycle.py",
+      "sha256": "7b8c1baf47f8bc16715a7ce66fb14b3367048611d45666209aecde93da12b044",
+      "bytes": 6544,
       "source_snapshot_identical": true,
       "original_runtime_identical": false
     },
@@ -2124,6 +2151,13 @@
       "original_blob": "2245dfbebd0a1a891fb44f654162ba3b2adc3c3c"
     },
     {
+      "path": "scripts/telegram-acceptance-fixture.ts",
+      "sha256": "2217fc63f726d2c919db3c4bde9a7a5386b433578c5a886400010b19fa89f294",
+      "bytes": 4211,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "scripts/top5-rescued.ts",
       "sha256": "1e2f5be37ae78c4d3fc5a14540fe7ab66fd9e0c58c4000cb2ca18bb2b1d29b53",
       "bytes": 1119,
@@ -2449,6 +2483,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "96dda6b5ce1bb93f10e46dc51903facf66637eae"
+    },
+    {
+      "path": "scripts/visibility-providers.py",
+      "sha256": "b8bf42410a239be06c7cfbcb594987d98e8a29921364a980ad9c8279997bb52b",
+      "bytes": 5106,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "scripts/wake_slo_alert_check.ts",
@@ -2890,8 +2931,8 @@
     },
     {
       "path": "src/delivery/bundle.ts",
-      "sha256": "a84e6a44fee201ea01622aa89a2fab428f5b2dba49f2b3eac455418b8cb04f70",
-      "bytes": 4206,
+      "sha256": "9f8c719411aa21ce023f65edf9bc0736b312df0febd57223421233b110d1f706",
+      "bytes": 4366,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "c87421015468d8528ea2e8e54a8f9f00be620f42"
@@ -3121,8 +3162,8 @@
     },
     {
       "path": "src/delivery/snapshot.ts",
-      "sha256": "5220737e9d768473db64dd42f9763293f81b909bb839189dfb108e2b25416c37",
-      "bytes": 10096,
+      "sha256": "dc286fe0a9932230b03bb61f6a65276b8b48655459d55b4d5a621aa2bc61de06",
+      "bytes": 10688,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "275499af6e1a0e4f3668ab81d1a2e9c1da34471d"
@@ -3440,16 +3481,16 @@
     },
     {
       "path": "src/public/brand/i18n.js",
-      "sha256": "ba5726b5fbcccaa04b652139145d031cb82fb6a502d0fd7a70c8058851115413",
-      "bytes": 125072,
+      "sha256": "7c1b7f3294a52b0038f25155dc69d71f00fc096baeeceb27ae0f6b5cae6c235e",
+      "bytes": 125782,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "952d111780838f8bfef36b6bc548b8ce292d66a4"
     },
     {
       "path": "src/public/brand/i18n.ru.json",
-      "sha256": "d5f6fc20225af0c6c99cc4bcb34fdec7a2f309cc456b60f1dfcc429cc3fd5bf3",
-      "bytes": 121937,
+      "sha256": "89ca151c735337d2bbb48d4d583c00ba63a933849fd9dae15e43ce76aae9d355",
+      "bytes": 122667,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "63339331ba1a0c8eeb8661edb521d9cfa0971c0a"
@@ -3552,8 +3593,8 @@
     },
     {
       "path": "src/public/dashboard.html",
-      "sha256": "1120c67a40dbada1f82c16ca65312aa1d24206ed59809b59db28c3b76b31ef5a",
-      "bytes": 235558,
+      "sha256": "faf045c9c49ffc35f8310e6be3aaa78ae7776d6dc3c07aa97baf4fdb75e39f1a",
+      "bytes": 237869,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "2b6b886badd349e1789cd8a3deb58d6ae27393cb"
@@ -3632,10 +3673,10 @@
     },
     {
       "path": "src/services/claude-agent-runtime.ts",
-      "sha256": "b2bfc98215188ec27eafb51915e024896c3dc2888f97c93fd69ee2ab14db2821",
-      "bytes": 12250,
+      "sha256": "5ec86e2f80a24108d2113af879b215b35ad0af134eb9ad26d4c0cf2170292316",
+      "bytes": 13092,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "323da3f363b81fe8a96ea5645c69dd89dcb1e8bb"
     },
     {
@@ -3751,16 +3792,16 @@
     },
     {
       "path": "src/services/my-agent-telegram.ts",
-      "sha256": "a57beac0341aafae6c0acee26b1c3800b2f3baa6ae4a8a5a94f67372093759c7",
-      "bytes": 13215,
+      "sha256": "b564ba3bad7729f8842690c64485b72973e06e7854eb3dadb0fa36f1f997554a",
+      "bytes": 28448,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "d84b44289d9f91e42828d85d38f13ab903742ecc"
     },
     {
       "path": "src/services/my-agent.ts",
-      "sha256": "46d4c1ea54e81addbdef950e62db7afc3eabf644a5c1fb3f6305a441a237a9e3",
-      "bytes": 31466,
+      "sha256": "8ddf898d175ef87a5d3c40dcd16bc5efb10c03353e72d9ba114c3434a357f391",
+      "bytes": 34832,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "e8b30f6095ff3c28d5ac5dd0314803fa585a8f3f"
@@ -3870,8 +3911,8 @@
     },
     {
       "path": "src/services/retention.ts",
-      "sha256": "ccdbf48ccdfd8496b3d55d38f665069b1898ce9a48a58c77770745a920811a04",
-      "bytes": 13230,
+      "sha256": "68e7140e2efc4ffce3754c338f5531fdfe9cc2b6b8d21557d7c65aba3c1c8782",
+      "bytes": 13239,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "7ff18b5ac5b734d8b87549a3586e93aa88f355bd"
@@ -3899,6 +3940,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "a2a1cb184e2087820f51a5e96b2f486f58eb252b"
+    },
+    {
+      "path": "src/services/telegram-store.ts",
+      "sha256": "fc0fec454a7e996438a146b27764ecc418e9c18d0dfb0af900c0ef3fc4fa0075",
+      "bytes": 4294,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "src/services/temporal-migration.ts",
@@ -4418,8 +4466,8 @@
     },
     {
       "path": "tests/claude-agent-runtime.test.ts",
-      "sha256": "681140224b0b9d9be25a76d5f27a32d656b78c83df4ea239bed6db450c0f5bb9",
-      "bytes": 7320,
+      "sha256": "6d8b574c832c499c0b2b22bf8b4f0577375f683e3566414720b6d6947947fa1f",
+      "bytes": 10149,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "3b8115c1ab293df8f17893d01004743a6d31aad8"
@@ -4535,11 +4583,18 @@
       "original_blob": "4468634a552034c6af7fd6dfbcbb8f9e58afd246"
     },
     {
+      "path": "tests/dashboard-session-restore.test.ts",
+      "sha256": "7f14c043def17f0405ac744cfff580fa2ec3da00860196f24b52e7f53c3e9bd7",
+      "bytes": 1416,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "tests/dashboard-v4.test.ts",
-      "sha256": "fcef8da7a58fdb67d5b0515c25d48ce71ec504ff2e5b4a6af187c602ac06f990",
+      "sha256": "2e7336f987cc28b2bc93db016c5e4c2f4a5c19c9395ed118d178a6f10ece64df",
       "bytes": 6486,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "591ed4d7e6681156e1f2a68171d9b0a19d1791bf"
     },
     {
@@ -4876,10 +4931,10 @@
     },
     {
       "path": "tests/helpers/p2-fixtures.ts",
-      "sha256": "4a4cdcd74b8f245d0f789e07d7372f9b6adb6f943e137969e329837993c3b55e",
+      "sha256": "f766ac755d23ac329b40799f52b1345e5c19c6987f375d46928cc714546606e4",
       "bytes": 5363,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "6521ebe1fc3cbded1e745ad901284ae65aeaa9fd"
     },
     {
@@ -4953,6 +5008,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": true,
       "original_blob": "0b5298defc208772325a852d698d90d16018fbbf"
+    },
+    {
+      "path": "tests/helpers/telegram-browser.py",
+      "sha256": "bda54a2d95f9ddabb204bbfb194f136c0d5a76de7a4734aed5f73ca6b976732c",
+      "bytes": 3883,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "tests/helpers/temporal-fixtures.ts",
@@ -5170,8 +5232,8 @@
     },
     {
       "path": "tests/my-agent.test.ts",
-      "sha256": "6eb9d68d473ac26be4a64125039ed30de48efe2bceabbd178247982e05f30ca7",
-      "bytes": 21222,
+      "sha256": "a5ae42221a1c1b192f62652bea2e9847973f030a09aa855a27075a497120c00b",
+      "bytes": 21437,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "19c641fd1ff1e7bbdbad733ef415cb0e6a99ebbb"
@@ -5297,10 +5359,10 @@
     },
     {
       "path": "tests/p1-cli.test.ts",
-      "sha256": "4063f8286e21c750eabb380e3bae364fb2e457b02d41f619a065a9b0a76fcec1",
+      "sha256": "5c11cfa9734b32f9ff1002c51302af8540139ca8513510034c75047d5406331c",
       "bytes": 2991,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "dd9df5f28aec5ea6ff12121dce77fd8c572e8d98"
     },
     {
@@ -5433,10 +5495,10 @@
     },
     {
       "path": "tests/p3-maintenance.test.ts",
-      "sha256": "d252770eef5dcf6e31c4e36ac19e083c17a1374dc84e702668c0c975f7246b18",
+      "sha256": "c796dbe8c86b732247b1047c92ba63cd307b10503df94ad7eb5d1582a50b3dca",
       "bytes": 13626,
       "source_snapshot_identical": true,
-      "original_runtime_identical": true,
+      "original_runtime_identical": false,
       "original_blob": "0c1cd0dd3b6b8762ba1318d3358789f08d7dcefb"
     },
     {
@@ -5545,8 +5607,8 @@
     },
     {
       "path": "tests/product-version.test.ts",
-      "sha256": "322aa80e93d8c25acc443485de8adfa99df96ece25a969aab7da078ef9957df0",
-      "bytes": 828,
+      "sha256": "297a18150e955c811e07ffe5c253761a4b6803b3efb6290f75f6018f353467f9",
+      "bytes": 837,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "8b7a41614729ede2a1c054c123880eb616755016"
@@ -5641,7 +5703,7 @@
     },
     {
       "path": "tests/release-artifacts.test.ts",
-      "sha256": "075f2fecdc0b51444c2046baf8e1b95993e9e4bb4579fee57b35d852e0178ec2",
+      "sha256": "060705e762872e3248c33794c171570fe65c9f2608890f3355b881728a7ec388",
       "bytes": 5957,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
@@ -5806,6 +5868,13 @@
       "original_blob": "a5de1c9be4921474f6dd85de59c4cebaba7171d6"
     },
     {
+      "path": "tests/telegram-recovery.test.ts",
+      "sha256": "311b8a0acd9684926ba74d856e79891a5a9867eab4c18e6a3488f748d6e3a6b5",
+      "bytes": 24757,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "tests/temporal-classifier.test.ts",
       "sha256": "4f9fb0a28c98fcdcb59e9cc1ad500b0d80199bedcc1d52f2f7ab3e9e96ffe1d7",
       "bytes": 7492,
@@ -5877,12 +5946,26 @@
       "original_runtime_identical": false
     },
     {
+      "path": "tests/test_discovery_cycle.py",
+      "sha256": "4a173317318193e20dbf4f024e26de88bfbc60ecf6686bf0378c0708e8bf84bb",
+      "bytes": 4039,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
+    },
+    {
       "path": "tests/test_release_health.py",
       "sha256": "0921839aaee0553c935ac8594430dc6e351250b67c8e52764bee553818cbe313",
       "bytes": 2073,
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "3b38f117e98746c8c7e4dfd08a3fb8cd050f62f0"
+    },
+    {
+      "path": "tests/test_visibility_providers.py",
+      "sha256": "449a7abb3b028b36ba84e4f4725ccf97ed5aa2b750ae150ac65ea39f73785311",
+      "bytes": 1320,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "tests/tool-contract-v4.test.ts",
@@ -6050,7 +6133,8 @@
   "desktop_release_source": "f647faff39c21f0556d757c6398f32e4c8301849",
   "website_source": "363d40855200a4abdef195f9b10ed2c012fa8b80",
   "monitoring_source": "50cf27204ffaf969450ce10163f2da3e698237d0",
-  "product_version": "5.0.2",
+  "product_version": "5.0.4",
   "release_503_source": "279a2d62b576e760ac89d10d02b30b9ab0f96bb7",
-  "website_503_source": "4e92f3c"
+  "website_503_source": "4e92f3c",
+  "release_504_source": "c065704ddfe42e1338881d26d8bc249679b72851"
 }

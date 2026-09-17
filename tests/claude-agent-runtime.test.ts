@@ -64,6 +64,32 @@ test('Claude login only accepts exact official OAuth paths and refuses API authe
  try{await rpc.start();expect((await rpc.call('account/read',{})).account).toBeNull();await expect(rpc.call('thread/resume',{threadId:'--bad',developerInstructions:''})).rejects.toThrow('Invalid');}finally{await rpc.stop();fs.rmSync(root,{recursive:true,force:true});}
 });
 
+test('Claude completion flushes native history before reporting completion and resuming',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-claude-flush-'))),binary=path.join(root,'claude');
+ durableWrite(binary,'#!'+process.execPath+'\n'+`
+  import readline from 'node:readline';import fs from 'node:fs';
+  const send=m=>process.stdout.write(JSON.stringify(m)+'\\n');
+  const args=process.argv.slice(2),resume=args.some(a=>a.startsWith('--resume='));
+  for await(const line of readline.createInterface({input:process.stdin})){
+   const m=JSON.parse(line);
+   if(m.type==='control_request')send({type:'control_response',response:{subtype:'success',request_id:m.request_id,response:{}}});
+   if(m.type==='user')send({type:'result',subtype:'success',result:resume?fs.readFileSync('history','utf8'):'FIRST-ANSWER'});
+  }
+  await new Promise(r=>setTimeout(r,80));fs.writeFileSync('history','FIRST-ANSWER');
+ `,0o700);
+ const rpc=new ClaudeAgentRuntime({binary,cwd:root,env:{HOME:root,PATH:'/usr/bin:/bin'},mcpConfig:path.join(root,'mcp.json')}),events:any[]=[];
+ rpc.on('notification',e=>events.push(e));
+ try{
+  await rpc.start();const thread=await rpc.call('thread/start',{developerInstructions:'Synthetic context'});
+  await rpc.call('turn/start',{threadId:thread.thread.id,input:[{text:'first'}]});
+  await until(()=>events.some(e=>e.method==='turn/completed'));
+  expect(fs.readFileSync(path.join(root,'history'),'utf8')).toBe('FIRST-ANSWER');
+  await rpc.call('turn/start',{threadId:thread.thread.id,input:[{text:'recall your answer'}]});
+  await until(()=>events.filter(e=>e.method==='turn/completed').length===2);
+  expect(events.filter(e=>e.method==='item/agentMessage/delta').map(e=>e.params.delta)).toEqual(['FIRST-ANSWER','FIRST-ANSWER']);
+ }finally{await rpc.stop();fs.rmSync(root,{recursive:true,force:true});}
+});
+
 test('Claude interruption terminates a real detached command before reporting the turn stopped',async()=>{
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-claude-tree-'))),binary=path.join(root,'claude');
  durableWrite(binary,'#!'+process.execPath+'\n'+`
@@ -88,3 +114,15 @@ test('Claude interruption terminates a real detached command before reporting th
   expect(fs.existsSync(path.join(root,'result'))).toBe(false);
  }finally{await rpc.stop();control?.kill('SIGKILL');fs.rmSync(root,{recursive:true,force:true});}
 },10000);
+
+
+test('Claude Stop terminates a stalled subscription check without waiting for its deadline',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-claude-auth-stop-'))),binary=path.join(root,'claude'),marker=path.join(root,'ready');
+ durableWrite(binary,'#!'+process.execPath+'\n'+`import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000);`,0o700);
+ const rpc=new ClaudeAgentRuntime({binary,cwd:root,env:{HOME:root,PATH:'/usr/bin:/bin'},mcpConfig:path.join(root,'mcp.json')});
+ try{
+  await rpc.start();const checking=rpc.call('account/read',{});await until(()=>fs.existsSync(marker));
+  const pid=Number(fs.readFileSync(marker,'utf8')),began=Date.now();await rpc.stop();expect(Date.now()-began).toBeLessThan(3000);
+  expect((await checking).account).toBeNull();expect(()=>process.kill(pid,0)).toThrow();
+ }finally{await rpc.stop();fs.rmSync(root,{recursive:true,force:true});}
+});

@@ -19,9 +19,9 @@ Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/d
 
 ## Can I start from a phone?
 
-You can read about Qoopia from a phone or ask your chat model to evaluate this page. A phone chat without computer access cannot install the Mac or Linux application. Installation needs a supported computer or a server you manage. Cloud MCP connections need a reachable HTTPS endpoint; ChatGPT Web/Desktop support remains experimental and depends on account capabilities. External access can be configured for your installation; a local computer must stay on and online. A supported connected cloud client can then access permitted memory from its interface.
+You can read about Qoopia from a phone or ask your chat model to evaluate this page. A phone chat without computer access cannot install the Mac or Linux application. Installation needs a supported computer or a server you manage. Cloud MCP connections need a reachable HTTPS endpoint; ChatGPT Web and Mac Desktop memory access has been verified in real-client acceptance checks; availability still depends on your account capabilities and client configuration. External access can be configured for your installation; a local computer must stay on and online. A supported connected cloud client can then access permitted memory from its interface.
 
-Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md)
+Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md)
 
 
 ## Can my agent install it for me?

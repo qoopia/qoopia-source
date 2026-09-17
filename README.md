@@ -46,7 +46,7 @@ Or download the [signed installer](https://github.com/qoopia/qoopia-downloads/re
 | Linux | x64, glibc 2.34 or later; `procps` for process management |
 | Windows / Intel Mac | Not included in this release |
 
-ChatGPT Web/Desktop MCP connections are experimental. Managed HTTPS is a limited pilot; a complete real-account enrollment has not yet been qualified. A model subscription is subject to the provider's availability and limits. Telegram requires your own bot and a running, connected host.
+ChatGPT Web and Mac Desktop MCP memory access passed real-client qualification; availability depends on your account and client configuration. Managed HTTPS is a limited pilot; a complete real-account enrollment has not yet been qualified. A model subscription is subject to the provider's availability and limits. Telegram requires your own bot and a running, connected host.
 
 ## Your data and control
 
