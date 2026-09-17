@@ -14,11 +14,10 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "0a1e5334bcca9205e8b62e8281207c14db05cbbc912bbc4c4cbbd622d46418d4",
-      "bytes": 2737,
+      "sha256": "81f7e93ab90677ffa8822f53e4c55902b6375fb2980f9971f6da1be54fd8d7dd",
+      "bytes": 2838,
       "source_snapshot_identical": false,
-      "original_runtime_identical": false,
-      "original_blob": "2b5776d0b8418f8d8a01960f7a9183b7efa4cb1b"
+      "original_runtime_identical": false
     },
     {
       "path": ".gitignore",
@@ -5960,6 +5959,13 @@
       "source_snapshot_identical": true,
       "original_runtime_identical": false,
       "original_blob": "3b38f117e98746c8c7e4dfd08a3fb8cd050f62f0"
+    },
+    {
+      "path": "tests/test_visibility_providers.py",
+      "sha256": "449a7abb3b028b36ba84e4f4725ccf97ed5aa2b750ae150ac65ea39f73785311",
+      "bytes": 1320,
+      "source_snapshot_identical": true,
+      "original_runtime_identical": false
     },
     {
       "path": "tests/tool-contract-v4.test.ts",
