@@ -35,3 +35,7 @@ deploy/*.env
 *.sqlite3
 *.db-wal
 *.db-shm
+
+# Local Python test caches
+__pycache__/
+*.py[cod]

@@ -21,8 +21,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "7573f8b0e2a6994b77e9fc7c90a683bb565b8468e153bdc8e605c3763f84b7da",
-      "bytes": 537,
+      "sha256": "38384b849b6abe0cd056171ae7ca6731cc3d9e602d1158108331e6efd811a5a7",
+      "bytes": 588,
       "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "dc3b00e3c3b0dee86528a73840aa56d9a54ca896"
