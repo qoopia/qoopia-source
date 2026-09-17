@@ -23,6 +23,7 @@ import {QoopiaError} from '../utils/errors.ts';
 import {saveMessage} from './sessions.ts';
 import {restoreContext} from './continuity.ts';
 import {assertNoSecrets} from '../utils/secret-guard.ts';
+import {cancelTelegramQueue,resumeTelegramAfterLogin} from './telegram-store.ts';
 
 export type AgentProvider='codex'|'claude_code';
 export type AgentSettings={owner_id:string;workspace_id:string;agent_id:string;provider:AgentProvider;active_conversation_id:string|null;channel:'dashboard'|'telegram';telegram_username:string|null;telegram_user_id:string|null;telegram_chat_id:string|null;telegram_offset:number;telegram_verified:number;enabled:number};
@@ -31,6 +32,16 @@ type Run={id:string;conversation_id:string;request_id:string;prompt:string;answe
 type Approval={id:string;rpcId:number|string;method:string;params:any;expires:number;runId:string};
 type Live={rpc:CodexAppServer|ClaudeAgentRuntime;provider:AgentProvider;run?:Run;rawAnswer?:string;approvals:Map<string,Approval>;progress:string;account?:boolean;login?:{url:string;code?:string};ready:Set<string>};
 const live=new Map<string,Live>(),starting=new Map<string,Promise<Live>>(),busy=new Set<string>();
+const initializing=new Map<string,CodexAppServer|ClaudeAgentRuntime>();
+const stopEpoch=new Map<string,number>(),stopping=new Map<string,Promise<void>>();
+/** Control commands do not wait behind a slow turn/start RPC. */
+export async function stopMyAgent(ownerId:string){
+  agentOwner(ownerId);cancelTelegramQueue(ownerId);
+  const previous=stopping.get(ownerId);if(previous)return previous;
+  stopEpoch.set(ownerId,(stopEpoch.get(ownerId)??0)+1);
+  const task=(async()=>{const rpc=live.get(ownerId)?.rpc??initializing.get(ownerId);if(rpc)await rpc.stop();})();
+  stopping.set(ownerId,task);try{await task;}finally{if(stopping.get(ownerId)===task)stopping.delete(ownerId);}
+}
 type SetupOperation={action:string;state:'running'|'completed'|'failed';error?:string};
 const setupOperations=new Map<string,SetupOperation>();
 /** Return immediately; the dashboard observes progress through its authenticated state endpoint. */
@@ -138,6 +149,7 @@ function updateRun(run:Run) {
 function finish(session:Live,state:string,error:string|null=null) {
   if(session.run){
     const run=session.run;run.state=state;run.error=error;updateRun(run);
+    db.query('UPDATE qoopia_telegram_inbox SET state=? WHERE run_id=?').run(state==='completed'?'done':state==='interrupted'?'cancelled':'failed',run.id);
     const identity=db.query('SELECT s.workspace_id,s.agent_id FROM qoopia_agent_settings s JOIN qoopia_agent_conversations c ON c.owner_id=s.owner_id WHERE c.id=?').get(run.conversation_id) as {workspace_id:string;agent_id:string}|null;
     if(identity&&run.answer)try{for(let i=0;i<run.answer.length;i+=90_000)saveMessage({...identity,session_id:run.conversation_id,role:'assistant',content:run.answer.slice(i,i+90_000),ingest_uuid:run.id+':answer:'+i});}catch{run.error='Conversation saved; memory indexing needs attention.';updateRun(run);}
   }
@@ -153,6 +165,8 @@ function prepareAgentProfile(ownerId:string,provider:AgentProvider) {
   installAgentInstructions(profile,provider,'steward');
 }
 async function runtime(ownerId:string):Promise<Live> {
+  if(stopping.has(ownerId))throw new QoopiaError('CONFLICT','Your agent is stopping. Wait for confirmation.');
+  const epoch=stopEpoch.get(ownerId)??0;
   credentials(ownerId);
   const existing=live.get(ownerId);if(existing)return existing;
   const pending=starting.get(ownerId);if(pending)return pending;
@@ -169,7 +183,7 @@ async function runtime(ownerId:string):Promise<Live> {
     rpc.on('notification',(message:any)=>{
       const p=message.params??{};
       if(message.method==='qoopia/approval/cancelled'){for(const [id,a] of session.approvals)if(a.rpcId===p.rpcId)session.approvals.delete(id);if(session.run&&!session.approvals.size){session.run.state='running';updateRun(session.run);}return;}
-      if(message.method==='account/login/completed'){session.account=!!p.success;session.login=undefined;}
+      if(message.method==='account/login/completed'){session.account=!!p.success;session.login=undefined;if(session.account&&live.get(ownerId)===session)resumeTelegramAfterLogin(ownerId);}
       if(!session.run)return;
       const c=conversation(ownerId,session.run.conversation_id);
       if(p.threadId!==c.native_thread_id)return;
@@ -184,13 +198,17 @@ async function runtime(ownerId:string):Promise<Live> {
     rpc.on('request',(message:any)=>{
       const p=message.params??{},run=session.run;
       if(!run||p.threadId!==conversation(ownerId,run.conversation_id).native_thread_id||(run.native_turn_id&&p.turnId!==run.native_turn_id)){rpc.refuse(message.id);return;}
-      const allowed=['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/tool/requestUserInput','item/permissions/requestApproval'];
+      const allowed=['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/tool/requestUserInput','item/permissions/requestApproval','mcpServer/elicitation/request'];
       if(!allowed.includes(message.method)){rpc.refuse(message.id);return;}
-      const id=randomUUID();session.approvals.set(id,{id,rpcId:message.id,method:message.method,params:p,expires:Date.now()+300_000,runId:run.id});run.state='approval';updateRun(run);
+      const id=randomUUID();session.approvals.set(id,{id,rpcId:message.id,method:message.method,params:message.method==='mcpServer/elicitation/request'?{...p,reason:p.message}:p,expires:Date.now()+300_000,runId:run.id});run.state='approval';updateRun(run);
     });
-    try{await rpc.start();}catch(error){rpc.stop();throw error;}live.set(ownerId,session);
+    if(epoch!==(stopEpoch.get(ownerId)??0))throw new QoopiaError('CONFLICT','Agent start was cancelled');
+    initializing.set(ownerId,rpc);
+    try{await rpc.start();if(epoch!==(stopEpoch.get(ownerId)??0)){await rpc.stop();throw new QoopiaError('CONFLICT','Agent start was cancelled');}}catch(error){void rpc.stop().catch(()=>{});throw error;}finally{if(initializing.get(ownerId)===rpc)initializing.delete(ownerId);}
+    live.set(ownerId,session);
     if(!accessTimer){accessTimer=setInterval(()=>{for(const [owner,current] of live){try{credentials(owner);if([...current.approvals.values()].some(a=>a.expires<Date.now()))current.rpc.stop();}catch{current.rpc.stop();}}},2000);accessTimer.unref();}
     try{const result=await rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');}catch{session.account=false;}
+    if(session.account&&live.get(ownerId)===session)resumeTelegramAfterLogin(ownerId);
     return session;
   })();
   starting.set(ownerId,start);try{return await start;}finally{starting.delete(ownerId);}
@@ -230,8 +248,10 @@ const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('approve'),id:z.string().uuid(),accept:z.boolean(),answers:z.record(z.string().max(4000)).optional()}).strict(),
   z.object({action:z.literal('channel'),channel:z.enum(['dashboard','telegram'])}).strict(),
 ]);
-export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
+export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{generation:string;updateId:number}):Promise<any> {
   const auth=agentOwner(ownerId),input=actions.parse(raw);
+  if(input.action==='stop'){await stopMyAgent(ownerId);return {ok:true};}
+  const epoch=stopEpoch.get(ownerId)??0;
   if(busy.has(ownerId))throw new QoopiaError('CONFLICT','Please wait for the current action');
   busy.add(ownerId);
   try {
@@ -257,6 +277,7 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
     if(input.action==='provider') {
       const settings=credentials(ownerId).settings;
       if(settings.provider===input.provider)return myAgentState(ownerId);
+      if(db.query("SELECT 1 FROM qoopia_telegram_inbox WHERE owner_id=? AND state IN ('queued','starting','running') LIMIT 1").get(ownerId))throw new QoopiaError('CONFLICT','Stop the Telegram task and queue before switching subscription');
       if(live.get(ownerId)?.run||live.get(ownerId)?.login)throw new QoopiaError('CONFLICT','Finish or stop the current task and sign-in before switching subscription');
       await provision(input.provider);prepareAgentProfile(ownerId,input.provider);
       await live.get(ownerId)?.rpc.stop();
@@ -268,7 +289,7 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
       if(input.channel==='telegram'&&!settings.telegram_verified)throw new QoopiaError('NOT_READY','Complete a real reply in Telegram first');
       db.query('UPDATE qoopia_agent_settings SET channel=? WHERE owner_id=?').run(input.channel,ownerId);return {ok:true};
     }
-    if(input.action==='disconnect'){await live.get(ownerId)?.rpc.stop();db.query('UPDATE qoopia_agent_settings SET enabled=0,channel=\'dashboard\' WHERE owner_id=?').run(ownerId);return {ok:true};}
+    if(input.action==='disconnect'){await stopMyAgent(ownerId);db.query('UPDATE qoopia_agent_settings SET enabled=0,channel=\'dashboard\' WHERE owner_id=?').run(ownerId);return {ok:true};}
     if(input.action==='new') {
       const settings=credentials(ownerId).settings;assertNoSecrets(input.title,'conversation title');const id=randomUUID();
       db.transaction(()=>{
@@ -282,19 +303,13 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
     if(input.action==='select-conversation'){credentials(ownerId);conversation(ownerId,input.conversation);db.query('UPDATE qoopia_agent_settings SET active_conversation_id=? WHERE owner_id=?').run(input.conversation,ownerId);return {ok:true};}
     if(input.action==='start'&&agentSettings(ownerId)&&!agentSettings(ownerId)!.enabled)db.query('UPDATE qoopia_agent_settings SET enabled=1 WHERE owner_id=?').run(ownerId);
     const alreadyRunning=live.has(ownerId),session=await runtime(ownerId);
-    if(input.action==='start'){if(alreadyRunning){const result=await session.rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');}return myAgentState(ownerId);}
+    if(input.action==='start'){if(alreadyRunning){const result=await session.rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');}if(session.account)resumeTelegramAfterLogin(ownerId);return myAgentState(ownerId);}
     if(input.action==='login-code'){if(session.provider!=='claude_code'||!session.login)throw new QoopiaError('NOT_READY','Start Claude sign-in first');await session.rpc.call('account/login/code',{code:input.code});return {ok:true};}
     if(input.action==='login') {
       if(session.provider==='claude_code')await prepareNativeKeychain(privateDirectory(path.join(agentDirectory(ownerId),'home')));
       const result=await session.rpc.call('account/login/start',{type:session.provider==='codex'?'chatgpt':'claude'});
       const url=new URL(result.authUrl);if(session.provider==='claude_code')claudeLoginUrl(result.authUrl);else if(url.protocol!=='https:'||url.hostname!=='auth.openai.com'||url.username||url.password)throw new Error('Unexpected login URL');
       session.login={url:url.href};return session.login;
-    }
-    if(input.action==='stop') {
-      // A provider's interrupted notification does not prove its tool process
-      // stopped. Retire the private runtime and verify its entire child tree;
-      // the next message resumes the saved native thread in a fresh runtime.
-      if(session.run)await session.rpc.stop();return {ok:true};
     }
     if(input.action==='approve') {
       const approval=session.approvals.get(input.id);
@@ -303,9 +318,14 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
       if(approval.method==='item/tool/requestUserInput'&&!input.accept){session.rpc.refuse(approval.rpcId);session.approvals.delete(input.id);return {ok:true};}
       if(approval.method==='item/tool/requestUserInput')result={answers:Object.fromEntries((approval.params.questions??[]).map((q:any)=>[q.id,{answers:[input.answers?.[q.id]??'']}]))};
       if(approval.method==='item/permissions/requestApproval')result={permissions:input.accept?approval.params.permissions:{},scope:'turn'};
+      if(approval.method==='mcpServer/elicitation/request'){
+        if(input.accept&&(!['form','openai/form','openaiForm'].includes(approval.params.mode)||approval.params.requestedSchema?.type!=='object'||Object.keys(approval.params.requestedSchema?.properties??{}).length>0||(approval.params.requestedSchema?.required?.length??0)>0))throw new QoopiaError('NOT_READY','This MCP request needs form input. Review its details before continuing.');
+        result={action:input.accept?'accept':'decline',...(input.accept?{content:{}}:{})};
+      }
       session.rpc.respond(approval.rpcId,result);session.approvals.delete(input.id);
       if(session.run){session.run.state=session.approvals.size?'approval':'running';updateRun(session.run);}return {ok:true};
     }
+    if(epoch!==(stopEpoch.get(ownerId)??0))throw new QoopiaError('CONFLICT','Task cancelled');
     const c=conversation(ownerId,input.conversation);
     const duplicate=db.query('SELECT id FROM qoopia_agent_runs WHERE conversation_id=? AND request_id=?').get(c.id,input.requestId);if(duplicate)return duplicate;
     if(session.run)throw new QoopiaError('CONFLICT','Your agent is working. Stop it or wait for its reply.');
@@ -315,6 +335,13 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
     assertNoSecrets(input.text,'agent message');
     db.transaction(()=>{
       db.query('INSERT INTO qoopia_agent_runs(id,conversation_id,request_id,prompt,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(run.id,c.id,input.requestId,input.text,'starting',now(),now());
+      if(telegram){
+        const current=db.query('SELECT 1 FROM qoopia_telegram_channels WHERE owner_id=? AND generation=? AND paused=0').get(ownerId,telegram.generation);
+        if(!current)throw new QoopiaError('CONFLICT','Telegram connection changed');
+        db.query("INSERT INTO qoopia_agent_telegram_delivery(run_id,state,generation) VALUES(?,'pending',?)").run(run.id,telegram.generation);
+        const receipt=db.query("UPDATE qoopia_telegram_inbox SET run_id=?,state='running' WHERE owner_id=? AND generation=? AND update_id=? AND state='starting'").run(run.id,ownerId,telegram.generation,telegram.updateId);
+        if(receipt.changes!==1)throw new QoopiaError('CONFLICT','Telegram task cancelled or already started');
+      }
       const settings=credentials(ownerId).settings;
       saveMessage({workspace_id:settings.workspace_id,agent_id:settings.agent_id,session_id:c.id,role:'user',content:input.text,ingest_uuid:run.id+':prompt'});
       db.query('UPDATE sessions SET title=? WHERE id=? AND workspace_id=?').run(c.title,c.id,settings.workspace_id);
@@ -325,6 +352,7 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
         const result=await session.rpc.call(c.native_thread_id?'thread/resume':'thread/start',c.native_thread_id?{...params,threadId:c.native_thread_id}:params);
         c.native_thread_id=result.thread.id;db.query('UPDATE qoopia_agent_conversations SET native_thread_id=? WHERE id=?').run(c.native_thread_id,c.id);session.ready.add(c.id);
       }
+      if(epoch!==(stopEpoch.get(ownerId)??0)||session.run!==run)throw new QoopiaError('CONFLICT','Task cancelled');
       const result=await session.rpc.call('turn/start',{threadId:c.native_thread_id,clientUserMessageId:run.id,input:[{type:'text',text:input.text,text_elements:[]}]});
       if(session.run===run){run.native_turn_id=result.turn.id;run.state='running';updateRun(run);}return {id:run.id};
     }catch(error){finish(session,'failed','The task could not start. Check your connection and sign-in.');throw error;}
@@ -332,4 +360,4 @@ export async function myAgentAction(ownerId:string,raw:unknown):Promise<any> {
 }
 /** Called after migrations and HTTP startup; never replay a possibly executed turn. */
 export function recoverMyAgentRuns(){db.query("UPDATE qoopia_agent_runs SET state='interrupted',error='Qoopia restarted. Continue with a new message.',updated_at=? WHERE state IN ('starting','running','approval')").run(now());}
-export async function stopMyAgents(){if(accessTimer)clearInterval(accessTimer);accessTimer=undefined;await Promise.all([...live.values()].map(session=>session.rpc.stop()));}
+export async function stopMyAgents(){if(accessTimer)clearInterval(accessTimer);accessTimer=undefined;await Promise.all([...new Set([...live.values()].map(session=>session.rpc).concat([...initializing.values()]))].map(rpc=>rpc.stop()));}

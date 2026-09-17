@@ -6,7 +6,7 @@ import { ownerFixture, completeContent } from "./helpers/p1-fixtures.ts";
 import { Database } from "bun:sqlite";
 
 test("T-05/T-22: actual CLI process uses the shared writer and rechecks current authorization", async () => {
-  const { database, owner } = ownerFixture(43), directory = mkdtempSync(join(tmpdir(), "p1-cli-"));
+  const { database, owner } = ownerFixture(44), directory = mkdtempSync(join(tmpdir(), "p1-cli-"));
   try {
     const data = join(directory, "data"); mkdirSync(data);
     const filename = join(data, "qoopia.db"); writeFileSync(filename, database.serialize());

@@ -45,3 +45,7 @@ Canonical product source `279a2d62b576e760ac89d10d02b30b9ab0f96bb7`. Authorizati
 The public compose template replaces owner-specific instance names and environment paths with operator parameters. It supplies the file already referenced by the public Dockerfile and rollback check. Public CHANGELOG contains only the current release notes; private historical operational notes are excluded.
 
 5.0.3 website metadata and signed Sparkle feed match canonical website merge `4e92f3c`. Packaged product source remains `279a2d62b576e760ac89d10d02b30b9ab0f96bb7`.
+
+## Qoopia 5.0.4
+
+Canonical product source `c065704ddfe42e1338881d26d8bc249679b72851`. Telegram subscription recovery, persistent receipts, Stop and native Claude transcript preservation. Public history remains independent. Operator state, host-specific runbooks, private profiles and acceptance artifacts are excluded.

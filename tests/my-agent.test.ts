@@ -9,7 +9,7 @@ import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
-import {isBoundTelegramMessage,telegramState,telegramCall,pollTelegramOwner,telegramAction,stopTelegramChannels} from '../src/services/my-agent-telegram.ts';
+import {isBoundTelegramMessage,telegramState,telegramCall,pollTelegramOwner,telegramAction,stopTelegramChannels,deliverTelegram} from '../src/services/my-agent-telegram.ts';
 import {inspectSnapshot} from '../src/delivery/snapshot.ts';
 beforeAll(()=>runMigrations());
 
@@ -80,7 +80,7 @@ test('shared channel selection and paged history include turn 201; artifacts can
   expect(safeAgentAnswer('Bearer '+agent.api_key)).not.toContain(agent.api_key);
 });
 
-test('a Telegram message rejected before sign-in is acknowledged and cannot block later updates',async()=>{
+test('a Telegram message received before sign-in is saved before acknowledgment; foreign messages never enter the queue',async()=>{
   const id='telegram-queue';db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(id,id,id);
   const owner=bootstrapOwner(db,'Telegram queue owner',undefined,id),agent=createAgent({name:'Queue agent',workspaceSlug:id,type:'steward'});
   db.query("INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,telegram_username,telegram_user_id,telegram_chat_id,created_at) VALUES(?,?,?,'fixture_bot','123','123','now')").run(owner.agent_id,id,agent.id);
@@ -90,7 +90,9 @@ test('a Telegram message rejected before sign-in is acknowledged and cannot bloc
     globalThis.fetch=(async(url:any,init:any)=>{const body=JSON.parse(init.body);if(String(url).endsWith('/getUpdates'))return Response.json({ok:true,result:[{update_id:7,message:{from:{id:123},chat:{id:123,type:'private'},text:'Hello'}},{update_id:8,message:{from:{id:999},chat:{id:999,type:'private'},text:'Do not run'}}]});notices.push(body);return Response.json({ok:true,result:{message_id:9}});}) as any;
     await pollTelegramOwner(owner.agent_id);
     expect(db.query('SELECT telegram_offset FROM qoopia_agent_settings WHERE owner_id=?').get(owner.agent_id)).toEqual({telegram_offset:9});
-    expect(notices.length).toBe(1);expect(telegramState(owner.agent_id).error).toContain('not started');expect(myAgentState(owner.agent_id).runs).toEqual([]);
+    expect(notices.length).toBe(0);expect(telegramState(owner.agent_id).queued).toBe(1);expect(myAgentState(owner.agent_id).runs).toEqual([]);
+    await deliverTelegram(owner.agent_id);expect(notices.length).toBe(1);
+    await pollTelegramOwner(owner.agent_id);expect(telegramState(owner.agent_id).queued).toBe(1);
   }finally{globalThis.fetch=original;}
 });
 
@@ -193,7 +195,7 @@ test('switching the dashboard to Claude retains Codex history, verifies selected
   }finally{await stopMyAgents();fs.rmSync(selected,{force:true});fs.rmSync(path.join(base,'claude_code'),{recursive:true,force:true});}
 });
 
-test('Telegram setup checks in parallel and a failed greeting preserves account confirmation for retry',async()=>{
+test('Telegram setup checks in parallel and persists confirmation independently of greeting delivery',async()=>{
   const slug='tg-retry-'+randomUUID();db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
   const owner=bootstrapOwner(db,'Telegram retry owner',undefined,slug),agent=createAgent({name:'Retry steward',workspaceSlug:slug,type:'steward'});
   db.query('INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,created_at) VALUES(?,?,?,?)').run(owner.agent_id,slug,agent.id,'now');
@@ -214,8 +216,9 @@ test('Telegram setup checks in parallel and a failed greeting preserves account 
     const connected=await telegramAction(owner.agent_id,{action:'telegram-connect',token:'12345:'+ 'a'.repeat(24)});stopTelegramChannels();
     expect(peak).toBe(2);code=new URL(connected.url!).searchParams.get('start')!;
     await pollTelegramOwner(owner.agent_id);expect(telegramState(owner.agent_id).pending?.user?.id).toBe('123');
-    await expect(telegramAction(owner.agent_id,{action:'telegram-confirm',userId:'123',chatId:'123'})).rejects.toThrow('Telegram did not accept');
-    expect(telegramState(owner.agent_id).pending?.user?.id).toBe('123');expect(myAgentState(owner.agent_id).telegram.linked).toBe(false);
+    expect(await telegramAction(owner.agent_id,{action:'telegram-confirm',userId:'123',chatId:'123'})).toEqual({linked:true});
+    await deliverTelegram(owner.agent_id);expect(telegramState(owner.agent_id).uncertain_deliveries).toBe(1);
+    expect(myAgentState(owner.agent_id).telegram.linked).toBe(true);
     failGreeting=false;expect(await telegramAction(owner.agent_id,{action:'telegram-confirm',userId:'123',chatId:'123'})).toEqual({linked:true});
     expect(telegramState(owner.agent_id).pending).toBeNull();expect(myAgentState(owner.agent_id).telegram.linked).toBe(true);
     expect(db.query('SELECT telegram_user_id FROM qoopia_agent_settings WHERE owner_id=?').get(owner.agent_id)).toEqual({telegram_user_id:'123'});

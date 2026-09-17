@@ -1007,5 +1007,10 @@
   "Subscription setup failed. Check your connection and try again.": "Не удалось подключить подписку. Проверьте соединение и попробуйте снова.",
   "Cancel sign-in": "Отменить вход",
   "Choose your Google account in the browser, then confirm the email from Qoopia. Return here to finish signing in.": "Выберите аккаунт Google в браузере, затем подтвердите письмо от Qoopia. Вернитесь сюда для завершения входа.",
-  "Sign-in cancelled. You can try again.": "Вход отменён. Можно попробовать снова."
+  "Sign-in cancelled. You can try again.": "Вход отменён. Можно попробовать снова.",
+  "Pairing link expired. Create a new link.": "Срок ссылки истёк. Создайте новую ссылку.",
+  "Open the pairing link and press Start in Telegram.": "Откройте ссылку привязки и нажмите Start в Telegram.",
+  "Create a new pairing link": "Создать новую ссылку привязки",
+  "Qoopia 5.0.3: public signed installers, supported platforms, release checks and limitations.": "Qoopia 5.0.3: общедоступные подписанные установщики, поддерживаемые платформы, проверки релиза и ограничения.",
+  "Releases / 15 September 2026": "Версии / 15 сентября 2026"
 }
