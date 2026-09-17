@@ -1012,5 +1012,12 @@
   "Open the pairing link and press Start in Telegram.": "Откройте ссылку привязки и нажмите Start в Telegram.",
   "Create a new pairing link": "Создать новую ссылку привязки",
   "Qoopia 5.0.3: public signed installers, supported platforms, release checks and limitations.": "Qoopia 5.0.3: общедоступные подписанные установщики, поддерживаемые платформы, проверки релиза и ограничения.",
-  "Releases / 15 September 2026": "Версии / 15 сентября 2026"
+  "Releases / 15 September 2026": "Версии / 15 сентября 2026",
+  "Qoopia 5.0.4: public signed installers, supported platforms, release checks and limitations.": "Qoopia 5.0.4: общедоступные подписанные установщики, поддерживаемые платформы, проверки релиза и ограничения.",
+  "Releases / 17 September 2026": "Версии / 17 сентября 2026",
+  "Reliable Telegram agents": "Надёжная работа агентов в Telegram",
+  "Queued messages resume after subscription sign-in and survive a restart.": "Сообщения в очереди продолжают выполняться после входа в подписку и сохраняются при перезапуске.",
+  "Stop cancels the active task and queued messages.": "Stop останавливает текущую задачу и отменяет сообщения в очереди.",
+  "Claude conversation history retains both your messages and the agent’s replies.": "История Claude сохраняет ваши сообщения и ответы агента.",
+  "Subscription sign-in and permission recovery are available directly in the dashboard.": "Вход в подписку и запросы разрешений доступны прямо в дашборде."
 }
