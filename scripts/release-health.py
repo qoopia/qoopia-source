@@ -45,6 +45,7 @@ def main():
     p.add_argument('--root', required=True)
     p.add_argument('--source', required=True)
     p.add_argument('--package-source', default=os.environ.get('QOOPIA_PACKAGE_SOURCE'), help='Expected published installer source; defaults to runtime source')
+    p.add_argument('--schema-version', type=int, default=int(os.environ.get('QOOPIA_SCHEMA_VERSION', '43')), help='Expected deployed database schema')
     p.add_argument('--analytics', default='/srv/qoopia-analytics/latest.json')
     a = p.parse_args()
     os.umask(0o077)
@@ -55,7 +56,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         results = dict(pool.map(request, endpoints))
     issues = [name for name, r in results.items() if not r['ok']]
-    for name, validate in [('release', lambda d: d.get('source') == (a.package_source or a.source)), ('auth', lambda d: d.get('ready') is True), ('memory', lambda d: d.get('release_sha') == a.source and d.get('schema_version') == 43 and d.get('status') == 'ready' and bool(d.get('checks')) and all(v == 'ok' for v in d['checks'].values()))]:
+    for name, validate in [('release', lambda d: d.get('source') == (a.package_source or a.source)), ('auth', lambda d: d.get('ready') is True), ('memory', lambda d: d.get('release_sha') == a.source and d.get('schema_version') == a.schema_version and d.get('status') == 'ready' and bool(d.get('checks')) and all(v == 'ok' for v in d['checks'].values()))]:
         r = results[name]
         if r['ok'] and not validate(r['data']):
             issues.append(name + ':unexpected_state')

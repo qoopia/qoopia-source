@@ -2112,9 +2112,9 @@
     },
     {
       "path": "scripts/release-health.py",
-      "sha256": "aa6cf46b36cd3197c2d48a9efa2880378ba8349a1ef94d323f396ba9cc9d19cf",
-      "bytes": 4504,
-      "source_snapshot_identical": true,
+      "sha256": "9bc7a8189e34de1d96eeecfa6e23fe2218b29a7d4a0843ee87c6b680dd756b4e",
+      "bytes": 4669,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "e64a4c5543e7473ee27d05b248b7d0fbcb22f306"
     },
