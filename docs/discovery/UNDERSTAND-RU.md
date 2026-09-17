@@ -21,7 +21,7 @@ Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/d
 
 С телефона можно изучить Qoopia или попросить модель оценить эту страницу. Чат без доступа к компьютеру не установит приложение на Mac или Linux. Для установки нужен поддерживаемый компьютер или свой сервер. Облачному MCP-клиенту нужен доступный HTTPS-адрес; доступ к памяти из ChatGPT Web и приложения ChatGPT для Mac проверен на реальных клиентах; доступность по-прежнему зависит от возможностей аккаунта и настройки клиента. Для установки можно настроить внешний доступ; локальный компьютер должен оставаться включённым и подключённым к сети. После подключения поддерживаемый облачный клиент получает разрешённый доступ к памяти из своего интерфейса.
 
-Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/final-release-20260915.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/final-release-20260915.md)
+Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md)
 
 
 ## Может мой агент установить всё за меня?

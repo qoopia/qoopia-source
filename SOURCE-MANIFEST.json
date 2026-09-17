@@ -75,8 +75,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "6183d0f934417337b1e28f87472dc048ed64f45c63ac4745cf78d8be57942a3d",
-      "bytes": 4918,
+      "sha256": "56280b5042db2d9d21520f79d6ae16942eda3277b13e55013d54bc37bdec5378",
+      "bytes": 5007,
       "source_snapshot_identical": false,
       "original_runtime_identical": false,
       "original_blob": "f791598ef9e9514f8d26d57d2407e64fe29b8a9e"
@@ -319,23 +319,23 @@
     },
     {
       "path": "docs/discovery/UNDERSTAND-EN.md",
-      "sha256": "339d6a85bb78bcae37ad3d79b5f14bbc3ace081b2e383e302a1fd1002ca8deae",
-      "bytes": 8627,
-      "source_snapshot_identical": true,
+      "sha256": "55cb1a971a187ae84f05bb6e23a51c1e8a4accb2d201db29e8508792280cf5e3",
+      "bytes": 8605,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
       "path": "docs/discovery/UNDERSTAND-RU.md",
-      "sha256": "c0aede5dadb0164480d85ff67fb0e6a1ee525252902c139478b24d6aa037eba7",
-      "bytes": 12933,
-      "source_snapshot_identical": true,
+      "sha256": "92ab3a77a25cd595b43aabe6dd793dc3f9ed2fd0ac243bb2143ebc304362d975",
+      "bytes": 12911,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
       "path": "docs/discovery/answers.json",
-      "sha256": "3f8bb83acd85c5af09827af8cf098f5faf982d8f4a917e255fb025383dbc255d",
-      "bytes": 19262,
-      "source_snapshot_identical": true,
+      "sha256": "c9e2db7f1dcdb70ca27c7e08d34d950c8ce77e656faf9e7db89dbf1d34816b45",
+      "bytes": 19251,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
@@ -1081,16 +1081,16 @@
     },
     {
       "path": "marketing-site/understand-ru.html",
-      "sha256": "6eb8a881ef3b19b0642f983470902331d9fe5cf8a269511ed911f11f314c672b",
-      "bytes": 17532,
-      "source_snapshot_identical": true,
+      "sha256": "fb2ff41c262ec1dd907c7e728763adf09aae666be04d6a166db849fd5efdd4c7",
+      "bytes": 17510,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
       "path": "marketing-site/understand.html",
-      "sha256": "ea2a1743e99acc6ed6bd2e6bc71bed297e8994ed5e117ffc952acd6b9e9673d6",
-      "bytes": 12768,
-      "source_snapshot_identical": true,
+      "sha256": "e13ef209acafb0b6f87ffca35a2e9ba8e8189eeb6a64877ea9619e8715d35226",
+      "bytes": 12746,
+      "source_snapshot_identical": false,
       "original_runtime_identical": false
     },
     {
