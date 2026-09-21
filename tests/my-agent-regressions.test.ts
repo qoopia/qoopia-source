@@ -26,6 +26,7 @@ function ownerFixture(){
     for await(const line of readline.createInterface({input:process.stdin})){
       const m=JSON.parse(line);if(m.method==='initialized')continue;
       fs.appendFileSync('rpc-trace.jsonl',JSON.stringify(m)+'\\n');let result={};
+      if(m.method==='model/list')result={data:[{model:'fixture-fast',displayName:'Fixture fast',isDefault:true},{model:'fixture-deep',displayName:'Fixture deep'}]};
       if(m.method==='account/read')result={account:{type:'chatgpt'}};
       if(m.method==='thread/start'||m.method==='thread/resume'){thread=m.params.threadId??randomUUID();result={thread:{id:thread}};}
       if(m.method==='turn/start'){thread=m.params.threadId;turn=randomUUID();result={turn:{id:turn}};}
@@ -116,3 +117,22 @@ test('new dashboard thread receives the selected saved context; snapshot survive
     expect(JSON.parse((db.query('SELECT metadata FROM sessions WHERE id=?').get(isolated.id) as any).metadata).dashboard_context).toBeUndefined();
   }finally{await stopMyAgents();process.env.PATH=oldPath;}
 },15000);
+
+test('owner model selection reaches Codex turns, rejects unknown models and cannot change an active task',async()=>{
+  const f=ownerFixture(),oldPath=process.env.PATH;
+  try {
+    process.env.PATH=f.bin+path.delimiter+oldPath;
+    await myAgentAction(f.owner,{action:'start'});
+    expect((await myAgentAction(f.owner,{action:'models'})).models).toHaveLength(2);
+    await expect(myAgentAction(f.owner,{action:'model',model:'not-in-catalog'})).rejects.toThrow('available');
+    await myAgentAction(f.owner,{action:'model',model:'fixture-deep'});
+    const c=await myAgentAction(f.owner,{action:'new',title:'Model selection'});
+    await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'model-turn',text:'approval'});
+    await until(()=>myAgentState(f.owner).approvals.length===1);
+    expect(myAgentState(f.owner).model).toBe('fixture-deep');
+    const trace=fs.readFileSync(path.join(f.cwd,'rpc-trace.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+    expect(trace.find(m=>m.method==='turn/start').params.model).toBe('fixture-deep');
+    await expect(myAgentAction(f.owner,{action:'model',model:'fixture-fast'})).rejects.toThrow('current task');
+    expect(myAgentState(f.owner).model).toBe('fixture-deep');
+  }finally{await stopMyAgents();process.env.PATH=oldPath;}
+});

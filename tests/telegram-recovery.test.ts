@@ -220,3 +220,59 @@ test('a subscribed provider failure is terminal for that receipt, with no automa
  expect(myAgentState(owner).provider).toBe('codex');expect(myAgentState(owner).runs).toHaveLength(1);expect(myAgentState(owner).runs[0]!.state).toBe('failed');expect(sent.some(m=>m.text.includes('Task failed.'))).toBe(true);
  expect(db.query('SELECT state FROM qoopia_telegram_inbox WHERE owner_id=?').get(owner)).toEqual({state:'failed'});
 });
+
+test('a manual agent answers in Telegram while queues and runs keep no message text after delivery',async()=>{
+  const {owner,folder}=fixture();
+  const {setMemoryPolicy}=await import('../src/services/memory-policy.ts');
+  const settings=db.query('SELECT workspace_id,agent_id FROM qoopia_agent_settings WHERE owner_id=?').get(owner) as {workspace_id:string;agent_id:string};
+  setMemoryPolicy({...settings,mode:'manual',actor_id:owner});
+  binary(folder,`import readline from 'node:readline';const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');for await(const line of readline.createInterface({input:process.stdin})){const m=JSON.parse(line);if(!m.id)continue;let result={};if(m.method==='account/read')result={account:{type:'chatgpt'}};if(m.method==='thread/start'||m.method==='thread/resume')result={thread:{id:'manual-thread'}};if(m.method==='turn/start')result={turn:{id:'manual-turn'}};send({id:m.id,result});if(m.method==='turn/start')setTimeout(()=>{send({method:'item/agentMessage/delta',params:{threadId:'manual-thread',turnId:'manual-turn',delta:'MANUAL-TG-REPLY-91c2'}});send({method:'turn/completed',params:{threadId:'manual-thread',turn:{id:'manual-turn',status:'completed'}}});},30);}`);
+  const sent=mockTelegram([update(1,'MANUAL-TG-PROMPT-91c2'),update(2,'MANUAL-TG-NEVER-STARTED-91c2')]);
+  await pollTelegramOwner(owner);
+  // Transit: the queue must hold the text until the turn is submitted, or a crash would lose the message.
+  expect(db.query("SELECT prompt FROM qoopia_telegram_inbox WHERE owner_id=? AND update_id=1").get(owner)).toEqual({prompt:'MANUAL-TG-PROMPT-91c2'});
+  await runTelegramQueue(owner);await until(()=>!myAgentState(owner).active_conversation);
+  await myAgentAction(owner,{action:'stop'});
+  for(let i=0;i<4;i++)await deliverTelegram(owner);
+  expect(sent.some(message=>message.text==='MANUAL-TG-REPLY-91c2')).toBe(true);
+  expect(myAgentState(owner).telegram.verified).toBe(true);
+  const tables=(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '%_fts_%' AND name NOT LIKE 'sqlite_%'").all() as {name:string}[]).map(t=>t.name);
+  const leaked=tables.filter(table=>{try{return (db.query(`SELECT * FROM "${table}"`).all() as object[]).some(row=>JSON.stringify(row).includes('MANUAL-TG-'));}catch{return false;}});
+  expect(leaked).toEqual([]);
+  expect(db.query("SELECT state FROM qoopia_telegram_inbox WHERE owner_id=? ORDER BY update_id").all(owner)).toEqual([{state:'done'},{state:'cancelled'}]);
+});
+
+test('a prepared save is asked once in Telegram, only the bound owner decides it, and the button writes the note',async()=>{
+  const {owner}=fixture();
+  const {setMemoryPolicy}=await import('../src/services/memory-policy.ts');
+  const {createNote}=await import('../src/services/notes.ts');
+  const settings=db.query('SELECT workspace_id,agent_id FROM qoopia_agent_settings WHERE owner_id=?').get(owner) as {workspace_id:string;agent_id:string};
+  setMemoryPolicy({...settings,mode:'manual',actor_id:owner});
+  const prepare=(text:string)=>{
+    try{createNote({workspace_id:settings.workspace_id,agent_id:settings.agent_id,text});}
+    catch(error){return /request (\S+) and waits/.exec((error as Error).message)![1]!;}
+    throw new Error('the write was accepted');
+  };
+  const notes=(text:string)=>(db.query('SELECT COUNT(*) AS n FROM notes WHERE workspace_id=? AND text=?').get(settings.workspace_id,text) as {n:number}).n;
+  const asked='Синтетический материал: подтверждение записи через Telegram.',refused='Синтетический материал: посторонний нажал кнопку.';
+  const first=prepare(asked),second=prepare(refused);
+
+  const updates:any[]=[],sent=mockTelegram(updates);
+  for(let i=0;i<3;i++)await deliverTelegram(owner);
+  const questions=sent.filter(message=>String(message.text).includes('сохранить это в память'));
+  expect(questions).toHaveLength(2);
+  const question=questions.find(message=>String(message.text).includes(asked))!;
+  expect(question.reply_markup.inline_keyboard[0][0].callback_data).toBe('qs:'+first+':yes');
+  expect(notes(asked)).toBe(0);
+
+  const press=(id:number,request:string,person:number)=>updates.push({update_id:id,callback_query:{id:'cb'+id,from:{id:person},data:'qs:'+request+':yes',message:{chat:{id:123,type:'private'}}}});
+  press(60,second,456);await pollTelegramOwner(owner);
+  expect(notes(refused)).toBe(0);
+  press(61,first,123);await pollTelegramOwner(owner);
+  expect(notes(asked)).toBe(1);
+
+  // A decided request is never asked again, and its queued question never reaches the chat.
+  const before=sent.length;
+  for(let i=0;i<3;i++)await deliverTelegram(owner);
+  expect(sent.slice(before).some(message=>String(message.text).includes(asked))).toBe(false);
+});

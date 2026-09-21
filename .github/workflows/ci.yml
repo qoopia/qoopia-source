@@ -20,7 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1 # Upgrade tests use the verified source-only fixture.
+          fetch-depth: 1 # Upgrade tests use the verified public source-only fixture.
 
       - name: Setup Bun
         # QSEC-008: pin Bun to keep CI reproducible. Bump deliberately when
@@ -56,6 +56,11 @@ jobs:
       - name: Generated locale runtime matches its catalog
         run: bun scripts/build-ui-locales.ts --check
 
+      - name: Release metadata consistency
+        run: |
+          python3 scripts/check-release-metadata.py
+          python3 tests/test_release_metadata.py
+
       - name: Release health monitor tests
         run: python3 tests/test_release_health.py
 
@@ -67,7 +72,10 @@ jobs:
           python3 tests/test_discovery_cycle.py
 
       - name: Tests
-        run: bun test
+        # Durable SQLite/backup fixtures can exceed Bun's 5s local default on
+        # shared runners. Functional assertions and the 10-minute job cap stay
+        # intact; performance budgets are checked by the separate V4 gate.
+        run: bun test --timeout 30000
 
       - name: Storage-full failure mode (isolated database)
         timeout-minutes: 1

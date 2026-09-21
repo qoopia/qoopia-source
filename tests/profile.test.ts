@@ -56,3 +56,16 @@ test('dashboard addresses reject credentials, agent routes and executable or tok
   expect(dashboardAddress('http://127.0.0.1:63655/dashboard')).toBe('http://127.0.0.1:63655/dashboard');
   for(const value of ['javascript:alert(1)','data:text/html,x','//evil.test','http://remote.test','https://u:p@my.test','https://my.test/mcp','https://my.test/dashboard?token=secret','https://my.test/dashboard#secret','https://auth.qoopia.ai','https://c-11111111-1111-1111-1111-111111111111.qoopia.ai',null,{}])expect(()=>dashboardAddress(value)).toThrow('INVALID_DASHBOARD');
 });
+
+test('the news form shows only localized messages, never a raw network or parse exception',async()=>{
+  const {profileView}=await import('../src/identity/profile-view.ts');
+  for(const ru of [false,true]) {
+    const html=profileView((_title,_content,script)=>script??'',ru,{email:'owner@example.com',url:null},'',false,{subscribed:true}) as string;
+    expect(html).not.toContain('textContent=e.message');
+    const M=JSON.parse(html.match(/const M=(\{.*?\}),status=/s)![1]!),known=new Function('M','return '+html.match(/const known=(e=>.*?),show=/s)![1])(M);
+    for(const raw of ['Failed to fetch','The operation timed out.','Unexpected token < in JSON at position 0'])expect(known(new TypeError(raw))).toBe(M.failed);
+    expect(known(new Error(M.limit))).toBe(M.limit);
+    expect(M.failed).toBe(ru?'Не удалось завершить действие. Попробуйте ещё раз.':'Could not complete the action. Please try again.');
+    expect(html).toContain('finally{button.disabled=false;}');
+  }
+});

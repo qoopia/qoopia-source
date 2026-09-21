@@ -110,3 +110,12 @@ test('External folders remain local: three catalogues, exact approval, received 
     for(const f of fixtures)expect(f.database.query('PRAGMA foreign_key_check').all()).toEqual([]);
   }finally{fixtures.forEach(f=>f.database.close());relayDb.close();}
 });
+
+test('the public invite page allows its one script by hash and nothing inline beyond it',async()=>{
+  const page=await bridgeRelay(new Database(':memory:'))(new Request(BRIDGE_RELAY+'/invite'),'fixture');
+  const csp=page.headers.get('content-security-policy')!,html=await page.text();
+  expect(csp).not.toContain("script-src 'unsafe-inline'");
+  const script=/<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+  expect(csp).toContain("script-src 'sha256-"+new Bun.CryptoHasher('sha256').update(script).digest('base64')+"'");
+  expect(script).toContain('navigator.clipboard.writeText');expect(html.match(/<script/g)).toHaveLength(1);
+});

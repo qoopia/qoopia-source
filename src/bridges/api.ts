@@ -36,6 +36,10 @@ export async function bridgeAction(ownerId:string,raw:unknown) {
     default:throw new QoopiaError('INVALID_INPUT','Unknown bridge action');
   }
 }
+export const BRIDGE_READ_TOOLS=['bridge_status','bridge_catalogue','bridge_material'];
+export const BRIDGE_TOOL_NAMES=[...BRIDGE_READ_TOOLS,'bridge_refresh','bridge_request','bridge_stage'];
+/** Why this principal cannot use bridges, or null when it can. */
+export function bridgeRefusal(auth:AuthContext){try{bridges.view(auth);return null;}catch(error){return error instanceof QoopiaError?error.message:'Bridges are unavailable';}}
 export function registerBridgeTools(server:McpServer,authProvider:()=>AuthContext|null) {
   const initial=authProvider();if(!initial)return;
   try {bridges.view(initial);}catch{return;}
@@ -48,7 +52,7 @@ export function registerBridgeTools(server:McpServer,authProvider:()=>AuthContex
     {name:'bridge_stage',description:'Propose a fixed material in your own For sending folder. This does not publish its metadata or transmit its content; a human owner must review and publish it.',schema:z.object({id,title:label,description:z.string().max(400),kind:z.enum(['note','file','skill']),filename:z.string().min(1).max(180),mime:z.string().max(100),content_base64:z.string().max(Math.ceil(MAX_FILE/3)*4)}).strict(),run:bridges.stage},
   ];
   for(const op of operations) {
-    try{currentToolAuth(db,initial,['bridge_status','bridge_catalogue','bridge_material'].includes(op.name)?'read':'write-low');}catch{continue;}
+    try{currentToolAuth(db,initial,BRIDGE_READ_TOOLS.includes(op.name)?'read':'write-low');}catch{continue;}
     server.registerTool(op.name,{description:op.description,inputSchema:op.schema},async(args:unknown)=>{
     try {
       const auth=authProvider();if(!auth)throw new QoopiaError('UNAUTHENTICATED','Authentication required');

@@ -20,6 +20,14 @@ test('native hooks preserve settings, resume unacknowledged UTF-8 events, and re
   const file=path.join(root,'memory-clients/codex/connection.json'),transcript=path.join(home,'.codex/sessions/test.jsonl');fs.mkdirSync(path.dirname(transcript),{mode:0o700});
   const hook={session_id:'test',cwd:'/project',transcript_path:transcript,hook_event_name:'SessionStart'};
   expect((await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext).toContain('Цель'); // before the log exists
+  // The kit is installed: the hook names the file. A connection older than the kit has no such
+  // file, and the hook must say so and point at the protocol served by the connection itself.
+  const protocolFile=path.join(home,'.codex/qoopia-protocol.md'),installedKit=fs.readFileSync(protocolFile);
+  expect((await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext).toMatch(/^Before Qoopia work, read "[^"]*\/\.codex\/qoopia-protocol\.md"\./);
+  fs.rmSync(protocolFile);
+  const missing=(await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext as string;
+  expect(missing).toContain('is not installed at');expect(missing).toContain('qoopia_protocol');expect(missing).not.toContain('Before Qoopia work, read "');
+  fs.writeFileSync(protocolFile,installedKit,{mode:0o600});
   const line=JSON.stringify({type:'response_item',timestamp:'2026-09-10',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Сохрани контекст — қазақша.'}]}})+'\n';
   const bytes=Buffer.from(line),split=bytes.indexOf(Buffer.from('қ'))+1;fs.writeFileSync(transcript,bytes.subarray(0,split));
   await runMemoryHook(file,{...hook,hook_event_name:'UserPromptSubmit'});expect(delivered.at(-1).messages).toHaveLength(0);
@@ -78,4 +86,28 @@ test('memory-link respects CODEX_HOME and refuses a relative profile selection',
   expect(installMemoryClient(connection,root,process.execPath).settings).toBe(path.join(native,'hooks.json'));
   expect(()=>installMemoryClient(connection,root,process.execPath,undefined,'relative')).toThrow('absolute path');
  } finally {if(saved===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=saved;fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('in «only on request» the adapter stops sending the conversation and never sends the skipped part later',async()=>{
+ const root=fs.mkdtempSync('/var/tmp/qoopia-client-manual-'),home=path.join(root,'home');fs.mkdirSync(path.join(home,'.codex/sessions'),{mode:0o700,recursive:true});
+ let mode:'auto'|'manual'='manual';const received:any[]=[];
+ const server=Bun.serve({port:0,async fetch(req){const event=await req.json() as any;received.push(event);
+   return Response.json(mode==='manual'?{accepted:[],memory_mode:'manual',session_id:event.session_id,tail:[]}:{accepted:event.messages.map((m:any)=>m.id),session_id:event.session_id,tail:[]});}});
+ try {
+  installMemoryClient({format:'qoopia-memory-connection/1',url:`http://127.0.0.1:${server.port}`,agent_id:'fixture',key:'q_fixturekey',runtime:'codex'},root,process.execPath,home);
+  const file=path.join(root,'memory-clients/codex/connection.json'),transcript=path.join(home,'.codex/sessions/manual.jsonl');
+  const line=(text:string)=>JSON.stringify({type:'response_item',timestamp:'2026-09-20T10:00:00Z',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}})+'\n';
+  const hook={session_id:'manual',cwd:'/project',transcript_path:transcript,hook_event_name:'Stop'};
+  const sent=()=>received.flatMap(event=>event.messages.map((m:any)=>m.content));
+  fs.writeFileSync(transcript,line('первое сообщение после переключения'));await runMemoryHook(file,hook);
+  // The adapter could not know yet, so the first batch travels once; the server stores nothing.
+  expect(sent()).toEqual(['первое сообщение после переключения']);
+  fs.appendFileSync(transcript,line('второе — только на этом компьютере'));await runMemoryHook(file,hook);
+  fs.appendFileSync(transcript,line('третье — только на этом компьютере'));await runMemoryHook(file,hook);
+  expect(sent()).toEqual(['первое сообщение после переключения']);
+  const state=JSON.parse(fs.readFileSync(path.join(root,'memory-clients/codex/cursors',hash(transcript)+'.json'),'utf8'));
+  expect(state).toMatchObject({manual:true,cursor:fs.statSync(transcript).size});expect(state.error).toBeUndefined();
+  mode='auto';fs.appendFileSync(transcript,line('после возврата в auto'));await runMemoryHook(file,hook);
+  expect(sent()).toEqual(['первое сообщение после переключения','после возврата в auto']);
+ } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
 });

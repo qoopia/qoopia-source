@@ -129,6 +129,21 @@ test('managed turn approval, answer persistence and duplicate send are one trans
     expect((await myAgentAction(owner.agent_id,request)).id).toBe(first.id);expect(myAgentState(owner.agent_id).runs.length).toBe(1);
     const messages=db.query('SELECT role FROM session_messages WHERE session_id=? ORDER BY created_at').all(c.id);expect(messages.length).toBe(2);
     await expect(myAgentAction(owner.agent_id,{action:'approve',id:approval.id,accept:true})).rejects.toThrow('expired');
+
+    // «Only on request»: the chat keeps working, but the turn's text exists in this process only.
+    const {setMemoryPolicy}=await import('../src/services/memory-policy.ts');
+    setMemoryPolicy({workspace_id:slug,agent_id:agent.id,mode:'manual',actor_id:owner.agent_id});
+    const marker='MANUAL-ONLY-PROMPT-7f3a',manual=await myAgentAction(owner.agent_id,{action:'send',conversation:c.id,requestId:'manual-turn',text:marker});
+    await until(()=>myAgentState(owner.agent_id).approvals.length===1);
+    await myAgentAction(owner.agent_id,{action:'approve',id:myAgentState(owner.agent_id).approvals[0]!.id,accept:true});
+    await until(()=>myAgentState(owner.agent_id).runs[1]?.state==='completed');
+    expect(myAgentState(owner.agent_id).runs[1]).toMatchObject({id:manual.id,prompt:marker,answer:'Synthetic approved result'});
+    expect(db.query('SELECT prompt,answer,state FROM qoopia_agent_runs WHERE id=?').get(manual.id)).toEqual({prompt:'',answer:'',state:'completed'});
+    expect(db.query('SELECT role FROM session_messages WHERE session_id=?').all(c.id).length).toBe(2);
+    const tables=(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '%_fts_%' AND name NOT LIKE 'sqlite_%'").all() as {name:string}[]).map(t=>t.name);
+    const leaked=tables.filter(table=>{try{return (db.query(`SELECT * FROM "${table}"`).all() as object[]).some(row=>JSON.stringify(row).includes(marker));}catch{return false;}});
+    expect(leaked).toEqual([]);
+    expect((await myAgentAction(owner.agent_id,{action:'send',conversation:c.id,requestId:'manual-turn',text:marker})).id).toBe(manual.id);
   }finally{process.env.PATH=previousPath;await stopMyAgents();}
 });
 

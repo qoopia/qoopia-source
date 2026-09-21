@@ -47,8 +47,6 @@ export const SKILL_METADATA_REQUIRED = [
   "related_incidents",
 ] as const;
 
-const SKILL_METADATA_OPTIONAL = ["last_tested", "tester_agent"] as const;
-
 /** Fields whose value must be a non-empty string array. */
 const STRING_ARRAY_FIELDS = new Set<string>([
   "trigger_conditions",

@@ -6,7 +6,7 @@ import operations from './OPERATIONS.md' with {type:'text'};
 import {PRODUCT_VERSION} from '../utils/product-version.ts';
 import {hash} from '../utils/fs.ts';
 declare const QOOPIA_BUILD_SHA:string;
-export const AGENT_KIT_REVISION=1;
+export const AGENT_KIT_REVISION=3;
 export const agentKitFiles={'qoopia-protocol.md':protocol,'MCP-CONNECTIONS.md':connections,'SOUL.md':soul,'OPERATIONS.md':operations};
 export function agentKitManifest(){return {format:'qoopia-agent-kit/1',revision:AGENT_KIT_REVISION,product_version:PRODUCT_VERSION,source:typeof QOOPIA_BUILD_SHA==='undefined'?'development':QOOPIA_BUILD_SHA,files:Object.fromEntries(Object.entries(agentKitFiles).map(([name,text])=>[name,hash(text)]))};}
 export function agentProtocol(section:'protocol'|'connections'|'operations'|'soul'='protocol'){

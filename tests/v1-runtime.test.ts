@@ -86,6 +86,13 @@ test('V1 ordinary task with no assigned skills preserves useful output for the n
     const first=await runAgentTask(f.database,f.reportAuth,{runtime_id:f.runtimeId,session:'First task',task:'Give a useful answer.',native:f.native},{PATH:'/no-native'},executor);
     expect(first.status).toBe('completed');expect(first.run_ids).toEqual([]);expect(first.skills).toEqual([]);
     expect(first.task_authorization_id).toBeString();
+    // «Only on request» covers a task started for this agent: its transcript is that agent's
+    // session content whoever launched it, so it is refused instead of written behind its back.
+    const target=f.target.data.agent_id;
+    f.database.query("UPDATE agents SET memory_mode='manual' WHERE id=?").run(target);
+    await expect(runAgentTask(f.database,f.reportAuth,{runtime_id:f.runtimeId,session:'Manual task',task:'Should be refused.',native:f.native},{PATH:'/no-native'},executor))
+      .rejects.toThrow('Automatic memory is off');
+    f.database.query("UPDATE agents SET memory_mode='auto' WHERE id=?").run(target);
     expect(f.database.query('SELECT count(*) n FROM session_loadout_entries WHERE loadout_id=?').get(first.loadout_id)).toEqual({n:0});
     expect(f.database.query('SELECT count(*) n FROM skill_runs WHERE loadout_id=?').get(first.loadout_id)).toEqual({n:0});
     expect(f.database.query("SELECT count(*) n FROM authority_commands WHERE operation='runtime_claim'").get()).toEqual({n:0});

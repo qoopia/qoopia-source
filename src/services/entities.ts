@@ -1,4 +1,5 @@
 import { autoEmbedEnabled } from "./embeddings.ts";
+import { assertAutomaticMemoryAllowed } from "./memory-policy.ts";
 /**
  * Entity pages service — SoT for facts about persons, agents, machines,
  * services, projects, protocols, incidents, skills, and free-form
@@ -153,6 +154,9 @@ export interface UpsertResult {
  * `created` flag tells them).
  */
 export function upsertEntity(input: UpsertInput, auth?: AuthContext): UpsertResult {
+  // A knowledge page is recall-visible memory. The check lives here, on the writer, so every
+  // caller is covered — entity_upsert, skill_upsert and anything added later.
+  if (auth) assertAutomaticMemoryAllowed(auth.workspace_id, auth.agent_id);
   if (input.type === "skill") return legacySkillUpsert(input, auth);
   const oldKind = db.query("SELECT type FROM entity_pages WHERE workspace_id=? AND slug=?")
     .get(input.workspace_id, input.slug) as { type: string } | null;

@@ -5,7 +5,7 @@
   "tag": "v5.0.0-v1.20260914-rc2",
   "source": "0b0890b6c83dce41347916f3e1cbf3d5acd5db16",
   "source_digest": "d8fc2e6930a90b5cf176920479dff4b5285e0723e2bc7500feee41b761d740c5",
-  "status": "SIGNED_CANDIDATE_PENDING_RC2_MAC_CONTINUITY_ACCEPTANCE",
+  "status": "HISTORICAL_NOT_FOR_INSTALLATION",
   "packages": {
     "darwin-arm64": {
       "file": "qoopia-v1-0b0890b-darwin-arm64.dmg",
@@ -47,5 +47,7 @@
     "ChatGPT Web",
     "ChatGPT Desktop"
   ],
-  "acceptance_prompt": "https://qoopia.ai/prompts/mac-v16-rc2-finish-ru.md"
+  "acceptance_prompt": "https://qoopia.ai/prompts/mac-v16-rc2-finish-ru.md",
+  "superseded_by": "https://qoopia.ai/release.json",
+  "notice": "Archived September 2026 candidate. Use the current stable release manifest for installation."
 }

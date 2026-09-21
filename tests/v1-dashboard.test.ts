@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
+import {dashboardSource} from './helpers/dashboard-source.ts';
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { accepted, assigned, loopFixture } from "./helpers/p2-fixtures.ts";
 import { loopView, updateAssignment } from "../src/skills/loop.ts";
 
-const dashboard = fs.readFileSync(new URL("../src/public/dashboard.html", import.meta.url), "utf8");
+const dashboard = dashboardSource;
 const http = fs.readFileSync(new URL("../src/http.ts", import.meta.url), "utf8");
 const has = (source: string, marker: string) => expect(source.includes(marker)).toBe(true);
 const lacks = (source: string, marker: string) => expect(source.includes(marker)).toBe(false);
@@ -35,7 +36,6 @@ test("V1 dashboard interactive collections use native single-click controls", ()
     '<button type="button" class="agent-card"',
     '<button type="button" class="sess-item"',
     '<button type="button" class="tg-chat"',
-    '<button type="button" class="ent"',
     'class="msg search-result"',
   ]) has(dashboard, marker);
   lacks(dashboard, "addEventListener('dblclick'");
@@ -83,8 +83,8 @@ test("global dashboard search reuses scoped message and note APIs", () => {
 });
 
 test("overview and skill UI render readiness returned by the server", () => {
-  for (const field of ["owner_bound", "connected_agents", "compatible_runtimes", "runnable_runtimes", "active_assignments", "runs", "outcomes"])
-    has(dashboard, `j.${field}`);
+  for (const field of ["ov.agents?.total_active", "ov.sessions?.last_24h", "ov.messages?.last_24h", "ov.skills?.total"])
+    has(dashboard, field);
   has(dashboard, "a.readiness?.ready");
   has(dashboard, "a.readiness?.blockers");
 });

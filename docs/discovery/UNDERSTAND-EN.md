@@ -19,9 +19,9 @@ Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/d
 
 ## Can I start from a phone?
 
-You can read about Qoopia from a phone or ask your chat model to evaluate this page. A phone chat without computer access cannot install the Mac or Linux application. Installation needs a supported computer or a server you manage. Cloud MCP connections need a reachable HTTPS endpoint; ChatGPT Web and Mac Desktop memory access has been verified in real-client acceptance checks; availability still depends on your account capabilities and client configuration. External access can be configured for your installation; a local computer must stay on and online. A supported connected cloud client can then access permitted memory from its interface.
+Use your existing Qoopia dashboard on iPhone, including memory, agents, connections, files and chat. Open its reachable HTTPS address in Safari, sign in with the email linked to that workspace, then add it to Home Screen as a web app. Your computer or server must stay running. The phone does not run the Mac/Linux agent runtime or create a second memory database. A managed MCP endpoint is for agent tools, not dashboard access.
 
-Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md)
+Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md), [src/http/web-app.ts](https://github.com/qoopia/qoopia-source/blob/main/src/http/web-app.ts), [src/public/app.webmanifest](https://github.com/qoopia/qoopia-source/blob/main/src/public/app.webmanifest)
 
 
 ## Can my agent install it for me?

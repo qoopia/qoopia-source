@@ -110,7 +110,7 @@ test('invalid or legacy backup, foreign instance, healthy/missing/oversized/unsa
    expect(fs.existsSync(path.join(f.root,'operations-recovery'))).toBe(false);
   }finally{f.cleanup();}
  }
-},15000); // Eleven isolated backup/journal cases include durable filesystem writes.
+},30000); // Eleven durable backup/journal fixtures took 16.7s on a shared CI runner.
 
 test('regular backup/restore/import/maintenance never acquire the explicit recovery reset behavior',()=>{
  const f=fixture();try{

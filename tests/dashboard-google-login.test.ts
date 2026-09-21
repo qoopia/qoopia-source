@@ -1,11 +1,12 @@
 import { test, expect } from 'bun:test';
+import {dashboardSource} from './helpers/dashboard-source.ts';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-const html=readFileSync(new URL('../src/public/dashboard.html',import.meta.url),'utf8');
+const html=dashboardSource;
 const source=html.slice(html.indexOf('  let loginPoll=0;'),html.indexOf("  $('#emailLoginForm').onsubmit"));
 function harness(popup:any=null){
  const elements=new Map<string,any>();const created:any[]=[];const timers:Array<()=>void>=[];const requests:any[]=[];
- const $=(id:string)=>{if(!elements.has(id))elements.set(id,{value:'',hidden:false,style:{},disabled:false,textContent:'',append(){},after(){},scrollIntoView(){},reportValidity:()=>true});return elements.get(id);};
+ const $=(id:string)=>{if(!elements.has(id))elements.set(id,{value:'',hidden:false,style:{},classList:{add(){},remove(){}},disabled:false,textContent:'',append(){},after(){},scrollIntoView(){},reportValidity:()=>true});return elements.get(id);};
  let reply:any={googleUrl:'https://auth.qoopia.ai/google?request=synthetic'};
  const context:any={$,QI:{msg:(x:string)=>x,resolve:(x:string)=>x,language:'en'},AbortController,AbortSignal,window:{open:()=>popup},document:{createElement:(type:string)=>{const e:any={type,clicks:0,click(){this.clicks++;}};created.push(e);return e;}},fetch:async(_url:string,options:any)=>{requests.push(options);return {ok:true,json:async()=>reply};},BASE:'',setTimeout:(fn:()=>void)=>timers.push(fn),consumeSafeNext:()=>false,showApp(){},boot(){}};
  runInNewContext(source+'\nglobalThis.start=startEmailLogin;',context);

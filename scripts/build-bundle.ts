@@ -58,7 +58,7 @@ const dependency=(name:string)=>{
  for(const dep of Object.keys(p.dependencies??{}))dependency(dep);
 };
 for(const name of Object.keys(pkg.dependencies))dependency(name);
-for(const family of ['MarckScript','IBMPlexSans'])notices.push(family+' — SIL Open Font License 1.1\n'+fs.readFileSync('src/public/brand/'+family+'-OFL.txt','utf8'));
+for(const family of ['Manrope'])notices.push(family+' — SIL Open Font License 1.1\n'+fs.readFileSync('src/public/brand/'+family+'-OFL.txt','utf8'));
 const missing=dependencies.map(p=>`${p.name}@${p.version}`).filter(id=>!covered.has(id));
 if(noticeCheck){console.log(JSON.stringify({status:'NOTICE_COVERAGE_CHECK',dependencies:dependencies.length,covered:covered.size,missing,runtime_notice:bunNotice,overrides:[{package:`${override.package}@${override.version}`,body_sha256:override.body_sha256,source_sha256:override.source_sha256}]}));process.exit(0);}
 let privateKey:KeyObject|undefined;
@@ -125,7 +125,7 @@ for(const member of Object.keys(inventory(out)))fs.chmodSync(path.join(out,membe
 // prove the final artifact can launch its managed transport child.
 const tunnelSmoke=spawnSync(path.join(out,'assets/native/cloudflared'),['--version'],{encoding:'utf8',timeout:10_000,env:{PATH:'/usr/bin:/bin'}});
 if(tunnelSmoke.status!==0||!tunnelSmoke.stdout.startsWith('cloudflared version '+tunnel.provenance.version+' '))throw new Error('Final packaged tunnel is not executable');
-const manifest=bundleSchema.parse({format:'qoopia-bundle/1',version:pkg.version,horizon:'QOOPIA-V-1',api_version:1,build_sha:git.stdout.trim(),source_digest:sourceDigest,target,bun_version:Bun.version,schema_min:32,schema_max:44,signing:fixture?'test-fixture':'publisher',publisher_key_sha256:hash(publicPem),platform_signing:fixture?'NOT_RUN':'externally_verified',members:inventory(out)});
+const manifest=bundleSchema.parse({format:'qoopia-bundle/1',version:pkg.version,horizon:'QOOPIA-V-1',api_version:1,build_sha:git.stdout.trim(),source_digest:sourceDigest,target,bun_version:Bun.version,schema_min:32,schema_max:46,signing:fixture?'test-fixture':'publisher',publisher_key_sha256:hash(publicPem),platform_signing:fixture?'NOT_RUN':'externally_verified',members:inventory(out)});
 const raw=JSON.stringify(manifest),rawBytes=Buffer.from(raw),signature=fixture?sign(null,rawBytes,privateKey!):runPublisherSigner(value('--signer')!,rawBytes,publicPem);
 durableWrite(path.join(out,'manifest.json'),raw);durableWrite(path.join(out,'manifest.sig'),signature);
 verifyBundle(out,publicPem,fixture);

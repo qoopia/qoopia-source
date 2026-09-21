@@ -12,7 +12,7 @@ import { createWorkspace } from "./workspaces.ts";
 import { createAgent } from "./agents.ts";
 import { env } from "../utils/env.ts";
 import { ensureSafeDir } from "../utils/fs-perms.ts";
-import { getRolePreset, ROLE_PRESET_NAMES, listRolePresets } from "./templates.ts";
+import { getRolePreset, listRolePresets } from "./templates.ts";
 import { ulid } from "ulid";
 import { nowIso } from "../utils/errors.ts";
 

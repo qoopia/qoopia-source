@@ -3,6 +3,7 @@ import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { sanitizeFtsQuery } from "./recall.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { assertAutomaticMemoryAllowed, type MemoryOrigin } from "./memory-policy.ts";
 
 const MAX_CONTENT = 100_000;
 const MAX_SUMMARY = 50_000;
@@ -17,6 +18,9 @@ export interface SessionSaveInput {
   token_count?: number;
   /** Claude Code JSONL entry uuid — used for server-side dedup in ingest path */
   ingest_uuid?: string;
+  /** Defaults to "automatic": anything not proven to be a confirmed owner action obeys
+   * the agent memory policy. Set by the server at the call site, never from a request body. */
+  origin?: MemoryOrigin;
 }
 
 export function saveMessage(input: SessionSaveInput) {
@@ -34,6 +38,11 @@ export function saveMessage(input: SessionSaveInput) {
 
   // Wrap all operations in a transaction so partial failure is impossible.
   return db.transaction(() => {
+    // Every path that records session content passes through here, so the memory
+    // policy is enforced once, inside the write transaction. A switch to manual that
+    // commits mid-flight therefore stops the very next message instead of a later one.
+    assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id, input.origin ?? "automatic");
+
     // H5 fix: check ownership BEFORE touching last_active.
     // If the session already exists, verify it belongs to this agent.
     const existing = db
@@ -344,6 +353,8 @@ export function sessionSummarize(input: SessionSummarizeInput) {
   }
 
   assertNoSecrets(input.content, "summary.content");
+  // A summary is derived session content, so it follows the same policy as the messages.
+  assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id);
 
   const sess = db
     .prepare(

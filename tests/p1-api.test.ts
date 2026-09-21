@@ -7,7 +7,8 @@ import { sunsetAllowed } from "../src/skills/compatibility.ts";
 import { randomUUID } from "node:crypto";
 
 test("T-05/T-22: REST closed schema, exact preconditions, current OAuth scopes and private IDs", async () => {
-  const { database: d, auth } = ownerFixture();
+  // The capability catalog is a current-schema surface: it reports the agent memory policy.
+  const { database: d, auth } = ownerFixture(46);
   try {
     const request = (body: unknown, headers: Record<string, string> = {}) => new Request("http://fixture/api/v1/skills/drafts", {
       method: "POST", headers: { "content-type": "application/json", "idempotency-key": "rest", "if-match": "0", ...headers }, body: JSON.stringify(body),

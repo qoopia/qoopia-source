@@ -4,6 +4,7 @@ import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { assertAutomaticMemoryAllowed, holdSaveForOwner, type MemoryOrigin } from "./memory-policy.ts";
 import { upsertNoteEmbedding } from "./embedding-store.ts";
 import { bitemporalEnabled, temporalFeatureDisabled } from "../utils/temporal.ts";
 import {
@@ -136,6 +137,8 @@ export interface NoteCreateInput {
   idempotency_key?: string | null;
   /** Server-derived connection identity; never accepted from a tool argument. */
   connection_id?: string;
+  /** Set only by the owner-confirmation path; never accepted from a tool argument. */
+  origin?: MemoryOrigin;
   /** Авторизация предшественника (private-ноты) — как в getNote. */
   is_admin?: boolean;
 }
@@ -318,6 +321,16 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
       throw new QoopiaError("INVALID_INPUT", "task_bound_id must reference a task");
   }
 
+  // A manual agent's note waits for the owner; one the owner already confirmed is returned as is.
+  const { origin, ...prepared } = input;
+  const confirmedId = holdSaveForOwner(input.workspace_id, input.agent_id, "note_create", prepared, origin);
+  if (confirmedId) {
+    const note = db.prepare(`SELECT * FROM notes WHERE id = ?`).get(confirmedId) as NoteRow;
+    return { created: false, id: note.id, type: note.type, workspace_id: note.workspace_id,
+      visibility: (note.visibility || "workspace") as NoteVisibility,
+      created_at: note.created_at, updated_at: note.updated_at, updated_at_ms: note.updated_at_ms };
+  }
+
   const id = ulid();
   // H6 fix: wrap insert + logActivity in a single transaction so partial failure
   // never leaves the note created without an audit entry or vice versa.
@@ -333,6 +346,8 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
         return previous as unknown as NoteCreateResult;
       }
     }
+    // The owner may have switched the agent to manual since the check above.
+    assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id, origin);
     const timestamp = nextNoteWriteTimestamp();
     // §3.1: created_at_ms / valid_from[_ms] заполняются всегда — это
     // структурные колонки, а не поведение. Они не сериализуются при
@@ -647,6 +662,8 @@ export interface NoteUpdateInput {
   project_id?: string | null;
   task_bound_id?: string | null;
   tags?: string[];
+  /** Set only by the owner-confirmation path; never accepted from a tool argument. */
+  origin?: MemoryOrigin;
 }
 
 export function updateNote(input: NoteUpdateInput) {
@@ -762,8 +779,12 @@ export function updateNote(input: NoteUpdateInput) {
     };
   }
 
+  const { origin, ...prepared } = input;
+  holdSaveForOwner(input.workspace_id, input.agent_id, "note_update", prepared, origin);
+
   // H6 fix: wrap update + logActivity atomically
   const result = db.transaction(() => {
+    assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id, origin);
     const timestamp = nextNoteWriteTimestamp(existing.updated_at_ms);
     const writeFields = [...fields, `updated_at = ?`, `updated_at_ms = ?`];
     const writeValues = [...values, timestamp.iso, timestamp.ms];

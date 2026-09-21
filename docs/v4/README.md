@@ -1,5 +1,9 @@
 # Qoopia V4 architecture freeze
 
+> Historical document retained for archaeology. It is not an operational source of truth and its
+> commands must not be run against the current schema. Current state: `python3 scripts/project-status.py --live`;
+> current operations: `docs/operations/`; production compose: `deploy/docker-compose.release.yml`.
+
 Status: P01 fix-pass candidate, ready for independent review
 Baseline: `integration/v4@b6c169b9c72a2f983933610072b4909ef61261c3`
 Accepted database baseline: schema 26

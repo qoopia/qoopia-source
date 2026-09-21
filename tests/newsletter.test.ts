@@ -57,7 +57,7 @@ test('unsubscribe resists forged links and mail scanners, and an old link cannot
   store.change(account,true,'ru','profile');await req(token,'POST');expect(store.preference(id)?.subscribed).toBe(1);
   expect(store.resolve(token)).toBeNull();
   const message=newsMessage({subject:'<Subject>',body:'<script>private</script>',language:'ru'},'https://auth.example.test/news/unsubscribe?token=fixture','Fixture address');
-  expect(message.html).not.toContain('<script>');expect(message.headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');expect(message.html).toContain('cid:qoopia-brand');
+  expect(message.html).not.toContain('<script>');expect(message.headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');expect(message.html).toContain('cid:qoopia-brand');expect(message.html).toContain('Manrope');expect(message.html).not.toContain('IBM Plex');
  }finally{db.close();}
 });
 

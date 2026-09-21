@@ -49,7 +49,7 @@ test('cloud and read-only MCP clients can read protocol sections without reading
  const server=createMcpServer(()=>auth,'memory',{agentToolProfile:'read-only'}),client=new Client({name:'protocol-fixture',version:'1'}),[a,b]=InMemoryTransport.createLinkedPair();
  try{
   await server.connect(a);await client.connect(b);const list=await client.listTools();const tool=list.tools.find(t=>t.name==='qoopia_protocol');expect(tool?.annotations?.readOnlyHint).toBe(true);
-  const result=await client.callTool({name:'qoopia_protocol',arguments:{section:'connections'}});const body=JSON.parse((result.content as any)[0].text);expect(body.manifest.revision).toBe(1);expect(body.text).toContain('ChatGPT Web/Desktop');
+  const result=await client.callTool({name:'qoopia_protocol',arguments:{section:'connections'}});const body=JSON.parse((result.content as any)[0].text);expect(body.manifest.revision).toBe(3);expect(body.text).toContain('ChatGPT Web/Desktop');
   auth=null;expect((await client.callTool({name:'qoopia_protocol',arguments:{}})).isError).toBe(true);
  }finally{await client.close();await server.close();}
 });

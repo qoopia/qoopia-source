@@ -67,8 +67,8 @@ export const entityTools: EntityToolDef[] = [
       status: entityStatusEnum.optional().describe("Default 'active'."),
       metadata: z.record(z.unknown()).optional(),
     },
-    handler: (args, auth) =>
-      upsertEntity({
+    handler: (args, auth) => {
+      return upsertEntity({
         expected_revision: args.expected_revision as number | undefined,
         idempotency_key: args.idempotency_key as string | undefined,
         workspace_id: auth.workspace_id,
@@ -78,7 +78,8 @@ export const entityTools: EntityToolDef[] = [
         summary: (args.summary as string | undefined) ?? null,
         status: args.status as (typeof ENTITY_STATUSES)[number] | undefined,
         metadata: args.metadata as Record<string, unknown> | undefined,
-      }, auth),
+      }, auth);
+    },
   },
   {
     name: "entity_get",

@@ -77,7 +77,8 @@ export class ClaudeAgentRuntime extends EventEmitter {
     if(this.active)throw new Error('Claude is already working');
     const thread=this.threads.get(params.threadId);if(!thread)throw new Error('Claude session was not prepared');
     const turn=randomUUID();
-    const args=['--print','--verbose','--input-format','stream-json','--output-format','stream-json','--include-partial-messages',
+    if(params.model!==undefined&&!['opus','sonnet'].includes(params.model))throw new Error('Unsupported Claude model');
+    const args=[...(params.model?['--model',params.model]:[]),'--print','--verbose','--input-format','stream-json','--output-format','stream-json','--include-partial-messages',
       '--permission-mode','default','--permission-prompt-tool','stdio','--setting-sources','user','--strict-mcp-config','--mcp-config',this.options.mcpConfig,
       '--append-system-prompt',thread.instructions,thread.resume?'--resume='+thread.id:'--session-id='+thread.id];
     const child=this.spawn(args),active={child,thread,turn,ended:false};this.active=active;let buffer='',initialized=false,sawText=false;

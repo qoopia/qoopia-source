@@ -15,6 +15,8 @@ import { QoopiaError } from "../utils/errors.ts";
 import { recordStorageWriteFailure } from "../utils/storage-degradation.ts";
 import { readPackage } from "../skills/legacy/archive.ts";
 import { getV4FeatureFlags } from "../utils/health-metadata.ts";
+import { agentContract, agentContractFor } from "./agent-contract.ts";
+import { agentMemoryStatus, listMemoryPolicies, memoryPolicy, resolveAgentByName } from "../services/memory-policy.ts";
 
 import { importPreview, importPreviewSchema, resolveImport, resolveImportSchema } from '../skills/import-review.ts';
 import { captureSkill, captureSchema } from '../skills/capture.ts';
@@ -143,16 +145,36 @@ export function effectiveAuthority(auth?: AuthContext, database: Database = db) 
     format: "qoopia-skill-package/1", limits: { mutations_per_principal_per_minute: 120, pairing_ttl_ms: 600_000, member_bytes: 4 * 1024 * 1024, members: 512 },
     runtime_activation: "session_projection", runtime_capabilities: runtimeCapabilities, autonomous_owner_installation: "unavailable_P3" };
   if (!auth) return publicPart;
-  const row = database.query("SELECT authority_profile,policy_epoch FROM agents WHERE id=? AND workspace_id=? AND active=1")
-    .get(auth.agent_id, auth.workspace_id) as { authority_profile: string; policy_epoch: number } | null;
+  const row = database.query("SELECT authority_profile,policy_epoch,memory_mode,memory_mode_revision FROM agents WHERE id=? AND workspace_id=? AND active=1")
+    .get(auth.agent_id, auth.workspace_id) as { authority_profile: string; policy_epoch: number; memory_mode: string; memory_mode_revision: number } | null;
   if (!row) throw new QoopiaError("UNAUTHENTICATED", "Principal is inactive");
   const ops = authorityOperations.filter((op) => {
     try { authorize(database, auth, op.action); return true; } catch { return false; }
   }).map((op) => ({ name: op.name, method: op.method, path: `/api/v1${op.path}`, risk: op.action,
     input_schema: toJsonSchemaCompat(op.schema, { target: "jsonSchema7" }) }));
-  const config = { ...publicPart, profile: row.authority_profile, policy_epoch: row.policy_epoch, operations: ops, flags: getV4FeatureFlags(),
+  // Part of the digest on purpose: a client comparing digests notices that the owner changed the mode.
+  const memory_policy = { mode: row.memory_mode, revision: row.memory_mode_revision,
+    automatic_capture: row.memory_mode === "auto" ? "allowed" : "refused_with_APPROVAL_REQUIRED", managed_by: "workspace owner" };
+  const config = { ...publicPart, profile: row.authority_profile, policy_epoch: row.policy_epoch, memory_policy, operations: ops, flags: getV4FeatureFlags(),
     authority_outbox: "transactional_session_claims", client_refresh: "Reconnect after an explicit profile change" };
-  return { ...config, config_digest: digest(canonical(config)) };
+  return { ...config, config_digest: digest(canonical(config)), ...agentContract(database, auth, authorityOperations) };
+}
+
+/** The owner's question «who has what working?» answered from the same contract each agent reads for itself. */
+export function agentCoverage(auth: AuthContext | null, target: string, database: Database = db) {
+  if (!auth) throw new QoopiaError("UNAUTHENTICATED", "Authentication required");
+  const self = target === auth.agent_id;
+  if (!self && auth.type !== "steward" && auth.type !== "owner") throw new QoopiaError("FORBIDDEN", "Only the steward or the owner reads another agent's contract");
+  const describe = (id: string, name: string) => ({ agent_id: id, name, memory: agentMemoryStatus(auth.workspace_id, id),
+    ...agentContractFor(database, auth.workspace_id, id, authorityOperations) });
+  if (target === "all") return { agents: listMemoryPolicies(auth.workspace_id).map((a) => {
+    const row = describe(a.agent_id, a.name);
+    return { agent_id: row.agent_id, name: row.name, memory_mode: row.memory.mode, memory_channel: row.memory.state, connection: row.connection ?? null,
+      coverage: Object.fromEntries((row.mechanisms ?? []).map((m) => [m.id, m.status])) };
+  }) };
+  let found: { agent_id: string; name: string };
+  try { found = memoryPolicy(auth.workspace_id, target); } catch { found = resolveAgentByName(auth.workspace_id, target); }
+  return describe(found.agent_id, found.name);
 }
 
 export function apiError(error: unknown, requestId = randomUUID()) {
@@ -224,8 +246,12 @@ export async function handleAuthorityRequest(request: Request, database: Databas
 }
 
 export function registerAuthorityTools(server: McpServer, authProvider: () => AuthContext | null, existingNames: Set<string>, database: Database = db) {
-  server.registerTool("qoopia_capabilities", { description: "Read actual scoped operations, schemas, limits and effective config digest.", inputSchema: z.object({}).strict() },
-    async () => ({ content: [{ type: "text", text: JSON.stringify(effectiveAuthority(authProvider() ?? undefined, database)) }] }));
+  server.registerTool("qoopia_capabilities", { description: "Read actual scoped operations, schemas, limits, effective config digest and the status of every Qoopia mechanism for this agent: available, forbidden, client_unsupported, needs_setup or faulty, with the reason and what to do. Steward and owner may pass agent (an id, an exact name, or \"all\") to see the same contract for other agents.",
+    inputSchema: z.object({ agent: z.string().min(1).max(128).optional() }).strict() },
+    async ({ agent }) => {
+      try { return { content: [{ type: "text", text: JSON.stringify(agent ? agentCoverage(authProvider(), agent, database) : effectiveAuthority(authProvider() ?? undefined, database)) }] }; }
+      catch (error) { return { isError: true, content: [{ type: "text", text: JSON.stringify(apiError(error).error) }] }; }
+    });
   for (const op of authorityOperations) {
     if (op.humanOnly || existingNames.has(op.name)) continue;
     const discoveryAuth = authProvider();

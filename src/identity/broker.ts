@@ -10,6 +10,7 @@ import {MAX_RPC} from '../bridges/protocol.ts';
 import {deviceRegistry, type DeviceRegistryOptions} from './device-registry.ts';
 import {cloudflareTunnels} from './cloudflare.ts';
 import {profilePortal} from './profile.ts';
+import {accountHandoff} from './account-handoff.ts';
 import {accounts} from './account.ts';
 import {newsletter,unsubscribePage} from './newsletter.ts';
 import type {OwnerOptions} from './owner.ts';
@@ -39,6 +40,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   if(!(db.query('PRAGMA table_info(login_requests)').all() as {name:string}[]).some(c=>c.name==='device_peer'))db.exec('ALTER TABLE login_requests ADD COLUMN device_peer TEXT');
   if(!(db.query('PRAGMA table_info(login_requests)').all() as {name:string}[]).some(c=>c.name==='language'))db.exec("ALTER TABLE login_requests ADD COLUMN language TEXT NOT NULL DEFAULT 'en'");
   const identify=accounts(db),news=newsletter(db);
+  const handoff=accountHandoff(db);
   const devices=config.devices?deviceRegistry(db,origin,config.devices):undefined;
   const headers = {'cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff','x-frame-options':'DENY'};
   const json = (status: number, value: unknown) => Response.json(value,{status,headers});
@@ -79,6 +81,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     // HTTPS terminates at Cloudflare; the service itself listens on loopback only.
     if ((req.headers.get('host')??url.host) !== new URL(origin).host) return json(403,{error:'Host refused'});
     db.query('DELETE FROM login_requests WHERE expires<=?').run(now);
+    handoff.cleanup();
     db.query('DELETE FROM login_limits WHERE expires<=?').run(now);
     if (!allowance('requests:'+clientIp,300,60_000)) return json(429,{error:'Please try again shortly'});
     try {
@@ -137,9 +140,14 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
       const body=JSON.parse(text);
       if (!body || typeof body!=='object' || Array.isArray(body)) return json(400,{error:'Invalid request'});
       if (url.pathname === '/requests') {
-        if (!['email','google'].includes(body.method) || !/^[a-f0-9]{64}$/.test(body.challenge)) return json(400,{error:'Invalid sign-in request'});
+        if (!['email','google','account'].includes(body.method) || !/^[a-f0-9]{64}$/.test(body.challenge)) return json(400,{error:'Invalid sign-in request'});
         if(body.device_peer!==undefined&&(!devices||typeof body.device_peer!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(body.device_peer)))return json(400,{error:'Device registration is unavailable'});
         if (!allowance('start:'+clientIp,20,3_600_000)) return json(429,{error:'Too many sign-in attempts. Please try again later'});
+        if(body.method==='account'){
+          if(body.device_peer!==undefined)return json(400,{error:'Account continuation cannot enroll a device'});
+          const id=handoff.start(body.challenge,body.dashboard);
+          return json(201,{id,expires_in:600,account_url:origin+'/profile?app=ios&request='+id});
+        }
         const email=body.method==='email'?loginEmail(body.email):undefined,id=random(),language=loginLanguage(body.language);
         db.query('INSERT INTO login_requests(id,challenge,expires,device_peer,language) VALUES (?,?,?,?,?)').run(id,body.challenge,now+lifetime,body.device_peer??null,language);
         record({kind:'auth_request',method:body.method,language});
@@ -156,6 +164,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
       }
       if (url.pathname === '/redeem') {
         if(typeof body.id!=='string'||typeof body.verifier!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(body.verifier)) return json(400,{error:'Invalid sign-in request'});
+        if(handoff.get(body.id))return json(200,handoff.redeem(body.id,body.verifier,body.account_code));
         const flow=db.query('SELECT * FROM login_requests WHERE id=? AND challenge=?').get(body.id,hash(body.verifier)) as Flow|null;
         if(!flow)return json(410,{error:'Sign-in expired. Please start again'});
         if(!flow.confirmed)return json(202,{pending:true});

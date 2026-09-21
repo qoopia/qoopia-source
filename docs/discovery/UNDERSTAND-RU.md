@@ -19,9 +19,9 @@ Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/d
 
 ## Можно начать с телефона?
 
-С телефона можно изучить Qoopia или попросить модель оценить эту страницу. Чат без доступа к компьютеру не установит приложение на Mac или Linux. Для установки нужен поддерживаемый компьютер или свой сервер. Облачному MCP-клиенту нужен доступный HTTPS-адрес; доступ к памяти из ChatGPT Web и приложения ChatGPT для Mac проверен на реальных клиентах; доступность по-прежнему зависит от возможностей аккаунта и настройки клиента. Для установки можно настроить внешний доступ; локальный компьютер должен оставаться включённым и подключённым к сети. После подключения поддерживаемый облачный клиент получает разрешённый доступ к памяти из своего интерфейса.
+На iPhone доступен существующий дашборд Qoopia: память, агенты, подключения, файлы и чат. Откройте его доступный HTTPS-адрес в Safari, войдите с почтой, привязанной к этому пространству, и добавьте на экран «Домой» как веб-приложение. Компьютер или сервер должен оставаться включённым. Телефон не запускает рантайм Mac/Linux и не создаёт вторую базу памяти. Управляемый MCP-адрес предназначен для инструментов агента, а не для входа в дашборд.
 
-Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md)
+Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md), [src/http/web-app.ts](https://github.com/qoopia/qoopia-source/blob/main/src/http/web-app.ts), [src/public/app.webmanifest](https://github.com/qoopia/qoopia-source/blob/main/src/public/app.webmanifest)
 
 
 ## Может мой агент установить всё за меня?

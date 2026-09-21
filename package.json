@@ -1,6 +1,6 @@
 {
   "name": "qoopia",
-  "version": "5.0.4",
+  "version": "5.0.9",
   "description": "Memory and truth layer for AI agents",
   "type": "module",
   "bin": {
@@ -25,7 +25,7 @@
     "ops:check-boundaries": "bun run scripts/check-module-boundaries.ts",
     "ops:validate-agent-paths": "bun run scripts/validate-agent-instructions.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src scripts tests sdk",
+    "lint": "oxlint -D no-unsafe-optional-chaining src scripts tests sdk",
     "lint:v41": "oxlint --deny-warnings src/utils/temporal.ts src/services/temporal-migration.ts src/services/note-temporal.ts src/services/note-idempotency.ts src/services/recall/temporal-filter.ts src/db/migration-033-exec.ts src/db/migration-033-gate.ts src/db/migration-033-plan.ts scripts/migrate-033-preflight.ts scripts/v41-concurrency-probe.ts tests/temporal-classifier.test.ts tests/temporal-epoch-ms.test.ts tests/temporal-migration-033.test.ts tests/temporal-mcp-boundary.test.ts tests/temporal-migration-atomicity.test.ts tests/temporal-parity-surface.test.ts tests/temporal-read.test.ts tests/temporal-write.test.ts tests/helpers/temporal-fixtures.ts",
     "test": "bun test",
     "test:storage-full": "QOOPIA_T27_SQLITE_FULL=true bun test --timeout 30000 tests/p3-t27-sqlite-full.test.ts"

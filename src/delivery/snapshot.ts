@@ -8,11 +8,15 @@ import { createVerifiedBackup, sha256File } from '../services/backup.ts';
 import { computeLogicalDatabaseHash } from '../db/v4-migrations.ts';
 import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJsonBytes, MAX_JSON_BYTES, safePath, preflightSpace } from '../utils/fs.ts';
 
+/** Schemas a unified snapshot can carry. One list: backup, retention and restore read it from here. */
+export const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46] as const;
+export const unifiedSnapshotSchema=(schema:number)=>(UNIFIED_SNAPSHOT_SCHEMAS as readonly number[]).includes(schema);
+
 export function inspectSnapshot(database: Database) {
   assertDatabaseIntegrity(database, 'Snapshot');
   const tables = new Set((database.query("SELECT name FROM sqlite_master WHERE type='table'").all() as {name:string}[]).map(r => r.name));
   const schema = (database.query('SELECT max(version) n FROM schema_versions').get() as {n:number}).n;
-  if (![37,38,39,40,41,42,43,44].includes(schema)) throw new Error('Unified snapshot requires schema 37, 38, 39, 40, 41, 42, 43 or 44; use versioned source migration for 32/35');
+  if (!unifiedSnapshotSchema(schema)) throw new Error(`Unified snapshot requires schema ${UNIFIED_SNAPSHOT_SCHEMAS.join(', ')}; use versioned source migration for 32/35`);
   const instance = (database.query("SELECT instance_id FROM authority_instance WHERE id='local'").get() as {instance_id:string}).instance_id;
   let bytes = 0, packages = 0;
   for (const row of database.query('SELECT sha256,content,size FROM files').iterate() as IterableIterator<{sha256:string;content:Uint8Array;size:number}>) {

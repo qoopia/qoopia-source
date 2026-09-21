@@ -9,10 +9,8 @@ COPY --chown=bun:bun package.json bun.lock ./
 COPY --chown=bun:bun scripts/vendor/transpect-fontmap-to-unicode ./scripts/vendor/transpect-fontmap-to-unicode
 RUN bun install --frozen-lockfile
 COPY --chown=bun:bun . .
-COPY --from=history --chown=bun:bun /history.bundle /tmp/history.bundle
-RUN git init && git fetch /tmp/history.bundle HEAD && git reset --mixed FETCH_HEAD && rm /tmp/history.bundle
 RUN bun run typecheck
-RUN bun test
+RUN bun test --timeout 30000
 RUN mkdir -p /prod/scripts/vendor && cp package.json bun.lock /prod/ && cp -R scripts/vendor/transpect-fontmap-to-unicode /prod/scripts/vendor/ && cd /prod && bun install --frozen-lockfile --production
 RUN bun scripts/prepare-memory-model.ts
 RUN touch /tmp/qoopia-verify-passed

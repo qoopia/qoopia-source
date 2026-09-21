@@ -67,6 +67,11 @@ import { assertNoSecrets } from "./utils/secret-guard.ts";
 import { assignmentReadiness, compatibility, type Assignment } from "./skills/loop.ts";
 import { ADMIN_TYPES } from "./auth/principal.ts";
 import { json } from "./utils/http-json.ts";
+import { agentMemoryStatus, setMemoryPolicy, type MemoryMode } from "./services/memory-policy.ts";
+import { decideSaveRequest, listSaveRequests } from "./services/memory-save-requests.ts";
+import { agentContractFor } from "./api/agent-contract.ts";
+import { authorityOperations } from "./api/authority.ts";
+import { QoopiaError } from "./utils/errors.ts";
 import {
   ALLOWED_TYPES,
   DashboardAuth,
@@ -330,6 +335,7 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
   );
 
   const items = rows.map((a) => {
+    const memory = agentMemoryStatus(auth.workspace_id, a.id);
     const s = countSessions.get(a.id) as { c: number };
     const n = countNotes.get(a.id) as { c: number };
     const m = countMessages.get(a.id) as { c: number };
@@ -348,6 +354,7 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
       messages_count: m.c,
       last_session_id: last?.id ?? null,
       last_session_active: last?.last_active ?? null,
+      memory,
     };
   });
 
@@ -719,8 +726,6 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
   const comm = ccTry(() => {
     const mf = admin ? "" : " AND (sender_agent_id = ? OR recipient_agent_id = ?)";
     const mp: any[] = admin ? [] : [aid, aid];
-    const rf = admin ? "" : " AND recipient_agent_id = ?";
-    const rp: any[] = admin ? [] : [aid];
     const wf = admin ? "" : " AND target_agent_id = ?";
     const wp: any[] = admin ? [] : [aid];
     return {
@@ -1262,6 +1267,40 @@ function dashboardV4State(res: ServerResponse, auth: DashboardAuth) {
   });
 }
 
+/** The same owner-only change the MCP command makes; the dashboard is just another way in. */
+/** Owner writes about an agent's memory: same-origin, CSRF header, and a real owner session. */
+async function memoryOwnerPost(req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, act: (body: Record<string, unknown>) => unknown) {
+  if (!originAllowed(req) || req.headers["x-qoopia-csrf"] !== "1")
+    return json(res, 403, { error: "forbidden", error_description: "Origin and X-Qoopia-CSRF are required" });
+  if (auth.source === "oauth")
+    return json(res, 403, { error: "forbidden", error_description: "Changing a memory policy requires an owner dashboard session" });
+  try {
+    return json(res, 200, act(await readDashboardJson(req)));
+  } catch (error) {
+    const code = error instanceof QoopiaError ? error.code : "INTERNAL";
+    const status = { FORBIDDEN: 403, NOT_FOUND: 404, STALE_REVISION: 409, CONFLICT: 409, EXPIRED: 410, INVALID_INPUT: 400 }[code as string] ?? 500;
+    return json(res, status, { error: code.toLowerCase(), error_description: status === 500 ? "Could not complete the memory change" : (error as Error).message });
+  }
+}
+
+const memoryPolicyPost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, agentId: string) =>
+  memoryOwnerPost(req, res, auth, (body) => {
+    const policy = setMemoryPolicy({
+      workspace_id: auth.workspace_id,
+      agent_id: agentId,
+      mode: body.mode as MemoryMode,
+      actor_id: auth.agent_id,
+      expected_revision: typeof body.expected_revision === "number" ? body.expected_revision : undefined,
+    });
+    return { agent_id: policy.agent_id, name: policy.name, mode: policy.mode, revision: policy.revision };
+  });
+
+const memorySavePost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, requestId: string) =>
+  memoryOwnerPost(req, res, auth, (body) => {
+    if (typeof body.accept !== "boolean") throw new QoopiaError("INVALID_INPUT", "accept must be true or false");
+    return decideSaveRequest({ workspace_id: auth.workspace_id, actor_id: auth.agent_id, id: requestId, accept: body.accept });
+  });
+
 async function dashboardV4Post(req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, path: string) {
   if (!originAllowed(req) || req.headers["x-qoopia-csrf"] !== "1") {
     json(res, 403, { error: "forbidden", error_description: "Origin and X-Qoopia-CSRF are required" });
@@ -1385,6 +1424,52 @@ export function handleDashboardApi(
     }
     if (!requireV4Admin(res, auth)) return true;
     void dashboardV4Post(req, res, auth, path);
+    return true;
+  }
+
+  // The contract is one agent's answer and costs a pass over the tool registry, so it is read
+  // on demand rather than for every row of the agent list.
+  const contractRoute = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/contract$/);
+  if (method === "GET" && contractRoute) {
+    const auth = checkDashboardAuth(req);
+    if (!auth) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const id = decodeURIComponent(contractRoute[1]!);
+    if (!auth.isAdmin && id !== auth.agent_id) {
+      json(res, 403, { error: "forbidden" });
+      return true;
+    }
+    const contract = agentContractFor(db, auth.workspace_id, id, authorityOperations);
+    json(res, contract ? 200 : 404, contract ?? { error: "not_found" });
+    return true;
+  }
+
+  const policyRoute = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/memory-policy$/);
+  if (method === "POST" && policyRoute) {
+    const auth = checkDashboardAuth(req);
+    if (!auth) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    void memoryPolicyPost(req, res, auth, decodeURIComponent(policyRoute[1]!));
+    return true;
+  }
+
+  const saveRoute = path.match(/^\/api\/dashboard\/memory-saves(?:\/([^/]+))?$/);
+  if (saveRoute && (saveRoute[1] ? method === "POST" : method === "GET")) {
+    const auth = checkDashboardAuth(req);
+    if (!auth) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (saveRoute[1]) void memorySavePost(req, res, auth, decodeURIComponent(saveRoute[1]));
+    else {
+      // The prepared text is for the owner alone; other dashboard roles see only the count on the card.
+      try { json(res, 200, { items: listSaveRequests(auth.workspace_id, auth.agent_id) }); }
+      catch { json(res, 403, { error: "forbidden" }); }
+    }
     return true;
   }
 

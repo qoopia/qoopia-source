@@ -58,16 +58,17 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         return json(res,200,{linked:false,setup:true});
       }
       if(route==='/start'){
-        if(body.method!=='google'&&body.method!=='email')throw new Error('Choose Google or email');
+        if(!['google','email','account'].includes(String(body.method)))throw new Error('Choose Google or email');
         if(attempts.size>=20)throw new Error('Too many pending sign-ins. Please wait a few minutes');
         const binding=ownerIdentity(root),claim=claims.get(hash(cookie(req)));
         if(!binding&&!claim)throw new Error('Open Qoopia from its launcher once to link this workspace');
+        if(body.method==='account'&&(!binding||!isHttps(req)))throw new Error('Sign in with email to connect this workspace');
         const owner=localOwner(database,binding?.ownerId??claim!.ownerId),verifier=random();
-        const data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),challenge:hash(verifier)});
+        const data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:'https://'+req.headers.host+'/dashboard'}:{}),challenge:hash(verifier)});
         if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new Error('Invalid sign-in service response');
         const token=random();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:data.id,verifier,expires:now+600_000,busy:false});
         res.setHeader('set-cookie',`${pendingCookie}=${token}; HttpOnly; SameSite=Strict; Path=/api/dashboard/identity; Max-Age=600${isHttps(req)?'; Secure':''}`);
-        return json(res,200,{...(body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id}:{email:loginEmail(body.email)})});
+        return json(res,200,body.method==='account'?{accountUrl:LOGIN_ORIGIN+'/profile?app=ios&request='+data.id}:body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id}:{email:loginEmail(body.email)});
       }
       if(route==='/poll'){
         const token=cookie(req,pendingCookie),attempt=attempts.get(token);
@@ -75,7 +76,7 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         if(attempt.busy)return json(res,200,{pending:true});
         attempt.busy=true;
         try{
-          const identity=await broker('/redeem',{id:attempt.id,verifier:attempt.verifier});
+          const identity=await broker('/redeem',{id:attempt.id,verifier:attempt.verifier,...(body.accountCode?{account_code:body.accountCode}:{})});
           if(identity.pending===true)return json(res,200,{pending:true});
           attempts.delete(token);
           const email=loginEmail(identity.email),sub=identity.googleSub;

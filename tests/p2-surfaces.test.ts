@@ -1,4 +1,5 @@
 import {test,expect} from 'bun:test';
+import {dashboardSource,dashboardPage,dashboardScript} from './helpers/dashboard-source.ts';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
@@ -27,7 +28,10 @@ test('P2 REST / real MCP SDK transport / actual CLI share capture replay and cur
   expect(s.entries).toHaveLength(1);expect(()=>getOperation(f.auth,{id:operation.id},f.database)).toThrow('requester scope');
  }finally{await client.close();await server.close();f.database.close();rmSync(dir,{recursive:true,force:true});}
 });
-test('Dashboard inline JavaScript parses without executing a browser or user profile',()=>{
- const html=readFileSync(new URL('../src/public/dashboard.html',import.meta.url),'utf8');
- for(const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))expect(()=>new Function(match[1]!)).not.toThrow();
+test('Dashboard JavaScript parses without executing a browser or user profile',()=>{
+ // The page's code is a separate file now; parse it directly. A <script> tag search would match
+ // only the empty bodies of the two src= tags and prove nothing.
+ expect(dashboardScript.length).toBeGreaterThan(10_000);
+ expect(()=>new Function(dashboardScript)).not.toThrow();
+ for(const match of dashboardPage.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))expect(()=>new Function(match[1]!)).not.toThrow();
 });
