@@ -889,19 +889,17 @@
     },
     {
       "path": "marketing-site/brand/i18n.js",
-      "sha256": "0d6a78251e69343edd2f55cd6c20c2f4c27a5c681e05e6f42b6709da8c67215c",
-      "bytes": 127053,
+      "sha256": "b6daf924f7dc337708aed266945b8daa791984f9ffacae282838d7430ad5ed7d",
+      "bytes": 114864,
       "source_snapshot_identical": false,
-      "original_runtime_identical": false,
-      "original_blob": "89c298d003d4f087a1e44894e632cb17e80a98ab"
+      "original_runtime_identical": false
     },
     {
       "path": "marketing-site/brand/i18n.ru.json",
-      "sha256": "59c968bd23dfec8900b2a2171ecec35f3ed693a15d08b10f89c228d10a5046bd",
-      "bytes": 108899,
-      "source_snapshot_identical": true,
-      "original_runtime_identical": false,
-      "original_blob": "5db8954e44b15db3f8ed284c86bb807c10aeb7a0"
+      "sha256": "66feef2ff1b23565af9fdcfbadb995ab9bf4784d3d3fbd2d2e3216298ac66bf4",
+      "bytes": 111337,
+      "source_snapshot_identical": false,
+      "original_runtime_identical": false
     },
     {
       "path": "marketing-site/brand/logo/motif-underline.svg",
@@ -1041,11 +1039,10 @@
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "443975356305b09fc44a224d248af5eeb7708eaf7eccb87f07ad6856bc93fd5d",
-      "bytes": 7360,
+      "sha256": "b4bf1c1f97ed5cbc9d8bd7342d1b189d78902dccab00fcdc65a62865e6574fdc",
+      "bytes": 7660,
       "source_snapshot_identical": false,
-      "original_runtime_identical": false,
-      "original_blob": "8f6bf97f3d5b395ea6cc5abe9a0d7a924adcb443"
+      "original_runtime_identical": false
     },
     {
       "path": "marketing-site/robots.txt",
@@ -6136,5 +6133,6 @@
   "product_version": "5.0.4",
   "release_503_source": "279a2d62b576e760ac89d10d02b30b9ab0f96bb7",
   "website_503_source": "4e92f3c",
-  "release_504_source": "c065704ddfe42e1338881d26d8bc249679b72851"
+  "release_504_source": "c065704ddfe42e1338881d26d8bc249679b72851",
+  "release_copy_source": "b9966f9050f791bffe1bb71d6234c2b4969fa13b"
 }

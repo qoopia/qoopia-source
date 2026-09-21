@@ -51,3 +51,7 @@ The public compose template replaces owner-specific instance names and environme
 Canonical product source `c065704ddfe42e1338881d26d8bc249679b72851`. Telegram subscription recovery, persistent receipts, Stop and native Claude transcript preservation. Public history remains independent. Operator state, host-specific runbooks, private profiles and acceptance artifacts are excluded.
 
 5.0.4 website metadata and signed updater feed use the published package source c065704; website-only locale and release-note updates do not change those package bytes.
+
+## Release-page clarification — 21 September 2026
+
+Editorial changes derived from canonical b9966f9050f791bffe1bb71d6234c2b4969fa13b distinguish the initial public V1 launch (14 September) from 5.0.4 notes (17 September), and link the official release history. Only these content changes and their translations were applied to this public tree; its runtime, package metadata and existing design remain unchanged. This is not an export of 5.0.8 runtime sources.
