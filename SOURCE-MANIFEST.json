@@ -336,9 +336,10 @@
     },
     {
       "path": "docs/operations/release-consistency.md",
-      "sha256": "af68df098bebce00c0719bc5a9ddd383def70fbce45c98ab1e860be79f668a99",
-      "bytes": 3578,
-      "source_snapshot_identical": true
+      "sha256": "33462932f15d916f8bc8401aa4a6c8e030641c0796dcc802dad123bc429ff5f4",
+      "bytes": 3975,
+      "source_snapshot_identical": false,
+      "followup_source": "de41b500a75e8aebf5858d2f8b3d750311e956b1"
     },
     {
       "path": "docs/operations/storage-full-check.md",
@@ -1854,9 +1855,10 @@
     },
     {
       "path": "scripts/release-health.py",
-      "sha256": "91e0a5c4c1e8f36665c8abc7d7778342aeb37f59a68ac1e1bca3041fb8fe38e7",
-      "bytes": 9377,
-      "source_snapshot_identical": true
+      "sha256": "f534e253fc6e779d6120e022b4d894b7b348edd1f3eebbf7c7c6acdb75a042b6",
+      "bytes": 9405,
+      "source_snapshot_identical": false,
+      "followup_source": "de41b500a75e8aebf5858d2f8b3d750311e956b1"
     },
     {
       "path": "scripts/release-stamp.ts",
