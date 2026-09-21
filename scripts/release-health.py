@@ -115,8 +115,8 @@ def main():
     now = datetime.datetime.now(UTC)
     endpoints = [('website', 'https://qoopia.ai/'), ('release', 'https://qoopia.ai/release.json'), ('auth', 'https://auth.qoopia.ai/health'), ('memory', 'https://mcp.qoopia.ai/ready'),
                  ('appcast', 'https://qoopia.ai/updates/macos/appcast.xml'), ('ios', 'https://qoopia.ai/ios-release.json'),
-                 ('public_package', 'https://raw.githubusercontent.com/qoopia/qoopia-source/main/package.json'),
-                 ('public_release', 'https://raw.githubusercontent.com/qoopia/qoopia-source/main/RELEASE.json'),
+                 ('public_package', 'https://raw.githubusercontent.com/qoopia/qoopia-source/v' + a.version + '/package.json'),
+                 ('public_release', 'https://raw.githubusercontent.com/qoopia/qoopia-source/v' + a.version + '/RELEASE.json'),
                  ('downloads_tag', 'https://github.com/qoopia/qoopia-downloads/releases/latest'),
                  ('source_tag', 'https://github.com/qoopia/qoopia-source/releases/latest')]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(endpoints)) as pool:

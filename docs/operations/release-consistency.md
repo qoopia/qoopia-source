@@ -30,3 +30,5 @@ Apple reviews an exact native version/build. Do not withdraw a pending build or 
 ## Boundaries
 
 Schema numbers, MCP protocol revisions, SDK versions and historical feature-flag names are separate compatibility identifiers, not product release numbers. Do not renumber them cosmetically. Client installations can remain older until their updater runs; a healthy delivery channel does not prove every user's installation has upgraded.
+
+Public raw-source checks read the expected version tag, not a cached mutable branch response. Both GitHub latest-release redirects must also identify that same version, so an old tag cannot masquerade as the latest delivery. The public main branch is checked at release closure with fresh Git refs and tree equality; documentation-only commits may follow without rebuilding an immutable release.
