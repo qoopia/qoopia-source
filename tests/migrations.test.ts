@@ -78,3 +78,25 @@ describe("runMigrations", () => {
     expect(ws?.slug).toBe("migration-test");
   });
 });
+
+// Migrations up to 044 predate this rule and keep their names and headers: renaming an
+// applied file or inventing thirty-one retroactive rollbacks would add risk, not safety.
+const RECORDED_FROM = 45;
+describe("migration record", () => {
+  const recent = fs
+    .readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith(".sql") && parseInt(f, 10) >= RECORDED_FROM);
+
+  test("new migrations are named NNN-name.sql", () => {
+    for (const file of recent) expect(file).toMatch(/^\d{3}-[a-z0-9]+(-[a-z0-9]+)*\.sql$/);
+  });
+
+  test("new migrations state reader/writer compatibility, recovery and the fate of later data", () => {
+    expect(recent.length).toBeGreaterThan(0);
+    for (const file of recent) {
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), "utf8");
+      for (const field of ["compatibility:", "recovery:", "data-after-upgrade:"])
+        expect(sql.includes(`-- ${field}`), `${file} lacks "-- ${field}"`).toBe(true);
+    }
+  });
+});

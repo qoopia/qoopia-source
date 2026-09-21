@@ -13,6 +13,8 @@ import {
 import { redactQuery } from "./recall_log_redaction.ts";
 import { isReadOnlyInstance } from "../utils/instance-role.ts";
 import { runV4Recall, v4RecallRequested } from "./recall/v4-pipeline.ts";
+import { boundDefaultRecall } from "./recall/response-envelope.ts";
+import { chooseRerankBackend, rerankResults } from "./recall/rerank.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
 import {
   resolveTemporalFilter,
@@ -23,20 +25,11 @@ import {
 } from "./recall/temporal-filter.ts";
 
 import {
-  DEFAULT_RECALL_OUTPUT_BYTES,
   MAX_QUERY_CHARS,
   VECTOR_TYPE_FILTER_TYPES,
   getVectorTypeFilterMaxLen,
   hybridChannelTopN,
-  jinaRerankEndpoint,
-  llmRerankEndpoint,
-  llmRerankTimeoutMs,
   passageForRerank,
-  rerankDefaultDeep,
-  rerankEnabledLegacy,
-  rerankMaxDocChars,
-  rerankPassageWindow,
-  rerankTimeoutMs,
   rerankTopK,
   rrfK,
   vectorCosineThreshold,
@@ -239,96 +232,6 @@ export interface ResultRow {
   completeness?: "complete" | "excerpt";
   omitted_fields?: string[];
   full_body_request?: { tool: "note_get"; arguments: { id: string } };
-}
-
-interface RecallCompleteness {
-  status: "complete" | "partial";
-  reason?: "default_recall_output_budget";
-  max_tokens?: 4_000;
-  enforcement?: "conservative_utf8_bytes";
-  max_serialized_bytes?: 4_000;
-  full_body_tool?: "note_get";
-  omitted_fields?: string[];
-  omitted_results?: { count: number; ids: string[] };
-}
-
-type BoundedRecall<T> = Omit<T, "results"> & {
-  results: ResultRow[];
-  completeness: RecallCompleteness;
-};
-
-function serializedBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), "utf8");
-}
-
-function boundDefaultRecall<T extends { results: ResultRow[] }>(response: T): BoundedRecall<T> {
-  const complete = {
-    ...response,
-    results: response.results.map((row) => ({ ...row, completeness: "complete" as const })),
-    completeness: { status: "complete" as const },
-  };
-  if (serializedBytes(complete) <= DEFAULT_RECALL_OUTPUT_BYTES) return complete;
-
-  const originals = response.results.map((row) => row.text);
-  const results = response.results.map((row) => {
-    const { metadata: _metadata, ...rest } = row;
-    return {
-      ...rest,
-      completeness: "excerpt" as const,
-      omitted_fields: ["metadata"],
-      full_body_request: { tool: "note_get" as const, arguments: { id: row.id } },
-    };
-  });
-  const partial = {
-    ...response,
-    results,
-    completeness: {
-      status: "partial" as const,
-      reason: "default_recall_output_budget",
-      max_tokens: 4_000,
-      enforcement: "conservative_utf8_bytes",
-      max_serialized_bytes: DEFAULT_RECALL_OUTPUT_BYTES,
-      full_body_tool: "note_get",
-      omitted_fields: [] as string[],
-      omitted_results: { count: 0, ids: [] as string[] },
-    },
-  } as BoundedRecall<T>;
-  const mutablePartial = partial as BoundedRecall<T> & Record<string, unknown>;
-  if (serializedBytes(partial) <= DEFAULT_RECALL_OUTPUT_BYTES) return partial;
-
-  for (const result of results) {
-    result.text = "";
-    result.omitted_fields.push("text");
-  }
-  for (const field of ["sanitized_query", "query", "cost", "effective_options", "pipeline_version", "trace_id"]) {
-    if (serializedBytes(partial) <= DEFAULT_RECALL_OUTPUT_BYTES) break;
-    if (Object.hasOwn(partial, field)) {
-      delete mutablePartial[field];
-      partial.completeness.omitted_fields!.push(field);
-    }
-  }
-  while (serializedBytes(partial) > DEFAULT_RECALL_OUTPUT_BYTES && results.length > 0) {
-    const omitted = results.pop()!;
-    partial.completeness.omitted_results!.ids.unshift(omitted.id);
-    partial.completeness.omitted_results!.count++;
-  }
-
-  for (let i = 0; i < results.length; i++) {
-    const characters = Array.from(originals[i]!);
-    let low = 0;
-    let high = characters.length;
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      results[i]!.text = characters.slice(0, middle).join("");
-      if (serializedBytes(partial) <= DEFAULT_RECALL_OUTPUT_BYTES) low = middle;
-      else high = middle - 1;
-    }
-    results[i]!.text = characters.slice(0, low).join("");
-    if (low === characters.length) {
-      results[i]!.omitted_fields = results[i]!.omitted_fields.filter((field) => field !== "text");
-    }
-  }
-  return partial;
 }
 
 const GLOBAL_SOURCE_PRIORITY: Record<NonNullable<ResultRow["source"]>, number> = {
@@ -917,124 +820,6 @@ async function entityCandidates(
     if (out.length >= topN) break;
   }
   return out;
-}
-
-/**
- * Cross-encoder / LLM rerank stage. Generic over backend — the caller
- * picks an endpoint URL and timeout per request. Input: hydrated
- * candidates already shortlisted by RRF. Output: same rows reordered
- * by pair-wise relevance. On any sidecar error, returns the input
- * unchanged (mode='rerank-fallback') so the caller stays oblivious.
- */
-async function rerankResults(
-  query: string,
-  candidates: ResultRow[],
-  endpoint: string,
-  timeoutMs: number,
-  backendLabel: string,
-): Promise<{
-  rows: ResultRow[];
-  mode: "rerank" | "rerank-fallback";
-  fallback_reason?: string;
-}> {
-  if (candidates.length <= 1) return { rows: candidates, mode: "rerank" };
-  const maxChars = rerankMaxDocChars();
-  // Пассаж вокруг совпадения, а не голова документа: голова у длинных нот не
-  // содержит отличительного терма, и переранжировщик судит по тексту, в котором
-  // искомого нет. Измерено: precision@5 2/5 -> 5/5 на головном кейсе аудита.
-  const usePassage = rerankPassageWindow();
-  const documents = candidates.map((c) =>
-    usePassage ? passageForRerank(c.text, query, maxChars) : c.text.slice(0, maxChars),
-  );
-  const t0 = performance.now();
-  try {
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(timeoutMs),
-      body: JSON.stringify({ query, documents }),
-    });
-    if (!resp.ok) {
-      logger.warn(
-        `rerank[${backendLabel}]: sidecar HTTP ${resp.status}; falling back to RRF order`,
-      );
-      return { rows: candidates, mode: "rerank-fallback", fallback_reason: "rerank_http_error" };
-    }
-    const data = (await resp.json()) as {
-      results: Array<{ index: number; score: number }>;
-      latency_ms?: number;
-    };
-    if (!Array.isArray(data.results) || data.results.length !== candidates.length ||
-      new Set(data.results.map(r=>r.index)).size !== candidates.length ||
-      data.results.some(r=>!Number.isInteger(r.index)||r.index<0||r.index>=candidates.length||!Number.isFinite(r.score))) {
-      return { rows: candidates, mode: "rerank-fallback", fallback_reason: "rerank_invalid_response" };
-    }
-    const wallMs = performance.now() - t0;
-    logger.info(
-      `rerank[${backendLabel}]: n=${candidates.length} sidecar=${data.latency_ms ?? "?"}ms wall=${wallMs.toFixed(0)}ms`,
-    );
-    const reordered: ResultRow[] = [];
-    for (const r of data.results) {
-      const src = candidates[r.index];
-      if (!src) continue;
-      reordered.push({
-        ...src,
-        // Carry rerank score in `rank` for transparency; negate so the
-        // existing "smaller rank == better" caller contract holds.
-        rank: -r.score,
-      });
-    }
-    return { rows: reordered, mode: "rerank" };
-  } catch (e: any) {
-    logger.warn(
-      `rerank[${backendLabel}]: failed (${e?.message ?? e}); falling back to RRF order`,
-    );
-    return { rows: candidates, mode: "rerank-fallback", fallback_reason: "rerank_exception" };
-  }
-}
-
-/**
- * Decide which rerank backend (if any) to use for this call.
- *
- * Precedence:
- *   1. `deep_llm=true` → Claude Haiku sidecar (opt-in, slow but precise)
- *   2. `deep=true` (or QOOPIA_RERANK_DEFAULT_DEEP=1) → JinaAI cross-encoder
- *   3. Otherwise → null (no rerank, raw RRF order)
- *
- * Legacy QOOPIA_RERANK_ENABLED=1 keeps the historical "always-on with the
- * single env-configured endpoint" behaviour, even when the caller didn't
- * pass `deep`. This lets existing deployments upgrade without coordinated
- * call-site changes.
- */
-function chooseRerankBackend(p: RecallParams): {
-  endpoint: string;
-  timeoutMs: number;
-  label: "jina" | "llm" | "legacy";
-} | null {
-  if (memoryProfile(p.workspace_id)) return null;
-  if (p.deep_llm === true) {
-    return {
-      endpoint: llmRerankEndpoint(),
-      timeoutMs: llmRerankTimeoutMs(),
-      label: "llm",
-    };
-  }
-  const deepRequested = p.deep ?? rerankDefaultDeep();
-  if (deepRequested) {
-    return {
-      endpoint: jinaRerankEndpoint(),
-      timeoutMs: rerankTimeoutMs(),
-      label: "jina",
-    };
-  }
-  if (rerankEnabledLegacy() && p.deep !== false) {
-    return {
-      endpoint: jinaRerankEndpoint(),
-      timeoutMs: rerankTimeoutMs(),
-      label: "legacy",
-    };
-  }
-  return null;
 }
 
 export async function recallBaseline(p: RecallParams) {

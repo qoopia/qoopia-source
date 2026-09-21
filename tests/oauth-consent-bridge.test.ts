@@ -426,8 +426,11 @@ describe("ADR-017: /api/dashboard/oauth-consent GET", () => {
     const dashboard = await fetch(new URL(loc, baseUrl), { redirect: "manual" });
     expect(dashboard.status).toBe(200);
     const html = await dashboard.text();
-    expect(html).toContain("Qoopia V1");
-    expect(html).toContain("consumeSafeNext");
+    expect(html).toContain('<title>qoopia</title>');
+    // The next-bounce logic ships in the page's same-origin script.
+    const script = /<script src="(\/brand\/dashboard\.js[^"]*)">/.exec(html)?.[1];
+    expect(script).toBeString();
+    expect(await (await fetch(new URL(script!, baseUrl))).text()).toContain("consumeSafeNext");
   });
 
   test("Bearer for workspace B against ticket for workspace A → 403 wrong-workspace HTML, no nonce", async () => {

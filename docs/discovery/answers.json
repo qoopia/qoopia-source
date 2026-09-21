@@ -38,16 +38,18 @@
       "id": "phone",
       "en": {
         "question": "Can I start from a phone?",
-        "answer": "You can read about Qoopia from a phone or ask your chat model to evaluate this page. A phone chat without computer access cannot install the Mac or Linux application. Installation needs a supported computer or a server you manage. Cloud MCP connections need a reachable HTTPS endpoint; ChatGPT Web and Mac Desktop memory access has been verified in real-client acceptance checks; availability still depends on your account capabilities and client configuration. External access can be configured for your installation; a local computer must stay on and online. A supported connected cloud client can then access permitted memory from its interface."
+        "answer": "Use your existing Qoopia dashboard on iPhone, including memory, agents, connections, files and chat. Open its reachable HTTPS address in Safari, sign in with the email linked to that workspace, then add it to Home Screen as a web app. Your computer or server must stay running. The phone does not run the Mac/Linux agent runtime or create a second memory database. A managed MCP endpoint is for agent tools, not dashboard access."
       },
       "ru": {
         "question": "Можно начать с телефона?",
-        "answer": "С телефона можно изучить Qoopia или попросить модель оценить эту страницу. Чат без доступа к компьютеру не установит приложение на Mac или Linux. Для установки нужен поддерживаемый компьютер или свой сервер. Облачному MCP-клиенту нужен доступный HTTPS-адрес; доступ к памяти из ChatGPT Web и приложения ChatGPT для Mac проверен на реальных клиентах; доступность по-прежнему зависит от возможностей аккаунта и настройки клиента. Для установки можно настроить внешний доступ; локальный компьютер должен оставаться включённым и подключённым к сети. После подключения поддерживаемый облачный клиент получает разрешённый доступ к памяти из своего интерфейса."
+        "answer": "На iPhone доступен существующий дашборд Qoopia: память, агенты, подключения, файлы и чат. Откройте его доступный HTTPS-адрес в Safari, войдите с почтой, привязанной к этому пространству, и добавьте на экран «Домой» как веб-приложение. Компьютер или сервер должен оставаться включённым. Телефон не запускает рантайм Mac/Linux и не создаёт вторую базу памяти. Управляемый MCP-адрес предназначен для инструментов агента, а не для входа в дашборд."
       },
       "sources": [
         "src/agent-kit/MCP-CONNECTIONS.md",
         "docs/v1-setup.md",
-        "docs/operations/connections.md"
+        "docs/operations/connections.md",
+        "src/http/web-app.ts",
+        "src/public/app.webmanifest"
       ]
     },
     {

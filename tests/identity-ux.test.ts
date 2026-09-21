@@ -18,7 +18,7 @@ test('sign-in language survives broker restart; localized mail retains one-use p
       expect(db.query('SELECT language FROM login_requests WHERE id=?').get(id)).toEqual({language});
       broker=loginBroker(db,config,provider);
       const mail=mails.at(-1)!;expect(mail.subject).toBe(language==='ru'?'Подтвердите вход в Qoopia':'Confirm your sign-in to Qoopia');
-      expect(mail.html).toContain('lang="'+language+'"');expect(mail.html).toContain('cid:qoopia-brand');expect(mail.html).not.toMatch(/<img[^>]+src="https?:/);expect(mail.attachments).toHaveLength(1);
+      expect(mail.html).toContain('lang="'+language+'"');expect(mail.html).toContain('cid:qoopia-brand');expect(mail.html).not.toMatch(/<img[^>]+src="https?:/);expect(mail.attachments).toHaveLength(1);expect(mail.html).toContain('Manrope');expect(mail.html).not.toContain('IBM Plex');expect(mail.html).toContain('#111110');
       const link=new URL(mail.text.match(/https:\/\/[^\s]+/)![0]);expect(link.searchParams.get('lang')).toBe(language);
       const page=await(await call('/confirm'+link.search)).text();expect(page).toContain('<html lang="'+language+'"');
       expect((await call('/redeem',{id,verifier})).status).toBe(202); // Viewing the page never consumes proof.

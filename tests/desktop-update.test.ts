@@ -15,14 +15,14 @@ import { OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../src/delivery/bundle
 function fixture() {
   const outer=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-t24-'))),root=path.join(outer,'installation');
   const {privateKey,publicKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
-  const bundle=(name:string)=>{
+  const bundle=(name:string,schema=37,script=name!=='first')=>{
     const dir=path.join(outer,name);privateDirectory(dir);
-    for(const file of ['qoopia','assets/src/public/dashboard.html','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
+    for(const file of ['qoopia','assets/src/public/dashboard.html', ...(script?['assets/src/public/brand/dashboard.js']:[]),'assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
       privateDirectory(path.dirname(path.join(dir,file)));durableWrite(path.join(dir,file),name);
     }
     durableWrite(path.join(dir,OPS_READER_MEMBER),JSON.stringify(OPS_READER_CAPABILITY));
     if(name!=='first')durableWrite(path.join(dir,DESKTOP_RELEASE),JSON.stringify(desktopRelease(trust,name==='next'?200:100)));
-    const raw=JSON.stringify({format:'qoopia-bundle/1',version:'5.0.0-p3.0',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:37,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
+    const raw=JSON.stringify({format:'qoopia-bundle/1',version:'5.0.0-p3.0',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:schema,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
     durableWrite(path.join(dir,'manifest.json'),raw);durableWrite(path.join(dir,'manifest.sig'),sign(null,Buffer.from(raw),privateKey));return dir;
   };
   const migrate=(_bundle:string,generationRoot:string)=>{privateDirectory(path.join(generationRoot,'data'));const file=path.join(generationRoot,'data','qoopia.db');if(!fs.existsSync(file)){const f=ownerFixture(37);durableWrite(file,f.database.serialize());f.database.close();}};
@@ -36,6 +36,8 @@ function writeWorkspace(root:string,current:ReturnType<typeof readCurrent>,name:
 
 test('desktop upgrade adopts legacy installation preserving memory, instance and connection configuration',()=>{
   const f=fixture();try{
+    // The old signed installation predates the dashboard script extraction (5.0.4).
+    expect(fs.existsSync(path.join(f.root,'bundles',f.current.bundle,'assets/src/public/brand/dashboard.js'))).toBe(false);
     writeWorkspace(f.root,f.current,'Synthetic preserved workspace');
     const config=path.join(f.root,'config','fixture-client.json');privateDirectory(path.dirname(config));durableWrite(config,'synthetic connection configuration');
     const result=prepareDesktopUpdate(f.delivery,f.next,f.trust,true);
@@ -46,6 +48,19 @@ test('desktop upgrade adopts legacy installation preserving memory, instance and
     expect(prepareDesktopUpdate(f.delivery,f.next,f.trust,true)).toEqual({state:'current',binary:result.binary});
     expect(()=>prepareDesktopUpdate(f.delivery,f.bundle('older'),f.trust,true)).toThrow('older');
     expect(readCurrent(f.root)).toEqual(selected);
+  }finally{f.cleanup();}
+});
+test('desktop upgrade still refuses a new bundle without its required dashboard script',()=>{
+  const f=fixture();try{
+    expect(()=>prepareDesktopUpdate(f.delivery,f.bundle('missing-script',45,false),f.trust,true)).toThrow('Required dashboard script missing');
+    expect(readCurrent(f.root)).toEqual(f.current);
+  }finally{f.cleanup();}
+});
+test('legacy inline dashboard remains protected by the signed inventory during upgrade',()=>{
+  const f=fixture();try{
+    fs.appendFileSync(path.join(f.root,'bundles',f.current.bundle,'assets/src/public/dashboard.html'),'tampered');
+    expect(()=>prepareDesktopUpdate(f.delivery,f.next,f.trust,true)).toThrow('Bundle member hashes');
+    expect(readCurrent(f.root)).toEqual(f.current);
   }finally{f.cleanup();}
 });
 test('desktop upgrade refuses a running writer and altered metadata without changing installed data',()=>{

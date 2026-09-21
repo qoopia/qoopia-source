@@ -109,6 +109,11 @@ describe("QSA-F: riskOf returns the documented class for known tools", () => {
     expect(riskOf("note_get")).toBe("read");
     expect(riskOf("activity_list")).toBe("read");
   });
+  test("the documentation tools registered beside the table are named too", () => {
+    // A real ChatGPT call logged `tool=unknown risk=unknown` before these were classified.
+    expect(riskOf("qoopia_protocol")).toBe("read");
+    expect(riskOf("qoopia_capabilities")).toBe("read");
+  });
   test("canonical write-low", () => {
     expect(riskOf("note_create")).toBe("write-low");
     expect(riskOf("session_save")).toBe("write-low");

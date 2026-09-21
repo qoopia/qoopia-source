@@ -15,7 +15,7 @@ function fixture() {
   const {privateKey,publicKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
   const bundle=(name:string)=>{
     const dir=path.join(outer,name);privateDirectory(dir);
-    for(const file of ['qoopia','assets/src/public/dashboard.html','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
+    for(const file of ['qoopia','assets/src/public/dashboard.html', 'assets/src/public/brand/dashboard.js','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
       privateDirectory(path.dirname(path.join(dir,file)));durableWrite(path.join(dir,file),name);
     }
     durableWrite(path.join(dir,OPS_READER_MEMBER),JSON.stringify(OPS_READER_CAPABILITY));

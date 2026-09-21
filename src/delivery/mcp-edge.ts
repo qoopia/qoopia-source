@@ -15,8 +15,10 @@ const routes: Record<string, readonly string[]> = {
   // Public, static design resources required by the isolated consent page.
   '/brand/base.css':['GET','HEAD'],
   '/brand/tokens.css':['GET','HEAD'],
-  '/brand/MarckScript-Regular.ttf':['GET','HEAD'],
-  '/brand/IBMPlexSans.ttf':['GET','HEAD'],
+  '/brand/Manrope.ttf':['GET','HEAD'],
+  '/brand/graphite/qoopia-mark-ivory.svg':['GET','HEAD'],
+  '/brand/graphite/qoopia-wordmark-ivory.svg':['GET','HEAD'],
+  '/brand/graphite/favicon.svg':['GET','HEAD'],
   '/brand/logo/qoopia-mark.svg':['GET','HEAD'],
   '/brand/logo/qoopia-favicon.svg':['GET','HEAD'],
   '/mcp': ['GET', 'POST', 'DELETE', 'OPTIONS'],

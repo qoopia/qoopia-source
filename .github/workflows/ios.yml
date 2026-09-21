@@ -1,0 +1,35 @@
+name: iOS
+on:
+  push:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  pull_request:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  simulator:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          git rev-parse HEAD
+      - name: Validate and build iPhone app
+        run: bash ios/scripts/check.sh
+      - name: Build Release for device without signing
+        run: xcodebuild -project ios/Qoopia.xcodeproj -scheme Qoopia -configuration Release -destination 'generic/platform=iOS' -derivedDataPath ios/build-device CODE_SIGNING_ALLOWED=NO build
+      - name: Capture native iPhone states
+        run: bash ios/scripts/capture-simulator.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qoopia-ios-simulator-${{ github.sha }}
+          path: ios/build/evidence/
+          if-no-files-found: warn

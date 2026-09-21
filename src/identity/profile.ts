@@ -5,6 +5,8 @@ import {accounts} from './account.ts';
 import {profileView} from './profile-view.ts';
 import {newsletter} from './newsletter.ts';
 import {ownerPortal,type OwnerOptions} from './owner.ts';
+import {accountHandoff,mobileDashboard} from './account-handoff.ts';
+import {appProfileView} from './profile-app-view.ts';
 
 const secret=()=>randomBytes(32).toString('base64url');
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
@@ -29,6 +31,7 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
   const identify=accounts(db);
   const news=newsletter(db);
   const owner=ownerPortal(db,page,ownerOptions);
+  const handoff=accountHandoff(db);
   db.exec(`CREATE TABLE IF NOT EXISTS profile_sessions(hash TEXT PRIMARY KEY,account_id TEXT NOT NULL,expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_pending(hash TEXT PRIMARY KEY,request_id TEXT NOT NULL,verifier TEXT NOT NULL,expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_news_pending(hash TEXT PRIMARY KEY,language TEXT NOT NULL);
@@ -40,13 +43,18 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
   };
   const busy=new Set<string>();
   const json=(status:number,body:unknown)=>Response.json(body,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
-  const current=(req:Request)=>db.query(`SELECT a.id,a.email,d.url FROM profile_sessions s JOIN connection_accounts a ON a.id=s.account_id
-    LEFT JOIN profile_dashboards d ON d.account_id=a.id WHERE s.hash=? AND s.expires>?`).get(hash(cookie(req,sessionName)),Date.now()) as {id:string;email:string;url:string|null}|null;
+  const current=(req:Request)=>db.query(`SELECT a.id,a.email,a.google_sub,d.url FROM profile_sessions s JOIN connection_accounts a ON a.id=s.account_id
+    LEFT JOIN profile_dashboards d ON d.account_id=a.id WHERE s.hash=? AND s.expires>?`).get(hash(cookie(req,sessionName)),Date.now()) as {id:string;email:string;google_sub:string|null;url:string|null}|null;
   return {cleanup,handler:async(req:Request,ip:string):Promise<Response>=>{
     cleanup();const url=new URL(req.url),account=current(req);
     if(url.pathname==='/owner'||url.pathname.startsWith('/owner/'))return owner(req,account);
     if(req.method==='GET'&&url.pathname==='/profile'){
       const ru=(url.searchParams.get('lang')??req.headers.get('cookie')?.match(/(?:^|;\s*)qoopia_language=(en|ru)(?:;|$)/)?.[1]??(req.headers.get('accept-language')?.startsWith('ru')?'ru':'en'))==='ru';
+      if(url.searchParams.get('app')==='ios'){
+        const id=url.searchParams.get('request');
+        if(id&&(!/^[A-Za-z0-9_-]{43}$/.test(id)||!handoff.get(id)))return page(ru?'Вход истёк':'Sign-in expired',`<a href="/profile?app=ios">${ru?'Вернуться в Qoopia':'Return to Qoopia'}</a>`,'',410,ru?'ru':'en');
+        return appProfileView(page,ru,account,!!db.query('SELECT hash FROM profile_pending WHERE hash=?').get(hash(cookie(req,pendingName))),id);
+      }
       let suggested='';try{suggested=dashboardAddress(url.searchParams.get('dashboard'));}catch{/* Untrusted URL is never reflected without validation. */}
       const preference=account?news.preference(account.id):null;
       return profileView(page,ru,account,suggested,!!db.query('SELECT hash FROM profile_pending WHERE hash=?').get(hash(cookie(req,pendingName))),{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id});
@@ -92,12 +100,17 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
         }finally{busy.delete(key);}
       }
       if(!account)return json(401,{error:'SIGN_IN_REQUIRED'});
+      if(url.pathname==='/profile/authorize'){
+        if(typeof body.request!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(body.request))return json(400,{error:'INVALID_REQUEST'});
+        return json(200,{url:handoff.authorize(body.request,account)});
+      }
       if(url.pathname==='/profile/news'){
         if(typeof body.subscribed!=='boolean'||!['en','ru'].includes(body.language))return json(400,{error:'INVALID_REQUEST'});
         news.change(account,body.subscribed,body.language,'profile');
         return json(200,{ok:true,subscribed:body.subscribed});
       }
       if(url.pathname==='/profile/dashboard'){
+        if(body.mobile===true&&!mobileDashboard(body.url))return json(400,{error:'INVALID_DASHBOARD'});
         if(body.url===null)db.query('DELETE FROM profile_dashboards WHERE account_id=?').run(account.id);
         else db.query('INSERT INTO profile_dashboards VALUES (?,?) ON CONFLICT(account_id) DO UPDATE SET url=excluded.url').run(account.id,dashboardAddress(body.url));
         record({kind:'profile_saved',outcome:'ok'});

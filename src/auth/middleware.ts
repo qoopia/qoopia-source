@@ -26,6 +26,11 @@ export interface AuthContext {
   session_version?: number;
   authority_profile?: string;
   legacy_skill_access?: number;
+  /** The discovery restriction this connection actually got, set by the transport that computed
+   * it: a profile name, or null for the unrestricted legacy surface. Absent means "derive it",
+   * which is what REST and the CLI do. The agent contract reports what this connection really
+   * sees, so the `?profile=full` escape hatch cannot make the catalogue disagree with reality. */
+  bootstrap_profile?: string | null;
 }
 
 /**

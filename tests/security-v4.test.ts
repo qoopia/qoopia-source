@@ -69,7 +69,7 @@ describe("P08 security and observability", () => {
       resolver: async () => [{ address: "203.0.113.10" }],
       fetchImpl: (async (_url: URL | RequestInfo, init?: RequestInit) => {
         expect(init?.redirect).toBe("manual");
-        expect((init?.headers as Record<string, string>)["x-qoopia-signature"]).toMatch(/^sha256=/);
+        expect((init?.headers as Record<string, string> | undefined)?.["x-qoopia-signature"]).toMatch(/^sha256=/);
         return new Response("ok", { status: 200 });
       }) as typeof fetch,
     });

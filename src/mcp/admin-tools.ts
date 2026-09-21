@@ -24,6 +24,14 @@ import { logActivity } from "../services/activity.ts";
 import { getRolePreset, ROLE_PRESET_NAMES } from "../admin/templates.ts";
 import { ulid } from "ulid";
 import type { RiskClass } from "./tools.ts";
+import {
+  listMemoryPolicies,
+  memoryPolicy,
+  resolveAgentByName,
+  setMemoryPolicy,
+  type MemoryMode,
+} from "../services/memory-policy.ts";
+import { decideSaveRequest, listSaveRequests } from "../services/memory-save-requests.ts";
 
 export interface AdminToolDef {
   name: string;
@@ -397,5 +405,136 @@ export const adminTools: AdminToolDef[] = [
         new_profile: newProfile,
       };
     },
+  },
+
+  // --- memory_policy_list ---
+  {
+    name: "memory_policy_list",
+    risk: "admin",
+    description:
+      "Show the memory policy of every active agent in this workspace: auto (session " +
+      "content is captured automatically) or manual (captured only on an explicit request). " +
+      "Answers questions like 'who has autosave running?'.",
+    rawSchema: {},
+    handler: (_args, auth) => {
+      assertSteward(auth);
+      const agents = listMemoryPolicies(auth.workspace_id);
+      return {
+        agents: agents.map((a) => ({
+          agent_id: a.agent_id,
+          name: a.name,
+          mode: a.mode,
+          revision: a.revision,
+          changed_at_ms: a.updated_at_ms,
+          changed_by: a.actor_id,
+        })),
+        auto: agents.filter((a) => a.mode === "auto").length,
+        manual: agents.filter((a) => a.mode === "manual").length,
+      };
+    },
+  },
+
+  // --- memory_policy_set ---
+  {
+    name: "memory_policy_set",
+    risk: "admin",
+    description:
+      "Turn automatic memory on (auto) or off (manual) for one agent. Only the workspace " +
+      "owner may change it; a steward may not. Existing memory is never deleted and stays " +
+      "readable in either mode. Repeating a command that already holds is not an error.",
+    rawSchema: {
+      agent: z
+        .string()
+        .min(1)
+        .max(128)
+        .describe("Agent id, or its exact name when that name is unique in the workspace"),
+      mode: z.enum(["auto", "manual"]).describe("auto = capture automatically, manual = only on request"),
+      expected_revision: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe("Reject the change if the policy moved since it was read"),
+    },
+    handler: (args, auth) => {
+      const requested = args.agent as string;
+      const mode = args.mode as MemoryMode;
+      // An id is accepted directly; a name must resolve to exactly one agent, so an
+      // ambiguous name is reported instead of changing the wrong agent's setting.
+      let target: ReturnType<typeof resolveAgentByName>;
+      try {
+        target = memoryPolicy(auth.workspace_id, requested);
+      } catch {
+        target = resolveAgentByName(auth.workspace_id, requested);
+      }
+      const before = target.mode;
+      const result = setMemoryPolicy({
+        workspace_id: auth.workspace_id,
+        agent_id: target.agent_id,
+        mode,
+        actor_id: auth.agent_id,
+        expected_revision: args.expected_revision as number | undefined,
+      });
+
+      if (before !== result.mode) {
+        logActivity({
+          workspace_id: auth.workspace_id,
+          agent_id: auth.agent_id,
+          action: "agent_memory_policy_changed",
+          entity_type: "agent",
+          entity_id: result.agent_id,
+          project_id: null,
+          summary: `Memory policy of '${result.name}' changed from ${before} → ${result.mode}`,
+          details: { agent_name: result.name, previous_mode: before, new_mode: result.mode, revision: result.revision },
+        });
+      }
+
+      return {
+        changed: before !== result.mode,
+        agent_id: result.agent_id,
+        name: result.name,
+        mode: result.mode,
+        revision: result.revision,
+        note:
+          result.mode === "manual"
+            ? "Automatic capture is off. Existing memory stays readable; new material is saved only when explicitly requested."
+            : "Automatic capture is on from now. Material from the manual period is not backfilled.",
+      };
+    },
+  },
+
+  // --- memory_save_list ---
+  {
+    name: "memory_save_list",
+    risk: "admin",
+    description:
+      "Owner only. Notes that «only on request» agents prepared and that wait for the owner's " +
+      "confirmation. They are not memory yet: recall does not see them and they expire after 24 hours.",
+    rawSchema: {
+      agent: z.string().min(1).max(128).optional().describe("Limit to one agent id"),
+    },
+    handler: (args, auth) => ({
+      items: listSaveRequests(auth.workspace_id, auth.agent_id, args.agent as string | undefined),
+    }),
+  },
+
+  // --- memory_save_decide ---
+  {
+    name: "memory_save_decide",
+    risk: "admin",
+    description:
+      "Owner only. Confirm (accept=true) or decline one prepared save. Confirming writes exactly " +
+      "the prepared note once; repeating it returns the same note. An agent can never confirm its own request.",
+    rawSchema: {
+      id: z.string().min(1).max(64).describe("Request id from memory_save_list or from the agent's APPROVAL_REQUIRED reply"),
+      accept: z.boolean(),
+    },
+    handler: (args, auth) =>
+      decideSaveRequest({
+        workspace_id: auth.workspace_id,
+        actor_id: auth.agent_id,
+        id: args.id as string,
+        accept: args.accept as boolean,
+      }),
   },
 ];

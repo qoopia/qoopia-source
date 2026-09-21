@@ -116,8 +116,11 @@ describe("smoke: HTTP boot", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type") || "").toContain("text/html");
     const html = await r.text();
-    expect(html).toContain("Qoopia V1");
-    expect(html).toContain("consumeSafeNext");
+    expect(html).toContain('<title>qoopia</title>');
+    // The next-bounce logic ships in the page's same-origin script.
+    const script = /<script src="(\/brand\/dashboard\.js[^"]*)">/.exec(html)?.[1];
+    expect(script).toBeString();
+    expect(await (await fetch(new URL(script!, baseUrl))).text()).toContain("consumeSafeNext");
   });
 
   test("OAuth authorization-server metadata also works for protected resource path", async () => {

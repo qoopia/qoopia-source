@@ -1,4 +1,5 @@
 import { test,expect,spyOn } from 'bun:test';
+import {dashboardSource} from './helpers/dashboard-source.ts';
 import type { IncomingMessage,ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -89,7 +90,7 @@ test('hosted owner login requires explicit enablement, trusted HTTPS and same or
 });
 
 test('P3 login form fallback posts the capability and never puts it in a query string',()=>{
- const source=fs.readFileSync(new URL('../src/public/dashboard.html',import.meta.url),'utf8');
+ const source=dashboardSource;
  const form=source.match(/<form\b(?=[^>]*\bid="ownerLoginForm")[^>]*>[\s\S]*?<\/form>/)?.[0];
  expect(form).toBeDefined();
  expect(form).toMatch(/\bmethod="post"/);

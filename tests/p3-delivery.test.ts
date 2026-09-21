@@ -16,7 +16,7 @@ function fixture(withAutostart=false) {
  const {privateKey,publicKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
  const bundle=(name:string,includePeer=true,opsV2=true)=>{
   const dir=path.join(root,name);privateDirectory(dir);
-  for(const file of ['qoopia','assets/src/public/dashboard.html','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py', ...(includePeer ? [`assets/native/owner-peer.${process.platform === 'darwin' ? 'dylib' : 'so'}`] : [])]){privateDirectory(path.dirname(path.join(dir,file)));durableWrite(path.join(dir,file),name);}
+  for(const file of ['qoopia','assets/src/public/dashboard.html', 'assets/src/public/brand/dashboard.js','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py', ...(includePeer ? [`assets/native/owner-peer.${process.platform === 'darwin' ? 'dylib' : 'so'}`] : [])]){privateDirectory(path.dirname(path.join(dir,file)));durableWrite(path.join(dir,file),name);}
   if(opsV2)durableWrite(path.join(dir,OPS_READER_MEMBER),JSON.stringify(OPS_READER_CAPABILITY));
   const raw=JSON.stringify({format:'qoopia-bundle/1',version:'5.0.0-p3.0',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:37,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
   durableWrite(path.join(dir,'manifest.json'),raw);durableWrite(path.join(dir,'manifest.sig'),sign(null,Buffer.from(raw),privateKey));return dir;

@@ -26,6 +26,7 @@ export function cancelTelegramQueue(owner:string){
   db.transaction(()=>{
     db.query("UPDATE qoopia_telegram_inbox SET state='cancelled' WHERE owner_id=? AND state IN ('queued','starting') AND run_id IS NULL").run(owner);
     db.query('UPDATE qoopia_telegram_channels SET paused=1 WHERE owner_id=?').run(owner);
+    scrubTelegramTransit(owner);
   }).immediate();
 }
 export function recoverTelegram(){
@@ -37,6 +38,7 @@ export function recoverTelegram(){
     for(const row of interrupted)queueTelegram(row.owner_id,row.generation,'restart:'+row.update_id,{chat_id:row.telegram_chat_id,text:'Qoopia перезапущена во время запуска задачи. Она не будет запущена повторно автоматически. Проверьте историю и отправьте новую команду. / Qoopia restarted during task submission. No automatic replay. Check history before sending a new command.'});
     db.query("UPDATE qoopia_telegram_inbox SET state='failed' WHERE state='starting'").run();
     db.query("UPDATE qoopia_telegram_inbox SET state='cancelled' WHERE state='running' AND run_id IN (SELECT id FROM qoopia_agent_runs WHERE state='interrupted')").run();
+    scrubTelegramTransit();
   }).immediate();
 }
 /** Telegram counts UTF-16 characters; never split a surrogate pair. */
@@ -44,4 +46,18 @@ export function telegramChunks(text:string,limit=3900){
   const chunks:string[]=[];
   while(text.length){let end=Math.min(limit,text.length);if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]!))end--;chunks.push(text.slice(0,end));text=text.slice(end);}
   return chunks.length?chunks:['Task finished.'];
+}
+/** A manual agent's messages are transit state: once a reply is sent, or a message will never
+ * start, the queue rows keep their delivery facts and lose the text. Driven by the agent's own
+ * policy rather than by run linkage, so approval prompts, orphaned rows and rows left behind by
+ * a disconnected channel are covered too. Called with no owner from the maintenance tick, so it
+ * still runs when nobody is delivering anything. */
+export function scrubTelegramTransit(owner?:string){
+  const mine=(table:string)=>`(?1 IS NULL OR owner_id=?1) AND EXISTS(SELECT 1 FROM qoopia_agent_settings s
+    JOIN agents a ON a.id=s.agent_id AND a.workspace_id=s.workspace_id
+    WHERE s.owner_id=${table}.owner_id AND a.memory_mode='manual')`;
+  db.query(`UPDATE qoopia_telegram_outbox SET body='{}' WHERE body<>'{}' AND state IN ('sent','cancelled','uncertain')
+    AND ${mine('qoopia_telegram_outbox')}`).run(owner??null);
+  db.query(`UPDATE qoopia_telegram_inbox SET prompt='' WHERE prompt<>'' AND state IN ('done','failed','cancelled')
+    AND ${mine('qoopia_telegram_inbox')}`).run(owner??null);
 }

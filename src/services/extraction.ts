@@ -9,6 +9,7 @@ import { createNoteProvenance, hashProvenanceFragment } from "./provenance.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict, recordExtractionOutcome } from "../utils/observability.ts";
 import { assertWriteScope, isAdmin } from "../auth/principal.ts";
+import { assertAutomaticMemoryAllowed } from "./memory-policy.ts";
 
 const MAX_CANDIDATES = 200;
 const MAX_CANDIDATE_TEXT = 16_384;
@@ -315,6 +316,8 @@ export function createExtractionRun(input: {
   candidates: ExtractionProposal[];
 }) {
   assertWriteScope(input.auth);
+  // Candidates are derived from session content and persist until reviewed: a derived record.
+  assertAutomaticMemoryAllowed(input.auth.workspace_id, input.auth.agent_id);
   if (!input.extractor_version || input.extractor_version.length > 100) {
     throw new QoopiaError("INVALID_INPUT", "invalid extractor_version");
   }

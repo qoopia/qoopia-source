@@ -211,6 +211,14 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
       metadata.additionalProperties = true; // historical comparison only; live schema remains closed
     }
   }
+  // V1 adds the owner's memory-policy commands. They are new admin-risk tools that leave every
+  // frozen tool untouched, so they are verified here and set aside before the frozen comparison.
+  const memoryPolicyTools = ["memory_policy_list", "memory_policy_set", "memory_save_list", "memory_save_decide"];
+  for (const name of memoryPolicyTools) {
+    const tool = projected.canonical_tools.find((t) => t.name === name);
+    if (!tool || tool.risk !== "admin") throw new Error(`V1 memory policy tool missing or not admin-risk: ${name}`);
+  }
+  projected.canonical_tools = projected.canonical_tools.filter((t) => !memoryPolicyTools.includes(t.name));
   return projected;
 }
 

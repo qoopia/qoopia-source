@@ -1,6 +1,5 @@
 @import url("tokens.css");
-@font-face{font-family:'Marck Script';src:url('MarckScript-Regular.ttf') format('truetype');font-weight:400;font-display:swap}
-@font-face{font-family:'IBM Plex Sans';src:url('IBMPlexSans.ttf') format('truetype');font-weight:100 900;font-display:swap}
+@font-face{font-family:Manrope;src:url("Manrope.ttf") format("truetype");font-weight:200 800;font-display:swap}
 :root{color-scheme:dark}
 .q-wordmark{font:400 36px/1.15 var(--qoopia-font-display);letter-spacing:0;color:var(--qoopia-white)}
 .q-brand{font-size:36px;display:flex;align-items:baseline;gap:16px;text-decoration:none;color:var(--qoopia-white)}
@@ -25,7 +24,7 @@
 .q-language{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;font:500 12px/1.5 var(--qoopia-font-ui);letter-spacing:.06em;color:var(--qoopia-smoke)}
 .q-language button{position:relative;appearance:none;background:transparent;color:inherit;border:0;border-radius:0;min-width:36px;min-height:40px;padding:8px 4px;font:inherit;letter-spacing:inherit;cursor:pointer}
 .q-language button[aria-pressed="true"]{color:var(--qoopia-white)}
-.q-language button[aria-pressed="true"]::after{content:'';position:absolute;left:4px;right:4px;bottom:4px;height:4px;background:url('/brand/logo/motif-underline.svg') center/100% 100% no-repeat}
+.q-language button[aria-pressed="true"]::after{content:"";position:absolute;left:8px;right:8px;bottom:3px;height:1px;background:currentColor}
 .q-language button:focus-visible{outline:2px solid var(--qoopia-white);outline-offset:3px;border-radius:3px}
 .q-language-login{display:flex;justify-content:flex-end;margin-bottom:16px}
 html[lang="ru"] .q-wordmark{font-family:var(--qoopia-font-display)}
@@ -93,3 +92,44 @@ h1,h2,h3{text-wrap:balance;scroll-margin-top:96px}
 .q-consent .languages{margin-top:24px;text-align:right}
 
 @media(max-width:700px){.q-profile .profile-grid:has(#signin-form)>.profile-panel{grid-row:1}}
+
+/* Profile news and the private service-owner view inherit the canonical brand. */
+.q-profile .news-choice{display:flex;align-items:flex-start;gap:12px;font-size:16px;line-height:1.5;cursor:pointer;margin:16px 0 24px;min-height:44px}
+.q-profile .news-choice input{display:block;width:20px;height:20px;min-height:20px;flex:0 0 20px;padding:0;margin:3px 0;accent-color:var(--qoopia-white)}
+.q-profile .profile-news{margin-top:40px;padding-top:24px;border-top:1px solid var(--qoopia-line)}
+.q-profile .profile-news h2{margin-top:0}
+.q-profile .profile-news button{min-height:44px}
+.q-auth:has(.q-owner){grid-template-columns:minmax(0,1fr)}
+.q-auth main:has(.q-owner){min-width:0;max-width:1200px;padding:48px 32px}
+.q-owner{font-variant-numeric:tabular-nums}
+.q-owner nav{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
+.q-owner section{margin-top:48px}
+.q-owner h2{margin:0 0 16px;line-height:1.2}
+.q-owner p{max-width:72ch}
+.q-owner a{min-height:44px;display:inline-flex;align-items:center;text-underline-offset:4px}
+.q-owner .owner-totals{display:flex;gap:32px;flex-wrap:wrap;padding:24px 0;border-bottom:1px solid var(--qoopia-line)}
+.q-owner .owner-totals div{flex:1;min-width:180px}
+.q-owner dt{color:var(--qoopia-smoke)}
+.q-owner dd{font-size:32px;margin:8px 0 0}
+.q-owner .owner-table{max-width:100%;overflow-x:auto;scrollbar-color:var(--qoopia-smoke) var(--qoopia-bg)}
+.q-owner table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}
+.q-owner th{font-weight:500;color:var(--qoopia-smoke)}
+.q-owner th,.q-owner td{padding:12px 16px 12px 0;border-bottom:1px solid var(--qoopia-line);vertical-align:top;overflow-wrap:anywhere;min-width:90px;max-width:320px}
+.q-owner .owner-pagination{justify-content:flex-start;align-items:center;margin:16px 0}
+.q-owner details{margin-top:40px}
+.q-owner summary{cursor:pointer;min-height:44px}
+.q-owner ::selection,.profile-news ::selection{background:var(--qoopia-white);color:var(--qoopia-black)}
+@media(max-width:600px){.q-auth main:has(.q-owner){padding:32px 20px}.q-owner .owner-totals{gap:20px}.q-owner .owner-totals div{min-width:120px}.q-owner section{margin-top:36px}}
+
+.q-owner .owner-scroll{display:none}
+.q-owner table:has(th:nth-child(5)){min-width:900px}
+.q-owner table:has(th:nth-child(5)) td,.q-owner table:has(th:nth-child(5)) th{overflow-wrap:normal;min-width:140px}
+.q-owner table:has(th:nth-child(5)) td:first-child,.q-owner table:has(th:nth-child(5)) th:first-child{min-width:260px;overflow-wrap:anywhere}
+@media(max-width:600px){.q-owner .owner-scroll{display:block;font-size:14px;margin-bottom:12px}}
+
+.q-owner .profile-nav{display:flex;flex-wrap:wrap;gap:8px 24px}
+.q-owner #github details details{margin-top:16px}
+.q-owner #github summary{overflow-wrap:anywhere}
+
+/* Graphite identity on every account and consent surface. */
+.q-brand{align-items:center;gap:10px}.q-brand img{transform:none;width:28px;height:28px}.q-brand img.q-wordmark{width:105px;height:auto}.q-auth{font-size:15px}.q-auth h1{font-size:32px;letter-spacing:-.025em}.q-auth p,.q-auth .info,.q-auth .scope-list{font-size:15px}.q-auth button,.q-auth .btn{font-size:14px;min-height:44px}.q-auth .profile-caption{display:none}.q-auth .profile-panel{border-radius:12px}.q-auth h2{font-size:23px}.q-auth input{font-size:16px}.q-auth ::selection{background:var(--qoopia-white);color:var(--qoopia-black)}

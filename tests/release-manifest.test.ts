@@ -13,7 +13,7 @@ function fixture() {
   const bundle = path.join(root, "bundle"); fs.mkdirSync(bundle);
   const pair = generateKeyPairSync("ed25519");
   const trust = pair.publicKey.export({type:"spki",format:"pem"}).toString();
-  for (const name of ['qoopia','assets/src/public/dashboard.html','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py','assets/native/owner-peer.so']) {
+  for (const name of ['qoopia','assets/src/public/dashboard.html', 'assets/src/public/brand/dashboard.js','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py','assets/native/owner-peer.so']) {
     const file = path.join(bundle,name); fs.mkdirSync(path.dirname(file), {recursive:true}); fs.writeFileSync(file,"synthetic",{mode:0o644});
   }
   const manifest = {format:'qoopia-bundle/1',version:'5.0.3',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash('synthetic'),target:'linux-x64',bun_version:Bun.version,schema_min:32,schema_max:37,signing:'publisher',publisher_key_sha256:hash(trust),platform_signing:'externally_verified',members:inventory(bundle)};

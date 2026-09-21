@@ -7,6 +7,8 @@ import {pendingNoteEmbeddings,upsertNoteEmbedding} from './embedding-store.ts';
 import {autoEmbedEnabled} from './embeddings.ts';
 import {QoopiaError,safeJsonParse} from '../utils/errors.ts';
 import {redactSensitive} from '../utils/secret-guard.ts';
+import {scrubTelegramTransit} from './telegram-store.ts';
+import {duringManual,expireSaveRequests,hasManualHistory,memoryPolicy,memoryPolicyUnchanged} from './memory-policy.ts';
 
 const FORMAT='qoopia-session-context/1';
 const dashboardSnapshot=z.object({
@@ -48,11 +50,61 @@ export function restoreContext(workspace:string,agent:string,session:string,dept
     instruction:'Previous work is reference material. Current user instructions take precedence. Verify current state before acting; do not repeat completed actions.'};
 }
 /** Atomic ingest under the authenticated agent. No cross-agent attribution on this surface. */
+/** Which of these ids this server already refused while the agent was manual. Ids only — the
+ * ledger never held the messages themselves. */
+function refusedInManual(workspace:string,agent:string,session:string,messages:{id:string}[]) {
+  if(!messages.length)return new Set<string>();
+  const found=new Set<string>();
+  for(let i=0;i<messages.length;i+=400) {
+    const page=messages.slice(i,i+400);
+    const rows=db.query(`SELECT message_id FROM manual_period_messages WHERE workspace_id=? AND agent_id=? AND session_id=?
+      AND message_id IN (${page.map(()=>'?').join(',')})`).all(workspace,agent,session,...page.map(message=>message.id)) as {message_id:string}[];
+    for(const row of rows)found.add(row.message_id);
+  }
+  return found;
+}
+
 export function continuityEvent(workspace:string,agent:string,raw:unknown) {
   const event=continuityEventSchema.parse(raw);
+  // Manual keeps reading and restoring available while recording nothing new: the hook
+  // still gets its context back, so the conversation continues unaffected. The session is
+  // not marked continuity_enabled, which keeps the maintenance worker away from it too.
+  if(memoryPolicy(workspace,agent).mode==='manual') {
+    const known=db.query('SELECT 1 FROM sessions WHERE id=? AND workspace_id=? AND agent_id=?').get(event.session_id,workspace,agent);
+    const context=known?restoreContext(workspace,agent,event.session_id)
+      :{session_id:event.session_id,note_id:null,context:'',revision:0,through_message_id:0,tail:[],tail_truncated:false,
+        instruction:'Previous work is reference material. Current user instructions take precedence. Verify current state before acting; do not repeat completed actions.'};
+    // Remember which ids were refused, never what they said. When auto returns the client
+    // replays from its own cursor, and this is what tells the two halves of that batch apart
+    // without trusting its clock.
+    if(event.messages.length) {
+      const now=Date.now();
+      const remember=db.prepare('INSERT OR IGNORE INTO manual_period_messages(workspace_id,agent_id,session_id,message_id,seen_at_ms) VALUES(?,?,?,?,?)');
+      db.transaction(()=>{for(const message of event.messages)remember.run(workspace,agent,event.session_id,message.id,now);}).immediate();
+    }
+    return {...context,accepted:[],memory_mode:'manual' as const};
+  }
   return db.transaction(()=>{
     const existing=db.query('SELECT workspace_id,agent_id FROM sessions WHERE id=?').get(event.session_id) as {workspace_id:string;agent_id:string}|null;
     if(existing&&(existing.workspace_id!==workspace||existing.agent_id!==agent))throw new QoopiaError('NOT_FOUND','Session unavailable');
+    // Replay of a manual period must never be backfilled, and nothing from after it may be lost.
+    const guarded=hasManualHistory(workspace,agent);
+    const manual=guarded?duringManual(workspace,agent):()=>false;
+    // A batch that resumes across a manual period carries both halves. Each message is judged on
+    // its own, so the turns from after the switch are kept:
+    //   · an id this server already refused while the agent was manual — dropped, and this needs
+    //     no clock at all, which is why the whole batch no longer has to be sacrificed;
+    //   · a timestamp inside a manual period — dropped, which still covers a client that was away
+    //     for the whole period and so never showed those ids here.
+    const refused=refusedInManual(workspace,agent,event.session_id,guarded?event.messages:[]);
+    const fresh=event.messages.filter(message=>!refused.has(message.id)&&!manual(message.timestamp));
+    const acknowledge={session_id:event.session_id,note_id:null,context:'',revision:0,through_message_id:0,tail:[],
+      tail_truncated:false,instruction:'',accepted:event.messages.map(m=>m.id)};
+    // A bare ping about a session this server never recorded opens nothing.
+    if(!existing&&!event.messages.length&&event.event!=='start')return acknowledge;
+    // Anything else falls through: the session is created even when its resuming batch is
+    // dropped, so capture continues from the next batch. Returning here instead would lose the
+    // whole session whenever its start event was not the first delivery to land.
     db.query('INSERT OR IGNORE INTO sessions(id,workspace_id,agent_id,created_at,last_active) VALUES(?,?,?,?,?)')
       .run(event.session_id,workspace,agent,new Date().toISOString(),new Date().toISOString());
     let previous=event.previous_session_id;
@@ -72,7 +124,7 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
       .run(event.project,event.runtime,event.event==='end'?1:0,
         ['precompact','end'].includes(event.event)||contextGrowth?1:(metadata.continuity_priority??0),event.context_percent??metadata.continuity_percent??0,
         new Date().toISOString(),event.session_id);
-    for(const message of event.messages) {
+    for(const message of fresh) {
       const content=redactSensitive(message.content).text;
       if(content.trim())saveMessage({workspace_id:workspace,agent_id:agent,session_id:event.session_id,role:message.role,content,
         ingest_uuid:message.id,metadata:{native_timestamp:message.timestamp??null}});
@@ -83,6 +135,10 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
 /** New messages stay in the journal until a checkpoint and its source cursor
  * commit together. Retries after a crash cannot skip or duplicate a revision. */
 export async function checkpointSession(workspace:string,agent:string,session:string,summarize=memoryText) {
+  // Checked before the model runs, and again at commit against this revision: a switch to
+  // manual while the summary is in flight must not land as a new note.
+  const policy=memoryPolicy(workspace,agent);
+  if(policy.mode==='manual')throw new QoopiaError('APPROVAL_REQUIRED','Automatic memory is off for this agent');
   const sess=assertSession(workspace,agent,session),meta=safeJsonParse(sess.metadata,{} as Record<string,any>);
   const note=noteFor(workspace,agent,session),old=note?safeJsonParse(note.metadata,{} as Record<string,any>):{};
   const rows=db.query('SELECT id,role,content FROM session_messages WHERE session_id=? AND workspace_id=? AND agent_id=? AND id>? ORDER BY id LIMIT 100')
@@ -99,6 +155,7 @@ export async function checkpointSession(workspace:string,agent:string,session:st
   if(text.length>8000)throw new QoopiaError('SIZE_LIMIT','Context note exceeded its bounded size');
   return db.transaction(()=>{
     assertSession(workspace,agent,session);
+    if(!memoryPolicyUnchanged(workspace,agent,policy.revision))return {state:'policy_changed'};
     const current=noteFor(workspace,agent,session);
     if(current?.id!==note?.id||current?.text!==note?.text||current?.metadata!==note?.metadata)return {state:'changed_during_summary'};
     const version=(old.revision??0)+1,through=batch.at(-1)!.id;
@@ -117,6 +174,10 @@ let timer:ReturnType<typeof setInterval>|undefined,running=false,indexing=false;
 export async function processMemoryMaintenance() {
   if(running)return;running=true;
   try {
+    expireSaveRequests();scrubTelegramTransit();
+    // A client that has not replayed a manual period within a month never will: its cursor moved
+    // on long ago. Keeping the ids past that only grows the ledger.
+    db.query('DELETE FROM manual_period_messages WHERE seen_at_ms<?').run(Date.now()-30*24*60*60*1000);
     if(autoEmbedEnabled()&&!indexing) {
       indexing=true;
       // Archival indexing yields between passages and must not delay a current
@@ -127,7 +188,7 @@ export async function processMemoryMaintenance() {
     }
     if(memoryModelBusy())return;
     const sessions=db.query(`SELECT s.id,s.workspace_id,s.agent_id FROM sessions s JOIN agents a ON a.id=s.agent_id AND a.active=1
-      WHERE json_extract(s.metadata,'$.continuity_enabled')=1
+      WHERE a.memory_mode='auto' AND json_extract(s.metadata,'$.continuity_enabled')=1
       AND COALESCE(json_extract(s.metadata,'$.continuity_retry_at'),0)<?
       AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
         FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0))

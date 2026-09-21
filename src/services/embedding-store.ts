@@ -19,16 +19,6 @@ import {
 } from "./embeddings.ts";
 import { logger } from "../utils/logger.ts";
 
-interface EmbeddingRow {
-  note_id: string;
-  workspace_id: string;
-  embedding: Buffer;
-  dim: number;
-  model: string;
-  embedded_at: string;
-  text_hash: string;
-}
-
 /**
  * Compute and upsert the embedding for a note. Idempotent on
  * (note_id, text_hash, model) — skips the Ollama call when the text

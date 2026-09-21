@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite';
+import {assertAutomaticMemoryAllowed} from '../services/memory-policy.ts';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -69,6 +70,10 @@ export function nativeTaskFailure(stdout:string) {
 }
 
 function save(database:Database,workspace:string,agent:string,session:string,role:'user'|'assistant'|'system',content:string,metadata:Record<string,unknown>){
+  // This records under the TARGET agent's identity and is read back by transcript(), so it is
+  // that agent's session content whoever started the task. «Only on request» refuses it rather
+  // than letting a background run on behalf of an agent become the way around the setting.
+  assertAutomaticMemoryAllowed(workspace,agent,'automatic',database);
   if(!content||content.length>100_000)throw new QoopiaError('SIZE_LIMIT','Task session message is empty or too large');
   assertNoSecrets(content,'agent task message');assertNoSecrets(JSON.stringify(metadata),'agent task metadata');
   const now=new Date().toISOString();

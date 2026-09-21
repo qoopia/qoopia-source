@@ -13,7 +13,7 @@ export const memoryConnectionSchema=z.object({format:z.literal('qoopia-memory-co
 const localConnectionSchema=memoryConnectionSchema.extend({native_root:z.string().startsWith('/')});
 type Connection=z.infer<typeof memoryConnectionSchema>;
 type LocalConnection=z.infer<typeof localConnectionSchema>;
-interface ClientState {file:string;session:string;project:string;cursor:number;part:number;last_sync?:string;error?:string;inode?:string;owner?:{pid:number;identity:string};closed?:boolean;previous?:string;context_percent?:number}
+interface ClientState {file:string;session:string;project:string;cursor:number;part:number;last_sync?:string;error?:string;inode?:string;owner?:{pid:number;identity:string};closed?:boolean;previous?:string;context_percent?:number;manual?:boolean}
 const quote=(value:string)=>"'"+value.replace(/'/g,"'\\''")+"'";
 function endpoint(raw:string) {
   const url=new URL(raw);
@@ -159,8 +159,15 @@ async function syncSource(connection:LocalConnection,state:ClientState,stateFile
       cursor+=Buffer.byteLength(line)+1;part=0;
       if(messages.length>=40||chars>=240_000)break;
     }
-    const result=await send(connection,{session_id:state.session,project:state.project,runtime:connection.runtime,event,messages,...(state.context_percent!==undefined?{context_percent:state.context_percent}:{}),...(event==='start'&&state.previous?{previous_session_id:state.previous}:{})});
-    if(!Array.isArray(result.accepted)||result.accepted.length!==messages.length||messages.some(m=>!result.accepted.includes(m.id)))throw new Error('Delivery was not acknowledged');
+    // «Only on request»: once the server has said manual, ask before sending anything. While it
+    // stays manual the conversation does not leave this computer, and the bytes passed over here
+    // are never sent later — a return to auto continues from the current position.
+    const envelope={session_id:state.session,project:state.project,runtime:connection.runtime,event};
+    const probe=state.manual?await send(connection,{...envelope,messages:[]}):undefined;
+    const result=probe?.memory_mode==='manual'?probe:await send(connection,{...envelope,messages,...(state.context_percent!==undefined?{context_percent:state.context_percent}:{}),...(event==='start'&&state.previous?{previous_session_id:state.previous}:{})});
+    state.manual=result.memory_mode==='manual';
+    if(state.manual){cursor=state.cursor+end+1;part=0;}
+    else if(!Array.isArray(result.accepted)||result.accepted.length!==messages.length||messages.some(m=>!result.accepted.includes(m.id)))throw new Error('Delivery was not acknowledged');
     state.cursor=cursor;state.part=part;state.last_sync=new Date().toISOString();delete state.error;
     durableWrite(stateFile,JSON.stringify(state));return result;
   } finally {fs.closeSync(fd);}
@@ -183,7 +190,13 @@ export async function runMemoryHook(file:string,input:unknown) {
   if(!hook||typeof hook.session_id!=='string'||typeof hook.cwd!=='string'||typeof hook.transcript_path!=='string')return;
   if(hook.session_id.length>160)return;
   const folder=privateDirectory(path.join(path.dirname(file),'cursors')),stateFile=path.join(folder,hash(hook.transcript_path)+'.json');
-  const bootstrap='Before Qoopia work, read '+JSON.stringify(path.join(connection.native_root,'qoopia-protocol.md'))+'. Use only this selected connection; document presence does not prove model or memory access. Current user instructions take precedence.\n';
+  // A connection made before the instruction kit existed keeps working after an update, but the
+  // kit was never written. Naming a missing file as required reading misleads the agent, so the
+  // text follows the fact and points at the protocol served by this same connection.
+  const protocolFile=path.join(connection.native_root,'qoopia-protocol.md');
+  const bootstrap=(fs.existsSync(protocolFile)?'Before Qoopia work, read '+JSON.stringify(protocolFile)+'.'
+    :'The local Qoopia protocol is not installed at '+JSON.stringify(protocolFile)+'. Before Qoopia work, read it with the qoopia_protocol tool of this connection; reconnecting this client in Qoopia reinstalls the local copy.')
+    +' Use only this selected connection; document presence does not prove model or memory access. Current user instructions take precedence.\n';
   const session=connection.runtime+':'+hook.session_id;
   let state:ClientState=fs.existsSync(stateFile)?JSON.parse(readJsonBytes(stateFile).toString()):
     {file:hook.transcript_path,session,project:hook.cwd,cursor:0,part:0};

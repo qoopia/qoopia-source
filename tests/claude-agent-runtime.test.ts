@@ -45,7 +45,7 @@ test('Claude native adapter supports isolated subscription auth, approvals, resu
   const login=await rpc.call('account/login/start',{});expect(login.authUrl).toStartWith('https://claude.com/cai/oauth/authorize');
   await rpc.call('account/login/code',{code:'fixture-code'});await until(()=>events.some(e=>e.method==='account/login/completed'&&e.params.success));
   const thread=await rpc.call('thread/start',{developerInstructions:'fixture guidance'});
-  await rpc.call('turn/start',{threadId:thread.thread.id,input:[{text:'approve'}]});await until(()=>requests.length===1);
+  await rpc.call('turn/start',{threadId:thread.thread.id,model:'opus',input:[{text:'approve'}]});await until(()=>requests.length===1);
   expect(requests[0].params.command).toBe('fixture command');rpc.respond(requests[0].id,{decision:'accept'});
   await until(()=>events.some(e=>e.method==='turn/completed'));expect(events.filter(e=>e.method==='item/agentMessage/delta').map(e=>e.params.delta).join('')).toBe('Allowed ✓');
   expect(()=>rpc.respond('permission',{decision:'accept'})).toThrow('expired');
@@ -53,7 +53,7 @@ test('Claude native adapter supports isolated subscription auth, approvals, resu
   await until(()=>events.filter(e=>e.method==='turn/completed').length===2);
   await rpc.call('turn/start',{threadId:thread.thread.id,input:[{text:'hang'}]});await rpc.call('turn/interrupt',{});
   expect(events.at(-1).params.turn.status).toBe('interrupted');
-  const trace=fs.readFileSync(env.TRACE,'utf8');expect(trace).toContain('--resume='+thread.thread.id);expect(trace).toContain('"behavior":"deny"');expect(trace).not.toContain('bypassPermissions');expect(trace).not.toContain('--console');
+  const trace=fs.readFileSync(env.TRACE,'utf8');expect(trace).toContain('"--model","opus"');expect(trace).toContain('--resume='+thread.thread.id);expect(trace).toContain('"behavior":"deny"');expect(trace).not.toContain('bypassPermissions');expect(trace).not.toContain('--console');
  }finally{await rpc.stop();await new Promise(r=>setTimeout(r,30));fs.rmSync(root,{recursive:true,force:true});}
 });
 test('Claude login only accepts exact official OAuth paths and refuses API authentication',async()=>{

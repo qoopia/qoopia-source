@@ -983,8 +983,21 @@ const TOOL_RISK_INDEX: ReadonlyMap<string, RiskClass> = (() => {
   return m;
 })();
 
+/** Every registered tool with what gates it. The agent contract derives per-agent
+ * availability from this list, so the catalogue cannot drift from the real registry. */
+export function toolCatalog(): { name: string; risk: RiskClass; admin: boolean }[] {
+  return [
+    ...tools.map((t) => ({ name: t.name, risk: t.risk, admin: false })),
+    ...adminTools.map((t) => ({ name: t.name, risk: t.risk, admin: true })),
+  ];
+}
+
+/** The two documentation tools are registered beside this table rather than in it, so name their
+ * risk here: without it the audit line for a real call reads `tool=unknown risk=unknown`. */
+const SERVER_TOOL_RISK = new Map<string, RiskClass>([["qoopia_protocol", "read"], ["qoopia_capabilities", "read"]]);
+
 export function riskOf(toolName: string): RiskClass | null {
-  return TOOL_RISK_INDEX.get(toolName) ?? null;
+  return TOOL_RISK_INDEX.get(toolName) ?? SERVER_TOOL_RISK.get(toolName) ?? null;
 }
 
 export function toolNames(profile: ToolProfile = "full"): string[] {

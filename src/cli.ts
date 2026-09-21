@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { install, type InstallOpts } from "./admin/install.ts";
+import { install } from "./admin/install.ts";
 import { assertSchemaCurrent, getPendingMigrations } from "./db/migrate.ts";
 import {
   createAgent,

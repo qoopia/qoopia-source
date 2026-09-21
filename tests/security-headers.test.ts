@@ -114,14 +114,17 @@ function expectHardenedCsp(csp: string | null) {
   expect(c).toContain("object-src 'none'");
   expect(c).toContain("base-uri 'none'");
   expect(c).toContain("form-action 'self'");
-  // CSP-3 navigation restriction (defense-in-depth against window.location
-  // exfiltration from any injected inline script).
-  expect(c).toContain("navigate-to 'self'");
-  // Inline scripts are allowed (the dashboard ships a single inline block);
-  // but external script hosts must NOT be permitted.
-  expect(c).not.toContain("script-src *");
-  expect(c).not.toContain("script-src 'self' http");
-  expect(c).not.toContain("script-src 'self' https:");
+  // Dropped from CSP Level 3 and unrecognised by every current browser, so it would only add a
+  // console error on every page and hide the violations worth seeing.
+  expect(c).not.toContain("navigate-to");
+  // Same-origin script files only: no inline script, no inline handler, no external host.
+  expect(c.split("; ")).toContain("script-src 'self'");
+}
+
+/** A page under that policy must not rely on what the policy forbids. */
+function expectNoInlineScript(html: string) {
+  expect(html.match(/<script(?![^>]*\bsrc=)[^>]*>/gi) ?? []).toEqual([]);
+  expect(html.match(/<[^>]+\son[a-z]+\s*=/gi) ?? []).toEqual([]);
 }
 
 describe("QSA-G / Codex QSA-007: dashboard CSP + HSTS-on-https", () => {
@@ -130,6 +133,27 @@ describe("QSA-G / Codex QSA-007: dashboard CSP + HSTS-on-https", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type") || "").toContain("text/html");
     expectHardenedCsp(r.headers.get("content-security-policy"));
+    const html = await r.text();
+    expectNoInlineScript(html);
+    // The page's own code is a same-origin file, versioned with the page and served as JavaScript.
+    const src = /<script src="(\/brand\/dashboard\.js\?v=[0-9a-f]{12})"><\/script>/.exec(html)?.[1];
+    expect(src).toBeString();
+    const script = await fetch(baseUrl + src!);
+    expect(script.headers.get("content-type")).toContain("text/javascript");
+    const code = await script.text();
+    expect(code).toContain("window.location.origin");
+    // Markup built by the script is subject to the same policy: no inline handlers, no javascript: URLs.
+    expect(code.match(/[\s"'\\]on[a-z]+\s*=\s*\\?["']|javascript:/gi) ?? []).toEqual([]);
+    // The links that used those handlers now name their target in an attribute, so the page must
+    // carry exactly one delegated listener that acts on them; without it they are dead.
+    const targets = [...code.matchAll(/data-go=\\?"([a-z]+)/g)].map(m => m[1]!);
+    expect(new Set(targets).size).toBeGreaterThan(0);
+    const delegated = /addEventListener\('click'[\s\S]{0,400}?\[data-go\],\[data-route\][\s\S]{0,300}?go\(link\.dataset\.go\)/.exec(code);
+    expect(delegated, "dashboard.js must delegate [data-go]/[data-route] clicks").not.toBeNull();
+    // go() refuses a page that is not in NAV, so a stale target would be a silently dead link.
+    const nav = new Set([...code.matchAll(/\{\s*id:\s*'([a-z-]+)'/g)].map(m => m[1]!));
+    for (const page of new Set(targets)) expect([...nav]).toContain(page);
+    expect(html).toContain('<link href="/brand/dashboard.css?v=' + r.headers.get("x-qoopia-dashboard-version") + '"');
   });
 
   test("GET /dashboard sets x-content-type-options + referrer-policy", async () => {
@@ -161,6 +185,8 @@ describe("QSA-G / Codex QSA-007: OAuth consent page CSP", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type") || "").toContain("text/html");
     expectHardenedCsp(r.headers.get("content-security-policy"));
+    // The consent page is where an approval is given: it must work with scripts forbidden.
+    expectNoInlineScript(await r.text());
   });
 
   test("GET /api/dashboard/oauth-consent does NOT emit HSTS on plain http", async () => {

@@ -17,7 +17,7 @@ function bundle(root: string, name: string, trust: string, privateKey: KeyObject
   const dir = path.join(root, name);
   privateDirectory(dir);
   for (const file of [
-    "qoopia", "assets/src/public/dashboard.html", "assets/migrations/037-skill-loop.sql", "SBOM.json",
+    "qoopia", "assets/src/public/dashboard.html", "assets/src/public/brand/dashboard.js", "assets/migrations/037-skill-loop.sql", "SBOM.json",
     "THIRD-PARTY-NOTICES.txt", "assets/scripts/runtime/codex-seatbelt.py",
     `assets/native/owner-peer.${process.platform === "darwin" ? "dylib" : "so"}`,
   ]) {

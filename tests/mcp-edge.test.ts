@@ -21,7 +21,7 @@ function request(port: number, url: string, options: {method?: string; body?: st
 test('edge rejects admin routes, path normalization tricks, and unsupported methods', () => {
   for (const url of ['/dashboard','/api/dashboard/login','/health','/ready','/mcp/','/x/../mcp','/%6dcp','//mcp','/mcp%2f..%2fdashboard'])
     expect(mcpEdgeRoute(url,'GET')).toBe('not_found');
-  for(const asset of ['/brand/base.css','/brand/tokens.css','/brand/IBMPlexSans.ttf','/brand/MarckScript-Regular.ttf','/brand/logo/qoopia-mark.svg','/brand/logo/qoopia-favicon.svg']){expect(mcpEdgeRoute(asset,'GET')).toBe('allowed');expect(mcpEdgeRoute(asset,'POST')).toBe('method_not_allowed');}
+  for(const asset of ['/brand/base.css','/brand/tokens.css','/brand/Manrope.ttf','/brand/graphite/qoopia-mark-ivory.svg','/brand/graphite/qoopia-wordmark-ivory.svg','/brand/graphite/favicon.svg','/brand/logo/qoopia-mark.svg','/brand/logo/qoopia-favicon.svg']){expect(mcpEdgeRoute(asset,'GET')).toBe('allowed');expect(mcpEdgeRoute(asset,'POST')).toBe('method_not_allowed');}
   for(const asset of ['/brand/i18n.js','/brand/../identity/broker.ts','/brand/%2e%2e/identity/broker.ts','/brand/email-lockup.png'])expect(mcpEdgeRoute(asset,'GET')).toBe('not_found');
   expect(mcpEdgeRoute('/oauth/token','GET')).toBe('method_not_allowed');
   expect(mcpEdgeRoute('/mcp?profile=full','POST')).toBe('allowed');

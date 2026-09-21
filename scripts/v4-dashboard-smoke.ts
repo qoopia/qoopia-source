@@ -1,3 +1,8 @@
+// HISTORICAL. This checks the V4 review dashboard, a section that was removed from
+// src/public/dashboard.html before schema 45; every token below is already absent on main, so the
+// script fails by design until someone revives that surface. Kept as evidence of the V4 contract,
+// not as a working check — it is not part of CI. The file reference is current: the page's code
+// lives in src/public/brand/dashboard.js.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -11,15 +16,17 @@ const widths = value("--widths", "375,768,1440").split(",").map(Number);
 const output = value("--json", "artifacts/v4/evidence/P07/ui-smoke.json");
 const html = readFileSync("src/public/dashboard.html", "utf8");
 const fixture = JSON.parse(readFileSync(join(fixtureDir, "state.json"), "utf8"));
-const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
-if (!script) throw new Error("dashboard inline script not found");
+// The page's code is a same-origin file; the page itself only references it.
+const script = readFileSync("src/public/brand/dashboard.js", "utf8");
+if (!html.includes("/brand/dashboard.js")) throw new Error("dashboard page does not load its script");
 new Function(script);
+const searched = html + "\n" + script;
 const required = [
   "V4 Review", "v4Query", "v4Results", "v4Extraction", "v4Relations",
   "v4Lifecycle", "v4Runtime", "v4Chain", "X-Qoopia-CSRF", "aria-live",
   "production apply unavailable", "esc(row.text", "expected_version",
 ];
-const missing = required.filter((token) => !html.includes(token));
+const missing = required.filter((token) => !searched.includes(token));
 if (missing.length) throw new Error(`dashboard DOM contract missing: ${missing.join(", ")}`);
 if (!widths.every((width) => Number.isInteger(width) && width >= 320 && width <= 4096)) {
   throw new Error("widths must be integer CSS pixels in [320,4096]");

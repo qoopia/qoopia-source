@@ -1,11 +1,11 @@
 :root {
   /* Colour — black palette, no chromatic accents */
-  --qoopia-black: #0B0A09;
-  --qoopia-white: #FFFFFF;
-  --qoopia-smoke: #B7B1A6;
-  --qoopia-muted: #6E6963;
-  --qoopia-line: #2A2724;
-  --qoopia-surface: #141311;
+  --qoopia-black: #111110;
+  --qoopia-white: #f2efe9;
+  --qoopia-smoke: #c3bdb4;
+  --qoopia-muted: #8a847b;
+  --qoopia-line: #343330;
+  --qoopia-surface: #191918;
 
   /* Semantic */
   --qoopia-bg: var(--qoopia-black);
@@ -17,8 +17,8 @@
   --qoopia-inverse-fg: var(--qoopia-black);
 
   /* Type */
-  --qoopia-font-display: 'Marck Script', cursive;   /* wordmark, display headings */
-  --qoopia-font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --qoopia-font-display: 'Manrope', sans-serif;   /* wordmark is an unchanged SVG asset */
+  --qoopia-font-ui: 'Manrope', system-ui, sans-serif;
   --qoopia-size-display: 72px;
   --qoopia-size-h1: 40px;
   --qoopia-size-h2: 28px;
