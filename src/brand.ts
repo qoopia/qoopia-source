@@ -6,6 +6,8 @@ const files:Record<string,string>={
   'logo/qoopia-mark.svg':'image/svg+xml','logo/qoopia-mark-small.svg':'image/svg+xml',
   'logo/qoopia-favicon.svg':'image/svg+xml',
   'logo/motif-underline.svg':'image/svg+xml',
+  'qoopia-app-icon-1024.png':'image/png',
+  'manifest.webmanifest':'application/manifest+json',
 };
 export function brandAsset(path:string){
   if(!path.startsWith('/brand/'))return;
@@ -13,5 +15,10 @@ export function brandAsset(path:string){
   if(!Object.hasOwn(files,name))return;
   return {body:readFileSync(assetPath('src/public/brand/'+name)),type};
 }
-export const brandHead='<link rel="icon" type="image/svg+xml" href="/brand/logo/qoopia-favicon.svg?v=contrast-3"><link rel="stylesheet" href="/brand/base.css">';
+export const brandHead='<link rel="icon" type="image/svg+xml" href="/brand/logo/qoopia-favicon.svg?v=contrast-3">'
+  +'<link rel="apple-touch-icon" href="/brand/qoopia-app-icon-1024.png">'
+  +'<link rel="manifest" href="/brand/manifest.webmanifest">'
+  +'<meta name="apple-mobile-web-app-title" content="Qoopia">'
+  +'<meta name="theme-color" content="#111111">'
+  +'<link rel="stylesheet" href="/brand/base.css">';
 export const brandLockup='<div class="q-brand"><img src="/brand/logo/qoopia-mark.svg" width="40" height="36" alt=""><span class="q-wordmark">Qoopia</span></div>';
