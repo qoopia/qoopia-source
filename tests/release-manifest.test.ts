@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { inventory, hash } from "../src/utils/fs.ts";
-import { inspectReleaseArtifact, assertReleaseIdentity, buildReleaseManifest } from "../scripts/build-release-manifest.ts";
+import { inspectReleaseArtifact, assertReleaseIdentity, buildReleaseManifest, releaseSchemaVersion } from "../scripts/build-release-manifest.ts";
 
 // Independent synthetic signing identity: no production key or data is used.
 function fixture() {
@@ -51,4 +51,17 @@ test("manifest rejects malformed release identity before opening packages", () =
   expect(() => buildReleaseManifest({...input,source:"abc"})).toThrow(/40-character/);
   expect(() => buildReleaseManifest({...input,version:"5.0"})).toThrow(/X.Y.Z/);
   expect(() => buildReleaseManifest(input)).toThrow(/not found/);
+});
+
+test("release schema comes from signed packages and rejects mismatched declarations", () => {
+  const f=fixture();
+  try {
+    const m=inspectReleaseArtifact(f.archive,"linux-x64",f.trust);
+    expect(releaseSchemaVersion([m,m])).toBe(37);
+    expect(()=>releaseSchemaVersion([])).toThrow(/No release/);
+    expect(()=>releaseSchemaVersion([{...m,members:{}}])).toThrow(/No numbered/);
+    expect(()=>releaseSchemaVersion([{...m,schema_max:46}])).toThrow(/disagrees/);
+    const newer={...m,schema_max:46 as const,members:{...m.members,'assets/migrations/046-example.sql':m.members['assets/migrations/037-skill-loop.sql']!}};
+    expect(()=>releaseSchemaVersion([m,newer])).toThrow(/schemas disagree/);
+  } finally {fs.rmSync(f.root,{recursive:true,force:true});}
 });

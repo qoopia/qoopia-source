@@ -67,6 +67,24 @@ export function assertReleaseIdentity(manifests: ReturnType<typeof inspectReleas
 }
 
 
+/** Derive schema only from authenticated package inventories, never the operator checkout. */
+export function releaseSchemaVersion(manifests: ReturnType<typeof inspectReleaseArtifact>[]) {
+  if (!manifests.length) throw new Error("No release packages supplied");
+  const versions = manifests.map(manifest => {
+    const migrations = Object.keys(manifest.members).flatMap(name => {
+      const match = /^assets\/migrations\/(\d+)[_-].+\.sql$/.exec(name);
+      return match ? [Number(match[1])] : [];
+    });
+    if (!migrations.length) throw new Error("No numbered migrations in signed package");
+    const latest = Math.max(...migrations);
+    if (latest !== manifest.schema_max) throw new Error("Package schema disagrees with shipped migrations");
+    return latest;
+  });
+  if (new Set(versions).size !== 1) throw new Error("Package schemas disagree");
+  return versions[0]!;
+}
+
+
 const DOWNLOAD_BASE = "https://github.com/qoopia/qoopia-downloads/releases/download";
 const REQUIREMENTS = {
   mac: "Apple Silicon Mac, macOS 15.0 or newer. Intel Macs and Windows are not supported.",
@@ -102,10 +120,11 @@ export function buildReleaseManifest(input: {
   const mac = measure(input.mac, input.version, ".dmg");
   const linux = measure(input.linux, input.version, ".tar.gz");
   const publicKey = fs.readFileSync(input.publisherPublicKey, "utf8");
-  assertReleaseIdentity([
+  const manifests = [
     inspectReleaseArtifact(path.resolve(input.mac), "darwin-arm64", publicKey),
     inspectReleaseArtifact(path.resolve(input.linux), "linux-x64", publicKey),
-  ], input.version, input.source);
+  ];
+  assertReleaseIdentity(manifests, input.version, input.source);
   const url = (file: string) => `${DOWNLOAD_BASE}/${tag}/${file}`;
   return {
     schema: 1,
@@ -113,6 +132,7 @@ export function buildReleaseManifest(input: {
     tag,
     date: input.date,
     source: input.source,
+    schema_version: releaseSchemaVersion(manifests),
     availability: "public",
     packages: {
       mac: { label: "macOS Apple Silicon", format: "DMG", ...mac, url: url(mac.file), requirements: REQUIREMENTS.mac },

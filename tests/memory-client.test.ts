@@ -26,7 +26,10 @@ test('native hooks preserve settings, resume unacknowledged UTF-8 events, and re
   expect((await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext).toMatch(/^Before Qoopia work, read "[^"]*\/\.codex\/qoopia-protocol\.md"\./);
   fs.rmSync(protocolFile);
   const missing=(await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext as string;
-  expect(missing).toContain('is not installed at');expect(missing).toContain('qoopia_protocol');expect(missing).not.toContain('Before Qoopia work, read "');
+  expect(missing).toContain('qoopia_protocol');expect(fs.readFileSync(protocolFile)).toEqual(installedKit);
+  fs.writeFileSync(protocolFile,'owner edit',{mode:0o600});
+  const refused=(await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext;
+  expect(refused).toContain('could not be refreshed');expect(fs.readFileSync(protocolFile,'utf8')).toBe('owner edit');
   fs.writeFileSync(protocolFile,installedKit,{mode:0o600});
   const line=JSON.stringify({type:'response_item',timestamp:'2026-09-10',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Сохрани контекст — қазақша.'}]}})+'\n';
   const bytes=Buffer.from(line),split=bytes.indexOf(Buffer.from('қ'))+1;fs.writeFileSync(transcript,bytes.subarray(0,split));
