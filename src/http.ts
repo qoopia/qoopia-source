@@ -1,4 +1,5 @@
 import { connectionAction, connectionRegistrationAuth } from "./services/client-connections.ts";
+import {AGENT_KIT_REVISION} from './agent-kit/index.ts';
 import { publicConnection } from "./services/connection-identity.ts";
 import { brandAsset } from './brand.ts';
 import {webAppAsset} from './http/web-app.ts';
@@ -440,6 +441,9 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       version: PRODUCT_VERSION,
       release_sha: release?.commitSha ?? process.env.QOOPIA_EXPECTED_RELEASE_SHA ?? null,
       schema_version: schemaVersion,
+      // Lets an operator see instruction drift across a fleet without opening
+      // a session on every agent.
+      protocol_kit_revision: AGENT_KIT_REVISION,
       feature_flags: featureFlags,
       build_commit: release?.commitSha ?? process.env.QOOPIA_EXPECTED_RELEASE_SHA ?? null,
       server_role: env.SERVER_ROLE,
@@ -460,6 +464,9 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       release_sha: release?.commitSha ?? process.env.QOOPIA_EXPECTED_RELEASE_SHA ?? null,
       build_commit: release?.commitSha ?? process.env.QOOPIA_EXPECTED_RELEASE_SHA ?? null,
       schema_version: readiness.schema_version,
+      // Lets an operator see instruction drift across a fleet without opening
+      // a session on every agent.
+      protocol_kit_revision: AGENT_KIT_REVISION,
       feature_flags: getV4FeatureFlags(),
       server_role: env.SERVER_ROLE,
       instance_id: env.INSTANCE_ID,

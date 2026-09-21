@@ -1,7 +1,7 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "db34b883c5ec83e4d9834ccd365a9f8f2015a5a4",
-  "product_version": "5.0.9",
+  "source_snapshot": "7ccaa023ae215fce37b2ee8510ec59020d64709a",
+  "product_version": "5.0.10",
   "runtime_files_identical": true,
   "files": [
     {
@@ -36,8 +36,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "8de2004636e95232780bee4f11de2bb39c1ff9b709a7f2394bf3b92c23ec2fb2",
-      "bytes": 3640,
+      "sha256": "6a79152035746f5eccf40b1dc1156335672ed91586bd673250210637889e2ffc",
+      "bytes": 4036,
       "source_snapshot_identical": false
     },
     {
@@ -78,8 +78,8 @@
     },
     {
       "path": "RELEASE.json",
-      "sha256": "b8aa760200b0a9d96d2bce301f552f3e69acc45ef9c8b66afdd9203f21dbb9d8",
-      "bytes": 178,
+      "sha256": "82be99b1719bd242e5df5d7674889b357b0a01b5e38474adfd348d5b884307e9",
+      "bytes": 179,
       "source_snapshot_identical": false
     },
     {
@@ -299,6 +299,12 @@
       "source_snapshot_identical": true
     },
     {
+      "path": "docs/operations/agent-kit-refresh.md",
+      "sha256": "68bf34fbb35349f8ac81dad87c7f7830ddf47e396dde3b32152e02288d5bf7b0",
+      "bytes": 1672,
+      "source_snapshot_identical": true
+    },
+    {
       "path": "docs/operations/agent-memory-policy.md",
       "sha256": "2023c76ec06a2056f18a3b6b62b4ac88819b5628530e9928b8f8f2b3b1bb2a90",
       "bytes": 13635,
@@ -338,8 +344,7 @@
       "path": "docs/operations/release-consistency.md",
       "sha256": "33462932f15d916f8bc8401aa4a6c8e030641c0796dcc802dad123bc429ff5f4",
       "bytes": 3975,
-      "source_snapshot_identical": false,
-      "followup_source": "de41b500a75e8aebf5858d2f8b3d750311e956b1"
+      "source_snapshot_identical": true
     },
     {
       "path": "docs/operations/storage-full-check.md",
@@ -991,14 +996,14 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "c10b05ad79a26d7bd647721bf60a78575ef74ce44e803608587fe4f4c7aee113",
-      "bytes": 1119,
+      "sha256": "af61c6904881de1ec4590aa323fc0f6331840e7d58099d05f687aabb918ca029",
+      "bytes": 1127,
       "source_snapshot_identical": true
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "4c9c27c1d4f6e695a54057dce780303dd99d47134116b93e18da155bc61051d1",
-      "bytes": 9435,
+      "sha256": "b083fe429a4bd209a6537891815785f8a5488619bea502c3fec7cee8a23faa08",
+      "bytes": 10477,
       "source_snapshot_identical": true
     },
     {
@@ -1039,8 +1044,8 @@
     },
     {
       "path": "marketing-site/updates/macos/appcast.xml",
-      "sha256": "101b8f28ca799b301395da0b84edfeda45a5a3f49c591e9e13beacbc2c17e072",
-      "bytes": 765,
+      "sha256": "79c0cd7f5cb9586aa7fae15c714a182722d3a00376f978f7f489965eec8f31af",
+      "bytes": 769,
       "source_snapshot_identical": true
     },
     {
@@ -1399,8 +1404,8 @@
     },
     {
       "path": "package.json",
-      "sha256": "39d574250821fb52d378e9572b466d47d52744cbdb0db06649414fe48dd15963",
-      "bytes": 3003,
+      "sha256": "3f3f1ff58e1a6bcc5da359416bbe8ef65d4d0ae9bc2a8b0eac9d131e6fd7cd99",
+      "bytes": 3004,
       "source_snapshot_identical": true
     },
     {
@@ -1489,8 +1494,8 @@
     },
     {
       "path": "scripts/build-release-manifest.ts",
-      "sha256": "03940b9b7839d8648f6641462ebf274293cd78fd45638a40642d9f3f9175159a",
-      "bytes": 7022,
+      "sha256": "6b2bd30f00d7afd6bfecd8d69d819574deafae4bf01ea853aac937d8c942fe61",
+      "bytes": 7990,
       "source_snapshot_identical": true
     },
     {
@@ -1857,8 +1862,7 @@
       "path": "scripts/release-health.py",
       "sha256": "f534e253fc6e779d6120e022b4d894b7b348edd1f3eebbf7c7c6acdb75a042b6",
       "bytes": 9405,
-      "source_snapshot_identical": false,
-      "followup_source": "de41b500a75e8aebf5858d2f8b3d750311e956b1"
+      "source_snapshot_identical": true
     },
     {
       "path": "scripts/release-stamp.ts",
@@ -2270,14 +2274,14 @@
     },
     {
       "path": "src/agent-kit/index.ts",
-      "sha256": "321be200cb1a19284d93609a93afebd61aa5763203ad75b4802ff867c1220313",
-      "bytes": 1803,
+      "sha256": "4ffb5871b8478e1e33875111af9467321a89a1cd8d38b9da1b72216af69ed72c",
+      "bytes": 2608,
       "source_snapshot_identical": true
     },
     {
       "path": "src/agent-kit/install.ts",
-      "sha256": "3523155dff5eeb5d90fe08c010be38da885d0cc0db8e31ef0308df748ea1f1be",
-      "bytes": 6933,
+      "sha256": "c25c5d656fadb794992f91731a1c848c7df630a88b1a9eb84e883ab0761529b3",
+      "bytes": 9323,
       "source_snapshot_identical": true
     },
     {
@@ -2540,8 +2544,8 @@
     },
     {
       "path": "src/delivery/entry.ts",
-      "sha256": "7ba3fb64bfff64d0c2b54463df9d064463b6f6149ada369e46319374508d23b8",
-      "bytes": 35409,
+      "sha256": "158ea9f533ad6b61ee88cd54b7eff70d93475afa2eac4d123226c5ac125768a7",
+      "bytes": 35825,
       "source_snapshot_identical": true
     },
     {
@@ -2576,8 +2580,8 @@
     },
     {
       "path": "src/delivery/memory-client.ts",
-      "sha256": "5de24f72cc0aa0a6c55e392d5b7d71f6d09530527f3cba1c0961ac08f2f59cc6",
-      "bytes": 19153,
+      "sha256": "9ed43fa32ae89516303fa6fa22f25258c20ad4a2bd294e5d1ffb789e01311c64",
+      "bytes": 20875,
       "source_snapshot_identical": true
     },
     {
@@ -2708,8 +2712,8 @@
     },
     {
       "path": "src/http.ts",
-      "sha256": "caf90d6a8cee95ed9afdc01659146b71816f1d7ac7cfe881d794d01a0baf8378",
-      "bytes": 40719,
+      "sha256": "bea5606b970866ddde361287f96a0dc5ea601df093ad62035ea7bc416525d202",
+      "bytes": 41102,
       "source_snapshot_identical": true
     },
     {
@@ -3716,8 +3720,8 @@
     },
     {
       "path": "tests/agent-kit.test.ts",
-      "sha256": "68f7a8dd52ee3d721655094b7e97daa0126342d85b9379b23876b969d6ac7740",
-      "bytes": 6182,
+      "sha256": "5050173a7f594726a52bac81e000c79ec6a33c7778462fa182264d3fe7c2c9c5",
+      "bytes": 11873,
       "source_snapshot_identical": true
     },
     {
@@ -4370,8 +4374,8 @@
     },
     {
       "path": "tests/memory-client.test.ts",
-      "sha256": "86c768a9768cfdb672cad39d6bbe3894a163b19bd1ef7cab11b2428d3272e8ed",
-      "bytes": 11215,
+      "sha256": "ec320f12d17e94a69448c59b0373ee7b8c84e09b56ef0674e7217dc734303330",
+      "bytes": 11433,
       "source_snapshot_identical": true
     },
     {
@@ -4826,8 +4830,8 @@
     },
     {
       "path": "tests/release-manifest.test.ts",
-      "sha256": "bda5e2512dadd0148f613a1b2a6a6941e647e839318a1344054e09d0e30be03b",
-      "bytes": 3791,
+      "sha256": "a1b936cd81d07ca209ea1a907d0a21f4ab756f082974a9d265db6c8ce476f063",
+      "bytes": 4582,
       "source_snapshot_identical": true
     },
     {

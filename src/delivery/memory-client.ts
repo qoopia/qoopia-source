@@ -1,6 +1,7 @@
 import {installAgentInstructions,planAgentInstructions} from '../agent-kit/install.ts';
 import fs from 'node:fs';
 import path from 'node:path';
+import {AGENT_KIT_REVISION} from '../agent-kit/index.ts';
 import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {z} from 'zod';
@@ -184,6 +185,13 @@ function lockCursor(file:string):(()=>void)|undefined {
     return ()=>{try{if(fs.readFileSync(lock,'utf8')===String(process.pid))fs.unlinkSync(lock);}catch{}};
   } catch{return;}
 }
+/** Revision of the instruction kit installed in a profile, or null when absent. */
+function installedKitRevision(nativeRoot:string):number|null{
+  try{
+    const revision=JSON.parse(fs.readFileSync(path.join(nativeRoot,'qoopia','manifest.json'),'utf8')).revision;
+    return Number.isSafeInteger(revision)?revision:null;
+  }catch{return null;}
+}
 /** Invoked by vendor lifecycle hooks; no model is launched in the agent's turn. */
 export async function runMemoryHook(file:string,input:unknown) {
   const connection=localConnectionSchema.parse(JSON.parse(readJsonBytes(file).toString())),hook=input as Record<string,any>;
@@ -194,9 +202,27 @@ export async function runMemoryHook(file:string,input:unknown) {
   // kit was never written. Naming a missing file as required reading misleads the agent, so the
   // text follows the fact and points at the protocol served by this same connection.
   const protocolFile=path.join(connection.native_root,'qoopia-protocol.md');
-  const bootstrap=(fs.existsSync(protocolFile)?'Before Qoopia work, read '+JSON.stringify(protocolFile)+'.'
+  // An installed kit is only refreshed when someone re-runs a connect or a link.
+  // Nothing else compares it against the build now running, so a kit can sit
+  // revisions behind in silence. Both numbers are local; say so at session start.
+  let refreshNotice='';
+  if(hook.hook_event_name==='SessionStart') {
+    try {
+      // Only this already-linked profile; the installer preserves edits, role and backups.
+      installAgentInstructions(connection.native_root,connection.runtime);
+    } catch {
+      // A refusal must not disable capture or expose file contents through the hook.
+      refreshNotice=' Local Qoopia instructions could not be refreshed and were preserved. Read qoopia_protocol on the selected connection and ask the owner to inspect instructions refresh.';
+    }
+  }
+  const installed=installedKitRevision(connection.native_root);
+  const staleness=installed!==null&&installed<AGENT_KIT_REVISION
+    ?' The Qoopia instructions installed here are revision '+installed+', this build ships revision '+AGENT_KIT_REVISION
+      +': treat the local copy as out of date, prefer the qoopia_protocol tool and tell the owner to reinstall it.'
+    :'';
+  const bootstrap=(fs.existsSync(protocolFile)?'Before Qoopia work, read '+JSON.stringify(protocolFile)+'.'+staleness
     :'The local Qoopia protocol is not installed at '+JSON.stringify(protocolFile)+'. Before Qoopia work, read it with the qoopia_protocol tool of this connection; reconnecting this client in Qoopia reinstalls the local copy.')
-    +' Use only this selected connection; document presence does not prove model or memory access. Current user instructions take precedence.\n';
+    +refreshNotice+' Compare the installed kit revision with qoopia_capabilities protocol.revision; read qoopia_protocol when the server is newer. Use only this selected connection; document presence does not prove model or memory access. Current user instructions take precedence.\n';
   const session=connection.runtime+':'+hook.session_id;
   let state:ClientState=fs.existsSync(stateFile)?JSON.parse(readJsonBytes(stateFile).toString()):
     {file:hook.transcript_path,session,project:hook.cwd,cursor:0,part:0};

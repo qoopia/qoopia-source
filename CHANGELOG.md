@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.0.10 — 2026-09-21
+
+- Linked native agents refresh managed instructions at session start, preserving role and user edits. Stale kits are visible in protocol and health responses.
+- Explicit instruction refresh reports failed profiles and refuses downgrades.
+- Release schema is derived from verified signed package inventories and must agree across platforms.
+
+## Earlier public releases
+
+
 ## 5.0.9 — 2026-09-21
 
 - Theme-aware favicon: black in light browser chrome, white in dark chrome.
