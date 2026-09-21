@@ -893,5 +893,21 @@
   "ChatGPT Web and Desktop on Mac passed OAuth, verification, note creation, reading and retries without duplicates. Add the HTTPS address prepared in Connections and complete consent. Your account must allow custom MCP connections. Qoopia has no published directory entry. Use a normal ChatGPT conversation and the selected plugin.": "ChatGPT Web и Desktop на Mac прошли OAuth, проверку подключения, создание и чтение заметок, повтор без дублей. Добавьте HTTPS-адрес из Подключений и подтвердите доступ. Аккаунт должен поддерживать свои MCP-подключения. Qoopia пока нет в публичном каталоге. Используйте обычный чат ChatGPT с выбранным плагином.",
   "For an existing Mac installation, quit Qoopia and replace Qoopia.app in Applications once. Keep Application Support and your saved data. This installs the native updater; subsequent releases use Check for Updates in the Qoopia menu. Closing the window keeps Qoopia running in the menu bar.": "Для обновления старой версии на Mac завершите Qoopia и один раз замените Qoopia.app в Applications. Сохраните Application Support и свои данные. Так устанавливается встроенный механизм обновлений; следующие версии доступны через «Проверить обновления» в меню Qoopia. Закрытие окна оставляет Qoopia работать в строке меню.",
   "ChatGPT Web / Desktop": "ChatGPT Web / Desktop",
-  "Updating Qoopia on Mac": "Обновление Qoopia на Mac"
+  "Updating Qoopia on Mac": "Обновление Qoopia на Mac",
+  "Qoopia releases: signed installers, supported platforms, release notes and limitations.": "Выпуски Qoopia: подписанные установщики, поддерживаемые платформы, заметки о выпусках и ограничения.",
+  "Cloud browser clients need reachable HTTPS or a supported tunnel.": "Облачным браузерным клиентам нужен доступный HTTPS-адрес или поддерживаемый туннель.",
+  "Subscription sign-in and permission recovery are available directly in the dashboard.": "Вход в подписку и запросы разрешений доступны прямо в дашборде.",
+  "Claude conversation history retains both your messages and the agent’s replies.": "История Claude сохраняет ваши сообщения и ответы агента.",
+  "Queued messages resume after subscription sign-in and survive a restart.": "Сообщения в очереди продолжают выполняться после входа в подписку и сохраняются при перезапуске.",
+  "Qoopia releases": "Выпуски Qoopia",
+  "Release history": "История выпусков",
+  "Supported targets are macOS Apple Silicon and Linux x64 with glibc 2.34+. Qoopia does not claim Windows, Intel Mac or universal Linux support.": "Поддерживаются macOS Apple Silicon и Linux x64 с glibc 2.34+. Поддержка Windows, Intel Mac и произвольных дистрибутивов Linux не заявлена.",
+  "Release notes — Qoopia": "Заметки о выпусках — Qoopia",
+  "Reliable Telegram agents": "Надёжная работа агентов в Telegram",
+  "Latest changes and previous versions:": "Последние изменения и предыдущие версии:",
+  "Current packages": "Актуальные установщики",
+  "Qoopia V1 launched on 14 September 2026.": "Qoopia V1 вышел 14 сентября 2026 года.",
+  "Version 5.0.4 — 17 September 2026": "Версия 5.0.4 — 17 сентября 2026 года",
+  "Releases / 17 September 2026": "Версии / 17 сентября 2026",
+  "Stop cancels the active task and queued messages.": "Stop останавливает текущую задачу и отменяет сообщения в очереди."
 }
