@@ -112,6 +112,39 @@ class ReleaseConsistencyTests(unittest.TestCase):
         self.data['release']['packages'] = []
         self.assertIn('appcast:invalid', self.issues())
 
+    def test_unmonitored_mirrors_can_no_longer_hide_stale_versions(self):
+        for name in ('public_main', 'downloads_release', 'pages_release', 'review'):
+            with self.subTest(name=name):
+                self.data[name] = {'version': '5.0.4'}
+                self.assertIn(name + ':version_mismatch', self.issues())
+                del self.data[name]
+
+    def test_downloads_copy_distinguishes_current_claim_from_upgrade_history(self):
+        self.data['downloads_readme'] = '# Qoopia\nDownload the latest Qoopia\nQoopia 5.0.1 and newer support updates.'
+        self.assertEqual(self.issues(), [])
+        self.data['downloads_readme'] = '# Qoopia 5.0.4\n'
+        self.assertIn('downloads_readme:stale_version', self.issues())
+
+    def test_review_must_be_ready_and_match_schema(self):
+        self.data['review'] = {'version': '5.0.9', 'status': 'starting', 'schema_version': 45}
+        self.assertIn('review:unexpected_state', self.issues())
+
+
+class MirrorTests(unittest.TestCase):
+    def test_mirror_compares_fresh_remote_head_and_product_version(self):
+        for remote, version, expected in [('a', '5.0.9', []), ('b', '5.0.9', ['git_mirror:stale_main']), ('a', '5.0.4', ['git_mirror:version_mismatch'])]:
+            receipt = '{"status":"OK","checked_at":100,"remote_main":"' + remote + '"}'
+            with self.subTest(remote=remote, version=version), patch.object(health.subprocess, 'check_output', side_effect=['a', '{"version":"' + version + '"}']), patch.object(health.Path, 'read_text', return_value=receipt), patch.object(health.time, 'time', return_value=101):
+                self.assertEqual(health.mirror_issues('/example', '5.0.9'), expected)
+
+    def test_stale_sync_cannot_look_healthy(self):
+        with patch.object(health.subprocess, 'check_output', return_value='a'), patch.object(health.Path, 'read_text', return_value='{"status":"OK","checked_at":100}'), patch.object(health.time, 'time', return_value=701):
+            self.assertEqual(health.mirror_issues('/example', '5.0.9'), ['git_mirror:sync_stale_or_failed'])
+
+    def test_unreachable_mirror_does_not_expose_git_error(self):
+        with patch.object(health.subprocess, 'check_output', side_effect=subprocess.CalledProcessError(128, ['git'])):
+            self.assertEqual(health.mirror_issues('/example', '5.0.9'), ['git_mirror:unavailable'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "7ccaa023ae215fce37b2ee8510ec59020d64709a",
+  "source_snapshot": "971f7d365a1483ccd3064563a9cc2c832a32a38b",
   "product_version": "5.0.10",
   "runtime_files_identical": true,
   "files": [
@@ -66,8 +66,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "56280b5042db2d9d21520f79d6ae16942eda3277b13e55013d54bc37bdec5378",
-      "bytes": 5007,
+      "sha256": "35d3b8fd58b20b173340ed48062f8de560b2c3c77c8610c35995e08a63322594",
+      "bytes": 4998,
       "source_snapshot_identical": false
     },
     {
@@ -78,7 +78,7 @@
     },
     {
       "path": "RELEASE.json",
-      "sha256": "82be99b1719bd242e5df5d7674889b357b0a01b5e38474adfd348d5b884307e9",
+      "sha256": "dfbff9f994fc4a37cb19da85a2110245203965ffa6faf4fda47cf77b14f92cac",
       "bytes": 179,
       "source_snapshot_identical": false
     },
@@ -194,6 +194,18 @@
       "path": "deploy/qoopia-release-health.timer",
       "sha256": "de7d8fe2a7640416cae34152a0f1dee1716f2112fd4647e76317f73cacb3c9fb",
       "bytes": 186,
+      "source_snapshot_identical": true
+    },
+    {
+      "path": "deploy/qoopia-source-mirror.service",
+      "sha256": "dec3ce8e639edb89bbe2f559e1361aea8992b15a7a63ef962256724ded288c99",
+      "bytes": 506,
+      "source_snapshot_identical": true
+    },
+    {
+      "path": "deploy/qoopia-source-mirror.timer",
+      "sha256": "8b893ddb621b6669c1d685699012c1312346fb81146fcdbd2a8474ba63694d1f",
+      "bytes": 158,
       "source_snapshot_identical": true
     },
     {
@@ -342,8 +354,8 @@
     },
     {
       "path": "docs/operations/release-consistency.md",
-      "sha256": "33462932f15d916f8bc8401aa4a6c8e030641c0796dcc802dad123bc429ff5f4",
-      "bytes": 3975,
+      "sha256": "8bc8b8099a4ebaa0c4f2438b73294228a1b2520dde134321382d64ef03da3c71",
+      "bytes": 5807,
       "source_snapshot_identical": true
     },
     {
@@ -1860,8 +1872,8 @@
     },
     {
       "path": "scripts/release-health.py",
-      "sha256": "f534e253fc6e779d6120e022b4d894b7b348edd1f3eebbf7c7c6acdb75a042b6",
-      "bytes": 9405,
+      "sha256": "75a3e1a47dbc08a8b67b7246ea4af715463744a6fa6c337ac08a06b6ccb01b50",
+      "bytes": 12045,
       "source_snapshot_identical": true
     },
     {
@@ -1886,6 +1898,12 @@
       "path": "scripts/site-preview.ts",
       "sha256": "55d59ce264edef00a4bdcd1ab813f5c7634b3cc1a45e4d773e1b29c03f05520d",
       "bytes": 1843,
+      "source_snapshot_identical": true
+    },
+    {
+      "path": "scripts/sync-source-mirror.py",
+      "sha256": "2d4dcedd3680c840d9f9bf05b2249017cee41176f766330939d4b81b20e25eef",
+      "bytes": 1435,
       "source_snapshot_identical": true
     },
     {
@@ -5010,8 +5028,8 @@
     },
     {
       "path": "tests/test_release_health.py",
-      "sha256": "72aff2386fc851805978ff5dc802784be6f13e4cdcb6dfb1e48287b76dff9df3",
-      "bytes": 6221,
+      "sha256": "e190954e77d1e0afaf2177a7918f650bb1752d2f7babc3b7d7e63f791a53ae33",
+      "bytes": 8574,
       "source_snapshot_identical": true
     },
     {
