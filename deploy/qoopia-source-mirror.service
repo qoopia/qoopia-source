@@ -1,0 +1,18 @@
+[Unit]
+Description=Synchronize the private Qoopia source mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=askhat
+Group=askhat
+UMask=0077
+ExecStart=/usr/bin/python3 /srv/qoopia-monitor/sync-source-mirror.py --mirror /srv/qoopia/git-mirror
+TimeoutStartSec=180
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Existing Git credential helper reads the operator's home; no credentials are copied.
+ProtectHome=read-only
+ReadWritePaths=/srv/qoopia/git-mirror

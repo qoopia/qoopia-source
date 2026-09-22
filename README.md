@@ -21,7 +21,7 @@ Qoopia gives your agents persistent memory across sessions and clients. Use your
 
 - Keep notes, files and session context accessible to your connected agents.
 - See agents, their notes and AgentComm conversations in a dashboard.
-- Choose Codex or Claude Code for **My Qoopia agent**, using your own eligible subscription. Chat in the dashboard or connect your own Telegram bot.
+- Open **Chat** from any dashboard page and choose Codex or Claude Code using your eligible subscription, or connect your own Telegram bot.
 - Connect separate environments through controlled bridges. Choose what to publish and what to import.
 - Turn approved work into reusable skill packages and share selected materials with other environments.
 

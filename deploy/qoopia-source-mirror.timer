@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep the Qoopia server source mirror current
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
