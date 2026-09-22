@@ -13,3 +13,7 @@ This repository is an independent public source history. It contains no private 
 Public adaptations: contributor instructions; source-only schema-35 upgrade fixture (checked by SHA-256); CI with read-only token and shallow checkout; Docker verification without private history; parameterized historical compose; public release notes. Historical source is included only as the audited test fixture. Private operator state, dated operational reports, private audit evidence are excluded. Two SQL-only query-plan fixtures needed by tests remain included.
 
 The manifest excludes itself and this document to avoid self-reference. Public changes must pass public CI independently. Never merge or push private Git history into this repository. A successful source build does not imply Apple signature, notarization or hosted deployment.
+
+## Discovery check update — 2026-09-22
+
+The bounded discovery checker now includes the published `/mobile` page and accepts the current six-page sitemap while rejecting unexpected routes. Only `scripts/discovery-audit.py` and `tests/test_discovery.py` are copied from canonical change `7d055b7`; their per-file hashes are updated. Runtime and installer provenance above are unchanged.
