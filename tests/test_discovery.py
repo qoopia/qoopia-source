@@ -11,9 +11,14 @@ class DiscoveryTests(unittest.TestCase):
   text='<title>Qoopia</title><meta name="description" content="Test"><meta name="robots" content="noindex"><link rel="canonical" href="https://qoopia.ai/"><h1>Qoopia</h1>/understand product source repository remains private'
   self.assertEqual({x['code'] for x in m.inspect('home',text,{})},{'FALSE_PRIVATE_SOURCE','NOINDEX'})
  def test_current_pages(self):
-  for key in ('home','docs','releases','understand','understand-ru'):
+  for key in ('home','docs','releases','understand','understand-ru','mobile'):
    file='index' if key=='home' else key
    self.assertEqual(m.inspect(key,(ROOT/f'marketing-site/{file}.html').read_text(),{}),[],key)
+ def test_current_sitemap_and_unexpected_extra(self):
+  xml=(ROOT/'marketing-site/sitemap.xml').read_text()
+  self.assertEqual(m.inspect('sitemap',xml,{}),[])
+  extra=xml.replace('</urlset>','<url><loc>https://qoopia.ai/unreviewed</loc></url></urlset>')
+  self.assertEqual(m.inspect('sitemap',extra,{})[0]['code'],'SITEMAP_ROUTES')
  def test_sitemap_rejects_private_or_extra_routes(self):
   xml='<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://auth.qoopia.ai/owner</loc></url></urlset>'
   self.assertEqual(m.inspect('sitemap',xml,{})[0]['code'],'SITEMAP_ROUTES')

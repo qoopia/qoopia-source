@@ -1632,9 +1632,9 @@
     },
     {
       "path": "scripts/discovery-audit.py",
-      "sha256": "f92b2b472701548f5dce4e6dc0673fd0ba914afa357493a928d3e2c594719a19",
-      "bytes": 8576,
-      "source_snapshot_identical": true
+      "sha256": "e5b30c5dcf5491993100d42ae8b84adf8e2e2761aba3258709c0a7ea8efa64bc",
+      "bytes": 8631,
+      "source_snapshot_identical": false
     },
     {
       "path": "scripts/discovery-content.py",
@@ -5016,9 +5016,9 @@
     },
     {
       "path": "tests/test_discovery.py",
-      "sha256": "dd110cb00e41270ed56fcf060acfb736d98661d067c3a31b3a75b0eab2a2582a",
-      "bytes": 2121,
-      "source_snapshot_identical": true
+      "sha256": "f55acf54c578d3470ad9c3c9e3c17133659500b69bcc171bd498c47fdd0ad3a9",
+      "bytes": 2462,
+      "source_snapshot_identical": false
     },
     {
       "path": "tests/test_discovery_cycle.py",

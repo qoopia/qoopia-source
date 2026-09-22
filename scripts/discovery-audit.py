@@ -8,7 +8,7 @@ from pathlib import Path
 URLS = {
     'home':'https://qoopia.ai/', 'docs':'https://qoopia.ai/docs',
     'releases':'https://qoopia.ai/releases', 'understand':'https://qoopia.ai/understand',
-    'understand-ru':'https://qoopia.ai/understand-ru',
+    'understand-ru':'https://qoopia.ai/understand-ru', 'mobile':'https://qoopia.ai/mobile',
     'robots':'https://qoopia.ai/robots.txt','sitemap':'https://qoopia.ai/sitemap.xml',
     'release':'https://qoopia.ai/release.json',
     'source-readme':'https://raw.githubusercontent.com/qoopia/qoopia-source/main/README.md',
@@ -55,7 +55,7 @@ def inspect(key,text,record):
     def issue(code,detail):findings.append({'surface':key,'code':code,'detail':detail})
     if text is None:
         issue('FETCH_UNAVAILABLE',str(record.get('http_status')));return findings
-    if key in ('home','docs','releases','understand','understand-ru'):
+    if key in ('home','docs','releases','understand','understand-ru','mobile'):
         p=Page();p.feed(text)
         if not ''.join(p.title).strip():issue('TITLE_MISSING','No raw HTML title')
         if not p.meta.get('description'):issue('DESCRIPTION_MISSING','No raw HTML description')
@@ -67,7 +67,7 @@ def inspect(key,text,record):
     if key=='sitemap':
         try:
             locs=[n.text for n in ET.fromstring(text).iter() if n.tag.endswith('}loc')]
-            expected={URLS[k] for k in ('home','docs','releases','understand','understand-ru')}
+            expected={URLS[k] for k in ('home','docs','releases','understand','understand-ru','mobile')}
             if set(locs)!=expected:issue('SITEMAP_ROUTES','Expected public route set differs')
         except ET.ParseError:issue('SITEMAP_INVALID','XML parse error')
     if key=='robots':
