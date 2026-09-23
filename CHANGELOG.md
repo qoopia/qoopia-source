@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.0.11 — 2026-09-23
+
+- Open Profile inside the signed-in dashboard on Mac, web and mobile without asking for another email sign-in. Keep workspace details and logout in the same session.
+- Keep the separate owner panel behind its own account-service authorization; no permissions or stored data change.
+
 ## 5.0.10 — 2026-09-21
 
 - Linked native agents refresh managed instructions at session start, preserving role and user edits. Stale kits are visible in protocol and health responses.

@@ -142,6 +142,7 @@
   $('#refreshBtn').onclick = () => route(true);
   function setMenu(open){document.querySelector('.sidebar').classList.toggle('open',open);$('#navToggle').setAttribute('aria-expanded',String(open));}
   $('#navToggle').onclick=()=>setMenu($('#navToggle').getAttribute('aria-expanded')!=='true');
+  $('#profileLink').onclick=e=>{if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();setMenu(false);go('profile');};
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#navToggle').getAttribute('aria-expanded')==='true'){setMenu(false);$('#navToggle').focus();}});
 
   // ---------- Conn / clock ----------
@@ -234,15 +235,20 @@
     $('#nav').querySelectorAll('.nav-item').forEach(el => {
       el.onclick=e=>{if(!el.getAttribute('data-page'))return;if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();setMenu(false);go(el.getAttribute('data-page'));};
     });
+    const profile=$('#profileLink');
+    profile.classList.toggle('active',state.page==='profile'&&!state.drill);
+    if(state.page==='profile'&&!state.drill)profile.setAttribute('aria-current','page');
+    else profile.removeAttribute('aria-current');
   }
   function pageFromHash() {
     const hash=location.hash.slice(1),page=hash==='memory'?'work':hash;
     if(hash==='my-agent'){chat?.open();return 'overview';}
+    if(page==='profile')return page;
     return NAV.some(n=>n.id===page)&&(!['work','connections'].includes(page)||localWorkspace)?page:'overview';
   }
   function go(page) {
     if(page==='my-agent'){chat?.open();return;}
-    if(!NAV.some(n=>n.id===page))return;
+    if(page!=='profile'&&!NAV.some(n=>n.id===page))return;
     try{localStorage.setItem('qoopia.dashboard.page',page);}catch{}
     history.pushState(null,'',location.pathname+location.search+'#'+(page==='work'?'memory':page));
     state={page:pageFromHash(),drill:null};Promise.resolve(route()).then(()=>{if(document.contains(main))main.focus({preventScroll:true});});
@@ -264,6 +270,7 @@
     if (state.page === 'work') return renderWorkspace();
     if (state.page === 'connections') return renderConnections();
     if (state.page === 'overview') return renderOverview();
+    if (state.page === 'profile') return renderProfile();
     if (state.page === 'agents') return renderAgentsPage();
     if (state.page === 'agentcomm') return renderAgentCommPage();
     if (state.page === 'bridges') return renderBridgesPage();
@@ -399,6 +406,19 @@
   }
 
   // ================= OVERVIEW =================
+  function renderProfile() {
+    setCrumb(QI.msg('Profile'));
+    const email=$('#ownerEmail').textContent;
+    const address=location.origin+'/dashboard';
+    const ownerPanel=email&&location.hostname==='mcp.qoopia.ai'?'<a class="btn" id="profileOwnerPanel" href="https://auth.qoopia.ai/owner?lang='+encodeURIComponent(QI.language)+'">'+esc(QI.msg('Owner dashboard'))+'</a>':'';
+    main.innerHTML='<section class="dashboard-profile"><header class="page-heading"><div><h1>'+esc(QI.msg('Profile'))+'</h1><p>'+esc(QI.msg('You are signed in to this workspace.'))+'</p></div></header>'+
+      '<dl class="profile-details"><div><dt>'+esc(QI.msg('Email address'))+'</dt><dd>'+esc(email||QI.msg('No email linked to this dashboard session.'))+'</dd></div>'+
+      '<div><dt>'+esc(QI.msg('Workspace address'))+'</dt><dd>'+esc(address)+'</dd></div></dl>'+
+      '<div class="profile-actions">'+ownerPanel+'<button class="btn" id="profileCopy" type="button">'+esc(QI.msg('Copy address'))+'</button><button class="btn" id="profileLogout" type="button">'+esc(QI.msg('Logout'))+'</button></div></section>';
+    $('#profileCopy').onclick=e=>copyText(e.currentTarget,address);
+    $('#profileLogout').onclick=()=>$('#logoutBtn').click();
+  }
+
   async function renderOverview() {
     setCrumb(QI.msg('Overview'));
     main.innerHTML='<section class="overview"><header class="page-heading"><div><h1>'+esc(QI.msg('Overview'))+'</h1><p>'+esc(QI.msg('Your agents, memory and recent work.'))+'</p></div>'+(localWorkspace?'<button class="btn primary" id="overviewChat">'+esc(QI.msg('Open chat'))+'</button>':'')+'</header><div class="pulse-grid" id="ccCards"><p class="loading">'+esc(QI.msg('Loading…'))+'</p></div><div class="cols"><section><div class="section-title">'+esc(QI.msg('Agents'))+'<a href="#agents">'+esc(QI.msg('View all'))+'</a></div><div class="agent-grid overview-agents" id="ccAgents"></div></section><section><div class="section-title">'+esc(QI.msg('Recent activity'))+'<span class="sub" id="feedSub"></span></div><div class="feed" id="ccFeed"></div></section></div><details class="system-status"><summary>'+esc(QI.msg('System status'))+'</summary><div class="health" id="ccHealth"></div></details></section>';
@@ -1342,7 +1362,6 @@
   // ---------- Boot ----------
   async function boot() {
     state = { page: 'overview', drill: null }; tickClock();
-    $('#profileLink').href='https://auth.qoopia.ai/profile?lang='+QI.language+'&dashboard='+encodeURIComponent(location.origin+'/dashboard');
     try{const r=await fetch(BASE+'/api/dashboard/profile',{credentials:'same-origin'});const p=r.ok?await r.json():null;$('#ownerEmail').textContent=p?.email||'';$('#ownerEmail').hidden=!p?.email;}catch{$('#ownerEmail').hidden=true;}
     $('#workspaceHost').textContent=location.host;
     try {
