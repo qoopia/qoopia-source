@@ -499,13 +499,31 @@ export function ownerIdentityEnabled() {
   return process.env.QOOPIA_STANDALONE === 'true' || process.env.QOOPIA_OWNER_LOGIN === 'true';
 }
 
+/**
+ * Standalone owner login is confined to the address the operator explicitly
+ * bound the server to. The default bind is loopback, so default behaviour is
+ * unchanged: only 127.0.0.1 is accepted, and only from a loopback peer. An
+ * operator who sets QOOPIA_HOST to one specific private address (a headless
+ * install reached over a private network) gets that exact host:port accepted
+ * as well, and only it. Wildcard binds are deliberately NOT trusted: they
+ * carry no operator statement about which address is reachable.
+ */
+export function standaloneOwnerLoginHosts(): string[] {
+  const bound = (process.env.QOOPIA_HOST || '').trim();
+  const hosts = ['127.0.0.1'];
+  if (bound && !['0.0.0.0', '::', '*', '127.0.0.1'].includes(bound)) hosts.push(bound);
+  return hosts.map(host => (host.includes(':') ? `[${host}]` : host) + `:${env.PORT}`);
+}
+
 /** Hosted login is opt-in, HTTPS-only, and confined to configured dashboard hosts. */
 export function ownerIdentityRequestAllowed(req: IncomingMessage, mutation = true) {
   if (!ownerIdentityEnabled()) return false;
   if (process.env.QOOPIA_STANDALONE === 'true') {
-    const host = `127.0.0.1:${env.PORT}`;
-    return req.headers.host === host && ['127.0.0.1','::ffff:127.0.0.1'].includes(req.socket?.remoteAddress ?? '') &&
-      (!mutation || req.headers.origin === `http://${host}`);
+    const hosts = standaloneOwnerLoginHosts();
+    const host = req.headers.host ?? '';
+    if (!hosts.includes(host)) return false;
+    if (hosts.length === 1 && !['127.0.0.1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress ?? '')) return false;
+    return !mutation || req.headers.origin === `http://${host}`;
   }
   if (!isHttps(req)) return false;
   return [env.PUBLIC_URL, ...env.DASHBOARD_ALLOWED_ORIGINS].some(value => {
