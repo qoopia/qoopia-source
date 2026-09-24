@@ -9,7 +9,7 @@ import { computeLogicalDatabaseHash } from '../db/v4-migrations.ts';
 import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJsonBytes, MAX_JSON_BYTES, safePath, preflightSpace } from '../utils/fs.ts';
 
 /** Schemas a unified snapshot can carry. One list: backup, retention and restore read it from here. */
-export const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46] as const;
+export const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47] as const;
 export const unifiedSnapshotSchema=(schema:number)=>(UNIFIED_SNAPSHOT_SCHEMAS as readonly number[]).includes(schema);
 
 export function inspectSnapshot(database: Database) {

@@ -7,7 +7,7 @@ import operations from './OPERATIONS.md' with {type:'text'};
 import {PRODUCT_VERSION} from '../utils/product-version.ts';
 import {hash} from '../utils/fs.ts';
 declare const QOOPIA_BUILD_SHA:string;
-export const AGENT_KIT_REVISION=4;
+export const AGENT_KIT_REVISION=5;
 export const agentKitFiles={'qoopia-protocol.md':protocol,'MCP-CONNECTIONS.md':connections,'SOUL.md':soul,'OPERATIONS.md':operations};
 /** The commit this kit was built from.
  *

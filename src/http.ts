@@ -49,6 +49,7 @@ import { PRODUCT_VERSION } from "./utils/product-version.ts";
 import { handleAuthorityRequest } from "./api/authority.ts";
 import { MAX_BODY_BYTES, MAX_UPLOAD_BYTES, getAllowedOrigin, getClientIp, json, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
 import { serveDashboard } from "./http/dashboard-static.ts";
+import { handleServiceOwner, serviceOwnerEmail } from './http/service-owner.ts';
 import { handleMcp } from "./http/mcp-route.ts";
 import {
   connectionIdentityRoot,
@@ -302,9 +303,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     try{
       const root=process.env.QOOPIA_STANDALONE==='true'?JSON.parse(process.env.QOOPIA_STANDALONE_LAYOUT!).root:env.ROOT_DIR;
       const identity=ownerIdentity(root);
-      return json(res,200,{email:identity?.ownerId===auth.agent_id?identity.email:null},req);
+      return json(res,200,{email:identity?.ownerId===auth.agent_id?identity.email:null,service_owner:!!serviceOwnerEmail(req)},req);
     }catch{return json(res,200,{email:null},req);}
   }
+  if(url==='/api/dashboard/service-owner')return handleServiceOwner(req,res);
   if(url==='/api/dashboard/identity'||url.startsWith('/api/dashboard/identity/')){
       if(!ownerIdentityEnabled())return json(res,404,{error:'Owner email login is not configured'},req);
       const route=url.slice('/api/dashboard/identity'.length);
@@ -334,7 +336,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         const artifact=readAgentArtifact(auth.agent_id,new URL(rawUrl,'http://local').searchParams.get('path')??'');
         res.writeHead(200,{'content-type':'application/octet-stream','content-length':String(artifact.bytes.length),'content-disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(artifact.name),'x-content-type-options':'nosniff','content-security-policy':"sandbox; default-src 'none'"});return res.end(artifact.bytes);
       }
-      if(method==='GET'){const query=new URL(rawUrl,'http://local').searchParams;return json(res,200,{...myAgentState(auth.agent_id,query.get('conversation')??undefined,{runBefore:query.get('runBefore')??undefined,conversationOffset:Number(query.get('conversationOffset')??0)}),telegram_setup:telegramState(auth.agent_id)},req);}
+      if(method==='GET'){const query=new URL(rawUrl,'http://local').searchParams;return json(res,200,{...myAgentState(auth.agent_id,query.get('conversation')??undefined,{runBefore:query.get('runBefore')??undefined,conversationOffset:Number(query.get('conversationOffset')??0),includeFiles:query.get('files')!=='0',runLimit:query.has('runs')?Number(query.get('runs')):undefined}),telegram_setup:telegramState(auth.agent_id)},req);}
       if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
       const body=JSON.parse((await readBodyLimited(req,32*1024)).toString());
       const result=typeof body?.action==='string'&&body.action.startsWith('telegram-')?await telegramAction(auth.agent_id,body):await submitMyAgentAction(auth.agent_id,body);

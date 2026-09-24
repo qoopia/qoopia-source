@@ -1,4 +1,4 @@
-import {test,expect,beforeAll} from 'bun:test';
+import {test,expect,beforeAll,spyOn} from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,9 +9,23 @@ import {inventory,inventoryAsync} from '../src/utils/fs.ts';
 import {db} from '../src/db/connection.ts';
 import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
-import {submitMyAgentAction,myAgentState} from '../src/services/my-agent.ts';
+import {createAgent} from '../src/admin/agents.ts';
+import {submitMyAgentAction,myAgentState,telegramAgentState,agentDirectory} from '../src/services/my-agent.ts';
 
 beforeAll(()=>runMigrations());
+test('frequent Telegram and dashboard status reads do not scan agent files',()=>{
+  const slug='status-perf-'+randomUUID();db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
+  const owner=bootstrapOwner(db,'Status fixture',undefined,slug),agent=createAgent({name:'Status agent',workspaceSlug:slug,type:'steward'});
+  db.query('INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,created_at) VALUES(?,?,?,?)').run(owner.agent_id,slug,agent.id,new Date().toISOString());
+  const root=agentDirectory(owner.agent_id);fs.mkdirSync(path.join(root,'workspace'),{recursive:true});
+  fs.writeFileSync(path.join(root,'credentials.json'),JSON.stringify({key:agent.api_key}));
+  const scan=spyOn(fs,'opendirSync').mockImplementation(()=>{throw new Error('full file scan');});
+  try{
+    expect(telegramAgentState(owner.agent_id).account).toBe(false);
+    expect(myAgentState(owner.agent_id,undefined,{includeFiles:false}).files).toBeNull();
+    expect(scan).not.toHaveBeenCalled();
+  }finally{scan.mockRestore();}
+});
 test('slow native probes leave the HTTP event loop responsive; timeout and failure refuse',async()=>{
   const server=Bun.serve({port:0,fetch:()=>new Response('ready')});
   const args=['-e','setTimeout(()=>process.stdout.write("fixture"),300)'];

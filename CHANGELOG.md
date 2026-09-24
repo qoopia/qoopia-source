@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.0.12 — 2026-09-24
+
+- Add guided remote MCP setup for Muse Code and Grok Bot while preserving existing client connections and OAuth records (schema 47).
+- Make the built-in ChatGPT/Claude agent more responsive in the dashboard and Telegram: lighter status reads, batched native output persistence, visible tool progress, lazy folder listing, and a bounded inactivity recovery path.
+- Keep Profile and the owner-only panel inside the signed-in dashboard. The owner panel remains restricted to the configured human owner account.
+- Publish protocol kit revision 5 with setup guidance for the added clients. Native iOS remains a separate TestFlight version/build.
+
 ## 5.0.11 — 2026-09-23
 
 - Open Profile inside the signed-in dashboard on Mac, web and mobile without asking for another email sign-in. Keep workspace details and logout in the same session.
@@ -10,9 +17,6 @@
 - Linked native agents refresh managed instructions at session start, preserving role and user edits. Stale kits are visible in protocol and health responses.
 - Explicit instruction refresh reports failed profiles and refuses downgrades.
 - Release schema is derived from verified signed package inventories and must agree across platforms.
-
-## Earlier public releases
-
 
 ## 5.0.9 — 2026-09-21
 
@@ -61,11 +65,51 @@
   no messages, no summary, no note. Its content is what never exists. Refusing the row was tried and
   reverted: it dropped the first batch after the switch, losing a real auto turn instead.
 
-## Earlier public releases
+## Unreleased
 
-# 5.0.3
+- Deployed to the hosted server on 2026-09-20: schema 45, release `936ab4d`. Existing agents keep
+  automatic saving; nothing was switched to «only on request».
+- A prepared save in «only on request» no longer touches the database at all — it waits in the
+  server's memory and only the owner's decision writes the note.
+- Closed the remaining ways into memory while an agent saves only on request: agent tasks,
+  `skill_upsert`, `extraction_preview`.
+- A manual period can no longer be backfilled, and the guard no longer depends on the client clock.
+- Eight existing agents connected to automatic capture in their own runtimes.
+
+- Dashboard and OAuth consent pages no longer allow inline scripts (`script-src 'self'`); the bridge invite
+  page allows its one script by hash. Inline styles remain allowed and are named as the residual exception.
+- One agent contract: `qoopia_capabilities` reports every mechanism as available, forbidden,
+  client_unsupported, needs_setup or faulty, with the reason and the action; the agent card shows the same.
+- «Только по команде»: a note from a manual agent waits for the owner's confirmation (24 h, one use);
+  `note_update`, `session_summarize` and `entity_upsert` follow the same policy.
+- A manual agent's dashboard/Telegram chat keeps no conversation text in the database.
+- A manual period can no longer be backfilled by a client that kept its transcript cursor (found by the
+  real-client canary, `scripts/memory-policy-canary.ts`).
+- Per-agent memory policy: automatic capture stays on by default; the workspace owner switches one agent to manual and back with a single command. Manual records nothing new while reading, restoring and the conversation keep working. Schema 45.
+- The release monitor requires an explicit expected schema instead of a built-in number.
+- The profile news form shows localized messages instead of raw network errors.
+- New migrations state reader/writer compatibility, the chosen recovery and the fate of later data.
+
+## 5.0.4 - 2026-09-17
+
+- Telegram pairing, pending messages and delivery receipts persist across a restart; subscription sign-in resumes waiting work automatically.
+- Stop cancels the active task and the queue.
+- Permission requests and subscription recovery are available directly in the dashboard.
+- Claude finishes writing its native transcript before completing a turn, so assistant replies survive when a conversation continues.
+- Schema 44. Details: docs/operations/unified-release-504-20260917.md.
+
+## 5.0.3
 
 - Consolidate authorization checks and preserve administrative write access consistently.
 - Split dashboard sessions and recall configuration; remove unused code and reduce runtime dependency cycles.
 - Parse runtime dependencies with TypeScript and reject new cycles.
 - Authenticate packaged inventories and require matching source commits before generating release metadata.
+
+## V4 Closeout - 2026-07-17
+
+- finalized Qoopia V4 release closeout from accepted runtime SHA `9249309c69572f42a4cc8fa838f85089c93f39eb`
+- live production runtime version at closeout remained `4.0.0-rc.1`; the `v4.0.0` release tag is created only after final independent PASS
+- closed controlled rollout through production Rings 2-6 with schema 32, green `health`/`ready`, and global V4 behavior flags enabled
+- kept `QOOPIA_V4_EVENT_OUTBOX=false` during closeout; external event egress remains separately authorized
+- recorded fresh verified production backup `pre-v4-final-20260717T224608Z`
+- published final release manifest, closeout draft, and P10/P11 checkpoints

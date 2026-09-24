@@ -8,6 +8,8 @@
   // QDASH-COOKIE: token is never stored in JS. Auth lives in an HttpOnly
   // cookie set by POST /api/dashboard/login. All fetches use credentials.
   let agentsCache = null;
+  let serviceOwner = false;
+  let ownerPage = 0;
 
   let localWorkspace = null;
   let pollFn = null;          // function called every 5s while tab visible
@@ -243,12 +245,12 @@
   function pageFromHash() {
     const hash=location.hash.slice(1),page=hash==='memory'?'work':hash;
     if(hash==='my-agent'){chat?.open();return 'overview';}
-    if(page==='profile')return page;
+    if(page==='profile'||page==='owner'&&serviceOwner)return page;
     return NAV.some(n=>n.id===page)&&(!['work','connections'].includes(page)||localWorkspace)?page:'overview';
   }
   function go(page) {
     if(page==='my-agent'){chat?.open();return;}
-    if(page!=='profile'&&!NAV.some(n=>n.id===page))return;
+    if(page!=='profile'&&!(page==='owner'&&serviceOwner)&&!NAV.some(n=>n.id===page))return;
     try{localStorage.setItem('qoopia.dashboard.page',page);}catch{}
     history.pushState(null,'',location.pathname+location.search+'#'+(page==='work'?'memory':page));
     state={page:pageFromHash(),drill:null};Promise.resolve(route()).then(()=>{if(document.contains(main))main.focus({preventScroll:true});});
@@ -271,6 +273,7 @@
     if (state.page === 'connections') return renderConnections();
     if (state.page === 'overview') return renderOverview();
     if (state.page === 'profile') return renderProfile();
+    if (state.page === 'owner') return renderOwner();
     if (state.page === 'agents') return renderAgentsPage();
     if (state.page === 'agentcomm') return renderAgentCommPage();
     if (state.page === 'bridges') return renderBridgesPage();
@@ -410,14 +413,42 @@
     setCrumb(QI.msg('Profile'));
     const email=$('#ownerEmail').textContent;
     const address=location.origin+'/dashboard';
-    const ownerPanel=email&&location.hostname==='mcp.qoopia.ai'?'<a class="btn" id="profileOwnerPanel" href="https://auth.qoopia.ai/owner?lang='+encodeURIComponent(QI.language)+'">'+esc(QI.msg('Owner dashboard'))+'</a>':'';
+    const ownerPanel=serviceOwner?'<button class="btn" id="profileOwnerPanel" type="button">'+esc(QI.msg('Owner dashboard'))+'</button>':'';
     main.innerHTML='<section class="dashboard-profile"><header class="page-heading"><div><h1>'+esc(QI.msg('Profile'))+'</h1><p>'+esc(QI.msg('You are signed in to this workspace.'))+'</p></div></header>'+
       '<dl class="profile-details"><div><dt>'+esc(QI.msg('Email address'))+'</dt><dd>'+esc(email||QI.msg('No email linked to this dashboard session.'))+'</dd></div>'+
       '<div><dt>'+esc(QI.msg('Workspace address'))+'</dt><dd>'+esc(address)+'</dd></div></dl>'+
       '<div class="profile-actions">'+ownerPanel+'<button class="btn" id="profileCopy" type="button">'+esc(QI.msg('Copy address'))+'</button><button class="btn" id="profileLogout" type="button">'+esc(QI.msg('Logout'))+'</button></div></section>';
     $('#profileCopy').onclick=e=>copyText(e.currentTarget,address);
     $('#profileLogout').onclick=()=>$('#logoutBtn').click();
+    if(serviceOwner)$('#profileOwnerPanel').onclick=()=>go('owner');
   }
+
+  async function renderOwner(page=ownerPage) {
+    setCrumb(QI.msg('Owner dashboard'));
+    main.innerHTML='<section class="dashboard-owner"><header class="page-heading"><div><h1>'+esc(QI.msg('Owner dashboard'))+'</h1></div><button class="btn" id="ownerBack" type="button">'+esc(QI.msg('Profile'))+'</button></header><div id="ownerContent" role="region" aria-live="polite"><p class="loading">'+esc(QI.msg('Loading…'))+'</p></div></section>';
+    $('#ownerBack').onclick=()=>go('profile');
+    const view=$('#ownerContent');
+    try {
+      const data=await api('/api/dashboard/service-owner?lang='+encodeURIComponent(QI.language)+'&page='+page);
+      if(state.page!=='owner'||!view.isConnected)return;
+      ownerPage=page;view.innerHTML=data.html;
+      view.onclick=e=>{
+        const link=e.target.closest?.('a[data-owner-page],a[data-owner-refresh],a[data-owner-section]');
+        if(!link)return;
+        e.preventDefault();
+        if(link.dataset.ownerPage!==undefined)return void renderOwner(Number(link.dataset.ownerPage));
+        if(link.dataset.ownerRefresh!==undefined)return void renderOwner(ownerPage);
+        view.querySelector('#'+link.dataset.ownerSection)?.scrollIntoView({behavior:'smooth',block:'start'});
+      };
+    } catch(e) {
+      if(state.page==='owner'&&view.isConnected)view.innerHTML='<p class="err">'+esc(e.message)+'</p><button class="btn" id="ownerRetry" type="button">'+esc(QI.msg('Retry'))+'</button>';
+      if($('#ownerRetry'))$('#ownerRetry').onclick=()=>renderOwner(page);
+    }
+  }
+
+  window.addEventListener('qoopia:language',()=>{
+    if(state?.page==='owner')void renderOwner(ownerPage);
+  });
 
   async function renderOverview() {
     setCrumb(QI.msg('Overview'));
@@ -1208,16 +1239,25 @@
 
   async function renderConnectionWizard(host,workspaceName,onRefresh) {
     const t=(en,ru)=>QI.pair(en,ru);
-    const names={codex:'Codex CLI',claude_code:'Claude Code',claude_desktop:'Claude Desktop',claude_web:'Claude Web',chatgpt_web:'ChatGPT Web',chatgpt_desktop:'ChatGPT Desktop'};
+    const names={codex:'Codex CLI',claude_code:'Claude Code',muse_code:'Muse Code',grok_bot:'Grok Bot',claude_desktop:'Claude Desktop',claude_web:'Claude Web',chatgpt_web:'ChatGPT Web',chatgpt_desktop:'ChatGPT Desktop'};
     const guides={
       chatgpt_web:{url:'https://chatgpt.com/plugins',text:t('Open Plugins → + → New plugin. Choose OAuth and paste this address. Developer mode may be required in Settings → Security and login.','Откройте Плагины → + → Новый плагин. Выберите OAuth и вставьте адрес. При необходимости включите режим разработчика в Настройки → Безопасность и вход.'),limit:t('Verified with ChatGPT Pro in the web client: OAuth, connection check, reading, adding and repeat requests. Availability depends on your ChatGPT plan and workspace settings. If a client check is blocked, stop and leave the connection unverified.','Проверено с ChatGPT Pro в браузере: OAuth, проверка подключения, чтение, добавление и повторные запросы. Доступность зависит от плана ChatGPT и настроек пространства. Если клиент блокирует проверку, остановите её и оставьте подключение неподтверждённым.')},
       chatgpt_desktop:{url:'https://developers.openai.com/apps-sdk/deploy/connect-chatgpt',text:t('Open Plugins in the desktop client and add this address using OAuth. If the desktop app does not offer custom plugins, use another supported client.','Откройте Плагины в настольном клиенте и добавьте адрес с OAuth. Если приложение не позволяет добавлять свои плагины, используйте другой поддерживаемый клиент.'),limit:t('OAuth, authenticated verification, reading, writing and retries without duplicates passed on Mac. Use New chat → Chat. A repeated one-use verification does not undo an earlier success. Stop any client-blocked action.','OAuth, подтверждение подключения, чтение, запись и повтор без дублей проверены на Mac. Используйте Новый чат → Чат. Повтор одноразовой проверки не отменяет прежний успех. Не повторяйте действие, заблокированное клиентом.')},
       claude_web:{url:'https://claude.ai/customize/connectors',text:t('Open Customize → Connectors → + → Add custom connector. Paste this address, add it and choose Connect. Enable it in the conversation.','Откройте Настройка → Коннекторы → + → Добавить свой коннектор. Вставьте адрес, добавьте коннектор и нажмите Подключить. Включите его в беседе.'),limit:t('Free allows one custom connector. Team/Enterprise require an organization owner to add it.','На Free доступен один собственный коннектор. В Team/Enterprise его добавляет владелец организации.')},
       claude_desktop:{url:'https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop',text:t('Add the local adapter on your Mac, or open the downloaded setup file there. Approve this connection in Qoopia, restart Claude Desktop, then verify in a new conversation.','Добавьте локальный адаптер на Mac или откройте там скачанный файл настройки. Подтвердите доступ в Qoopia, перезапустите Claude Desktop и выполните проверку в новой беседе.'),limit:t('The local adapter targets Claude Desktop on macOS. A server workspace still needs its external address to be reachable. Actual Desktop acceptance is reported separately.','Локальный адаптер предназначен для Claude Desktop на macOS. Для памяти на сервере требуется доступный внешний адрес. Приёмка реального приложения учитывается отдельно.')},
       codex:{url:'https://developers.openai.com/codex/mcp',text:t('Add this URL as a Streamable HTTP MCP server in Codex, then use its OAuth login. Complete the verification below inside Codex.','Добавьте адрес как MCP-сервер Streamable HTTP в Codex, затем выполните его OAuth-вход. Проверку ниже выполните внутри Codex.'),limit:t('MCP grants access to memory. Background model authorization remains separate.','MCP даёт доступ к памяти. Авторизация модели для фоновых задач выполняется отдельно.')},
-      claude_code:{url:'https://code.claude.com/docs/en/mcp',text:t('Add this URL as an HTTP MCP server in Claude Code. Open /mcp to sign in, then run the verification below inside Claude Code.','Добавьте адрес как HTTP MCP-сервер в Claude Code. Откройте /mcp для входа и выполните проверку ниже внутри Claude Code.'),limit:t('The client stores its own OAuth credential; never paste a token into chat.','Клиент хранит собственные данные OAuth; не вставляйте токен в чат.')}
+      claude_code:{url:'https://code.claude.com/docs/en/mcp',text:t('Add this URL as an HTTP MCP server in Claude Code. Open /mcp to sign in, then run the verification below inside Claude Code.','Добавьте адрес как HTTP MCP-сервер в Claude Code. Откройте /mcp для входа и выполните проверку ниже внутри Claude Code.'),limit:t('The client stores its own OAuth credential; never paste a token into chat.','Клиент хранит собственные данные OAuth; не вставляйте токен в чат.')},
+      muse_code:{url:'https://meta-models.github.io/muse-code-sdk/next/guides/extend/mcp-servers/',text:t('Merge the copied entry into ~/.config/muse/settings.json without replacing other settings. Start a new Muse Code process, run muse mcp login for this server, then verify from a Muse Code conversation.','Добавьте скопированную запись в ~/.config/muse/settings.json, сохранив остальные настройки. Запустите новый процесс Muse Code, выполните muse mcp login для этого сервера и проверьте вызов из беседы.'),limit:t('The setup snippet includes no secret. Muse Code stores OAuth separately. Automatic session capture requires a separate adapter and is not enabled by this MCP connection.','В фрагменте настройки нет секретов. Muse Code хранит OAuth отдельно. Автосохранение сессии требует отдельного адаптера и этим MCP-подключением не включается.')},
+      grok_bot:{url:'https://cursor.com/help/grok-bot/connect-plugins',text:t('Copy the setup request below into your cloud Grok Bot chat. Let the bot add this exact remote MCP address and complete OAuth in the client; then verify with one real tool call.','Скопируйте запрос настройки ниже в чат облачного Grok Bot. Попросите бота добавить именно этот удалённый MCP-адрес и завершите OAuth в клиенте; затем подтвердите подключение реальным вызовом.'),limit:t('Custom MCP setup varies by Grok Bot account and app version. If your bot cannot add a custom server, leave this connection unverified. Grok Bot plugins are account-wide.','Добавление своего MCP зависит от аккаунта и версии Grok Bot. Если бот не может добавить сервер, оставьте подключение неподтверждённым. Плагины Grok Bot доступны всем ботам этого аккаунта.')}
     };
     const link=(url,label)=>'<a class="connect-link" href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+label+' ↗</a>';
+    const connectionName=c=>'qoopia_'+c.id.replaceAll('-','');
+    function setupText(c){
+      const name=connectionName(c);
+      if(c.surface==='muse_code')return JSON.stringify({schema_version:1,mcpServers:{[name]:{type:'streamable-http',url:c.mcp_url}}},null,2);
+      if(c.surface==='grok_bot')return QI.resolve(t('Add a custom remote MCP server named '+name+' to this Grok Bot account: '+c.mcp_url+'. Use OAuth in the client; do not ask me to paste a token into chat. If custom MCP is unavailable, tell me instead of claiming it is connected.','Добавь в этот аккаунт Grok Bot удалённый MCP-сервер '+name+': '+c.mcp_url+'. Используй OAuth в клиенте; не проси вставлять токен в чат. Если свой MCP недоступен, скажи об этом и не объявляй подключение успешным.'));
+      return '';
+    }
     host.innerHTML='<p id="setupFeedback" role="status" aria-live="polite"></p><div id="setupConnections"></div><details id="setupNew" class="connection-add"><summary>'+t('Add an application','Добавить приложение')+'</summary><div class="work-controls"><div><label for="setupSurface">'+t('Application','Приложение')+'</label><select id="setupSurface">'+Object.entries(names).map(([id,name])=>'<option value="'+id+'">'+name+'</option>').join('')+'</select></div><div><label for="setupAccess">'+t('Access','Права')+'</label><select id="setupAccess"><option value="read">'+t('Read only','Только чтение')+'</option><option value="read_write">'+t('Read and add','Чтение и добавление')+'</option></select></div><button id="setupApply" class="primary">'+t('Prepare connection','Подготовить подключение')+'</button></div><p class="meta">'+t('A separate connection for this application. Existing agents keep their access.','Отдельное подключение для этого приложения. Доступ существующих агентов сохраняется.')+'</p><p class="meta">'+t('Read and add allows new notes, without editing or deleting existing ones.','Чтение и добавление разрешает создавать заметки, без изменения и удаления существующих.')+'</p></details><button id="setupRefresh">'+t('Refresh status','Обновить статусы')+'</button><details id="setupNetworkDetails" class="connection-options"><summary>'+t('External access settings','Настройки внешнего доступа')+'</summary><div id="setupNetwork"></div><p id="setupNetworkFeedback" role="status" aria-live="polite"></p></details>';
     const feedback=host.querySelector('#setupFeedback'),networkFeedback=host.querySelector('#setupNetworkFeedback');
     let actionBusy=false,revision=0,refreshing=false,lastResult='',lastConnections='',lastNetwork='';
@@ -1281,7 +1321,7 @@
         const title=names[c.surface]||c.surface;
         const stateLabel=ready?t('Client call verified','Вызов подтверждён'):revoked?t('Access revoked','Доступ отозван'):t('Setup unfinished','Настройка не завершена');
         const authHtml=c.surface==='claude_desktop'&&c.client_config==='on_this_computer'?'<div class="work-actions"><button data-client-auth="'+c.id+'">'+t('Approve access','Подтвердить доступ')+'</button>'+(c.client_auth?.open_url?link(c.client_auth.open_url,t('Open consent page','Открыть подтверждение')):'')+'</div>':'';
-        const setup=revoked?'':'<h3>'+t('Connect this application','Подключить это приложение')+'</h3><p>'+esc(guide.text)+'</p><p class="connection-endpoint">'+esc(c.mcp_url)+'</p><div class="work-actions">'+(c.client_config?'<button data-client-setup="'+c.id+'">'+(c.client_config==='on_this_computer'?t('Add to this computer','Добавить на этот компьютер'):t('Download setup file','Скачать файл настройки'))+'</button>':'')+'<button data-copy-connection="'+c.id+'">'+t('Copy address','Скопировать адрес')+'</button></div>'+authHtml+'<h3>'+t('Confirm a real call','Подтвердить реальный вызов')+'</h3><p>'+t('Run the verification prompt in this application, then refresh its status here.','Выполните проверочный запрос в этом приложении и обновите статус здесь.')+'</p><button data-verify-connection="'+c.id+'">'+t('Get verification prompt','Получить запрос проверки')+'</button><pre data-proof="'+c.id+'"></pre><details class="connection-help"><summary>'+t('Help and limitations','Помощь и ограничения')+'</summary><p>'+esc(guide.limit)+'</p>'+link(guide.url,t('Open instructions','Открыть инструкцию'))+'</details>';
+        const setup=revoked?'':'<h3>'+t('Connect this application','Подключить это приложение')+'</h3><p>'+esc(guide.text)+'</p><p class="connection-endpoint">'+esc(c.mcp_url)+'</p><div class="work-actions">'+(c.client_config?'<button data-client-setup="'+c.id+'">'+(c.client_config==='on_this_computer'?t('Add to this computer','Добавить на этот компьютер'):t('Download setup file','Скачать файл настройки'))+'</button>':'')+'<button data-copy-connection="'+c.id+'">'+t('Copy address','Скопировать адрес')+'</button>'+(setupText(c)?'<button data-copy-setup="'+c.id+'">'+(c.surface==='muse_code'?t('Copy config','Скопировать конфиг'):t('Copy request','Скопировать запрос'))+'</button>':'')+'</div>'+(c.surface==='muse_code'?'<p class="meta">'+t('Then run:','Затем выполните:')+' <code>'+esc('muse mcp login '+connectionName(c))+'</code></p>':'')+authHtml+'<h3>'+t('Confirm a real call','Подтвердить реальный вызов')+'</h3><p>'+t('Run the verification prompt in this application, then refresh its status here.','Выполните проверочный запрос в этом приложении и обновите статус здесь.')+'</p><button data-verify-connection="'+c.id+'">'+t('Get verification prompt','Получить запрос проверки')+'</button><pre data-proof="'+c.id+'"></pre><details class="connection-help"><summary>'+t('Help and limitations','Помощь и ограничения')+'</summary><p>'+esc(guide.limit)+'</p>'+link(guide.url,t('Open instructions','Открыть инструкцию'))+'</details>';
         return '<details class="connection-record" data-connection="'+c.id+'"'+(openIds.has(c.id)?' open':'')+'><summary><span>'+esc(title)+'</span><span class="connection-state">'+stateLabel+'</span><span class="connection-action">'+(revoked?t('Details','Подробнее'):ready?t('Manage','Управление'):t('Continue','Продолжить'))+'</span></summary><div class="connection-body"><p>'+t('Access: ','Права: ')+(c.access_mode==='read'?t('Read only','Только чтение'):t('Read and add','Чтение и добавление'))+'</p>'+
           (ready?'<p>'+t('Last verified call: ','Последний подтверждённый вызов: ')+esc(new Date(c.verified_at).toLocaleString(QI.language==='ru'?'ru-RU':'en-US'))+'. '+t('This records a successful call, not continuous availability.','Это подтверждение успешного вызова, а не постоянного присутствия в сети.')+'</p><details data-reconnect="'+c.id+'"'+(reconnectIds.has(c.id)?' open':'')+'><summary>'+t('Reconnect or verify again','Переподключить или проверить снова')+'</summary>'+setup+'</details>':setup)+
           (revoked?'':'<details class="connection-options"><summary>'+t('Remove access','Отключить доступ')+'</summary><p>'+t('Only this connection will stop working. Notes and other agents are preserved.','Перестанет работать только это подключение. Заметки и другие агенты сохранятся.')+'</p><button data-revoke-connection="'+c.id+'">'+t('Revoke access','Отозвать доступ')+'</button></details>')+'</div></details>';
@@ -1305,13 +1345,14 @@
       }catch(e){feedback.textContent=e.message;}finally{b.disabled=false;}});
       host.querySelectorAll('[data-client-auth]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{showResult(await call({action:'client-auth-start',id:b.dataset.clientAuth}));await refresh();}catch(e){feedback.textContent=e.message;}finally{b.disabled=false;}});
       host.querySelectorAll('[data-copy-connection]').forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(result.connections.find(c=>c.id===b.dataset.copyConnection).mcp_url);feedback.textContent=t('Address copied.','Адрес скопирован.');}catch{feedback.textContent=t('Select and copy the address above.','Выделите и скопируйте адрес выше.');}});
+      host.querySelectorAll('[data-copy-setup]').forEach(b=>b.onclick=async()=>{try{const c=result.connections.find(c=>c.id===b.dataset.copySetup);await navigator.clipboard.writeText(setupText(c));feedback.textContent=c.surface==='muse_code'?t('Config copied. Merge it into Muse Code user settings.','Конфиг скопирован. Добавьте его в пользовательские настройки Muse Code.'):t('Request copied. Send it to Grok Bot.','Запрос скопирован. Отправьте его Grok Bot.');}catch{feedback.textContent=t('Could not copy setup. Copy the address above and follow the instructions.','Не удалось скопировать настройку. Скопируйте адрес выше и следуйте инструкции.');}});
       host.querySelectorAll('[data-verify-connection]').forEach(b=>b.onclick=async()=>{try{const r=await call({action:'verify',id:b.dataset.verifyConnection});host.querySelector('[data-proof="'+b.dataset.verifyConnection+'"]').textContent=r.prompt;feedback.textContent=t('Run the prompt in the selected client within 10 minutes.','Выполните запрос в выбранном клиенте в течение 10 минут.');}catch(e){feedback.textContent=e.message;}});
       host.querySelectorAll('[data-revoke-connection]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await call({action:'disconnect',id:b.dataset.revokeConnection});await refresh();}catch(e){feedback.textContent=e.message;b.disabled=false;}});
     }
     host.querySelector('#setupApply').onclick=async e=>{e.target.disabled=true;try{
       const created=await call({action:'apply',...selection()});draft=null;try{sessionStorage.removeItem(draftKey);}catch{}
       await refresh();host.querySelector('#setupNew').open=false;
-      const detail=host.querySelector('[data-connection=\"'+created.connection.id+'\"]');if(detail){detail.open=true;detail.querySelector('summary').focus();}
+      const detail=host.querySelector('[data-connection="'+created.connection.id+'"]');if(detail){detail.open=true;detail.querySelector('summary').focus();}
       feedback.textContent=t('Connection prepared. Finish setup in the selected application.','Подключение подготовлено. Завершите настройку в выбранном приложении.');
     }catch(e){feedback.textContent=e.message;}finally{host.querySelector('#setupApply').disabled=false;}};
     host.querySelector('#setupRefresh').onclick=async()=>{try{await refresh(true);if(onRefresh)await onRefresh();}catch(e){feedback.textContent=e.message;}};await refresh();
@@ -1329,13 +1370,15 @@
     const modelStates={ready:t('Responding','Отвечает'),not_connected:t('Not selected','Не выбрана'),selected:t('Sign-in or check needed','Нужен вход или проверка'),auth_required:t('Sign in again','Нужно войти снова'),quota:t('Subscription limit reached','Достигнут лимит подписки'),timeout:t('Response timed out','Время ответа истекло'),unavailable:t('Unavailable','Недоступна'),invalid_response:t('Response could not be used','Не удалось обработать ответ'),busy:t('Working','Работает')};
     const active=data.clients.filter(c=>c.active_grants>0);
     const clientRow=c=>'<div class="connection-line"><strong>'+esc(c.name)+'</strong><div><span>'+t('Access granted','Доступ разрешён')+'</span><p class="meta">'+esc(lastSeen(c.last_seen))+'</p></div></div>';
-    main.innerHTML='<section class="work connections"><header><h1>'+t('Connections','Подключения')+'</h1><p>'+esc(data.workspace)+'. '+t('See existing access or add an application.','Посмотрите действующие подключения или добавьте приложение.')+'</p></header><p id="connectionsStatus" class="work-status" role="status" aria-live="polite"></p><section class="connection-summary"><div class="connection-line"><div><h2>'+t('My Qoopia agent','Мой Qoopia агент')+'</h2><p id="connectionsStewardName">'+esc(stewards||t('Not assigned','Не назначен'))+'</p></div><button id="connectionsSteward">'+t('Open agent','Открыть агента')+'</button></div><div class="connection-line"><div><h2>'+t('Memory model','Модель памяти')+'</h2><p id="connectionsModelSummary"></p><p id="connectionsModelChecked" class="meta"></p>'+'</div><button id="connectionsModel">'+t('Settings','Настройки')+'</button></div></section><section aria-labelledby="applicationTitle"><h2 id="applicationTitle">'+t('Applications','Приложения')+'</h2>'+'<div id="connectedApplications">'+active.map(clientRow).join('')+'</div><div id="connectionWizard"></div></section><details class="connection-options"><summary id="connectionsAgentCount">'+t('Agents with access','Агенты с доступом')+' ('+(data.agents||[]).length+')</summary><p>'+t('An agent already using this memory does not need a new connection.','Агенту, который уже работает с этой памятью, новое подключение не нужно.')+'</p>'+'<div id="connectionAgentList">'+(data.agents||[]).map(a=>'<div class="connection-line"><strong>'+esc(a.name)+'</strong><span class="meta">'+esc(lastSeen(a.last_seen))+'</span></div>').join('')+'</div><button id="connectionsAgents">'+t('Open agents and notes','Открыть агентов и заметки')+'</button></details><details class="connection-options"><summary>'+t('Session memory settings','Настройки памяти сессий')+'</summary><p>'+t('Configure automatic context for a local agent. This is separate from its access to notes.','Настройте автоматическое сохранение контекста локального агента. Это отдельно от его доступа к заметкам.')+'</p><div class="work-actions"><button data-memory-client="claude_code">Claude Code</button><button data-memory-client="codex">Codex</button></div></details>'+'<details id="connectionPrevious" class="connection-options"><summary>'+t('Previous authorizations','Прежние авторизации')+'</summary><p>'+t('No current OAuth authorization. These records do not determine API-key access.','Действующей OAuth-авторизации нет. Эти записи не определяют доступ по ключу агента.')+'</p><div id="connectionPreviousList"></div></details>'+'</section>';
+    main.innerHTML='<section class="work connections"><header><h1>'+t('Connections','Подключения')+'</h1><p>'+esc(data.workspace)+'. '+t('See existing access or add an application.','Посмотрите действующие подключения или добавьте приложение.')+'</p></header><p id="connectionsStatus" class="work-status" role="status" aria-live="polite"></p><section class="connection-summary"><div class="connection-line"><div><h2>'+t('My Qoopia agent','Мой Qoopia агент')+'</h2><p id="connectionsStewardName">'+esc(stewards||t('Not assigned','Не назначен'))+'</p></div><button id="connectionsSteward">'+t('Open agent','Открыть агента')+'</button></div><div class="connection-line"><div><h2>'+t('Memory model','Модель памяти')+'</h2><p id="connectionsModelSummary"></p><p id="connectionsModelChecked" class="meta"></p>'+'</div><button id="connectionsModel">'+t('Settings','Настройки')+'</button></div></section><section aria-labelledby="applicationTitle"><h2 id="applicationTitle">'+t('Applications','Приложения')+'</h2>'+'<div id="connectedApplications">'+active.map(clientRow).join('')+'</div><div id="existingGrokBot"></div><div id="connectionWizard"></div></section><details class="connection-options"><summary id="connectionsAgentCount">'+t('Agents with access','Агенты с доступом')+' ('+(data.agents||[]).length+')</summary><p>'+t('An agent already using this memory does not need a new connection.','Агенту, который уже работает с этой памятью, новое подключение не нужно.')+'</p>'+'<div id="connectionAgentList">'+(data.agents||[]).map(a=>'<div class="connection-line"><strong>'+esc(a.name)+'</strong><span class="meta">'+esc(lastSeen(a.last_seen))+'</span></div>').join('')+'</div><button id="connectionsAgents">'+t('Open agents and notes','Открыть агентов и заметки')+'</button></details><details class="connection-options"><summary>'+t('Session memory settings','Настройки памяти сессий')+'</summary><p>'+t('Configure automatic context for a local agent. This is separate from its access to notes.','Настройте автоматическое сохранение контекста локального агента. Это отдельно от его доступа к заметкам.')+'</p><div class="work-actions"><button data-memory-client="claude_code">Claude Code</button><button data-memory-client="codex">Codex</button></div></details>'+'<details id="connectionPrevious" class="connection-options"><summary>'+t('Previous authorizations','Прежние авторизации')+'</summary><p>'+t('No current OAuth authorization. These records do not determine API-key access.','Действующей OAuth-авторизации нет. Эти записи не определяют доступ по ключу агента.')+'</p><div id="connectionPreviousList"></div></details>'+'</section>';
     function overview(next){
       $('#connectionsStewardName').textContent=next.stewards.map(a=>a.name).join(', ')||t('Not assigned','Не назначен');
       const model=next.memory_model||{state:'not_connected'};
       $('#connectionsModelSummary').textContent=(model.model==='claude-haiku-4-5'?'Claude · Haiku':model.model==='gpt-5.6-luna'?'ChatGPT · Luna':model.model||t('Optional','По желанию'))+' · '+(modelStates[model.state]||t('Check needed','Нужна проверка'));
       $('#connectionsModelChecked').textContent=model.checked_at?t('Last response check: ','Последняя проверка ответа: ')+date(model.checked_at):'';
       $('#connectedApplications').innerHTML=next.clients.filter(c=>c.active_grants>0).map(clientRow).join('');
+      const grok=(next.agents||[]).find(a=>/^grok[\s_-]?bot$/i.test(a.name));
+      $('#existingGrokBot').innerHTML=grok?'<div class="connection-line"><strong>'+esc(grok.name)+'</strong><div><span>'+t('Already connected as an agent. No new setup is needed.','Уже подключён как агент. Повторная настройка не нужна.')+'</span><p class="meta">'+esc(lastSeen(grok.last_seen))+'</p></div></div>':'';
       const inactive=next.clients.filter(c=>!c.active_grants);$('#connectionPrevious').hidden=!inactive.length;
       $('#connectionPreviousList').innerHTML=inactive.map(c=>'<p>'+esc(c.name)+' · '+esc(lastSeen(c.last_seen))+'</p>').join('');
       $('#connectionsAgentCount').textContent=t('Agents with access','Агенты с доступом')+' ('+(next.agents||[]).length+')';
@@ -1362,7 +1405,7 @@
   // ---------- Boot ----------
   async function boot() {
     state = { page: 'overview', drill: null }; tickClock();
-    try{const r=await fetch(BASE+'/api/dashboard/profile',{credentials:'same-origin'});const p=r.ok?await r.json():null;$('#ownerEmail').textContent=p?.email||'';$('#ownerEmail').hidden=!p?.email;}catch{$('#ownerEmail').hidden=true;}
+    try{const r=await fetch(BASE+'/api/dashboard/profile',{credentials:'same-origin'});const p=r.ok?await r.json():null;serviceOwner=!!p?.service_owner;$('#ownerEmail').textContent=p?.email||'';$('#ownerEmail').hidden=!p?.email;}catch{serviceOwner=false;$('#ownerEmail').hidden=true;}
     $('#workspaceHost').textContent=location.host;
     try {
       const response=await fetch(BASE+'/api/dashboard/memory',{credentials:'same-origin'});

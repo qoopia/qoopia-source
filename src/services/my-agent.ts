@@ -33,7 +33,7 @@ type Conversation={provider:AgentProvider;id:string;owner_id:string;title:string
 /** `memory` is set only for a turn that began while its agent saved automatically. */
 type Run={id:string;conversation_id:string;request_id:string;prompt:string;answer:string;state:string;native_turn_id:string|null;error:string|null;memory?:{workspace_id:string;agent_id:string}};
 type Approval={id:string;rpcId:number|string;method:string;params:any;expires:number;runId:string};
-type Live={rpc:CodexAppServer|ClaudeAgentRuntime;provider:AgentProvider;run?:Run;rawAnswer?:string;approvals:Map<string,Approval>;progress:string;account?:boolean;login?:{url:string;code?:string};ready:Set<string>};
+type Live={rpc:CodexAppServer|ClaudeAgentRuntime;provider:AgentProvider;run?:Run;rawAnswer?:string;answerFlushTimer?:ReturnType<typeof setTimeout>;lastActivityAt?:number;approvals:Map<string,Approval>;progress:string;account?:boolean;login?:{url:string;code?:string};ready:Set<string>};
 const live=new Map<string,Live>(),starting=new Map<string,Promise<Live>>(),busy=new Set<string>();
 const initializing=new Map<string,CodexAppServer|ClaudeAgentRuntime>();
 const stopEpoch=new Map<string,number>(),stopping=new Map<string,Promise<void>>();
@@ -158,12 +158,22 @@ function updateRun(run:Run) {
     .run(keep?run.prompt:'',keep?run.answer:'',run.state,run.native_turn_id,run.error,now(),run.id);
 }
 function finish(session:Live,state:string,error:string|null=null) {
+  if(session.answerFlushTimer)clearTimeout(session.answerFlushTimer);
+  session.answerFlushTimer=undefined;
   if(session.run){
-    const run=session.run;run.state=state;run.error=error;updateRun(run);
+    const run=session.run;if(session.rawAnswer!==undefined)run.answer=safeAgentAnswer(session.rawAnswer);
+    run.state=state;run.error=error;updateRun(run);
     db.query('UPDATE qoopia_telegram_inbox SET state=? WHERE run_id=?').run(state==='completed'?'done':state==='interrupted'?'cancelled':'failed',run.id);
     if(run.answer&&keeps(run))try{for(let i=0;i<run.answer.length;i+=90_000)saveMessage({...run.memory!,session_id:run.conversation_id,role:'assistant',content:run.answer.slice(i,i+90_000),ingest_uuid:run.id+':answer:'+i});}catch{run.error='Conversation saved; memory indexing needs attention.';updateRun(run);}
   }
-  session.run=undefined;session.rawAnswer='';session.approvals.clear();session.progress='';
+  session.run=undefined;session.rawAnswer='';session.lastActivityAt=undefined;session.approvals.clear();session.progress='';
+}
+/** A native turn with no events for 15 minutes is stuck, not an open-ended spinner. */
+export function expireIdleMyAgentRuns(at=Date.now()){
+  for(const session of live.values())if(session.run&&session.run.state!=='approval'&&session.lastActivityAt&&at-session.lastActivityAt>15*60_000){
+    finish(session,'failed','The agent stopped responding for 15 minutes. Start a new turn to continue.');
+    void session.rpc.stop().catch(()=>{});
+  }
 }
 function prepareAgentProfile(ownerId:string,provider:AgentProvider) {
   const folder=agentDirectory(ownerId),profile=privateDirectory(path.join(folder,provider));
@@ -199,10 +209,14 @@ async function runtime(ownerId:string):Promise<Live> {
       if(p.threadId!==c.native_thread_id)return;
       if(p.turnId&&session.run.native_turn_id&&p.turnId!==session.run.native_turn_id)return;
       if(message.method==='item/agentMessage/delta'){
-        session.rawAnswer=((session.rawAnswer??'')+String(p.delta??'')).slice(0,256_000);session.run.answer=safeAgentAnswer(session.rawAnswer);updateRun(session.run);
+        session.lastActivityAt=Date.now();
+        session.rawAnswer=((session.rawAnswer??'')+String(p.delta??'')).slice(0,256_000);
+        // Native providers emit token-sized chunks. Persist at a UI-friendly cadence,
+        // then flush every last chunk in finish(), including on interruption.
+        if(!session.answerFlushTimer){session.answerFlushTimer=setTimeout(()=>{session.answerFlushTimer=undefined;if(session.run){session.run.answer=safeAgentAnswer(session.rawAnswer??'');updateRun(session.run);}},250);session.answerFlushTimer.unref();}
       }
-      if(message.method==='item/started')session.progress=String(p.item?.type??'working');
-      if(message.method==='turn/started'){session.run.native_turn_id=p.turn?.id??session.run.native_turn_id;session.run.state='running';updateRun(session.run);}
+      if(message.method==='item/started'){session.lastActivityAt=Date.now();session.progress=String(p.item?.type??'working');}
+      if(message.method==='turn/started'){session.lastActivityAt=Date.now();session.run.native_turn_id=p.turn?.id??session.run.native_turn_id;session.run.state='running';updateRun(session.run);}
       if(message.method==='turn/completed')finish(session,p.turn?.status==='completed'?'completed':p.turn?.status==='interrupted'?'interrupted':'failed',p.turn?.error?'The model could not finish this task. Check your account and try again.':null);
     });
     rpc.on('request',(message:any)=>{
@@ -216,14 +230,14 @@ async function runtime(ownerId:string):Promise<Live> {
     initializing.set(ownerId,rpc);
     try{await rpc.start();if(epoch!==(stopEpoch.get(ownerId)??0)){await rpc.stop();throw new QoopiaError('CONFLICT','Agent start was cancelled');}}catch(error){void rpc.stop().catch(()=>{});throw error;}finally{if(initializing.get(ownerId)===rpc)initializing.delete(ownerId);}
     live.set(ownerId,session);
-    if(!accessTimer){accessTimer=setInterval(()=>{for(const [owner,current] of live){try{credentials(owner);if([...current.approvals.values()].some(a=>a.expires<Date.now()))current.rpc.stop();}catch{current.rpc.stop();}}},2000);accessTimer.unref();}
+    if(!accessTimer){accessTimer=setInterval(()=>{for(const [owner,current] of live){try{credentials(owner);if([...current.approvals.values()].some(a=>a.expires<Date.now()))current.rpc.stop();}catch{current.rpc.stop();}}expireIdleMyAgentRuns();},2000);accessTimer.unref();}
     try{const result=await rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');}catch{session.account=false;}
     if(session.account&&live.get(ownerId)===session)resumeTelegramAfterLogin(ownerId);
     return session;
   })();
   starting.set(ownerId,start);try{return await start;}finally{starting.delete(ownerId);}
 }
-export function myAgentState(ownerId:string,conversationId?:string,paging:{runBefore?:string;conversationOffset?:number}={}) {
+export function myAgentState(ownerId:string,conversationId?:string,paging:{runBefore?:string;conversationOffset?:number;includeFiles?:boolean;runLimit?:number}={}) {
   const auth=agentOwner(ownerId),settings=agentSettings(ownerId),session=live.get(ownerId);
   if(session&&[...session.approvals.values()].some(a=>a.expires<Date.now()))session.rpc.stop();
   const steward=db.query("SELECT id,name FROM agents WHERE workspace_id=? AND active=1 AND type='steward'").get(auth.workspace_id);
@@ -236,15 +250,26 @@ export function myAgentState(ownerId:string,conversationId?:string,paging:{runBe
   if(selected)conversation(ownerId,selected);
   const before=paging.runBefore&&selected?db.query('SELECT created_at,id FROM qoopia_agent_runs WHERE id=? AND conversation_id=?').get(paging.runBefore,selected) as {created_at:string;id:string}|null:null;
   if(paging.runBefore&&!before)throw new QoopiaError('NOT_FOUND','History cursor not found');
-  const runs=selected?db.query('SELECT id,prompt,answer,state,error,created_at FROM qoopia_agent_runs WHERE conversation_id=?'+(before?' AND (created_at<? OR (created_at=? AND id<?))':'')+' ORDER BY created_at DESC,id DESC LIMIT 51')
-    .all(...(before?[selected,before.created_at,before.created_at,before.id]:[selected])) as (Run&{created_at:string})[]:[];
-  const hasOlderRuns=runs.length>50;if(hasOlderRuns)runs.pop();runs.reverse();
+  const runLimit=Math.max(1,Math.min(50,Math.trunc(paging.runLimit??50)||50));
+  const runs=selected?db.query('SELECT id,prompt,answer,state,error,created_at FROM qoopia_agent_runs WHERE conversation_id=?'+(before?' AND (created_at<? OR (created_at=? AND id<?))':'')+' ORDER BY created_at DESC,id DESC LIMIT ?')
+    .all(...(before?[selected,before.created_at,before.created_at,before.id]:[selected]),runLimit+1) as (Run&{created_at:string})[]:[];
+  const hasOlderRuns=runs.length>runLimit;if(hasOlderRuns)runs.pop();runs.reverse();
   return {model:settings?modelPreference(agentDirectory(ownerId),settings.provider)?.model??null:null,operation:setupOperations.get(ownerId)??null,provider:settings?.provider??'codex',selected_provider:selected?conversation(ownerId,selected).provider:null,access_error:accessError,configured:!!settings,enabled:!!settings?.enabled,steward,can_adopt:!settings&&!!adoptableConnection(ownerId),adoptable_providers:!settings?(['codex','claude_code'] as const).filter(p=>adoptableConnection(ownerId,p)):[],channel:settings?.channel??'dashboard',running:!!session&&!accessError,account:!accessError&&(session?.account??false),login:session?.login??null,
     telegram:{username:settings?.telegram_username,verified:!!settings?.telegram_verified,linked:!!settings?.telegram_user_id},
-    conversations,selected,selected_title:selected?conversation(ownerId,selected).title:null,more_conversations:moreConversations,next_conversation_offset:offset+100,has_older_runs:hasOlderRuns,files:settings?artifacts(ownerId):[],working_directory:settings?path.join(agentDirectory(ownerId),'workspace'):null,
+    conversations,selected,selected_title:selected?conversation(ownerId,selected).title:null,more_conversations:moreConversations,next_conversation_offset:offset+100,has_older_runs:hasOlderRuns,files:paging.includeFiles===false?null:settings?artifacts(ownerId):[],working_directory:settings?path.join(agentDirectory(ownerId),'workspace'):null,
     runs:runs.map(run=>run.prompt?run:{...run,...(unsaved.get(run.id)??{unsaved:true})}),
     active_conversation:session?.run?.conversation_id??null,progress:session?.progress??'',
     approvals:session?[...session.approvals.values()].map(a=>({id:a.id,method:a.method,params:a.params,expires:a.expires,run_id:a.runId})):[]};
+}
+/** Telegram checks this every second. Do not scan files or load chat history for a status check. */
+export function telegramAgentState(ownerId:string) {
+  const settings=agentSettings(ownerId),session=live.get(ownerId);
+  if(session&&[...session.approvals.values()].some(a=>a.expires<Date.now()))void session.rpc.stop();
+  let access=true;
+  if(settings?.enabled)try{credentials(ownerId);}catch{access=false;void session?.rpc.stop();}
+  return {running:access&&!!session,account:access&&(session?.account??false),
+    active_conversation:access?session?.run?.conversation_id??null:null,
+    approvals:access&&session?[...session.approvals.values()].map(a=>({id:a.id,method:a.method,params:a.params,expires:a.expires,run_id:a.runId})):[]};
 }
 const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('setup'),provider:z.enum(['codex','claude_code']).default('codex'),acceptPermissions:z.literal(true)}).strict(),
@@ -370,7 +395,7 @@ export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{genera
       }
       if(run.memory)saveMessage({...run.memory,session_id:c.id,role:'user',content:input.text,ingest_uuid:run.id+':prompt'});
       db.query('UPDATE sessions SET title=? WHERE id=? AND workspace_id=?').run(c.title,c.id,settings.workspace_id);
-    }).immediate();if(!run.memory)holdUnsaved(run);session.run=run;session.rawAnswer='';
+    }).immediate();if(!run.memory)holdUnsaved(run);session.run=run;session.rawAnswer='';session.lastActivityAt=Date.now();
     try {
       const model=await turnModel(agentDirectory(ownerId),session.provider,session.rpc);
       const params={...(model?{model}:{}),cwd:path.join(agentDirectory(ownerId),'workspace'),approvalPolicy:'on-request',sandbox:'workspace-write',developerInstructions:conversationInstructions(credentials(ownerId).settings,c.id,path.join(agentDirectory(ownerId),session.provider))};

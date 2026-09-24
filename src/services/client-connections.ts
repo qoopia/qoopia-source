@@ -53,7 +53,7 @@ function status(row:Row) {
     client_config:row.surface==='codex'||row.surface==='claude_code'||row.surface==='claude_desktop'?(process.env.QOOPIA_STANDALONE_LAYOUT&&(row.surface!=='claude_desktop'||process.platform==='darwin')?'on_this_computer':'download_file'):null,
     ...(row.surface==='claude_desktop'&&layout&&process.platform==='darwin'&&!revoked?{client_auth:desktopAuthStatus(JSON.parse(layout).root,{
       format:'qoopia-client-connection/1',connection_id:row.id,workspace_id:row.workspace_id,surface:row.surface,access_mode:row.access_mode,mcp_url:connectionResource(row.id)})}:{}),
-    next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':'Add the MCP URL in the selected client, consent, then run the verification prompt.'};
+    next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then run the verification prompt in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then run the verification prompt in a Bot conversation.':'Add the MCP URL in the selected client, consent, then run the verification prompt.'};
 }
 export function connectionAction(ownerId:string,raw:unknown) {
   const input=connectionActionSchema.parse(raw),owner=localOwner(db,ownerId);authorize(db,owner,'owner');

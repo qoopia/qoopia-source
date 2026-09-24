@@ -126,7 +126,7 @@ def sql_source(store,file,source):
             previous={json.loads(r[0])['state'] for r in store.db.execute("SELECT dimensions FROM latest_observations WHERE source=? AND metric='relay_members'",(source,))}
             for state in set(groups)|previous:store.observe(source,'relay_members',groups.get(state,0),{'state':state})
         else:
-            for surface in ['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','codex','claude_code']:
+            for surface in ['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','codex','claude_code','muse_code','grok_bot']:
                 for state in ['awaiting_client','verified','revoked']:
                     n=db.execute('SELECT count(*) FROM client_connections WHERE surface=? AND state=?',(surface,state)).fetchone()[0]
                     store.observe(source,'client_connections',n,{'surface':surface,'state':state})

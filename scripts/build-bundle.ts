@@ -125,7 +125,7 @@ for(const member of Object.keys(inventory(out)))fs.chmodSync(path.join(out,membe
 // prove the final artifact can launch its managed transport child.
 const tunnelSmoke=spawnSync(path.join(out,'assets/native/cloudflared'),['--version'],{encoding:'utf8',timeout:10_000,env:{PATH:'/usr/bin:/bin'}});
 if(tunnelSmoke.status!==0||!tunnelSmoke.stdout.startsWith('cloudflared version '+tunnel.provenance.version+' '))throw new Error('Final packaged tunnel is not executable');
-const manifest=bundleSchema.parse({format:'qoopia-bundle/1',version:pkg.version,horizon:'QOOPIA-V-1',api_version:1,build_sha:git.stdout.trim(),source_digest:sourceDigest,target,bun_version:Bun.version,schema_min:32,schema_max:46,signing:fixture?'test-fixture':'publisher',publisher_key_sha256:hash(publicPem),platform_signing:fixture?'NOT_RUN':'externally_verified',members:inventory(out)});
+const manifest=bundleSchema.parse({format:'qoopia-bundle/1',version:pkg.version,horizon:'QOOPIA-V-1',api_version:1,build_sha:git.stdout.trim(),source_digest:sourceDigest,target,bun_version:Bun.version,schema_min:32,schema_max:47,signing:fixture?'test-fixture':'publisher',publisher_key_sha256:hash(publicPem),platform_signing:fixture?'NOT_RUN':'externally_verified',members:inventory(out)});
 const raw=JSON.stringify(manifest),rawBytes=Buffer.from(raw),signature=fixture?sign(null,rawBytes,privateKey!):runPublisherSigner(value('--signer')!,rawBytes,publicPem);
 durableWrite(path.join(out,'manifest.json'),raw);durableWrite(path.join(out,'manifest.sig'),signature);
 verifyBundle(out,publicPem,fixture);

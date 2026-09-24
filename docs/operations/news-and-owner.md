@@ -2,6 +2,8 @@
 
 The account service provides `/owner` for the single account ID configured in `QOOPIA_OWNER_ACCOUNT_ID`. It reuses the existing confirmed profile session: anonymous requests return 401, other accounts return 403, and responses use `Cache-Control: no-store`. There is no public analytics API, bearer key in a URL, or CSV export of all addresses. `/profile` shows the owner link only to that account.
 
+The signed-in service owner can also open **Profile → Owner dashboard** inside the memory dashboard. This uses its existing owner-login `qoopia_dash` cookie; the browser never receives an account-service credential. An ordinary API-key dashboard cookie is insufficient. The memory server requires the exact human owner agent ID, its saved email binding and a private shared bridge secret. It then requests the read-only panel over host loopback; the account service checks the configured owner account ID and matching email before rendering. Other dashboard sessions receive 403, and both responses are `no-store`. The standalone `/owner` URL keeps its own account-session check for direct visits.
+
 The dashboard separates current account counts, subscriptions and valid profile sessions from periodically collected download and event counters. A valid session does not mean someone is online. GitHub downloads count files, repetitions and automation; two release-verification downloads are annotated in the analytical store. These are not unique people or finished installations. Sign-in events include historical QA; provider acceptance is not inbox delivery or reading.
 
 ## Data and consent
@@ -26,7 +28,18 @@ QOOPIA_OWNER_ANALYTICS_FILE=/owner-analytics/latest.json
 QOOPIA_PUBLIC_RELEASE_TAG=<current published installer tag>
 QOOPIA_NEWS_FROM=Qoopia <news@mail.qoopia.ai>
 QOOPIA_NEWS_POSTAL_ADDRESS=<owner-approved public physical postal address>
+QOOPIA_OWNER_BRIDGE_SECRET=<same private random secret on account and memory services, at least 32 bytes>
 ```
+
+Memory-service configuration:
+
+```
+QOOPIA_SERVICE_OWNER_AGENT_ID=<exact active human owner agent ID in this installation>
+QOOPIA_OWNER_BRIDGE_SECRET=<same private random secret as the account service>
+QOOPIA_OWNER_BRIDGE_PORT=3740
+```
+
+Both containers must share the host loopback network. Keep the bridge port bound to `127.0.0.1`; do not expose it publicly. Provision the ID from the verified local owner binding and check that its email equals the configured account owner's email. Missing or mismatched configuration hides the in-dashboard entry and denies the API. Rotate the bridge secret on both services together. The route is read-only and does not grant owner control to an agent, steward or another account.
 
 Keep these in the private operator environment. Resolve the owner UUID from an explicitly verified owner account; never select the first account or allow visitors to claim ownership. No privileged account ID or address belongs in the public source. Preserve all existing sign-in and Cloudflare settings.
 

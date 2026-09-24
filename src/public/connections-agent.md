@@ -12,7 +12,7 @@ not qualified. Record real client, version, plan and clean OS evidence separatel
    isolated installation; omitting it uses the platform's installed root.
 2. Save a selection JSON with `surface`, `access_mode` and a stable `request_key`.
    Surfaces: `chatgpt_web`, `chatgpt_desktop`, `claude_web`, `claude_desktop`,
-   `codex`, `claude_code`. Access: `read` or `read_write`. `read_write` permits
+   `codex`, `claude_code`, `muse_code`, `grok_bot`. Access: `read` or `read_write`. `read_write` permits
    adding new memory records; it does not expose `note_update` or `note_delete`.
    Do not switch to another connection when a tool is unavailable. Optional `transport` is
    `auto` (default), `local` (native HTTP clients on the installation machine),
@@ -46,6 +46,12 @@ not qualified. Record real client, version, plan and clean OS evidence separatel
    A pending handoff lasts ten minutes; after restart, start a fresh handoff.
    Restart Claude Desktop after approval and verify in a real conversation.
    Saved OAuth credentials alone are not client qualification.
+   First check Agents with access: an existing Grok Bot agent needs no new connection. Muse Code uses a `streamable-http` entry merged into its user `settings.json`
+   without replacing existing settings, followed by a new Muse process and
+   `muse mcp login NAME`. Grok Bot can be asked in chat to add the exact remote
+   MCP URL; availability varies by account and client version. Neither has an
+   automatic session-capture adapter in this release. If the client cannot add
+   the server, leave the connection unverified.
 7. `connections verify --input /absolute/id.json` returns a one-use, ten-minute
    prompt. Run it inside the selected real client. `status` / `resume` preserve
    progress. `CLIENT_CALL_VERIFIED` is evidence of an authenticated call, not

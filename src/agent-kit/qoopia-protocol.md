@@ -25,7 +25,7 @@
 
 ## Подключение и переподключение MCP
 
-Прочитай `qoopia/MCP-CONNECTIONS.md` из своего комплекта или раздел connections инструмента qoopia_protocol. Различай ChatGPT Web/Desktop, Claude.ai, Claude Desktop, Codex и Claude Code: это разные поверхности и конфиги. Подписка модели, OAuth доступа к Qoopia и локальный human owner — разные учётные связи.
+Прочитай `qoopia/MCP-CONNECTIONS.md` из своего комплекта или раздел connections инструмента qoopia_protocol. Различай ChatGPT Web/Desktop, Claude.ai, Claude Desktop, Codex, Claude Code, Muse Code и Grok Bot: это разные поверхности и конфиги. Подписка модели, OAuth доступа к Qoopia и локальный human owner — разные учётные связи.
 
 Перед изменением: определить установку, выбрать клиента и read/read_write, посмотреть текущую запись и план; сохранить чужие настройки; применить только подготовленное изменение. После входа пользователя выполнить проверочный вызов из самого выбранного клиента. Не выставлять verified вручную.
 

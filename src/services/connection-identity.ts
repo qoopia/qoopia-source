@@ -22,6 +22,8 @@ export const surfaces = [
   "claude_desktop",
   "codex",
   "claude_code",
+  "muse_code",
+  "grok_bot",
 ] as const;
 
 export const connectionId = z.string().uuid();
