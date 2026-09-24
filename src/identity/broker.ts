@@ -10,6 +10,7 @@ import {MAX_RPC} from '../bridges/protocol.ts';
 import {deviceRegistry, type DeviceRegistryOptions} from './device-registry.ts';
 import {cloudflareTunnels} from './cloudflare.ts';
 import {profilePortal} from './profile.ts';
+import {internalOwnerBridge} from './owner-bridge.ts';
 import {accountHandoff} from './account-handoff.ts';
 import {accounts} from './account.ts';
 import {newsletter,unsubscribePage} from './newsletter.ts';
@@ -26,7 +27,7 @@ export function loginEmail(value: unknown): string {
 }
 export type LoginIdentity = {email: string; googleSub?: string};
 type Flow = {language:LoginLanguage;id:string;challenge:string;expires:number;email:string|null;google_sub:string|null;state:string|null;pkce:string|null;mail_token:string|null;confirmed:number;device_peer:string|null};
-type Config = {owner?:OwnerOptions;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
+type Config = {owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
 
 /** Separate sign-in service: it never receives workspace content or model credentials. */
 export function loginBroker(db: Database, config: Config, request: typeof fetch = fetch) {
@@ -41,6 +42,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   if(!(db.query('PRAGMA table_info(login_requests)').all() as {name:string}[]).some(c=>c.name==='language'))db.exec("ALTER TABLE login_requests ADD COLUMN language TEXT NOT NULL DEFAULT 'en'");
   const identify=accounts(db),news=newsletter(db);
   const handoff=accountHandoff(db);
+  const ownerBridge=internalOwnerBridge(db,config.owner??{},config.ownerBridgeSecret);
   const devices=config.devices?deviceRegistry(db,origin,config.devices):undefined;
   const headers = {'cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff','x-frame-options':'DENY'};
   const json = (status: number, value: unknown) => Response.json(value,{status,headers});
@@ -78,6 +80,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   }
   const handler=async (req: Request, clientIp: string): Promise<Response> => {
     const url = new URL(req.url), now = Date.now();
+    if(url.pathname==='/internal/owner')return ownerBridge(req);
     // HTTPS terminates at Cloudflare; the service itself listens on loopback only.
     if ((req.headers.get('host')??url.host) !== new URL(origin).host) return json(403,{error:'Host refused'});
     db.query('DELETE FROM login_requests WHERE expires<=?').run(now);
@@ -195,6 +198,7 @@ if (import.meta.main) {
   process.umask(0o077);
   const config:Config={origin:process.env.QOOPIA_LOGIN_ORIGIN??'https://auth.qoopia.ai',resendKey:process.env.RESEND_API_KEY??'',from:process.env.QOOPIA_LOGIN_FROM??'Qoopia <login@mail.qoopia.ai>',googleClientId:process.env.GOOGLE_CLIENT_ID??'',googleClientSecret:process.env.GOOGLE_CLIENT_SECRET??''};
   config.owner={accountId:process.env.QOOPIA_OWNER_ACCOUNT_ID,analyticsFile:process.env.QOOPIA_OWNER_ANALYTICS_FILE,releaseTag:process.env.QOOPIA_PUBLIC_RELEASE_TAG,postalAddress:process.env.QOOPIA_NEWS_POSTAL_ADDRESS};
+  config.ownerBridgeSecret=process.env.QOOPIA_OWNER_BRIDGE_SECRET;
   if(process.env.QOOPIA_CF_TOKEN_FILE){
     const fd=openSync(process.env.QOOPIA_CF_TOKEN_FILE,constants.O_RDONLY|constants.O_NOFOLLOW);
     try{

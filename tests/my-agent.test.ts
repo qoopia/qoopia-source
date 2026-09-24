@@ -65,6 +65,7 @@ test('shared channel selection and paged history include turn 201; artifacts can
   for(let i=0;i<201;i++)db.query('INSERT INTO qoopia_agent_runs(id,conversation_id,request_id,prompt,answer,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run('history-'+i,a,'req-'+i,'Question '+i,'Answer '+i,'completed',new Date(1700000000000+i*1000).toISOString(),'now');
   await myAgentAction(owner.agent_id,{action:'select-conversation',conversation:a});
   const state=myAgentState(owner.agent_id);expect(state.selected).toBe(a);expect(state.runs.at(-1)?.prompt).toBe('Question 200');expect(state.runs.length).toBe(50);expect(state.has_older_runs).toBe(true);
+  const compact=myAgentState(owner.agent_id,a,{runLimit:10,includeFiles:false});expect(compact.runs).toHaveLength(10);expect(compact.runs.at(-1)?.prompt).toBe('Question 200');expect(compact.has_older_runs).toBe(true);expect(compact.files).toBeNull();
   const older=myAgentState(owner.agent_id,a,{runBefore:state.runs[0]!.id});expect(older.runs.at(-1)?.prompt).toBe('Question 150');
   expect(()=>myAgentState(owner.agent_id,b,{runBefore:state.runs[0]!.id})).toThrow('cursor');
   const workspace=privateDirectory(path.join(folder,'workspace'));durableWrite(path.join(workspace,'result.txt'),'Synthetic result');
@@ -108,7 +109,7 @@ test('managed turn approval, answer persistence and duplicate send are one trans
     const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
     for await(const line of readline.createInterface({input:process.stdin})){
       const m=JSON.parse(line);if(m.method==='initialized')continue;
-      if(m.id===900){send({method:'item/agentMessage/delta',params:{threadId:'fixture-thread',turnId:'fixture-turn',delta:'Synthetic approved result'}});send({method:'turn/completed',params:{threadId:'fixture-thread',turn:{id:'fixture-turn',status:'completed'}}});continue;}
+      if(m.id===900){for(const delta of ['Synthetic ','approved ','result'])send({method:'item/agentMessage/delta',params:{threadId:'fixture-thread',turnId:'fixture-turn',delta}});send({method:'turn/completed',params:{threadId:'fixture-thread',turn:{id:'fixture-turn',status:'completed'}}});continue;}
       let result={};if(m.method==='account/read')result={account:{type:'chatgpt'}};
       if(m.method==='thread/start'||m.method==='thread/resume')result={thread:{id:'fixture-thread'}};
       if(m.method==='turn/start')result={turn:{id:'fixture-turn'}};
@@ -180,6 +181,7 @@ test('switching the dashboard to Claude retains Codex history, verifies selected
    import readline from 'node:readline';
    const args=process.argv.slice(2),send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
    if(args[0]==='auth'){(await import('node:fs')).appendFileSync(process.cwd()+'/.auth-probes','1');send({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'pro'});process.exit(0);}
+   if(!args[args.indexOf('--append-system-prompt')+1]?.includes('Ты — специалист пользователя по его Qoopia'))process.exit(2);
    const id=args.find(a=>a.startsWith('--session-id=')||a.startsWith('--resume=')).split('=')[1];
    for await(const line of readline.createInterface({input:process.stdin})){
     const m=JSON.parse(line);

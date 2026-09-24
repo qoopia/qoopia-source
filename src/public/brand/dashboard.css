@@ -680,6 +680,10 @@ a { color:inherit;text-underline-offset:3px; }
 .foot-row .icon-btn,#profileLink { display:inline-flex;align-items:center;gap:6px; }.foot-row .icon-btn { justify-content:center; }
 #profileLink.active { color:var(--text);font-weight:600; }
 .dashboard-profile { max-width:680px; }
+.dashboard-owner { max-width:1200px; }
+.dashboard-owner .q-owner section { margin-top:30px; }
+.dashboard-owner .q-owner .owner-totals { padding:16px 0; }
+.dashboard-owner .q-owner details { margin-top:24px; }
 .profile-details { border-top:1px solid var(--border); }
 .profile-details>div { display:grid;grid-template-columns:minmax(120px,1fr) minmax(0,2fr);gap:16px;padding:16px 0;border-bottom:1px solid var(--border); }
 .profile-details dt { color:var(--text2); }

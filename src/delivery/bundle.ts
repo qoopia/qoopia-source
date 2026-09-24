@@ -8,7 +8,7 @@ export const bundleSchema = z.object({
   format: z.literal('qoopia-bundle/1'), version: z.string().regex(/^5\.0\.(?:0|[1-9][0-9]*)(?:-[a-z0-9.-]+)?$/),
   horizon: z.literal('QOOPIA-V-1'), api_version: z.literal(1), build_sha: z.string().regex(/^[a-f0-9]{40}$/),
   source_digest: hex, target: z.enum(['darwin-arm64', 'linux-x64']), bun_version: z.string(),
-  schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43),z.literal(44),z.literal(45),z.literal(46)]),
+  schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43),z.literal(44),z.literal(45),z.literal(46),z.literal(47)]),
   signing: z.enum(['test-fixture', 'publisher']), publisher_key_sha256: hex,
   platform_signing: z.enum(['NOT_RUN', 'externally_verified']),
   members: z.record(z.object({ size: z.number().int().nonnegative(), sha256: hex, mode: z.union([z.literal(0o600),z.literal(0o644),z.literal(0o700),z.literal(0o755)]) }).strict()),
@@ -40,6 +40,7 @@ export function verifyBundle(root: string, publicKey: string, allowTest = false,
   if(m.schema_max>=38)for(const required of ['assets/migrations/038-memory-continuity.sql','assets/models/multilingual-e5-small/model.onnx','assets/models/MODEL-NOTICE.json'])if(!m.members[required])throw new Error('Required memory bundle member missing');
   if(m.schema_max>=45&&!m.members['assets/migrations/045-agent-memory-policy.sql'])throw new Error('Required agent memory policy migration missing');
   if(m.schema_max>=46&&!m.members['assets/migrations/046-manual-message-ledger.sql'])throw new Error('Required manual boundary migration missing');
+  if(m.schema_max>=47&&!m.members['assets/migrations/047-client-surfaces.sql'])throw new Error('Required client surface migration missing');
   if(m.schema_max>=44&&!m.members['assets/migrations/044-telegram-recovery.sql'])throw new Error('Required Telegram recovery migration missing');
   if(m.schema_max>=43&&!m.members['assets/migrations/043_my_agent_provider.sql'])throw new Error('Required agent provider migration missing');
   if(m.schema_max>=42&&!m.members['assets/migrations/042-my-agent.sql'])throw new Error('Required agent conversation migration missing');

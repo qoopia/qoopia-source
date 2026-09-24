@@ -1,9 +1,10 @@
 # Connections contract and release support
 
-Release support is limited to the tested Codex CLI, Claude Code, Claude Desktop
-and Claude Web combinations below. ChatGPT Web/Desktop are experimental: their
-complete setup verification is not qualified. The existing installation and
-its selected remote workspace remain authoritative.
+The shipped release supports the tested Codex CLI, Claude Code, Claude Desktop
+and Claude Web combinations below. The next unreleased candidate additionally
+qualifies ChatGPT Pro Web through the synthetic acceptance recorded in
+[ChatGPT acceptance](chatgpt-acceptance-20260915.md). ChatGPT Desktop OAuth, verification, reading, writing and idempotent replay passed on Mac. Existing installed packages and their
+selected remote workspaces remain authoritative; this change is not a release.
 
 Owner API: `GET /api/dashboard/connection-setup` lists persisted progress;
 `POST` takes `action` and the same fields as `qoopia connections` below. It
@@ -23,7 +24,7 @@ qoopia connections disconnect --root /absolute/test-installation --input /absolu
 ```
 
 Selection JSON: `surface` (chatgpt_web, chatgpt_desktop, claude_web,
-claude_desktop, codex, claude_code), `access_mode` (read or read_write),
+claude_desktop, codex, claude_code, muse_code, grok_bot), `access_mode` (read or read_write),
 `request_key` (stable caller idempotency identifier). An ID input contains only
 `id`. Reusing the request key with another selection is IDEMPOTENCY_MISMATCH.
 Apply creates a separate agent; it does not activate a vendor client or a model.
@@ -44,12 +45,17 @@ verification. Setup returns a ten-minute one-use challenge. This proves an
 actual authenticated MCP call; the selected surface name is not a vendor
 attestation. Qualification through real vendor clients is tracked separately.
 A verified timestamp is historical evidence, not a current network-health claim.
+A consumed-challenge repeat from the same authenticated OAuth client returns
+VERIFICATION_ALREADY_COMPLETED as a tool error, preserving the earlier successful
+record; it is not a new verification and does not undo the original result.
 New connection note_create calls require an idempotency key and reuse the
 existing note idempotency ledger. The edge never retries writes.
 
 The external edge uses a private local listener and allows only MCP and OAuth
 protocol routes. Dashboard cookies and asserted user/proxy identity headers never
-cross it. Only dedicated, short-lived consent cookies are allowed on
+cross it. Local dashboard consent finalizes on the dashboard’s own origin before
+redirecting to the registered client; it does not detour through the external edge.
+Only dedicated, short-lived consent cookies are allowed on
 `/oauth/consent` routes. The edge preserves the consent page's CSP and frame guards.
 It has a body limit and absolute upstream timeout; outages return an error.
 
@@ -99,8 +105,8 @@ availability or substitute for real vendor-client qualification.
 ChatGPT Web read/add succeeded in the isolated 040997f prototype, but the client
 blocked verification. ChatGPT Desktop manual read/create/repeat/get also passed
 in a confirmed ChatGPT conversation against that prototype; read-only database
-inspection found exactly one new note. These two surfaces remain experimental
-and are excluded from the release’s complete setup qualification. No client
+inspection found exactly one new note. Those prototype results did not qualify either surface for that release.
+Current-source ChatGPT Web and Desktop qualification, including writes and idempotent replay, are recorded in the linked acceptance report. No client
 safety block is retried through another path, and no verified flag is set by an
 operator. The tests used existing ChatGPT Pro and Claude Max subscriptions and do
 not qualify other plans or client versions. The acceptance specification permits

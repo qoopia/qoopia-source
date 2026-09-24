@@ -7,7 +7,7 @@ import {db} from '../src/db/connection.ts';
 import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {createAgent} from '../src/admin/agents.ts';
-import {myAgentAction,myAgentState,agentDirectory,stopMyAgents} from '../src/services/my-agent.ts';
+import {myAgentAction,myAgentState,agentDirectory,stopMyAgents,expireIdleMyAgentRuns} from '../src/services/my-agent.ts';
 import {saveMessage} from '../src/services/sessions.ts';
 import {checkpointSession} from '../src/services/continuity.ts';
 import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
@@ -35,6 +35,11 @@ function ownerFixture(){
         const text=m.params.input[0].text;
         if(text==='run-child'){
           spawn('/bin/sh',['-c',"printf ready > child-ready; sleep 1.5; printf SHOULD_NOT_EXIST > child-finished"],{cwd:process.cwd(),detached:true,stdio:'ignore'});
+        }else if(text==='hang'){
+          // A native turn that never emits progress or a completion event.
+        }else if(text==='stream'){
+          send({method:'item/agentMessage/delta',params:{threadId:thread,turnId:turn,delta:'First part'}});
+          setTimeout(()=>{send({method:'item/agentMessage/delta',params:{threadId:thread,turnId:turn,delta:' and final part'}});send({method:'turn/completed',params:{threadId:thread,turn:{id:turn,status:'completed'}}});},350);
         }else if(text==='approval'){
           send({id:900,method:'item/commandExecution/requestApproval',params:{threadId:thread,turnId:turn,command:'fixture approval'}});
         }else{
@@ -46,6 +51,32 @@ function ownerFixture(){
   `,0o700);
   return {owner:owner.agent_id,agent:agent.id,workspace:slug,root,bin,cwd:path.join(root,'workspace')};
 }
+
+test('streamed text becomes visible during a turn and the final chunk is retained',async()=>{
+  const f=ownerFixture(),oldPath=process.env.PATH;
+  try{
+    process.env.PATH=f.bin+path.delimiter+oldPath;
+    const c=await myAgentAction(f.owner,{action:'new',title:'Streaming turn'});
+    await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'stream-once',text:'stream'});
+    await until(()=>myAgentState(f.owner).runs[0]?.answer==='First part');
+    expect(myAgentState(f.owner).runs[0]?.state).toBe('running');
+    await until(()=>myAgentState(f.owner).runs[0]?.state==='completed');
+    expect(myAgentState(f.owner).runs[0]?.answer).toBe('First part and final part');
+  }finally{await stopMyAgents();process.env.PATH=oldPath;}
+});
+
+test('an unresponsive native turn ends with a visible failure and releases its process',async()=>{
+  const f=ownerFixture(),oldPath=process.env.PATH;
+  try{
+    process.env.PATH=f.bin+path.delimiter+oldPath;
+    const c=await myAgentAction(f.owner,{action:'new',title:'Idle turn'});
+    await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'hang-once',text:'hang'});
+    expect(myAgentState(f.owner).active_conversation).toBe(c.id);
+    expireIdleMyAgentRuns(Date.now()+15*60_000+1000);
+    await until(()=>!myAgentState(f.owner).running);
+    expect(myAgentState(f.owner).runs[0]).toMatchObject({state:'failed',error:'The agent stopped responding for 15 minutes. Start a new turn to continue.'});
+  }finally{await stopMyAgents();process.env.PATH=oldPath;}
+});
 
 test('dashboard Stop kills detached tool descendants, preserves unrelated processes, and resumes without replay',async()=>{
   const f=ownerFixture(),oldPath=process.env.PATH;let control:ReturnType<typeof spawn>|undefined;

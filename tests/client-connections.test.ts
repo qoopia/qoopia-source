@@ -69,6 +69,18 @@ test('selection is idempotent, isolated and never reports configuration as a cli
   expect(()=>connectionAction(other.agent_id,{action:'resume',id:first.id})).toThrow('Connection unavailable');
   expect(JSON.stringify(connectionAction(owner.agent_id,{action:'status'}))).not.toMatch(/q_[A-Za-z0-9_-]{20}/);
 });
+test('Muse Code and cloud Grok Bot get distinct HTTPS addresses and remain unverified',()=>{
+  env.PUBLIC_URL='https://fixture.example';
+  try{for(const surface of ['muse_code','grok_bot'] as const){
+    const connection=(connectionAction(owner.agent_id,{action:'apply',surface,access_mode:'read',request_key:'new-'+surface}) as any).connection;
+    expect(connection.surface).toBe(surface);
+    expect(connection.client_config).toBeNull();
+    expect(connection.state).toBe('requires_user_action');
+    expect(connection.mcp_url).toMatch(/^https:\/\/fixture\.example\/mcp\/c\//);
+    expect((connectionAction(owner.agent_id,{action:'verify',id:connection.id}) as any).code).toBe('CLIENT_CALL_REQUIRED');
+    expect((connectionAction(owner.agent_id,{action:'status',id:connection.id}) as any).connections[0].state).toBe('requires_user_action');
+  }}finally{env.PUBLIC_URL=base;}
+});
 test('declining local OAuth includes the pinned issuer without issuing a code',async()=>{await authorize(apply(),owner,true);});
 test('OAuth discovery, audience binding, real MCP proof, cross-connection denial and revocation',async()=>{
   const connection=apply(),otherConnection=apply(other),token=await authorize(connection);

@@ -4,7 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {db} from '../db/connection.ts';
 import {durableWrite,readJsonBytes,hash} from '../utils/fs.ts';
-import {agentDirectory,agentOwner,agentSettings,myAgentAction,myAgentState,unsavedTurn,type AgentSettings} from './my-agent.ts';
+import {agentDirectory,agentOwner,agentSettings,myAgentAction,telegramAgentState,unsavedTurn,type AgentSettings} from './my-agent.ts';
 import {assertNoSecrets} from '../utils/secret-guard.ts';
 import {canManagePolicy,pendingSave} from './memory-policy.ts';
 import {decideSaveRequest,listSaveRequests} from './memory-save-requests.ts';
@@ -138,7 +138,7 @@ export async function pollTelegramOwner(owner:string) {
           }
         }
         else if(permitted&&match) {
-          const state=myAgentState(owner),approval=state.approvals.find(a=>a.id===match[1]);
+          const state=telegramAgentState(owner),approval=state.approvals.find(a=>a.id===match[1]);
           if(approval&&approval.expires>Date.now()&&simpleTelegramApproval(approval)) {
             await myAgentAction(owner,{action:'approve',id:approval.id,accept:match[2]==='yes'});
             await telegramCall(secret,'answerCallbackQuery',{callback_query_id:callback.id,text:'Qoopia: saved'});
@@ -156,7 +156,7 @@ export async function pollTelegramOwner(owner:string) {
       } else if(isBoundTelegramMessage(settings,message)&&typeof message.text==='string') {
         const text=message.text.trim();
         try {
-        const state=myAgentState(owner);
+        const state=telegramAgentState(owner);
         if(text==='/stop'){await myAgentAction(owner,{action:'stop'});queueTelegram(owner,generation,'stop:'+update.update_id,{chat_id:settings.telegram_chat_id,text:'Задача и очередь остановлены. / Task and queue stopped.'});}
         else if(text==='/new'){
           if(workers.has(owner)||state.active_conversation||telegramState(owner).queued)throw new QoopiaError('CONFLICT','Stop the current task and queue before starting a new conversation.');
@@ -198,7 +198,7 @@ export async function pollTelegramOwner(owner:string) {
 export async function runTelegramQueue(owner:string){
   const s=agentSettings(owner),c=channel(owner);
   if(!s?.enabled||!s.telegram_chat_id||!c||c.paused===1||workers.has(owner)||setupBusy.has(owner))return;
-  const state=myAgentState(owner);
+  const state=telegramAgentState(owner);
   if(state.active_conversation||(c.paused===TELEGRAM_WAITING_LOGIN&&state.running&&!state.account))return;
   if(c.paused===TELEGRAM_WAITING_LOGIN&&state.account)resumeTelegramAfterLogin(owner);
   const row=db.query("SELECT update_id,prompt,provider FROM qoopia_telegram_inbox WHERE owner_id=? AND generation=? AND state='queued' ORDER BY update_id LIMIT 1").get(owner,c.generation) as {update_id:number;prompt:string;provider:string}|null;
@@ -208,10 +208,10 @@ export async function runTelegramQueue(owner:string){
       db.query("UPDATE qoopia_telegram_inbox SET state='failed' WHERE owner_id=? AND generation=? AND update_id=? AND state='queued'").run(owner,c.generation,row.update_id);
       queueTelegram(owner,c.generation,'provider:'+row.update_id,{chat_id:s.telegram_chat_id,text:'Подписка изменилась до запуска сообщения. Оно не выполнялось. Выберите нужную подписку и отправьте его заново. / Subscription changed before this message started. It was not executed. Select your subscription and resend.'});return;
     }
-    if(!myAgentState(owner).account){
+    if(!telegramAgentState(owner).account){
       await myAgentAction(owner,{action:'start'});
       if(channel(owner)?.generation!==c.generation||channel(owner)?.paused===1)return;
-      if(!myAgentState(owner).account){
+      if(!telegramAgentState(owner).account){
         db.query('UPDATE qoopia_telegram_channels SET paused=? WHERE owner_id=? AND generation=?').run(TELEGRAM_WAITING_LOGIN,owner,c.generation);
         errors.set(owner,TELEGRAM_LOGIN_REQUIRED);
         queueTelegram(owner,c.generation,'login:'+row.update_id,{chat_id:s.telegram_chat_id,text:'Войдите в подписку в Qoopia. Сохранённые задачи продолжатся после входа. / Sign in to your subscription in Qoopia. Your saved tasks will continue after sign-in.'});return;
@@ -245,7 +245,7 @@ export async function deliverTelegram(owner:string){
   const currentBinding=()=>channel(owner)?.generation===generation&&!!agentSettings(owner)?.telegram_username;
   try{
     if(settings.telegram_chat_id){
-      const current=myAgentState(owner);
+      const current=telegramAgentState(owner);
       for(const approval of current.approvals){
         const simple=simpleTelegramApproval(approval);
         const text=simple?'Qoopia: разрешить команду один раз? / Allow this command once?\n\n'+approval.params.command:'Qoopia: нужен ваш ответ в дашборде. / Review this request in your dashboard.';
@@ -281,7 +281,7 @@ export async function deliverTelegram(owner:string){
     for(const item of outbound){
       if(!currentBinding())return;
       const retry=db.query('SELECT retry_at FROM qoopia_telegram_outbox WHERE id=?').get(item.id) as {retry_at:number};if(retry.retry_at>Date.now())break;
-      if(item.delivery_key.startsWith('approval:')&&!myAgentState(owner).approvals.some(a=>a.id===item.delivery_key.slice(9))){db.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE id=?").run(item.id);continue;}
+      if(item.delivery_key.startsWith('approval:')&&!telegramAgentState(owner).approvals.some(a=>a.id===item.delivery_key.slice(9))){db.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE id=?").run(item.id);continue;}
       // A prepared save that expired or was already decided must not arrive with live buttons.
       if(item.delivery_key.startsWith('save:')&&!pendingSave(settings.workspace_id,item.delivery_key.slice(5))){db.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE id=?").run(item.id);continue;}
       db.query("UPDATE qoopia_telegram_outbox SET state='sending' WHERE id=?").run(item.id);

@@ -79,7 +79,7 @@ describe("P07 V4 dashboard API", () => {
     const body = await response.json() as any;
     // Migration 039 adds bridge folders above the memory index.
     // The dashboard must report the highest applied schema, not the old V4 set.
-    expect(body.operations.schema_version).toBe(46);
+    expect(body.operations.schema_version).toBe(47);
     expect(body.operations.production_apply_controls).toBe(false);
     expect(body.runtime_acceptance.status).toBe("deferred_to_p10");
     expect(body.feature_flags.dashboard).toBe(true);
