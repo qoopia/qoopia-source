@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "c042f1cf9bba8e7febc5d9e62e3e7caa68b5be3f",
+  "source_snapshot": "b25c7d3db0a2c273574104da240c08347882f0c5",
   "product_version": "5.0.13",
   "runtime_files_identical": true,
   "files": [
@@ -36,8 +36,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "f394d5c2bc964ec2b0c550dbfb93213a76e191b006286fe547c8c91e895f3708",
-      "bytes": 8669,
+      "sha256": "fc06d8fadfc76f6d6e9ffe96e9c16768a1df7262808091ccd1b764264caed3fe",
+      "bytes": 8797,
       "source_snapshot_identical": true
     },
     {
@@ -78,7 +78,7 @@
     },
     {
       "path": "RELEASE.json",
-      "sha256": "9a6de2725bc0da52b83d441c5235b4ca9ead96649856b324d20d69f4ab78de20",
+      "sha256": "6100eca6fa70a32c34ba1d8688fd7adefadc7651d2e244580649ddb3923d5df1",
       "bytes": 179,
       "source_snapshot_identical": false
     },
@@ -138,7 +138,7 @@
     },
     {
       "path": "bun.lock",
-      "sha256": "223f6c1a0ae7f25c01f95b0522b29d7c99b5933bbe6ad7f7f25f112246f75edd",
+      "sha256": "ad03cdb38296de28762d9eeb8ff784916915e7b1e2a11dd97acd1b4dd5a916b1",
       "bytes": 34561,
       "source_snapshot_identical": true
     },
@@ -1008,7 +1008,7 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "59515ff951db4ae43199dfaefc62fed3e7b4b21d1d8e34f7fceaa41729d2ec4d",
+      "sha256": "5f96c0add7c9aa48c6bff7775e43c64225dc1ac6918317ae4ef3a813ee32fb79",
       "bytes": 1127,
       "source_snapshot_identical": true
     },
@@ -1056,7 +1056,7 @@
     },
     {
       "path": "marketing-site/updates/macos/appcast.xml",
-      "sha256": "23cb54d1a5559e1a60cfd0f088e36a4659f064cc681c87681259a936e3caf992",
+      "sha256": "f1fa1ac499351982af9615f5c10a197e5f102b6e21e0c0fced8330c46ac754c4",
       "bytes": 769,
       "source_snapshot_identical": true
     },
@@ -1422,7 +1422,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "705bbb0e070f7f2fe6d9bd881aae7cc72fb07c624b4c4fbb191ae0711d796aa9",
+      "sha256": "d814c5598994b5238f063b0ef1f3aa6537cdfff1123799a64efd55bd887e8e9a",
       "bytes": 3004,
       "source_snapshot_identical": true
     },
