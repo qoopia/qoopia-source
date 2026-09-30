@@ -273,3 +273,17 @@ Read protocol/capabilities from the target client and match the verification ID
 to its exact MCP URL. Read/write acceptance uses authorized synthetic content and
 an identical idempotency key for replay. Runtime MCP acceptance does not qualify
 Muse.app's native connector UI or automatic conversation capture.
+
+### Updating instruction files through a container mount
+
+The directory the operator writes is not necessarily the directory the native
+client reads. Prefer updating inside the client container, using its actual
+native profile. For an external writer, pass the client-visible profile as
+`referenceDirectory` to `planAgentInstructions` / `installAgentInstructions`;
+the managed receipt retains it for subsequent refreshes. For an existing
+steward use `INSTALLATION.json → native_profiles[runtime]`, checked against the
+container mount. Never substitute the host path for that value.
+
+The Qoopia block supplements the existing agent's identity and instructions.
+Hand-edited managed blocks remain protected: do not delete the receipt or force
+an overwrite to repair them. Review the correction before republishing.

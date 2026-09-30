@@ -24,6 +24,8 @@ import {
   getClient,
   createConsentTicket,
   getConsentTicket,
+  rememberFinalizeRedirect,
+  replayFinalizeRedirect,
   consentTicketStatus,
   approveConsentTicket,
   denyConsentTicket,
@@ -51,27 +53,27 @@ export function connectionIdentityRoot():string|undefined {
     (process.env.QOOPIA_STANDALONE_LAYOUT?JSON.parse(process.env.QOOPIA_STANDALONE_LAYOUT).root:undefined):env.ROOT_DIR;
 }
 
+/** Account-bound consent reuses only the exact human owner's browser session. */
+function accountConsentOrigin(ticket: NonNullable<ReturnType<typeof getConsentTicket>>): string | undefined {
+  const id=ticket.resource?resourceConnection(ticket.resource):undefined;
+  const root=connectionIdentityRoot(),binding=root?ownerIdentity(root):null;
+  if(!id||!binding)return undefined;
+  const connection=publicConnection(id),origin=connectionOrigin(id);
+  return connection.owner_id===binding.ownerId&&origin.startsWith('https://')?origin:undefined;
+}
+function accountConsentAllowed(ticket: NonNullable<ReturnType<typeof getConsentTicket>>,auth:DashboardAuth):boolean {
+  if(!accountConsentOrigin(ticket))return true;
+  const connection=publicConnection(resourceConnection(ticket.resource!)!);
+  return auth.source==='cookie'&&auth.agent_id===connection.owner_id&&auth.workspace_id===connection.workspace_id&&
+    !!db.query("SELECT 1 FROM agents WHERE id=? AND active=1 AND principal_kind='human' AND authority_profile='owner'").get(auth.agent_id);
+}
+
 // ADR-017: in-memory consentNonces is gone. Consent is brokered through
 // the consent_tickets table; nonces live as `approve_nonce` columns and are
 // rotated atomically. The dashboard-side approve POST uses
 // consumeConsentNonce() for one-time semantics.
-// Short-lived replay cache for OAuth finalize redirects. Browser-mediated
-// OAuth can double-hit /oauth/authorize/finalize after a successful consent
-// handoff; the ticket must stay single-use, but a duplicate GET should see the
-// same redirect instead of surfacing {ticket redeemed} to the operator.
-const finalizeRedirectReplay = new Map<string, { location: string; expiresAtMs: number }>();
-export function rememberFinalizeRedirect(ticketId: string, location: string): void {
-  finalizeRedirectReplay.set(ticketId, { location, expiresAtMs: Date.now() + 10 * 60_000 });
-}
-export function replayFinalizeRedirect(ticketId: string): string | null {
-  const row = finalizeRedirectReplay.get(ticketId);
-  if (!row) return null;
-  if (row.expiresAtMs <= Date.now()) {
-    finalizeRedirectReplay.delete(ticketId);
-    return null;
-  }
-  return row.location;
-}
+
+export {rememberFinalizeRedirect,replayFinalizeRedirect} from '../auth/oauth.ts';
 
 export function oauthAlreadyCompletedHtml(): string {
   return `<!doctype html>
@@ -300,7 +302,7 @@ export function handleAuthorizeRedirect(
   const identityRoot=connectionIdentityRoot(),binding=identityRoot?ownerIdentity(identityRoot):null;
   const remote=!!(resourceId&&binding&&connectionOrigin(resourceId).startsWith('https://')&&publicConnection(resourceId).owner_id===binding.ownerId);
   const consentOrigin=remote?connectionOrigin(resourceId!):process.env.QOOPIA_STANDALONE==='true'?`http://127.0.0.1:${env.PORT}`:resourceId?connectionOrigin(resourceId):env.PUBLIC_URL;
-  const target = new URL(remote?'/oauth/consent':"/api/dashboard/oauth-consent", consentOrigin);
+  const target = new URL('/api/dashboard/oauth-consent', consentOrigin);
   target.searchParams.set("ticket", ticket.id);
   res.writeHead(302, {
     location: target.toString(),
@@ -741,6 +743,17 @@ export function handleDashboardOAuthConsentGet(
 
   const auth = checkDashboardAuth(req);
   if (!auth) {
+    const remote=accountConsentOrigin(ticket!);
+    if(remote){
+      // SameSite=Strict omits the dashboard cookie on the initial external navigation.
+      // Commit a same-origin page before checking the existing session again.
+      if(!u.searchParams.has('session_check')){
+        const next='/api/dashboard/oauth-consent?'+new URLSearchParams({ticket:ticketId,session_check:'1'});
+        return sendHtml(res,200,`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1">${brandHead}<body class="q-auth"><main>${brandLockup}<p>Opening your connection…</p><a data-consent-session href="${escapeHtmlSafe(next)}">Continue</a></main><script src="/brand/consent-session.js" defer></script></body></html>`,req);
+      }
+      res.writeHead(302,{location:remote+'/oauth/consent?'+new URLSearchParams({ticket:ticketId}),'cache-control':'no-store'});
+      return res.end();
+    }
     // Not logged into dashboard → bounce through /dashboard?next=...
     const next = `/api/dashboard/oauth-consent?ticket=${encodeURIComponent(ticketId)}`;
     const target = `/dashboard?next=${encodeURIComponent(next)}`;
@@ -766,6 +779,7 @@ export function handleDashboardOAuthConsentGet(
     });
   }
 
+  if(!accountConsentAllowed(ticket!,auth))return json(res,403,{error:'forbidden',error_description:'Use this installation’s human owner session.'});
   const t = ticket!;
   const client = getClient(t.client_id);
   const safeClientName = escapeHtmlSafe(client?.name || "Unknown client");
@@ -935,6 +949,7 @@ export function handleDashboardOAuthConsentApprove(
     });
   }
   const ticket = getConsentTicket(ticketId);
+  if(ticket&&!accountConsentAllowed(ticket,auth))return json(res,403,{error:'forbidden',error_description:'Use this installation’s human owner session.'});
   const status = consentTicketStatus(ticket);
   if (status === "not_found") {
     return json(res, 404, {
@@ -1098,6 +1113,7 @@ export function handleDashboardOAuthConsentDeny(
     });
   }
   const ticket = getConsentTicket(ticketId);
+  if(ticket&&!accountConsentAllowed(ticket,auth))return json(res,403,{error:'forbidden',error_description:'Use this installation’s human owner session.'});
   const status = consentTicketStatus(ticket);
   if (status === "not_found") {
     return json(res, 404, {

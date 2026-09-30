@@ -1,6 +1,6 @@
 import {agentProtocol} from '../agent-kit/index.ts';
 import {z} from "zod";
-import {verifyClientConnection} from "../services/client-connections.ts";
+import {verifyClientConnection,observeClientProtocol} from "../services/client-connections.ts";
 import {QoopiaError} from "../utils/errors.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
@@ -34,7 +34,12 @@ export function createMcpServer(
     description:'Read the versioned Qoopia operating protocol before using this connection. Includes ChatGPT/Claude MCP reconnect, memory, agents, health and bridges. Documentation only; discover actual tools/scopes separately.',
     inputSchema:{section:z.enum(['protocol','connections','operations','soul']).default('protocol')},
     annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
-  },async({section})=>authProvider()?{content:[{type:'text' as const,text:JSON.stringify(agentProtocol(section))}]}:{isError:true,content:[{type:'text' as const,text:'UNAUTHENTICATED'}]});
+  },async({section})=>{
+    try{const auth=authProvider();if(!auth)throw new Error('UNAUTHENTICATED');
+      const text=JSON.stringify(agentProtocol(section));observeClientProtocol(auth);
+      return {content:[{type:'text' as const,text}]};
+    }catch(error){return {isError:true,content:[{type:'text' as const,text:error instanceof Error?error.message:'UNAUTHENTICATED'}]};}
+  });
   if(authProvider()?.connection_id)server.registerTool('connection_verify',{
     description:'Confirm this client can call its Qoopia connection using the verification challenge from the owner setup wizard. No memory content is read.',
     inputSchema:{connection_id:z.string().uuid(),challenge:z.string().min(1).max(100)},

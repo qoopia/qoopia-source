@@ -61,7 +61,7 @@ test('completed writes with pending receipt finalize; reconnect preserves the st
   const pending=JSON.parse(fs.readFileSync(receipt,'utf8'));pending.state='pending';durableWrite(receipt,JSON.stringify(pending));
   installAgentInstructions(root,'codex');
   expect(JSON.parse(fs.readFileSync(receipt,'utf8')).state).toBe('installed');
-  expect(fs.readFileSync(installed.instruction_file,'utf8')).toContain('You are My Qoopia agent.');
+  expect(fs.readFileSync(installed.instruction_file,'utf8')).toContain('Keep your existing name, role and instructions.');
   expect(fs.existsSync(path.join(root,'qoopia','install.lock'))).toBe(false);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
@@ -73,6 +73,7 @@ test('completed writes with pending receipt finalize; reconnect preserves the st
 // digest recorded, which is also the moment a reader decides the change is worth
 // re-publishing to every profile.
 const PUBLISHED_REVISIONS: Record<number, string> = {
+  7: '9a2159d6a263b8078ca27072e78ac52a2c9f88441019aa1314a29e4609217cd1',
   4: '9b92f581a013443daeb74d5af01a1910bd5dd5d66244a6ddc4330301f9ecf4ce',
   5: '4eabb8275fa226ca923164a383defdff200c1b1979137c1c99af3ab81db91fc4',
   6: '7a80edbe54275c1f9622ee003eae27bcf944cabc82c64cc27ef020e8b56fc4ce',
@@ -148,11 +149,34 @@ test('refresh upgrades a prior revision with valid receipts, preserving steward 
   expect(refreshAgentInstructions(root,true).profiles[0]!.state).toBe('updated');
   expect(JSON.parse(fs.readFileSync(manifestFile,'utf8')).revision).toBe(AGENT_KIT_REVISION);
   expect(fs.readFileSync(entry,'utf8')).toContain('Owner instructions stay here.');
-  expect(fs.readFileSync(entry,'utf8')).toContain('You are My Qoopia agent.');
+  expect(fs.readFileSync(entry,'utf8')).toContain('Keep your existing name, role and instructions.');
   expect(refreshAgentInstructions(root,true).profiles[0]!.state).toBe('current');
   manifest.revision=AGENT_KIT_REVISION+1;durableWrite(manifestFile,JSON.stringify(manifest));
   expect(refreshAgentInstructions(root,true).profiles[0]!.reason).toContain('refusing downgrade');
   durableWrite(path.join(link,'connection.json'),'broken json');
   expect(refreshAgentInstructions(root).profiles[0]!.state).toBe('refused');
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+
+test('bind-mounted instruction profiles retain reader paths and agent identity across updates',()=>{
+ const root=temporary();try{
+  for(const runtime of ['claude_code','codex'] as const){
+   const writer=privateDirectory(path.join(root,runtime)),reader=runtime==='claude_code'?'/home/node/.claude':'/home/node/agents/liam-runtime/codex';
+   const entry=path.join(writer,runtime==='claude_code'?'CLAUDE.md':'AGENTS.md');
+   durableWrite(entry,'You are Liam. Preserve LIAM_RUNTIME.md and your existing duties.\n');
+   installAgentInstructions(writer,runtime,'steward',reader);
+   const text=fs.readFileSync(entry,'utf8');
+   expect(text).toStartWith('You are Liam. Preserve LIAM_RUNTIME.md');
+   expect(text).not.toContain(writer);expect(text).not.toContain('You are My Qoopia agent');
+   for(const file of ['manifest.json','SOUL.md','OPERATIONS.md','MCP-CONNECTIONS.md'])expect(text).toContain(reader+'/qoopia/'+file);
+   expect(JSON.parse(fs.readFileSync(path.join(writer,'qoopia/instructions-receipt.json'),'utf8')).reference_directory).toBe(reader);
+   fs.rmSync(path.join(writer,'qoopia/MCP-CONNECTIONS.md'));
+   installAgentInstructions(writer,runtime);
+   expect(fs.readFileSync(entry,'utf8')).toBe(text);
+   expect(planAgentInstructions(writer,runtime).changes).toEqual([]);
+   expect(()=>planAgentInstructions(writer,runtime,'steward','relative/path')).toThrow();
+   expect(()=>planAgentInstructions(writer,runtime,'steward','/bad\npath')).toThrow();
+  }
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

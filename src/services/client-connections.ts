@@ -47,15 +47,16 @@ function owned(ownerId:string,id:string):Row {
 function status(row:Row) {
   const agent=db.query('SELECT name,last_seen FROM agents WHERE id=? AND workspace_id=? AND active=1').get(row.agent_id,row.workspace_id) as {name:string;last_seen:string|null}|null;
   const revoked=row.state==='revoked'||!agent;
+  const authorized=!revoked&&!!db.query("SELECT 1 FROM oauth_tokens WHERE agent_id=? AND workspace_id=? AND revoked=0 AND token_type IN ('access','refresh') AND expires_at>? LIMIT 1").get(row.agent_id,row.workspace_id,nowIso());
   const layout=process.env.QOOPIA_STANDALONE_LAYOUT;
   return {id:row.id,surface:row.surface,agent_name:agent?.name??null,workspace_id:row.workspace_id,access_mode:row.access_mode,
     state:revoked?'error':row.state==='verified'?'ready':'requires_user_action',code:revoked?'REVOKED':row.state==='verified'?'CLIENT_CALL_VERIFIED':'CLIENT_CALL_REQUIRED',
-    mcp_url:connectionResource(row.id),verified_at:row.verified_at,last_seen:revoked?null:agent?.last_seen??null,
+    mcp_url:connectionResource(row.id),verified_at:row.verified_at,last_seen:revoked?null:agent?.last_seen??null,authorized,
     evidence:row.verified_at?'authenticated_mcp_call':null,live_availability:'not_checked',
     client_config:row.surface==='codex'||row.surface==='claude_code'||row.surface==='claude_desktop'?(process.env.QOOPIA_STANDALONE_LAYOUT&&(row.surface!=='claude_desktop'||process.platform==='darwin')?'on_this_computer':'download_file'):null,
     ...(row.surface==='claude_desktop'&&layout&&process.platform==='darwin'&&!revoked?{client_auth:desktopAuthStatus(JSON.parse(layout).root,{
       format:'qoopia-client-connection/1',connection_id:row.id,workspace_id:row.workspace_id,surface:row.surface,access_mode:row.access_mode,mcp_url:connectionResource(row.id)})}:{}),
-    next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_app'?'Send this exact MCP URL to the Muse.app cloud agent. Use its supported remote MCP runtime and secure OAuth callback; do not use Muse Code CLI commands or paste callback codes into chat. Then verify from that agent.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then run the verification prompt in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then run the verification prompt in a Bot conversation.':'Add the MCP URL in the selected client, consent, then run the verification prompt.'};
+    next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_app'?'Send this exact MCP URL to the Muse.app cloud agent. Use its supported remote MCP runtime and secure OAuth callback; do not use Muse Code CLI commands or paste callback codes into chat. Then read qoopia_protocol from that agent.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then call qoopia_protocol in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then call qoopia_protocol in a Bot conversation.':'Add the MCP URL in the selected client, consent, then call qoopia_protocol.'};
 }
 export function connectionAction(ownerId:string,raw:unknown) {
   const input=connectionActionSchema.parse(raw),owner=localOwner(db,ownerId);authorize(db,owner,'owner');
@@ -130,20 +131,32 @@ export function connectionAction(ownerId:string,raw:unknown) {
     prompt:`First call qoopia_protocol on this exact Qoopia connection and read its protocol. Then call Qoopia connection_verify with connection_id "${row.id}" and challenge "${challenge}".`,expires_in_seconds:600,
     next_action:'Run this prompt inside the selected client. Configuration or OAuth login alone does not complete verification.'};
 }
-/** Invoked only by the authenticated MCP tool. It never accepts an owner-generated success claim. */
-export function verifyClientConnection(auth:AuthContext,id:string,challenge:string) {
+function authenticatedConnection(auth:AuthContext,id:string) {
   currentToolAuth(db,auth,'read');
   const row=publicConnection(id);
   if(row.agent_id!==auth.agent_id||row.workspace_id!==auth.workspace_id)throw new QoopiaError('FORBIDDEN','Connection belongs to another principal');
-  if(!auth.oauth_client_id)throw new QoopiaError('FORBIDDEN','Use the client OAuth connection');
+  if(auth.source!=='oauth'||!auth.oauth_client_id||auth.connection_id!==id)throw new QoopiaError('FORBIDDEN','Use the client OAuth connection');
   if(!db.query('SELECT 1 FROM oauth_clients WHERE id=? AND agent_id=? AND workspace_id=?').get(auth.oauth_client_id,row.agent_id,row.workspace_id))
     throw new QoopiaError('FORBIDDEN','OAuth client does not belong to this connection');
+  return row;
+}
+/** Reading the protocol from the exact OAuth client proves its first real tool call. */
+export function observeClientProtocol(auth:AuthContext) {
+  if(!auth.connection_id)return;
+  const row=authenticatedConnection(auth,auth.connection_id);
+  if(env.SERVER_ROLE==='legacy-readonly')return;
+  db.query("UPDATE client_connections SET state='verified',verified_at=?,oauth_client_id=? WHERE id=? AND state='awaiting_client'")
+    .run(nowIso(),auth.oauth_client_id!,row.id);
+}
+/** Retained for clients using an explicit one-use challenge. */
+export function verifyClientConnection(auth:AuthContext,id:string,challenge:string) {
+  const row=authenticatedConnection(auth,id);
   if(row.state==='verified'&&!row.challenge_hash&&row.oauth_client_id===auth.oauth_client_id)
     throw new QoopiaError('VERIFICATION_ALREADY_COMPLETED',`A previous authenticated call verified this connection at ${row.verified_at}. The one-use challenge was consumed. This repeated call creates no new verification and does not undo the earlier result.`);
   if(row.challenge_expires_at<=new Date().toISOString()||!row.challenge_hash||sha256Hex(challenge)!==row.challenge_hash)
     throw new QoopiaError('EXPIRED','Request a fresh verification prompt in Qoopia');
   db.query("UPDATE client_connections SET state='verified',verified_at=?,oauth_client_id=?,challenge_hash='' WHERE id=?")
-    .run(nowIso(),auth.oauth_client_id,row.id);
+    .run(nowIso(),auth.oauth_client_id!,row.id);
   return {connection_id:row.id,workspace_id:row.workspace_id,surface:row.surface,access_mode:row.access_mode,
     verified:true,evidence:'authenticated_mcp_call',memory_content_logged:false};
 }

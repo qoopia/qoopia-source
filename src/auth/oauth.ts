@@ -927,3 +927,21 @@ export function pruneConsentTickets(): number {
     .run(cutoffIso);
   return info.changes;
 }
+
+// Short-lived replay cache for OAuth finalize redirects. Browser-mediated
+// OAuth can double-hit /oauth/authorize/finalize after a successful consent
+// handoff; the ticket must stay single-use, but a duplicate GET should see the
+// same redirect instead of surfacing {ticket redeemed} to the operator.
+const finalizeRedirectReplay = new Map<string, { location: string; expiresAtMs: number }>();
+export function rememberFinalizeRedirect(ticketId: string, location: string): void {
+  finalizeRedirectReplay.set(ticketId, { location, expiresAtMs: Date.now() + 10 * 60_000 });
+}
+export function replayFinalizeRedirect(ticketId: string): string | null {
+  const row = finalizeRedirectReplay.get(ticketId);
+  if (!row) return null;
+  if (row.expiresAtMs <= Date.now()) {
+    finalizeRedirectReplay.delete(ticketId);
+    return null;
+  }
+  return row.location;
+}

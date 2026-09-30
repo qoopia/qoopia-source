@@ -9,7 +9,8 @@ if(config.fixture!=='qoopia-dashboard-preview/1'||new URL(config.url).hostname!=
  assert.equal(await page.locator('#nav [data-page]').count(),10);assert.equal(await page.locator('.nav-more').count(),0);
  await page.locator('#chatLauncher').click();await page.locator('#agentFirstProvider').waitFor();await page.screenshot({path:dir+'/desktop-setup-en.png'});assert.equal(await page.locator('[name=firstChannel]').count(),0);await page.locator('#chatClose').click();
  const routes=['agents','connections','agentcomm','skills','bridges','external','files','search','memory'];
- for(const route of routes){await page.locator('#nav a[href="#'+route+'"]').click();await page.waitForTimeout(450);assert.equal(await page.locator('#main').evaluate(e=>e.scrollWidth>e.clientWidth+1),false,'overflow '+route);}
+ for(const route of routes){await page.locator('#nav a[href="#'+route+'"]').click();await page.waitForTimeout(450);assert.equal(await page.locator('#main').evaluate(e=>e.scrollWidth>e.clientWidth+1),false,'overflow '+route);
+  if(route==='connections'){await page.locator('#setupSurface option[value="muse_code"]').waitFor({state:'attached'});await page.locator('#setupSurface option[value="grok_bot"]').waitFor({state:'attached'});await page.locator('#setupNew summary').click();await page.locator('#setupSurface').selectOption('muse_code');await page.screenshot({path:dir+'/desktop-connections-en.png'});}}
  const museId='11111111-1111-4111-8111-111111111111',grokId='22222222-2222-4222-8222-222222222222';
  const connectionFixtures=[{id:museId,agent_name:'Legacy Muse',surface:'muse_code',mcp_url:'https://fixture.example/mcp/muse',access_mode:'read',state:'requires_user_action',code:'CLIENT_CALL_REQUIRED',last_seen:'2026-09-29T22:10:00Z',client_config:null},{id:grokId,surface:'grok_bot',mcp_url:'https://fixture.example/mcp/grok',access_mode:'read',state:'requires_user_action',code:'CLIENT_CALL_REQUIRED',last_seen:null,client_config:null}];
  await page.route('**/api/dashboard/connection-setup',async route=>{if(route.request().method()!=='GET'){const input=route.request().postDataJSON();if(input.action==='verify'&&[museId,grokId].includes(input.id))return route.fulfill({json:{prompt:'First call qoopia_protocol on this exact connection. Then call connection_verify with connection_id '+input.id+' and challenge synthetic-browser-check.',expires_in_seconds:600}});if(input.action==='label'&&input.id===museId){connectionFixtures[0].agent_name=input.agent_name;connectionFixtures[0].surface=input.surface||connectionFixtures[0].surface;return route.fulfill({json:{connection:connectionFixtures[0],memory_preserved:true}});}return route.continue();}const response=await route.fetch(),body=await response.json();body.connections.push(...connectionFixtures);await route.fulfill({response,json:body});});
@@ -21,25 +22,25 @@ if(config.fixture!=='qoopia-dashboard-preview/1'||new URL(config.url).hostname!=
  await page.locator('#nav a[href="#connections"]').click();await page.locator('[data-copy-setup="'+museId+'"]').waitFor({state:'attached'});
  assert.equal(await page.locator('#connectedApplications .connection-line').count(),4,'native clients visible, OAuth identity deduplicated, revoked OAuth excluded');
  assert.equal(await page.locator('#connectedApplications strong').allTextContents().then(names=>names.slice(0,3).includes('Qoopia Claude memory')),true);
- assert.equal(await page.locator('[data-connection="'+museId+'"] .connection-state').innerText(),'Request received — verify connection');
- assert.equal(await page.locator('[data-connection-drafts]').getAttribute('open'),null,'unused drafts collapsed');
- assert.equal(await page.locator('[data-connection="'+grokId+'"] > summary').isVisible(),false);
+ assert.equal(await page.locator('[data-connection="'+museId+'"] .connection-state').innerText(),'Waiting for setup');
+ assert.equal(await page.locator('[data-connection-drafts]').count(),0,'pending connections remain visible');
+ assert.equal(await page.locator('[data-connection="'+grokId+'"] > summary').isVisible(),true);
  await page.locator('[data-connection="'+museId+'"] > summary').click();await page.locator('[data-copy-setup="'+museId+'"]').click();
  const copiedMuse=JSON.parse(await page.evaluate(()=>navigator.clipboard.readText()));assert.equal(copiedMuse.mcpServers['qoopia_'+museId.replaceAll('-','')].url,connectionFixtures[0].mcp_url);
- assert.equal(Object.keys(copiedMuse.mcpServers).length,1);assert.equal(await page.locator('[data-connection="'+museId+'"] code').innerText(),'muse mcp login qoopia_'+museId.replaceAll('-',''));
- await page.locator('[data-connection-drafts] > summary').click();
- await page.locator('[data-connection="'+grokId+'"] > summary').click();await page.locator('[data-copy-setup="'+grokId+'"]').click();await page.locator('#setupFeedback').filter({hasText:'Setup and verification copied'}).waitFor();assert((await page.evaluate(()=>navigator.clipboard.readText())).includes(connectionFixtures[1].mcp_url));
+ assert.equal(Object.keys(copiedMuse.mcpServers).length,1);assert.equal(await page.locator('[data-connection="'+museId+'"] code').textContent(),'muse mcp login qoopia_'+museId.replaceAll('-',''));
+
+ await page.locator('[data-connection="'+grokId+'"] > summary').click();await page.locator('[data-copy-request="'+grokId+'"]').click();await page.locator('#setupFeedback').filter({hasText:'Request copied.'}).waitFor();assert((await page.evaluate(()=>navigator.clipboard.readText())).includes(connectionFixtures[1].mcp_url));
  const beforePoll=connectionOverviewPolls,previousRequest=await page.locator('[data-connection="'+museId+'"] .meta').first().innerText();connectionFixtures[0].last_seen='2026-09-29T22:20:00Z';
- await page.waitForFunction(previous=>document.querySelector('[data-connection-drafts]')?.open&&document.querySelector('[data-connection="11111111-1111-4111-8111-111111111111"] .meta')?.textContent!==previous,previousRequest,{timeout:12000});
+ await page.waitForFunction(previous=>document.querySelector('[data-connection="11111111-1111-4111-8111-111111111111"] .meta')?.textContent!==previous,previousRequest,{timeout:12000});
  assert(connectionOverviewPolls>beforePoll,'existing access refreshes during background polling');
  await page.locator('#setupNew summary').click();await page.locator('#setupSurface').selectOption('codex');await page.locator('#setupApply').click();
- const newDraft=page.locator('[data-connection-drafts] [data-connection]').filter({has:page.locator('summary span:first-child',{hasText:'Codex CLI'})});await newDraft.locator('[data-verify-connection]').waitFor();
- assert(await page.locator('[data-connection-drafts]').evaluate(e=>e.open),'new connection opens its draft group');assert(await newDraft.evaluate(e=>e.open),'new connection details open');
+ const newDraft=page.locator('[data-connection]').filter({has:page.locator('summary span:first-child',{hasText:'Codex CLI'})});await newDraft.locator('[data-copy-request]').waitFor();
+assert(await newDraft.evaluate(e=>e.open),'new connection details open');
  assert(await newDraft.locator(':scope > summary').evaluate(e=>document.activeElement===e),'new connection receives keyboard focus');
- await newDraft.locator('[data-verify-connection]').click();await newDraft.locator('[data-proof]').filter({hasText:'connection_verify'}).waitFor();
+ await newDraft.locator('[data-copy-request]').click();assert((await page.evaluate(()=>navigator.clipboard.readText())).includes('qoopia_protocol'));
  await page.screenshot({path:dir+'/desktop-connection-instructions-en.png'});
  await page.locator('.topbar [data-language="ru"]').click();await page.waitForTimeout(100);
- assert.equal(await page.locator('[data-connection="'+museId+'"] .connection-state').innerText(),'Запрос получен — подтвердите подключение');
+ assert.equal(await page.locator('[data-connection="'+museId+'"] .connection-state').innerText(),'Ждёт настройки');
  await page.setViewportSize({width:390,height:844});assert.equal(await page.locator('#main').evaluate(e=>e.scrollWidth>e.clientWidth+1),false,'mobile connections overflow');await page.screenshot({path:dir+'/mobile-connections-ru.png'});
  await page.setViewportSize({width:1440,height:1000});await page.locator('.topbar [data-language="en"]').click();
  const proposal=new URL(config.url+'/dashboard');proposal.hash='connections';
@@ -52,8 +53,8 @@ if(config.fixture!=='qoopia-dashboard-preview/1'||new URL(config.url).hostname!=
  await page.screenshot({path:dir+'/desktop-muse-review-en.png'});
  proposal.searchParams.set('connection',museId);await page.goto(proposal.href);await page.waitForFunction(()=>document.querySelector('[data-label-name="11111111-1111-4111-8111-111111111111"]')?.value==='FIBI');
  assert.equal(proposalWrites,0);await page.locator('[data-label-connection="'+museId+'"]').click();await page.waitForFunction(()=>document.querySelector('[data-connection="11111111-1111-4111-8111-111111111111"] summary')?.textContent.includes('FIBI · Muse.app'));
- assert.equal(proposalWrites,1);await page.locator('[data-copy-setup="'+museId+'"]').click();await page.locator('#setupFeedback').filter({hasText:'Setup and verification copied'}).waitFor();const cloudRequest=await page.evaluate(()=>navigator.clipboard.readText());assert(cloudRequest.includes('FIBI'));assert(cloudRequest.includes(connectionFixtures[0].mcp_url));assert(!cloudRequest.includes('muse mcp login'));assert(!cloudRequest.includes('settings.json'));assert(cloudRequest.includes('connection_verify'));assert(cloudRequest.includes(museId));assert.equal(proposalWrites,2);
- await page.locator('[data-verify-connection="'+museId+'"]').waitFor({state:'visible'});
+ assert.equal(proposalWrites,1);await page.locator('[data-copy-request="'+museId+'"]').click();await page.locator('#setupFeedback').filter({hasText:'Request copied.'}).waitFor();const cloudRequest=await page.evaluate(()=>navigator.clipboard.readText());assert(cloudRequest.includes('FIBI'));assert(cloudRequest.includes(connectionFixtures[0].mcp_url));assert(!cloudRequest.includes('muse mcp login'));assert(!cloudRequest.includes('settings.json'));assert(cloudRequest.includes('qoopia_protocol'));assert(!cloudRequest.includes('challenge'));assert.equal(proposalWrites,1);
+ assert.equal(await page.locator('[data-verify-connection]').count(),0);
  await page.locator('.topbar [data-language="ru"]').click();await page.setViewportSize({width:390,height:844});await page.waitForTimeout(100);assert.equal(await page.locator('#main').evaluate(e=>e.scrollWidth>e.clientWidth+1),false,'mobile Muse name and setup overflow');await page.screenshot({path:dir+'/mobile-muse-app-ru.png'});
  await page.setViewportSize({width:1440,height:1000});await page.locator('.topbar [data-language="en"]').click();
  proposal.searchParams.set('workspace','wrong-workspace');await page.goto(proposal.href);await page.locator('#setupFeedback').filter({hasText:'does not match your workspace'}).waitFor();assert.equal(await page.locator('#setupAgentName').inputValue(),'');

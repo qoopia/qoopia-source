@@ -5,6 +5,7 @@ const files:Record<string,string>={
   'i18n.js':'text/javascript; charset=utf-8','base.css':'text/css; charset=utf-8','tokens.css':'text/css; charset=utf-8',
   'app.js':'text/javascript; charset=utf-8','graphite/icon-180.png':'image/png','graphite/icon-192.png':'image/png','graphite/icon-512.png':'image/png',
   'agent-chat.js':'text/javascript; charset=utf-8','agent-chat.css':'text/css; charset=utf-8',
+  'consent-session.js':'text/javascript; charset=utf-8',
   'graphite/favicon.svg':'image/svg+xml',
   'Manrope.ttf':'font/ttf','graphite/qoopia-mark-ivory.svg':'image/svg+xml','graphite/qoopia-wordmark-ivory.svg':'image/svg+xml',
   'dashboard.js':'text/javascript; charset=utf-8','dashboard.css':'text/css; charset=utf-8',
