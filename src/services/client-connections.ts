@@ -1,7 +1,7 @@
 import {randomBytes, randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {db} from '../db/connection.ts';
-import {createAgent} from '../admin/agents.ts';
+import {createAgent, AGENT_NAME_RE} from '../admin/agents.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {authorize, currentToolAuth} from '../auth/policy.ts';
 import type {AuthContext} from '../auth/middleware.ts';
@@ -15,7 +15,8 @@ import {configureNativeClient} from '../delivery/client-config.ts';
 import {desktopAuthStatus,startDesktopAuth,cancelDesktopAuth} from '../delivery/desktop-auth.ts';
 
 const clientDirectory=z.string().startsWith('/').max(4096).optional();
-const selection = {surface:z.enum(surfaces), access_mode:z.enum(['read','read_write']), request_key:z.string().min(1).max(100),transport:z.enum(['auto','local','remote']).default('auto')};
+const agentName=z.string().trim().regex(AGENT_NAME_RE,'Use 1–64 letters, digits, spaces, underscores or hyphens');
+const selection = {surface:z.enum(surfaces), access_mode:z.enum(['read','read_write']), agent_name:agentName.optional(), request_key:z.string().min(1).max(100),transport:z.enum(['auto','local','remote']).default('auto')};
 export const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('plan'),...selection}).strict(),
   z.object({action:z.literal('apply'),...selection}).strict(),
@@ -23,6 +24,7 @@ export const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('resume'),id:connectionId}).strict(),
   z.object({action:z.literal('verify'),id:connectionId}).strict(),
   z.object({action:z.literal('disconnect'),id:connectionId}).strict(),
+  z.object({action:z.literal('label'),id:connectionId,agent_name:agentName,surface:z.enum(['muse_app','muse_code']).optional()}).strict(),
   z.object({action:z.literal('client-plan'),id:connectionId,config_directory:clientDirectory}).strict(),
   z.object({action:z.literal('client-apply'),id:connectionId,config_directory:clientDirectory}).strict(),
   z.object({action:z.literal('client-status'),id:connectionId,config_directory:clientDirectory}).strict(),
@@ -43,17 +45,17 @@ function owned(ownerId:string,id:string):Row {
   if(!row)throw new QoopiaError('NOT_FOUND','Connection unavailable');return row;
 }
 function status(row:Row) {
-  const active=!!db.query('SELECT 1 FROM agents WHERE id=? AND workspace_id=? AND active=1').get(row.agent_id,row.workspace_id);
-  const revoked=row.state==='revoked'||!active;
+  const agent=db.query('SELECT name,last_seen FROM agents WHERE id=? AND workspace_id=? AND active=1').get(row.agent_id,row.workspace_id) as {name:string;last_seen:string|null}|null;
+  const revoked=row.state==='revoked'||!agent;
   const layout=process.env.QOOPIA_STANDALONE_LAYOUT;
-  return {id:row.id,surface:row.surface,workspace_id:row.workspace_id,access_mode:row.access_mode,
+  return {id:row.id,surface:row.surface,agent_name:agent?.name??null,workspace_id:row.workspace_id,access_mode:row.access_mode,
     state:revoked?'error':row.state==='verified'?'ready':'requires_user_action',code:revoked?'REVOKED':row.state==='verified'?'CLIENT_CALL_VERIFIED':'CLIENT_CALL_REQUIRED',
-    mcp_url:connectionResource(row.id),verified_at:row.verified_at,
+    mcp_url:connectionResource(row.id),verified_at:row.verified_at,last_seen:revoked?null:agent?.last_seen??null,
     evidence:row.verified_at?'authenticated_mcp_call':null,live_availability:'not_checked',
     client_config:row.surface==='codex'||row.surface==='claude_code'||row.surface==='claude_desktop'?(process.env.QOOPIA_STANDALONE_LAYOUT&&(row.surface!=='claude_desktop'||process.platform==='darwin')?'on_this_computer':'download_file'):null,
     ...(row.surface==='claude_desktop'&&layout&&process.platform==='darwin'&&!revoked?{client_auth:desktopAuthStatus(JSON.parse(layout).root,{
       format:'qoopia-client-connection/1',connection_id:row.id,workspace_id:row.workspace_id,surface:row.surface,access_mode:row.access_mode,mcp_url:connectionResource(row.id)})}:{}),
-    next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then run the verification prompt in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then run the verification prompt in a Bot conversation.':'Add the MCP URL in the selected client, consent, then run the verification prompt.'};
+    next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_app'?'Send this exact MCP URL to the Muse.app cloud agent. Use its supported remote MCP runtime and secure OAuth callback; do not use Muse Code CLI commands or paste callback codes into chat. Then verify from that agent.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then run the verification prompt in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then run the verification prompt in a Bot conversation.':'Add the MCP URL in the selected client, consent, then run the verification prompt.'};
 }
 export function connectionAction(ownerId:string,raw:unknown) {
   const input=connectionActionSchema.parse(raw),owner=localOwner(db,ownerId);authorize(db,owner,'owner');
@@ -63,7 +65,7 @@ export function connectionAction(ownerId:string,raw:unknown) {
   if(input.action==='apply')return db.transaction(()=>{
     const previous=db.query('SELECT * FROM client_connections WHERE owner_id=? AND request_key=?').get(ownerId,input.request_key) as Row|null;
     if(previous){
-      if(previous.surface!==input.surface||previous.access_mode!==input.access_mode||
+      if(previous.surface!==input.surface||previous.access_mode!==input.access_mode||input.agent_name!==undefined&&status(previous).agent_name!==input.agent_name||
         input.transport==='local'&&!previous.origin.startsWith('http:')||input.transport==='remote'&&!previous.origin.startsWith('https:'))throw new QoopiaError('IDEMPOTENCY_MISMATCH','Request key was used for another selection');
       return {format:'qoopia-connections/1',connection:status(previous),created:false};
     }
@@ -74,7 +76,7 @@ export function connectionAction(ownerId:string,raw:unknown) {
     if((input.transport==='remote'||!native)&&!origin.startsWith('https:'))throw new QoopiaError('NOT_READY','Enable external access before preparing this client');
     if(local&&!origin.startsWith('http:'))throw new QoopiaError('UNSUPPORTED','A local client must run on the installation machine; use the server connection here');
     const workspace=db.query('SELECT slug FROM workspaces WHERE id=?').get(owner.workspace_id) as {slug:string};
-    const id=randomUUID(),agent=createAgent({name:input.surface+' '+id.slice(0,8),workspaceSlug:workspace.slug,type:'standard'});
+    const id=randomUUID(),agent=createAgent({name:input.agent_name??input.surface+' '+id.slice(0,8),workspaceSlug:workspace.slug,type:'standard'});
     // Discard the initial API key. The selected client obtains its own OAuth grant after consent.
     db.query("UPDATE agents SET tool_profile=?,authority_profile='memory-worker',legacy_skill_access=0 WHERE id=?")
       .run(input.access_mode==='read'?'read-only':'no-destructive',agent.id);
@@ -112,6 +114,14 @@ export function connectionAction(ownerId:string,raw:unknown) {
     return {format:'qoopia-connections/1',state:'ready',code:'DISCONNECTED',id:row.id,memory_preserved:true};
   })();
   if(row.state==='revoked')throw new QoopiaError('REVOKED','Create a new connection to reconnect');
+  if(input.action==='label')return db.transaction(()=>{
+    if(input.surface&&row.surface!=='muse_app'&&row.surface!=='muse_code')throw new QoopiaError('INVALID_INPUT','Only Muse connections can change their Muse surface');
+    if(db.query('SELECT 1 FROM agents WHERE workspace_id=? AND name=? AND active=1 AND id!=?').get(row.workspace_id,input.agent_name,row.agent_id))
+      throw new QoopiaError('CONFLICT','An active agent already uses this name');
+    db.query('UPDATE agents SET name=? WHERE id=? AND workspace_id=?').run(input.agent_name,row.agent_id,row.workspace_id);
+    if(input.surface)db.query('UPDATE client_connections SET surface=? WHERE id=?').run(input.surface,row.id);
+    return {format:'qoopia-connections/1',connection:status(owned(ownerId,row.id)),memory_preserved:true};
+  })();
   if(input.action==='resume')return {format:'qoopia-connections/1',connection:status(row)};
   const challenge=randomBytes(24).toString('base64url');
   db.query('UPDATE client_connections SET challenge_hash=?,challenge_expires_at=? WHERE id=?')

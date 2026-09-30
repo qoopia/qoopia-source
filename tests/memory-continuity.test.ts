@@ -5,10 +5,33 @@ import {createWorkspace} from '../src/admin/workspaces.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {continuityEvent,checkpointSession,restoreContext} from '../src/services/continuity.ts';
 import {updateNote} from '../src/services/notes.ts';
+import {QoopiaError} from '../src/utils/errors.ts';
 let workspace:string,agent:string,other:string;
 beforeAll(()=>{runMigrations();const ws=createWorkspace({name:'Continuity check',slug:'continuity-check'});workspace=ws.id;
   agent=createAgent({name:'continuity-agent',workspaceSlug:ws.slug}).id;other=createAgent({name:'continuity-other',workspaceSlug:ws.slug}).id;});
 const summarize=async()=>({text:'Цель: сохранить данные на Corsair. Сделано: резервная копия. Дальше: проверить восстановление.',model:'test-fixture',observed_models:[]});
+test('a timed-out checkpoint retries smaller batches without losing or acknowledging source messages',async()=>{
+  const session='claude_code:timeout-recovery';
+  const event={session_id:session,project:'/timeout-check',runtime:'claude_code',event:'precompact',
+    messages:Array.from({length:4},(_,i)=>({id:'timeout-'+i,role:'user',content:'Synthetic decision '+i+' '.repeat(2100)}))};
+  continuityEvent(workspace,agent,event);
+  await expect(checkpointSession(workspace,agent,session,async(_w,_i,input)=>{
+    expect((input as any).new_events).toHaveLength(4);throw new QoopiaError('MODEL_TIMEOUT','Synthetic timeout');
+  })).rejects.toThrow('Synthetic timeout');
+  expect(restoreContext(workspace,agent,session).revision).toBe(0);
+  expect(restoreContext(workspace,agent,session).tail).toHaveLength(4);
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error','MODEL_TIMEOUT','$.continuity_retry_at',?) WHERE id=?").run(Date.now()+300_000,session);
+  const ids:number[]=[];
+  for(let i=0;i<2;i++)await checkpointSession(workspace,agent,session,async(_w,_i,input)=>{
+    const events=(input as any).new_events as {id:number}[];
+    expect(events).toHaveLength(2);ids.push(...events.map(e=>e.id));return summarize();
+  });
+  expect(new Set(ids).size).toBe(4);
+  expect(restoreContext(workspace,agent,session).revision).toBe(2);
+  expect(restoreContext(workspace,agent,session).tail).toHaveLength(0);
+  const meta=JSON.parse((db.query('SELECT metadata FROM sessions WHERE id=?').get(session) as {metadata:string}).metadata);
+  expect(meta.continuity_error).toBeUndefined();expect(meta.continuity_retry_at).toBeUndefined();
+});
 test('journal replay is idempotent; living note and immutable source ranges advance together',async()=>{
   const event={session_id:'claude_code:continuity-one',project:'/project-one',runtime:'claude_code',event:'progress',messages:[
     {id:'one-1',role:'user',content:'Данные остаются на Corsair.'},{id:'one-2',role:'assistant',content:'Резервная копия создана.'}]};

@@ -123,10 +123,10 @@ async function main(){
  if(cmd==='connections'){
    const {runConnectionCommand}=await import('./connection-cli.ts');
    const action=argv[1]??'status';
-   if(!['plan','apply','status','resume','verify','disconnect','network-plan','network-status','network-start','network-resume','network-enable','network-disable','network-devices','network-revoke','client-plan','client-apply','client-status','client-remove','client-export','client-auth-start','client-auth-status'].includes(action))throw new Error('Unknown connections action');
+   if(!['plan','apply','label','status','resume','verify','disconnect','network-plan','network-status','network-start','network-resume','network-enable','network-disable','network-devices','network-revoke','client-plan','client-apply','client-status','client-remove','client-export','client-auth-start','client-auth-status'].includes(action))throw new Error('Unknown connections action');
    const input=arg('input')?readJson<Record<string,unknown>>(safePath(need('input'))):{};
    if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('Connection input must be an object');
-   if(['apply','disconnect','network-start','network-enable','network-disable','network-revoke','client-apply','client-remove','client-auth-start'].includes(action)&&!flag('commit')){
+   if(['apply','label','disconnect','network-start','network-enable','network-disable','network-revoke','client-apply','client-remove','client-auth-start'].includes(action)&&!flag('commit')){
      emit({format:'qoopia-connections/1',state:'requires_user_action',code:'COMMIT_REQUIRED',next_action:'Review the plan, then apply with --commit.'});return;
    }
    try {

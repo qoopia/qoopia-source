@@ -1,7 +1,7 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "ec5c1a94f3adeb15db29dd25c5ecb3a4d0d808e7",
-  "product_version": "5.0.12",
+  "source_snapshot": "c042f1cf9bba8e7febc5d9e62e3e7caa68b5be3f",
+  "product_version": "5.0.13",
   "runtime_files_identical": true,
   "files": [
     {
@@ -36,8 +36,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "a3f81c62096d16730ce41a15d9d024321c7861fad0a0bf9613d00b14473f4c4f",
-      "bytes": 8167,
+      "sha256": "f394d5c2bc964ec2b0c550dbfb93213a76e191b006286fe547c8c91e895f3708",
+      "bytes": 8669,
       "source_snapshot_identical": true
     },
     {
@@ -78,7 +78,7 @@
     },
     {
       "path": "RELEASE.json",
-      "sha256": "dde8d0585c447d15ffda00d93675857e4aec96da52a7b1e2f68002496c3c47bd",
+      "sha256": "9a6de2725bc0da52b83d441c5235b4ca9ead96649856b324d20d69f4ab78de20",
       "bytes": 179,
       "source_snapshot_identical": false
     },
@@ -324,8 +324,8 @@
     },
     {
       "path": "docs/operations/connections.md",
-      "sha256": "5aa49801f4fedc78b7a09996747ad5909beaf57dbbd87b7b5f826ac9f07e39bd",
-      "bytes": 16484,
+      "sha256": "05c7e4216fb7236f822d4ea60cac83e385259bb8a2e480dc0d401e6be9874c02",
+      "bytes": 18265,
       "source_snapshot_identical": true
     },
     {
@@ -1008,14 +1008,14 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "b550c38b241aa96407610ea640f1d49ba58a0e57575f97ac3e8ae4e52454d99e",
+      "sha256": "59515ff951db4ae43199dfaefc62fed3e7b4b21d1d8e34f7fceaa41729d2ec4d",
       "bytes": 1127,
       "source_snapshot_identical": true
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "311b2326ac280ba2b57cae1138de11c8a15f4682bcb695b93f81ae847b0c7d74",
-      "bytes": 12556,
+      "sha256": "225c2ee24af7141ece774f2d12737c2d7d02407d2ad0e64e79b912269a8f43dd",
+      "bytes": 14022,
       "source_snapshot_identical": true
     },
     {
@@ -1056,7 +1056,7 @@
     },
     {
       "path": "marketing-site/updates/macos/appcast.xml",
-      "sha256": "8ba7b1e68f81f5a511c2449d47a7143cb31bfcd9aa3e4ae1a83e9cf6bce40531",
+      "sha256": "23cb54d1a5559e1a60cfd0f088e36a4659f064cc681c87681259a936e3caf992",
       "bytes": 769,
       "source_snapshot_identical": true
     },
@@ -1422,7 +1422,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "47bc81995b8f382d718c1f5aa8d372897b482378c0387b11b4dd6f346ed41aa5",
+      "sha256": "705bbb0e070f7f2fe6d9bd881aae7cc72fb07c624b4c4fbb191ae0711d796aa9",
       "bytes": 3004,
       "source_snapshot_identical": true
     },
@@ -1548,8 +1548,8 @@
     },
     {
       "path": "scripts/check-dashboard-ui.cjs",
-      "sha256": "c79cb2c7dafb3a6e2c9aede033af79f00fbf86f4c12d120033d2da909b8782c1",
-      "bytes": 11352,
+      "sha256": "5bcea59b8b6bd6ee8946e59cb5ec266e611c4ddc910c5f042ed5a2c08fe8cfa7",
+      "bytes": 18514,
       "source_snapshot_identical": true
     },
     {
@@ -1974,8 +1974,8 @@
     },
     {
       "path": "scripts/v4-contract-snapshot.ts",
-      "sha256": "dd8b784c0a3549e00dc448bc8880d44b2202c8c1ce979aff02a9b00f7d0b52c1",
-      "bytes": 16889,
+      "sha256": "62d020d1c299396875c316920ab36aec8dfba31507348295ae9214b711a4243b",
+      "bytes": 17196,
       "source_snapshot_identical": true
     },
     {
@@ -2250,8 +2250,8 @@
     },
     {
       "path": "src/admin/agents.ts",
-      "sha256": "a0328a58b91a98fe7f66a501b093387db6e34d756aecc852d0c965da6bf56395",
-      "bytes": 5297,
+      "sha256": "82e6611c54eb9ec2fec8cdeafa7027000dd23863e92314641e9344def47a332e",
+      "bytes": 5304,
       "source_snapshot_identical": true
     },
     {
@@ -2280,8 +2280,8 @@
     },
     {
       "path": "src/agent-kit/MCP-CONNECTIONS.md",
-      "sha256": "7b8c85ca457b820edd804b1e8e07541a179fc1313081a1f86afdf0fa0ddc082a",
-      "bytes": 8039,
+      "sha256": "b137c24f19b2f5f0a24d4589662681dc98bea1458c3e563802fa8a6370e06358",
+      "bytes": 11708,
       "source_snapshot_identical": true
     },
     {
@@ -2298,7 +2298,7 @@
     },
     {
       "path": "src/agent-kit/index.ts",
-      "sha256": "841eb20615d5e813eddefa6e63f5e46bf0cf0f6c80b6bdbf719f8573cf1b0557",
+      "sha256": "bfde07c67a71d9be9f82f37728d893b69b0a1ae239dc7a19a7242828720cdf4a",
       "bytes": 2608,
       "source_snapshot_identical": true
     },
@@ -2316,8 +2316,8 @@
     },
     {
       "path": "src/agent-kit/qoopia-protocol.md",
-      "sha256": "e63c59ef0208f092ce31cb18da3674d31b75b2e566a2fcb4b86d5eb38c83804b",
-      "bytes": 11805,
+      "sha256": "a89ea59a8598617c4629da50d978a7f80796c546e072bc6d9192bb9e0bf16390",
+      "bytes": 12195,
       "source_snapshot_identical": true
     },
     {
@@ -2328,8 +2328,8 @@
     },
     {
       "path": "src/api/agent-contract.ts",
-      "sha256": "4e1ace8151c5b8785f6b2655c2e7770b6782c9188aab6ce3ce066e8b8cb8a5fc",
-      "bytes": 9576,
+      "sha256": "aceba70098a508f813bec94ec24f2410ad99fab48a7803cca82cf7c8251bf0f5",
+      "bytes": 9607,
       "source_snapshot_identical": true
     },
     {
@@ -2370,8 +2370,8 @@
     },
     {
       "path": "src/auth/policy.ts",
-      "sha256": "90d1c361b765ffda39ad2d5b48f8d801bbed3840fd43730a70065cd21b9498ad",
-      "bytes": 6417,
+      "sha256": "968b63295db2c3f2e400ad2982c087dd5ac8f9fc3f6c30d736a12891d0fc6509",
+      "bytes": 6439,
       "source_snapshot_identical": true
     },
     {
@@ -2568,8 +2568,8 @@
     },
     {
       "path": "src/delivery/entry.ts",
-      "sha256": "158ea9f533ad6b61ee88cd54b7eff70d93475afa2eac4d123226c5ac125768a7",
-      "bytes": 35825,
+      "sha256": "c156b65ab03ef60896dab14179c69f9fe84aacf73b836a9e643263225b9d8c19",
+      "bytes": 35841,
       "source_snapshot_identical": true
     },
     {
@@ -2886,8 +2886,8 @@
     },
     {
       "path": "src/mcp/admin-tools.ts",
-      "sha256": "a4e39fd9ba05b788ce15e78a4be2ac9ba9e614eb3afa215deff0aa6e8730d0ce",
-      "bytes": 18429,
+      "sha256": "293e48599ff8d7bd451d50ee3ee6252238c96930051303364c92d5f3eb08e0e3",
+      "bytes": 21930,
       "source_snapshot_identical": true
     },
     {
@@ -3012,8 +3012,8 @@
     },
     {
       "path": "src/public/brand/dashboard.js",
-      "sha256": "6877ce139b4d6df9173bdd11f239077303651030a88797b75d5d0b189974c58a",
-      "bytes": 170034,
+      "sha256": "c56027ea529839f8fc82b1b55fc8afdbf0d68906225b4ee266390432b6c4cf10",
+      "bytes": 179400,
       "source_snapshot_identical": true
     },
     {
@@ -3132,20 +3132,20 @@
     },
     {
       "path": "src/public/connections-agent.md",
-      "sha256": "7c69babdcf24b0e450b13c4127b0cfe62595901759b2796eca099beb78ca68ea",
-      "bytes": 12274,
+      "sha256": "d8206cc629b0d247db70b059e6ced75b4c79edd9da34729dc26f801c76def765",
+      "bytes": 14057,
       "source_snapshot_identical": true
     },
     {
       "path": "src/public/connections-guide-en.html",
-      "sha256": "1475eb49d334ee5685c0017307a368982790579c96b15c39db160bb11a7aefab",
-      "bytes": 11802,
+      "sha256": "f1032cc91b40fa693e9f00f75881b9d6ab553acee7bfceec0f3c5b215d2dc37a",
+      "bytes": 12668,
       "source_snapshot_identical": true
     },
     {
       "path": "src/public/connections-guide-ru.html",
-      "sha256": "fc52e5ad4db38b6a79c5a85c5a320fb02e6ef5380d087de360b0b25628a4497b",
-      "bytes": 18506,
+      "sha256": "cd97b7656388a8697b0b4e3e0f4fb19b0bc403f49041670ccb6b43388bdee0fd",
+      "bytes": 19864,
       "source_snapshot_identical": true
     },
     {
@@ -3210,8 +3210,8 @@
     },
     {
       "path": "src/services/browser-connections.ts",
-      "sha256": "957089a61df5d4f3028192549a649e5729efc2f07d0b23f0a56ea87e2910dcae",
-      "bytes": 3486,
+      "sha256": "066be511f4231acec0d97617a7a2b610aeac93be6209c1e53308d9e6fb08a075",
+      "bytes": 3514,
       "source_snapshot_identical": true
     },
     {
@@ -3228,8 +3228,8 @@
     },
     {
       "path": "src/services/client-connections.ts",
-      "sha256": "7f9880f923f8c12ee535e34a65153eb5d18945325e42eeca319bdc1377b87a10",
-      "bytes": 13864,
+      "sha256": "f2c09d478d0761320b4636d070a51da6671077242add4f3dee34875e840b8d21",
+      "bytes": 15438,
       "source_snapshot_identical": true
     },
     {
@@ -3240,14 +3240,14 @@
     },
     {
       "path": "src/services/connection-identity.ts",
-      "sha256": "d585bf6efc0a4635ddaaf81048c6d91434511296791630fceb82864e6c60c29e",
-      "bytes": 2548,
+      "sha256": "8a38342c292c629c5a740e4b9069e5651c0c7ae143f8cbd05026f2ca84de8f7e",
+      "bytes": 2562,
       "source_snapshot_identical": true
     },
     {
       "path": "src/services/continuity.ts",
-      "sha256": "96f1900d7a55365177028b13dc96d01e9496c85c6eb15c89ab969df48fd7bebd",
-      "bytes": 17897,
+      "sha256": "30b9cce0aa8b1ddcef9fbbcb70bf95d9a6ee6ac7882471d330470d0c37f45a92",
+      "bytes": 18617,
       "source_snapshot_identical": true
     },
     {
@@ -3300,8 +3300,8 @@
     },
     {
       "path": "src/services/memory-model.ts",
-      "sha256": "e60f4069f8d2d638d70a0b1bbce1d944a8121f5a05c2796011a59409013b6165",
-      "bytes": 11980,
+      "sha256": "df57c5807467dab3f4d05355643dd9859019260428a042f37c629f0eeb7411f8",
+      "bytes": 12262,
       "source_snapshot_identical": true
     },
     {
@@ -3744,8 +3744,8 @@
     },
     {
       "path": "tests/agent-contract.test.ts",
-      "sha256": "ca356b2611d709718d29560f689a94f66b2ed0580635dba2b7accc3e428627bc",
-      "bytes": 8016,
+      "sha256": "683fd264ebbe35c2e1bd6aa55de87e38fada2141c838c3c35d0fe8724d5f56b3",
+      "bytes": 8179,
       "source_snapshot_identical": true
     },
     {
@@ -3756,8 +3756,8 @@
     },
     {
       "path": "tests/agent-kit.test.ts",
-      "sha256": "89d4af08bc781016c8f3912620aa71ca49567d97521c96a9a64f7475b14332f1",
-      "bytes": 11946,
+      "sha256": "3ca453eb8a92034ad65923b3f392ff4b246007da67d25086de3cbb410e6ff9f2",
+      "bytes": 12019,
       "source_snapshot_identical": true
     },
     {
@@ -3882,8 +3882,8 @@
     },
     {
       "path": "tests/client-connections.test.ts",
-      "sha256": "8d8801d50e3538777ffd2a2f5a92b035070517a7fb74d8d54f884b573c7631d7",
-      "bytes": 14959,
+      "sha256": "3ff88ea5870cde85c4020bc3853e30298df36b429795975acc97ad3f8a84896c",
+      "bytes": 19434,
       "source_snapshot_identical": true
     },
     {
@@ -4428,8 +4428,8 @@
     },
     {
       "path": "tests/memory-continuity.test.ts",
-      "sha256": "723be7cb0efcb6e3434ddd50b8c6b7c332e157a3a7a2d9f741b4084254805d34",
-      "bytes": 4925,
+      "sha256": "8137c7f7fc12fc7a76d0acf034c8a7e4c276a8b9c3dcec3229fb2e66ab9cf94a",
+      "bytes": 6628,
       "source_snapshot_identical": true
     },
     {

@@ -6,7 +6,7 @@ import { QoopiaError, nowIso } from "../utils/errors.ts";
 
 export type AgentType = "standard" | "claude-privileged" | "steward" | "owner" | "ingest-daemon";
 
-const AGENT_NAME_RE = /^[a-zA-Z0-9_\-\s]{1,64}$/;
+export const AGENT_NAME_RE = /^[a-zA-Z0-9_\-\s]{1,64}$/;
 
 export function createAgent(opts: {
   name: string;

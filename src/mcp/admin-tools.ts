@@ -19,7 +19,10 @@ import { z } from "zod";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
-import { createAgent } from "../admin/agents.ts";
+import { createAgent, AGENT_NAME_RE } from "../admin/agents.ts";
+import { currentToolAuth } from "../auth/policy.ts";
+import { surfaces, connectionId, connectionResource } from "../services/connection-identity.ts";
+import { env } from "../utils/env.ts";
 import { logActivity } from "../services/activity.ts";
 import { getRolePreset, ROLE_PRESET_NAMES } from "../admin/templates.ts";
 import { ulid } from "ulid";
@@ -50,7 +53,43 @@ function assertSteward(auth: AuthContext) {
   }
 }
 
+const connectionPreparationSchema=z.object({
+  agent_name: z.string().trim().regex(AGENT_NAME_RE),
+  surface: z.enum(surfaces),
+  access_mode: z.enum(['read','read_write']).default('read'),
+  connection_id: connectionId.optional().describe('Existing connection to label or resume; never rebinds its identity'),
+}).strict();
+
 export const adminTools: AdminToolDef[] = [
+  {
+    name: "connection_prepare",
+    risk: "read",
+    description: "Prepare a named client connection for the owner to review in the dashboard. Read-only: creates no agent, credential or grant. Reuse an existing connection instead of duplicating it. OAuth and verification must happen in the actual target client.",
+    rawSchema: connectionPreparationSchema.shape,
+    handler(args, auth) {
+      assertSteward(currentToolAuth(db, auth, 'read'));
+      const input=connectionPreparationSchema.parse(args);
+      const agent=db.query('SELECT id FROM agents WHERE workspace_id=? AND name=? AND active=1').get(auth.workspace_id,input.agent_name) as {id:string}|null;
+      const rows=db.query(`SELECT c.id,c.agent_id,c.surface,c.access_mode,c.state,c.verified_at FROM client_connections c
+        JOIN agents a ON a.id=c.agent_id AND a.workspace_id=c.workspace_id AND a.active=1
+        WHERE c.workspace_id=? AND c.state!='revoked' AND ${input.connection_id?'c.id=?':'a.name=?'}`)
+        .all(auth.workspace_id,input.connection_id??input.agent_name) as {id:string;agent_id:string;surface:string;access_mode:string;state:string;verified_at:string|null}[];
+      if(input.connection_id&&!rows.length)throw new QoopiaError('NOT_FOUND','Connection unavailable in this workspace');
+      if(rows.length>1)throw new QoopiaError('CONFLICT','Select an exact connection_id');
+      const existing=rows[0];
+      if(agent&&(!existing||agent.id!==existing.agent_id))throw new QoopiaError('CONFLICT','This agent already has access; reuse its existing client or select its exact connection');
+      if(existing&&(existing.access_mode!==input.access_mode||existing.surface!==input.surface&&![existing.surface,input.surface].every(s=>s==='muse_app'||s==='muse_code')))
+        throw new QoopiaError('CONFLICT','This connection has a different application or access. Resume its actual settings; changing access requires a separate owner-reviewed connection.');
+      const url=new URL('/dashboard',env.PUBLIC_URL);
+      for(const [key,value] of Object.entries({connect:input.surface,agent:input.agent_name,access:input.access_mode,workspace:auth.workspace_id}))url.searchParams.set(key,value);
+      if(existing)url.searchParams.set('connection',existing.id);
+      url.hash='connections';
+      return {format:'qoopia-connections/1',state:'requires_owner_action',workspace_id:auth.workspace_id,selection:input,
+        connection:existing?{...existing,mcp_url:connectionResource(existing.id)}:null,
+        owner_url:url.href,changes_applied:false,transcript_capture:false,
+        next_action:existing?'Open the existing connection in the owner dashboard. Keep its URL, OAuth grant and verification; review its label only.':'Send the owner this review link. The owner reviews the application, name and access, then prepares the connection. Send its exact MCP URL to the target client; complete OAuth and verify there. Never request tokens or callback codes in chat.'};
+    },
+  },
   // --- agent_onboard ---
   {
     name: "agent_onboard",

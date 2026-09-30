@@ -88,7 +88,7 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
   if(prompt.length>140_000)throw new QoopiaError('SIZE_LIMIT','Memory processing input is too large');
   if(queue>=8)throw new QoopiaError('MODEL_BUSY','Memory processing is busy');
   queue++;const previous=tail;let release!:()=>void;tail=new Promise<void>(resolve=>{release=resolve;});
-  await previous;active=true;
+  await previous;active=true;const started=Date.now();
   let directory:string|undefined;
   try {
     const base=privateDirectory(`/var/tmp/qoopia-memory-${process.getuid!()}`);
@@ -97,17 +97,17 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
     await preflightNativeSubscription(profile.runtime,launch);
     const result=await new Promise<{code:number|null;stdout:string;stderr:string}>((resolve,reject)=>{
       const child=spawn(launch.binary,launch.args,{cwd:launch.cwd,env:launch.env,stdio:['pipe','pipe','pipe']});
-      let stdout='',stderr='',failed=false;
-      const timer=setTimeout(()=>{failed=true;child.kill('SIGTERM');},45_000);
+      let stdout='',stderr='',failed:'time'|'output'|undefined;
+      const timer=setTimeout(()=>{failed??='time';child.kill('SIGTERM');},45_000);
       const hard=setTimeout(()=>child.kill('SIGKILL'),47_000);
       const collect=(which:'out'|'err',chunk:Buffer)=>{
-        if(stdout.length+stderr.length+chunk.length>512_000){failed=true;child.kill('SIGTERM');return;}
+        if(stdout.length+stderr.length+chunk.length>512_000){failed??='output';child.kill('SIGTERM');return;}
         if(which==='out')stdout+=chunk.toString();else stderr+=chunk.toString();
       };
       child.stdout.on('data',b=>collect('out',b));child.stderr.on('data',b=>collect('err',b));child.stdin.on('error',()=>{});
       child.stdin.end(prompt);
       child.once('error',()=>{clearTimeout(timer);clearTimeout(hard);reject(new QoopiaError('MODEL_UNAVAILABLE','Native runtime could not start'));});
-      child.once('close',code=>{clearTimeout(timer);clearTimeout(hard);if(failed)reject(new QoopiaError('MODEL_TIMEOUT','Memory model exceeded its time/output budget'));else resolve({code,stdout,stderr});});
+      child.once('close',code=>{clearTimeout(timer);clearTimeout(hard);if(failed)reject(new QoopiaError(failed==='time'?'MODEL_TIMEOUT':'MODEL_INVALID_RESPONSE',failed==='time'?'Memory model exceeded its 45-second time budget':'Memory model exceeded its output budget'));else resolve({code,stdout,stderr});});
     });
     if(result.code!==0) {
       const text=result.stdout+result.stderr;
@@ -135,7 +135,8 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
     return {text:payload.data.result,model:profile.model,observed_models:evidence.models};
   } catch(error) {
     const code=error instanceof QoopiaError?error.code:'';
-    logger.warn('Memory model unavailable: '+redactSensitive(error instanceof Error?error.message:'Unknown dependency failure').text.slice(0,300));
+    logger.warn('Memory model unavailable: '+redactSensitive(error instanceof Error?error.message:'Unknown dependency failure').text.slice(0,300),
+      {code:code||'DEPENDENCY_UNAVAILABLE',runtime:profile.runtime,elapsed_ms:Date.now()-started,input_chars:prompt.length});
     const state:MemoryStatus['state']=code==='UNAUTHENTICATED'?'auth_required':code==='MODEL_QUOTA'?'quota':code==='MODEL_TIMEOUT'?'timeout':code==='MODEL_INVALID_RESPONSE'?'invalid_response':'unavailable';
     states.set(workspace,{state,requested_model:profile.model,checked_at:new Date().toISOString()});throw error;
   } finally {try{if(directory)fs.rmSync(directory,{recursive:true,force:true});}finally{active=false;queue--;release();}}

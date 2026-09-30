@@ -75,6 +75,7 @@ test('completed writes with pending receipt finalize; reconnect preserves the st
 const PUBLISHED_REVISIONS: Record<number, string> = {
   4: '9b92f581a013443daeb74d5af01a1910bd5dd5d66244a6ddc4330301f9ecf4ce',
   5: '4eabb8275fa226ca923164a383defdff200c1b1979137c1c99af3ab81db91fc4',
+  6: '7a80edbe54275c1f9622ee003eae27bcf944cabc82c64cc27ef020e8b56fc4ce',
 };
 test('changing a shipped document requires a new kit revision',()=>{
   const combined=hash(['qoopia-protocol.md','MCP-CONNECTIONS.md','SOUL.md','OPERATIONS.md']

@@ -218,7 +218,9 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
     const tool = projected.canonical_tools.find((t) => t.name === name);
     if (!tool || tool.risk !== "admin") throw new Error(`V1 memory policy tool missing or not admin-risk: ${name}`);
   }
-  projected.canonical_tools = projected.canonical_tools.filter((t) => !memoryPolicyTools.includes(t.name));
+  const prepare = projected.canonical_tools.find((t) => t.name === "connection_prepare");
+  if (!prepare || prepare.risk !== "read" || !prepare.description.includes("creates no agent, credential or grant")) throw new Error("Connection preparation must remain read-only");
+  projected.canonical_tools = projected.canonical_tools.filter((t) => !memoryPolicyTools.includes(t.name) && t.name !== "connection_prepare");
   return projected;
 }
 

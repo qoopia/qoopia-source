@@ -23,6 +23,7 @@ export const surfaces = [
   "codex",
   "claude_code",
   "muse_code",
+  "muse_app",
   "grok_bot",
 ] as const;
 

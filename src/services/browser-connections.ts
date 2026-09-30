@@ -29,6 +29,7 @@ export function browserAgent(name:'GPT'|'Claude') {
 export function browserConnectionState(ownerId:string) {
   const owner=localOwner(db,ownerId),workspace=owner.workspace_id;
   return {
+    workspace_id:workspace,
     mcp_url:new URL('/mcp',env.PUBLIC_URL).href,
     workspace:(db.query('SELECT name FROM workspaces WHERE id=?').get(workspace) as {name:string}).name,
     memory_model:memoryModelStatus(workspace),
