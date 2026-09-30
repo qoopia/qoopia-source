@@ -11,10 +11,11 @@ import {remoteConnectionConsent} from '../src/identity/connection-consent.ts';
 import {durableWrite,privateDirectory} from '../src/utils/fs.ts';import {env} from '../src/utils/env.ts';
 import {startHttpServer} from '../src/http.ts';import {authLimiter} from '../src/utils/rate-limit.ts';
 import {authenticate} from '../src/auth/middleware.ts';
+import {signSession} from '../src/dashboard-session.ts';
 
 test('remote owner consent binds browser, account and exact client; real finalize and token exchange grant no dashboard authority',async()=>{
   runMigrations();const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-remote-consent-')),registry=new Database(':memory:');
-  const origin='https://consent.example',loginOrigin='https://auth.example',prior=env.PUBLIC_URL;env.PUBLIC_URL=origin;
+  const origin='https://consent.example',loginOrigin='https://auth.example',prior=env.PUBLIC_URL,priorRoot=env.ROOT_DIR;env.PUBLIC_URL=origin;env.ROOT_DIR=root;
   const owner=bootstrapOwner(db,'Remote owner',undefined,createWorkspace({name:'Private remote space',slug:randomUUID()}).id);
   privateDirectory(path.join(root,'config'));const bindingFile=path.join(root,'config/owner-identity.json');
   const binding={ownerId:owner.agent_id,email:'owner@example.test'};durableWrite(bindingFile,JSON.stringify(binding));
@@ -86,17 +87,36 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     expect(deniedTarget.searchParams.get('error')).toBe('access_denied');
     expect(deniedTarget.searchParams.get('iss')).toBe(origin+'/oauth/c/'+another.connection.id);
     expect(deniedTarget.searchParams.get('state')).toBe('client-state');expect(deniedTarget.searchParams.has('code')).toBe(false);
+    const approvalNonce=browser.nonce();
     const allowed=await browser.post('approve');expect(allowed.result.status).toBe(303);
     const agent=connectionRegistrationAuth(first.connection.id).agent_id;
     expect(getConsentTicket(first.ticket.id)!.approved_by_agent_id).toBe(agent);expect(agent).not.toBe(owner.agent_id);
     authLimiter.resetForTests();const final=await fetch(base+'/oauth/authorize/finalize?ticket='+first.ticket.id,{redirect:'manual'});
     expect(final.status).toBe(302);const target=new URL(final.headers.get('location')!);expect(target.searchParams.get('iss')).toBe(origin+'/oauth/c/'+first.connection.id);
+    const replay=await browser.post('approve',{nonce:approvalNonce});expect(replay.result.status).toBe(303);expect(replay.result.headers.get('location')).toBe(target.href);
+    expect((await browser.get()).result.headers.get('location')).toBe(target.href);
+    expect((await handler(new Request(origin+'/oauth/consent?ticket='+first.ticket.id))).status).toBe(403);
     const exchange=await fetch(base+'/oauth/token',{method:'POST',body:new URLSearchParams({grant_type:'authorization_code',client_id:first.client.client_id,
       code:target.searchParams.get('code')!,code_verifier:first.verifier,redirect_uri:first.client.redirect_uris[0]!,resource:first.connection.mcp_url})});
     expect(exchange.status).toBe(200);const token=(await exchange.json() as any).access_token;
     expect(authenticate(new Request(first.connection.mcp_url,{headers:{authorization:'Bearer '+token}}))?.agent_id).toBe(agent);
     expect((await fetch(base+'/api/dashboard/connection-setup',{headers:{authorization:'Bearer '+token}})).status).toBe(401);
-    expect((await browser.post('approve')).result.status).toBe(410);
+    expect((await browser.post('approve')).result.status).toBe(403);
+
+    // A live human dashboard session needs consent, not another email login.
+    const direct=make(),dashboardCookie='qoopia_dash='+signSession(owner.agent_id,(db.query('SELECT session_version FROM agents WHERE id=?').get(owner.agent_id) as {session_version:number}).session_version);
+    const reviewDirect=await fetch(base+'/api/dashboard/oauth-consent?ticket='+direct.ticket.id,{headers:{cookie:dashboardCookie},redirect:'manual'});
+    expect(reviewDirect.status).toBe(200);const directHtml=await reviewDirect.text();expect(directHtml).toContain('Authorize access');
+    expect(getConsentTicket(direct.ticket.id)!.approved_by_agent_id).toBeNull();
+    const directApprove=await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',headers:{cookie:dashboardCookie,origin,
+      'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket:direct.ticket.id,nonce:directHtml.match(/name="nonce" value="([^"]+)"/)![1]!}),redirect:'manual'});
+    expect(directApprove.status).toBe(302);expect(getConsentTicket(direct.ticket.id)!.approved_by_agent_id).toBe(connectionRegistrationAuth(direct.connection.id).agent_id);
+    const strangerCookie='qoopia_dash='+signSession(connectionRegistrationAuth(first.connection.id).agent_id,0);
+    const forbidden=make();
+    expect((await fetch(base+'/api/dashboard/oauth-consent?ticket='+forbidden.ticket.id,{headers:{cookie:strangerCookie}})).status).toBe(403);
+    const fallback=await fetch(base+'/api/dashboard/oauth-consent?ticket='+forbidden.ticket.id+'&session_check=1',{redirect:'manual'});
+    expect(fallback.status).toBe(302);expect(fallback.headers.get('location')).toBe(origin+'/oauth/consent?ticket='+forbidden.ticket.id);
+    expect(emails).toHaveLength(1);
 
     const wrong=make(),stranger=await session(wrong);
     await stranger.post('start',{method:'email',email:'stranger@example.test'});await confirm();
@@ -124,5 +144,5 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     expect((await resumed.post('approve')).result.status).toBe(403);expect(getConsentTicket(restart.ticket.id)!.approved_by_agent_id).toBeNull();
     const expiry=make(),expired=await session(expiry),clock=spyOn(Date,'now').mockReturnValue(Date.now()+601_000);
     try{expect((await expired.post('start',{method:'email',email:binding.email})).result.status).toBe(403);}finally{clock.mockRestore();}
-  }finally{env.PUBLIC_URL=prior;server.closeAllConnections();server.close();registry.close();fs.rmSync(root,{recursive:true,force:true});}
+  }finally{env.PUBLIC_URL=prior;env.ROOT_DIR=priorRoot;server.closeAllConnections();server.close();registry.close();fs.rmSync(root,{recursive:true,force:true});}
 });

@@ -7,7 +7,7 @@ import {createWorkspace} from '../src/admin/workspaces.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {adminTools} from '../src/mcp/admin-tools.ts';
-import {connectionAction} from '../src/services/client-connections.ts';
+import {connectionAction,observeClientProtocol} from '../src/services/client-connections.ts';
 import {startHttpServer} from '../src/http.ts';
 import {env} from '../src/utils/env.ts';
 import {authLimiter,dashboardLimiter} from '../src/utils/rate-limit.ts';
@@ -84,6 +84,26 @@ test('Muse Code and cloud Grok Bot get distinct HTTPS addresses and remain unver
   }}finally{env.PUBLIC_URL=base;}
 });
 test('declining local OAuth includes the pinned issuer without issuing a code',async()=>{await authorize(apply(),owner,true);});
+test('automatic protocol proof rejects fabricated bindings and works with read-only OAuth without granting writes',async()=>{
+  const connection=apply(owner,'read'),token=await authorize(connection);
+  const auth=authenticate(new Request(connection.mcp_url,{headers:{authorization:'Bearer '+token.access_token}}))!;
+  expect(()=>observeClientProtocol({...auth,source:'api-key'})).toThrow('Use the client OAuth connection');
+  expect(()=>observeClientProtocol({...auth,oauth_client_id:'unregistered-client'})).toThrow('OAuth client does not belong');
+  expect(()=>observeClientProtocol({...auth,granted_scope:[]})).toThrow('Current scope');
+  expect((await call(connection,token.access_token,'qoopia_protocol',{section:'invalid'})).data.result.isError).toBe(true);
+  expect((connectionAction(owner.agent_id,{action:'resume',id:connection.id}) as any).connection.state).toBe('requires_user_action');
+  const priorRole=env.SERVER_ROLE;env.SERVER_ROLE='legacy-readonly';
+  try{observeClientProtocol(auth);expect((db.query('SELECT state FROM client_connections WHERE id=?').get(connection.id) as any).state).toBe('awaiting_client');}
+  finally{env.SERVER_ROLE=priorRole;}
+  const legacy=connectionAction(owner.agent_id,{action:'verify',id:connection.id}) as any;
+  expect((await call(connection,token.access_token,'qoopia_protocol',{})).data.result.isError).not.toBe(true);
+  expect((connectionAction(owner.agent_id,{action:'resume',id:connection.id}) as any).connection.state).toBe('ready');
+  // An older client's outstanding challenge still works after the automatic first call.
+  expect((await call(connection,token.access_token,'connection_verify',{connection_id:connection.id,challenge:legacy.prompt.match(/challenge "([^"]+)"/)[1]})).data.result.isError).not.toBe(true);
+  expect((await call(connection,token.access_token,'note_create',{text:'Must not save',type:'memory',idempotency_key:'readonly-proof-denied'})).data.result.isError).toBe(true);
+  connectionAction(owner.agent_id,{action:'disconnect',id:connection.id});
+  expect(()=>observeClientProtocol(auth)).toThrow();
+});
 test('OAuth discovery, audience binding, real MCP proof, cross-connection denial and revocation',async()=>{
   const connection=apply(),otherConnection=apply(other),token=await authorize(connection);
   const advertised=await fetch(connection.mcp_url,{method:'POST',headers:{authorization:'Bearer '+token.access_token,'content-type':'application/json',accept:'application/json, text/event-stream'},body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list',params:{}})});
@@ -96,10 +116,15 @@ test('OAuth discovery, audience binding, real MCP proof, cross-connection denial
   expect(advertisedTools.some(t=>t.name==='note_update'||t.name==='note_delete')).toBe(false);
   expect(authenticate(new Request(connection.mcp_url,{headers:{authorization:'Bearer '+token.access_token}}))?.workspace_id).toBe(owner.workspace_id);
   expect(authenticate(new Request(base+'/mcp',{headers:{authorization:'Bearer '+token.access_token}}))).toBeNull();
+  const beforeProtocol=(connectionAction(owner.agent_id,{action:'resume',id:connection.id}) as any).connection;
+  expect(beforeProtocol.authorized).toBe(true);expect(beforeProtocol.state).toBe('requires_user_action');expect(beforeProtocol.verified_at).toBeNull();
   expect((await call(connection,token.access_token,'qoopia_protocol',{})).data.result.isError).not.toBe(true);
   const awaiting=(connectionAction(owner.agent_id,{action:'resume',id:connection.id}) as any).connection;
-  expect(awaiting.last_seen).toBeString();expect(awaiting.state).toBe('requires_user_action');
-  expect(awaiting.verified_at).toBeNull();expect(awaiting.evidence).toBeNull();
+  expect(awaiting.last_seen).toBeString();expect(awaiting.state).toBe('ready');
+  expect(awaiting.verified_at).toBeString();expect(awaiting.evidence).toBe('authenticated_mcp_call');
+  expect((connectionAction(other.agent_id,{action:'resume',id:otherConnection.id}) as any).connection.state).toBe('requires_user_action');
+  expect((await call(connection,token.access_token,'qoopia_protocol',{})).data.result.isError).not.toBe(true);
+  expect((connectionAction(owner.agent_id,{action:'resume',id:connection.id}) as any).connection.verified_at).toBe(awaiting.verified_at);
   const proof=connectionAction(owner.agent_id,{action:'verify',id:connection.id}) as any;
   const challenge=proof.prompt.match(/challenge "([^"]+)"/)[1];
   expect((await call(otherConnection,token.access_token,'connection_verify',{connection_id:connection.id,challenge})).status).toBe(401);

@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.0.14 — 2026-09-30
+
+- Agent onboarding confirms the first successful qoopia_protocol call on the exact OAuth connection. No temporary verification prompt is needed in the dashboard; older clients retain compatibility.
+- Owner consent reuses the signed-in browser session, including cross-site entry with SameSite cookies. Client permissions remain explicit; agent tokens cannot stand in for the human owner.
+- Pending applications stay visible; one setup request, clipboard recovery, and automatic status refresh replace the previous verification steps.
+- Instruction refresh preserves agent identity and container-local reader paths. Protocol kit revision 7; database schema remains 47.
+- Updated browser acceptance covers the new onboarding path. Existing verified connections, agents and memory policies are retained.
+
 ## 5.0.13 — 2026-09-30
 
 - Update MCP transitive dependencies fast-uri and ip-address to patched versions; dependency audit reports no vulnerabilities.

@@ -5,7 +5,7 @@ import {brandHead,brandLockup} from '../brand.ts';
 import {loginEmail} from './broker.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {connectionOrigin,publicConnection,resourceConnection} from '../services/connection-identity.ts';
-import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket} from '../auth/oauth.ts';
+import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket,replayFinalizeRedirect} from '../auth/oauth.ts';
 
 export const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
 const loginCookie=CONSENT_COOKIE_PREFIX+'login';
@@ -13,7 +13,7 @@ const random=()=>randomBytes(32).toString('base64url');
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const escape=(value:unknown)=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 type Flow={ticket:string;nonce:string;expires:number;owner:string;version:number;verified:boolean;busy:boolean;
-  binding?:string;login?:{id:string;verifier:string;method:'email'|'google'};language:'en'|'ru'};
+  approvalNonce?:string;binding?:string;login?:{id:string;verifier:string;method:'email'|'google'};language:'en'|'ru'};
 class ConsentError extends Error {constructor(readonly code:string,readonly status=400){super(code);}}
 
 /** A separate, browser-bound consent session can authorize only one prepared client agent. */
@@ -48,7 +48,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
         for(const key of ['ticket','nonce','method','email'])if(form.getAll(key).length>1)throw new ConsentError('INVALID_REQUEST');
       }else if(req.method!=='GET'||route!=='/oauth/consent')throw new ConsentError('NOT_FOUND',404);
       const ticket=getConsentTicket(ticketId);
-      if(!ticket||consentTicketStatus(ticket)!=='ok'||ticket.approved_by_agent_id)throw new ConsentError('CONSENT_EXPIRED',410);
+      if(!ticket||!['ok','redeemed'].includes(consentTicketStatus(ticket)))throw new ConsentError('CONSENT_EXPIRED',410);
       const id=ticket.resource?resourceConnection(ticket.resource):undefined;
       if(!id)throw new ConsentError('SCOPED_CONNECTION_REQUIRED',403);
       const connection=publicConnection(id),origin=connectionOrigin(id),client=getClient(ticket.client_id);
@@ -70,7 +70,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
       flow=flows.get(hash(token));
       let newCookie=false;
       if(req.method==='GET'){
-        if(!flow){
+        if(!flow&&!ticket.approved_by_agent_id){
           if(flows.size>=100||[...flows.values()].filter(f=>f.ticket===ticketId).length>=5)throw new ConsentError('TOO_MANY_ATTEMPTS',429);
           token=random();flow={ticket:ticketId,nonce:random(),expires:Math.min(Date.parse(ticket.expires_at),Date.now()+600_000),
             owner:owner.agent_id,version:owner.session_version!,verified:false,busy:false,language:url.searchParams.get('lang')==='ru'?'ru':'en'};
@@ -81,11 +81,20 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
           }
           flows.set(hash(token),flow);newCookie=true;
         }
-        if(['en','ru'].includes(url.searchParams.get('lang')??''))flow.language=url.searchParams.get('lang') as 'en'|'ru';
+        if(flow&&['en','ru'].includes(url.searchParams.get('lang')??''))flow.language=url.searchParams.get('lang') as 'en'|'ru';
       }
       if(!flow||flow.ticket!==ticketId||flow.owner!==owner.agent_id||flow.version!==owner.session_version)
         throw new ConsentError('SIGN_IN_EXPIRED',403);
       if(flow.verified&&flow.binding!==hash(JSON.stringify(binding))){flows.delete(hash(token));throw new ConsentError('SIGN_IN_EXPIRED',403);}
+      if(ticket.approved_by_agent_id){
+        // Recover duplicate navigation with the same code, never mint a second grant.
+        if(!flow.verified||ticket.approved_by_agent_id!==connection.agent_id)throw new ConsentError('CONSENT_EXPIRED',410);
+        if(req.method==='POST'&&(route!=='/oauth/consent/approve'||req.headers.get('origin')!==origin||form.get('nonce')!==flow.approvalNonce))
+          throw new ConsentError('ORIGIN_OR_SESSION_REFUSED',403);
+        const location=ticket.redeemed?replayFinalizeRedirect(ticket.id):origin+'/oauth/authorize/finalize?'+new URLSearchParams({ticket:ticket.id});
+        if(!location)throw new ConsentError('CONSENT_EXPIRED',410);
+        return new Response(null,{status:303,headers:{...headers,location}});
+      }
       if(req.method==='POST'){
         if(req.headers.get('origin')!==origin||form.get('nonce')!==flow.nonce)throw new ConsentError('ORIGIN_OR_SESSION_REFUSED',403);
         if(flow.busy)throw new ConsentError('ACTION_IN_PROGRESS',409);
@@ -115,7 +124,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
             if(current.session_version!==flow.version||current.workspace_id!==active.workspace_id||active.agent_id!==client.agent_id||active.owner_id!==current.agent_id)
               throw new ConsentError('AUTHORITY_CHANGED',403);
             if(!approveConsentTicket(ticket.id,active.agent_id))throw new ConsentError('CONSENT_EXPIRED',410);
-            flows.delete(hash(token));
+            flow.approvalNonce=form.get('nonce')!;
             return new Response(null,{status:303,headers:{...headers,location:origin+'/oauth/authorize/finalize?'+new URLSearchParams({ticket:ticket.id})}});
           }else if(route==='/oauth/consent/deny'){
             if(!denyConsentTicket(ticket.id))throw new ConsentError('CONSENT_EXPIRED',410);

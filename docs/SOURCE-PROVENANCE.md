@@ -1,19 +1,15 @@
-# Source provenance — Qoopia 5.0.13
+# Source provenance — Qoopia 5.0.14
 
-This repository is an independent public source history. It contains no private development ancestry, production databases, credentials or operator reports.
+This repository has an independent public source history. Private development ancestry, operator state and customer data are excluded.
 
-- Product version: **5.0.13**. Database schema: **47**.
-- Reviewed source snapshot: `b25c7d3db0a2c273574104da240c08347882f0c5`.
-- Signed Mac/Linux package source: `1a8784c35160b8d9318b7d74933219559f29a932`.
-- Official installers: [v5.0.13](https://github.com/qoopia/qoopia-downloads/releases/tag/v5.0.13).
-- Native iOS: **5.0.8, build 3**, separate TestFlight channel awaiting Apple review. Desktop release numbering does not change the uploaded native build.
+- Product version: **5.0.14**; database schema **47**; instruction kit **7**.
+- Reviewed source snapshot: `c368d4fd4138f327cde142c594420e7746a05b46`.
+- Signed Mac/Linux package source: `703e48475b4b0fa7a3bc0346ba830f9ceb24578c`.
+- Installers: [v5.0.14](https://github.com/qoopia/qoopia-downloads/releases/tag/v5.0.14).
+- Native iOS: **5.0.8 build 3**, separate TestFlight channel. This release does not replace Apple's pending native build.
 
-`src/`, `migrations/`, `templates/` and `sdk/` are byte-identical to the reviewed source. Runtime roots also match the signed package source; later changes affect tests, publication metadata and operations checks. `SOURCE-MANIFEST.json` records every distributed file's hash and its equality to the snapshot. `RELEASE.json` is the small machine-readable release identity used by monitoring. Neither file changes the origin or signature of an existing installer.
+Runtime source is byte-identical to the signed package source. Later commits update publication metadata and acceptance records. SOURCE-MANIFEST.json records every distributed file and equality to the reviewed snapshot; RELEASE.json identifies the release for monitoring.
 
-Public adaptations: contributor instructions; source-only schema-35 upgrade fixture (checked by SHA-256); CI with read-only token and shallow checkout; Docker verification without private history; parameterized historical compose; public release notes. Historical source is included only as the audited test fixture. Private operator state, dated operational reports, private audit evidence are excluded. Two SQL-only query-plan fixtures needed by tests remain included.
+Public adaptations retained: contributor instructions, verified source-only schema-35 upgrade fixture, read-only CI token and shallow checkout, Docker verification without private history, parameterized historical compose, public README/release documentation. No private Git history was exported. Public CI qualifies the source independently; it does not imply an Apple signature or hosted deployment.
 
-The manifest excludes itself and this document to avoid self-reference. Public changes must pass public CI independently. Never merge or push private Git history into this repository. A successful source build does not imply Apple signature, notarization or hosted deployment.
-
-## Discovery check update — 2026-09-22
-
-The bounded discovery checker now includes the published `/mobile` page and accepts the current six-page sitemap while rejecting unexpected routes. Only `scripts/discovery-audit.py` and `tests/test_discovery.py` are copied from canonical change `7d055b7`; their per-file hashes are updated. Runtime and installer provenance above are unchanged.
+The manifest excludes itself and this document to avoid self-reference.
