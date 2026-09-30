@@ -145,12 +145,22 @@ export async function checkpointSession(workspace:string,agent:string,session:st
     .all(session,workspace,agent,old.through_message_id??0) as Array<{id:number;role:string;content:string}>;
   if(!rows.length)return {state:'unchanged'};
   let size=0;const batch:typeof rows=[];
-  for(const row of rows){if(batch.length&&size+row.content.length>50_000)break;batch.push(row);size+=batch.at(-1)!.content.length;}
+  const batchLimit=Number.isInteger(meta.continuity_batch_limit)?Math.max(1,Math.min(100,meta.continuity_batch_limit)):100;
+  for(const row of rows){if(batch.length>=batchLimit||(batch.length&&size+row.content.length>50_000))break;batch.push(row);size+=batch.at(-1)!.content.length;}
   if(note&&!meta.continuity_priority&&size<4000&&Date.now()-(old.updated_at_ms??0)<300_000)return {state:'waiting'};
   const predecessor=!note?(meta.continuity_previous?restoreContext(workspace,agent,meta.continuity_previous):dashboardPredecessor(meta)):null;
-  const result=await summarize(workspace,
+  let result:Awaited<ReturnType<typeof summarize>>;
+  try {result=await summarize(workspace,
     'Update a concise working-state note, in the user language, at most 6000 characters. Preserve the goal, latest constraints, decisions with reasons, completed work and evidence, paths/links, unresolved issues and next step. Clearly record superseded/cancelled decisions. Distinguish requested/planned work from verified results. Do not invent facts. Keep useful prior facts unless new source evidence changes them. Return the full updated note in result.',
     {previous:note?.text??predecessor?.context??'',previous_tail:predecessor?.tail??[],new_events:batch});
+  } catch(error) {
+    // Retry a smaller source range after a timeout; never advance its cursor
+    // until the summary commits. A single source message remains indivisible.
+    if(error instanceof QoopiaError&&error.code==='MODEL_TIMEOUT'&&batch.length>1)
+      db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_batch_limit',?) WHERE id=? AND workspace_id=? AND agent_id=?")
+        .run(Math.ceil(batch.length/2),session,workspace,agent);
+    throw error;
+  }
   const text=redactSensitive(result.text).text;
   if(text.length>8000)throw new QoopiaError('SIZE_LIMIT','Context note exceeded its bounded size');
   return db.transaction(()=>{
@@ -166,7 +176,7 @@ export async function checkpointSession(workspace:string,agent:string,session:st
     const noteId=note?.id??createNote({workspace_id:workspace,agent_id:agent,type:'context',source:'qoopia-continuity',
       session_id:session,visibility:'private',text,metadata,tags:['session-context']}).id;
     if(note)updateNote({workspace_id:workspace,agent_id:agent,is_admin:false,id:note.id,text,metadata_replace:metadata});
-    db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_priority',0,'$.continuity_error',NULL) WHERE id=?").run(session);
+    db.query("UPDATE sessions SET metadata=json_remove(json_set(metadata,'$.continuity_priority',0),'$.continuity_error','$.continuity_retry_at') WHERE id=?").run(session);
     return {state:'saved',note_id:noteId,revision:version,through_message_id:through};
   })();
 }

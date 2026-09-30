@@ -1,6 +1,6 @@
 {
   "name": "qoopia",
-  "version": "5.0.12",
+  "version": "5.0.13",
   "description": "Memory and truth layer for AI agents",
   "type": "module",
   "bin": {
@@ -56,8 +56,8 @@
     "qs": "^6.15.4",
     "hono": "^4.12.18",
     "@hono/node-server": "^1.19.15",
-    "ip-address": "^10.1.1",
-    "fast-uri": "^3.1.6",
+    "ip-address": "^10.7.2",
+    "fast-uri": "^3.1.8",
     "body-parser": "^2.3.0"
   }
 }

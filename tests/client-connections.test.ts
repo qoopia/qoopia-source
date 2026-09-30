@@ -5,6 +5,8 @@ import {db} from '../src/db/connection.ts';
 import {runMigrations} from '../src/db/migrate.ts';
 import {createWorkspace} from '../src/admin/workspaces.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
+import {createAgent} from '../src/admin/agents.ts';
+import {adminTools} from '../src/mcp/admin-tools.ts';
 import {connectionAction} from '../src/services/client-connections.ts';
 import {startHttpServer} from '../src/http.ts';
 import {env} from '../src/utils/env.ts';
@@ -64,14 +66,14 @@ async function call(connection:any,token:string,name:string,args:any) {
   const body=await res.text();const line=body.split('\n').find(x=>x.startsWith('data: '));return {status:res.status,data:JSON.parse(line?line.slice(6):body)};
 }
 test('selection is idempotent, isolated and never reports configuration as a client call',()=>{
-  const first=apply(owner,'read','repeat');expect(first.state).toBe('requires_user_action');expect(apply(owner,'read','repeat').id).toBe(first.id);
+  const first=apply(owner,'read','repeat');expect(first.last_seen).toBeNull();expect(first.state).toBe('requires_user_action');expect(apply(owner,'read','repeat').id).toBe(first.id);
   expect(()=>apply(owner,'read_write','repeat')).toThrow('Request key');
   expect(()=>connectionAction(other.agent_id,{action:'resume',id:first.id})).toThrow('Connection unavailable');
   expect(JSON.stringify(connectionAction(owner.agent_id,{action:'status'}))).not.toMatch(/q_[A-Za-z0-9_-]{20}/);
 });
 test('Muse Code and cloud Grok Bot get distinct HTTPS addresses and remain unverified',()=>{
   env.PUBLIC_URL='https://fixture.example';
-  try{for(const surface of ['muse_code','grok_bot'] as const){
+  try{for(const surface of ['muse_code','muse_app','grok_bot'] as const){
     const connection=(connectionAction(owner.agent_id,{action:'apply',surface,access_mode:'read',request_key:'new-'+surface}) as any).connection;
     expect(connection.surface).toBe(surface);
     expect(connection.client_config).toBeNull();
@@ -94,7 +96,10 @@ test('OAuth discovery, audience binding, real MCP proof, cross-connection denial
   expect(advertisedTools.some(t=>t.name==='note_update'||t.name==='note_delete')).toBe(false);
   expect(authenticate(new Request(connection.mcp_url,{headers:{authorization:'Bearer '+token.access_token}}))?.workspace_id).toBe(owner.workspace_id);
   expect(authenticate(new Request(base+'/mcp',{headers:{authorization:'Bearer '+token.access_token}}))).toBeNull();
-  expect((connectionAction(owner.agent_id,{action:'resume',id:connection.id}) as any).connection.state).toBe('requires_user_action');
+  expect((await call(connection,token.access_token,'qoopia_protocol',{})).data.result.isError).not.toBe(true);
+  const awaiting=(connectionAction(owner.agent_id,{action:'resume',id:connection.id}) as any).connection;
+  expect(awaiting.last_seen).toBeString();expect(awaiting.state).toBe('requires_user_action');
+  expect(awaiting.verified_at).toBeNull();expect(awaiting.evidence).toBeNull();
   const proof=connectionAction(owner.agent_id,{action:'verify',id:connection.id}) as any;
   const challenge=proof.prompt.match(/challenge "([^"]+)"/)[1];
   expect((await call(otherConnection,token.access_token,'connection_verify',{connection_id:connection.id,challenge})).status).toBe(401);
@@ -130,6 +135,7 @@ test('OAuth discovery, audience binding, real MCP proof, cross-connection denial
   expect((await call(connection,replacement.access_token,'recall',{query:'synthetic'})).status).toBe(401);
   expect((await fetch(base+'/oauth/token',{method:'POST',body:new URLSearchParams({grant_type:'refresh_token',client_id:token.client_id,refresh_token:replacement.refresh_token,resource:connection.mcp_url})})).status).toBe(400);
   expect((connectionAction(owner.agent_id,{action:'disconnect',id:connection.id}) as any).code).toBe('DISCONNECTED');
+  expect((connectionAction(owner.agent_id,{action:'status',id:connection.id}) as any).connections[0].last_seen).toBeNull();
 });
 
 test('existing discovery, authorization, calls and refresh retain their audience after managed transport changes the default origin',async()=>{
@@ -148,5 +154,46 @@ test('existing discovery, authorization, calls and refresh retain their audience
     expect((await call(connection,access,'recall',{query:'synthetic'})).status).toBe(200);
     // A fresh vendor registration on the old connection also retains all original endpoint URLs.
     const second=await authorize(connection);expect((await call(connection,second.access_token,'recall',{query:'synthetic'})).status).toBe(200);
+  }finally{env.PUBLIC_URL=base;}
+});
+
+
+test('steward prepares a scoped review link; owner labels Muse without changing OAuth, proof or memory',()=>{
+  const steward=createAgent({name:'Preparation steward',workspaceSlug:'connection-isolation',type:'steward'});
+  const standard=createAgent({name:'Preparation standard',workspaceSlug:'connection-isolation'});
+  const prepare=adminTools.find(t=>t.name==='connection_prepare')!;
+  const auth={agent_id:steward.id,workspace_id:owner.workspace_id,agent_name:steward.name,type:'steward',source:'api-key' as const};
+  const selection={surface:'muse_app',agent_name:'FIBI',access_mode:'read_write'};
+  const count=()=>JSON.stringify(db.query('SELECT (SELECT count(*) FROM agents) agents,(SELECT count(*) FROM client_connections) connections,(SELECT count(*) FROM oauth_tokens) tokens').get());
+  const before=count();const proposal=prepare.handler(selection,auth) as any;
+  expect(proposal.changes_applied).toBe(false);expect(proposal.connection).toBeNull();expect(count()).toBe(before);
+  expect(new URL(proposal.owner_url).searchParams.get('workspace')).toBe(owner.workspace_id);
+  expect(new URL(proposal.owner_url).searchParams.get('agent')).toBe('FIBI');
+  expect(()=>prepare.handler(selection,{...auth,agent_id:standard.id})).toThrow('steward');
+  expect(()=>prepare.handler({...selection,agent_name:'<script>'},auth)).toThrow();
+  expect(()=>connectionAction(steward.id,{action:'apply',...selection,request_key:'steward-denied'})).toThrow();
+  env.PUBLIC_URL='https://fixture.example';
+  try{
+    const input={action:'apply',surface:'muse_code',agent_name:'Original Muse',access_mode:'read_write',request_key:'named-muse'};
+    const c=(connectionAction(owner.agent_id,input) as any).connection;
+    expect((connectionAction(owner.agent_id,input) as any).connection.id).toBe(c.id);
+    expect(()=>connectionAction(owner.agent_id,{...input,agent_name:'Another Muse'})).toThrow('Request key');
+    expect(()=>connectionAction(other.agent_id,{action:'label',id:c.id,agent_name:'FIBI'})).toThrow('unavailable');
+    expect(()=>prepare.handler({...selection,connection_id:c.id},{...auth,workspace_id:other.workspace_id})).toThrow();
+    const row=db.query('SELECT * FROM client_connections WHERE id=?').get(c.id) as any;
+    db.query("UPDATE client_connections SET state='verified',verified_at='2026-09-30T03:36:43Z' WHERE id=?").run(c.id); // synthetic proof fixture only
+    const identity=db.query('SELECT * FROM agents WHERE id=?').get(row.agent_id) as any;
+    const reused=prepare.handler({...selection,connection_id:c.id},auth) as any;
+    expect(reused.connection.id).toBe(c.id);expect(()=>prepare.handler({...selection,connection_id:c.id,access_mode:'read'},auth)).toThrow('different application or access');expect(reused.connection.mcp_url).toBe(c.mcp_url);
+    const labelled=(connectionAction(owner.agent_id,{action:'label',id:c.id,agent_name:'FIBI',surface:'muse_app'}) as any).connection;
+    expect(labelled).toMatchObject({id:c.id,agent_name:'FIBI',surface:'muse_app',state:'ready',mcp_url:c.mcp_url,verified_at:'2026-09-30T03:36:43Z'});
+    const after=db.query('SELECT * FROM agents WHERE id=?').get(row.agent_id) as any;
+    expect({...after,name:identity.name}).toEqual(identity);
+    const reusedByName=prepare.handler(selection,auth) as any;expect(reusedByName.connection.id).toBe(c.id);
+    expect(()=>connectionAction(owner.agent_id,{...input,request_key:'would-duplicate',surface:'muse_app',agent_name:'FIBI'})).toThrow('already exists');
+    expect(()=>connectionAction(owner.agent_id,{action:'label',id:c.id,agent_name:standard.name})).toThrow('already uses');
+    const native=apply();expect(()=>connectionAction(owner.agent_id,{action:'label',id:native.id,agent_name:'Not Muse',surface:'muse_app'})).toThrow('Only Muse');
+    db.query("UPDATE agents SET type='standard' WHERE id=?").run(steward.id);
+    expect(()=>prepare.handler(selection,auth)).toThrow('steward');
   }finally{env.PUBLIC_URL=base;}
 });

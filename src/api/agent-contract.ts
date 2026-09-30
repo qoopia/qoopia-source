@@ -24,9 +24,9 @@ const MECHANISMS:{id:string;title:string;match:RegExp;flag?:string}[]=[
   {id:'bridges',title:'Bridges and external material',match:/^bridge_/},
   {id:'files',title:'Files',match:/^file_/},
   {id:'transfer',title:'Export and import',match:/^(export_|import_)/},
-  {id:'management',title:'Agents, access and memory policy',match:/^(agent_(onboard|list|deactivate|set_profile)$|memory_(policy|save)_)/},
+  {id:'management',title:'Agents, access and memory policy',match:/^(connection_prepare$|agent_(onboard|list|deactivate|set_profile)$|memory_(policy|save)_)/},
 ];
-const MCP_ONLY_SURFACES=['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','muse_code','grok_bot'];
+const MCP_ONLY_SURFACES=['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','muse_code','muse_app','grok_bot'];
 
 /** What this agent really gets, by the same predicates the MCP registration applies. */
 export function grantedTools(database:Database,auth:AuthContext,operations:readonly ContractOperation[]) {

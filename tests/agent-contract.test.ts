@@ -47,6 +47,8 @@ test('the contract lists exactly the tools a real connection is offered, for eve
   }
   expect(advertised(authOf(agents.reader!))).not.toContain('note_create');
   expect(advertised(authOf(agents.steward!))).toContain('memory_policy_list');
+  expect(advertised(authOf(agents.steward!))).toContain('connection_prepare');
+  expect(advertised(authOf(agents.standard!))).not.toContain('connection_prepare');
 });
 
 test('every registered tool belongs to a named mechanism',()=>{

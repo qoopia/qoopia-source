@@ -99,5 +99,5 @@ export function bootstrapToolAllowed(name: string, profile?: string): boolean {
   if (["recall", "note_get", "skill_search", "skill_get", "operation_get"].includes(name)) return true;
   if (profile === "memory-worker" && ["note_create", "note_update", "session_save"].includes(name)) return true;
   if (profile === "skill-author" && ["skill_upsert", "entity_upsert", "skill_mark_tested"].includes(name)) return true;
-  return profile === "owner" && ["agent_list", "agent_onboard", "agent_deactivate", "skill_upsert", "skill_mark_tested"].includes(name);
+  return profile === "owner" && ["connection_prepare", "agent_list", "agent_onboard", "agent_deactivate", "skill_upsert", "skill_mark_tested"].includes(name);
 }

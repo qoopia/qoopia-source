@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.0.13 — 2026-09-30
+
+- Update MCP transitive dependencies fast-uri and ip-address to patched versions; dependency audit reports no vulnerabilities.
+
+- Distinguish Muse.app from Muse Code CLI; retain existing verified connections and accept meaningful agent names.
+- Let the steward prepare a scoped owner review link without creating duplicate agents or granting access.
+- Copy setup and verification together for cloud Muse and Grok Bot; display native connections and unfinished drafts accurately.
+- Recover timed-out memory checkpoints using smaller source batches. Publish instruction kit revision 6; schema remains 47.
+
 ## 5.0.12 — 2026-09-24
 
 - Add guided remote MCP setup for Muse Code and Grok Bot while preserving existing client connections and OAuth records (schema 47).
