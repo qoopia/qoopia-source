@@ -2,6 +2,8 @@
 
 ## 5.0.13 — 2026-09-30
 
+- Update MCP transitive dependencies fast-uri and ip-address to patched versions; dependency audit reports no vulnerabilities.
+
 - Distinguish Muse.app from Muse Code CLI; retain existing verified connections and accept meaningful agent names.
 - Let the steward prepare a scoped owner review link without creating duplicate agents or granting access.
 - Copy setup and verification together for cloud Muse and Grok Bot; display native connections and unfinished drafts accurately.
