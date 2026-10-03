@@ -1,4 +1,3 @@
-import os from "node:os";
 import { validateRuntimeConfiguration } from "./runtime-config.ts";
 
 /** Shared boolean parsing: deployed installations historically use both 1 and true. */
@@ -36,7 +35,7 @@ function requirePositiveInt(
   return parsed;
 }
 
-export type ServerRole = "canonical" | "legacy-readonly";
+type ServerRole = "canonical" | "legacy-readonly";
 
 export function resolveServerRole(
   value: string | undefined,
@@ -60,15 +59,20 @@ export const env = {
   PORT,
   SERVER_ROLE,
   ROOT_DIR: RUNTIME_PATHS.rootDir,
+  // Returned by the unauthenticated /health and /ready: never the machine's hostname.
   INSTANCE_ID:
     process.env.QOOPIA_INSTANCE_ID ||
-    `${SERVER_ROLE}:${os.hostname()}:${PORT}`,
+    `${SERVER_ROLE}:${PORT}`,
   // Bind address. Default = loopback only. Production behind cloudflared/nginx
   // also stays on 127.0.0.1 (the proxy is local). Set QOOPIA_HOST=0.0.0.0 only
   // when you explicitly want LAN exposure — every auth surface (Bearer + OAuth)
   // assumes it can trust the network it listens on, so this is opt-in by design.
+  // A specific private IP literal here also allows standalone owner login on that
+  // exact host:port (plain HTTP: use it on a tailnet/VPN, not a shared LAN).
   HOST: process.env.QOOPIA_HOST || "127.0.0.1",
   DATA_DIR: RUNTIME_PATHS.dataDir,
+  // /ready reports storage "low_space" below this many free bytes on the data volume.
+  MIN_FREE_BYTES: requireInt(process.env.QOOPIA_MIN_FREE_BYTES, "QOOPIA_MIN_FREE_BYTES", 64 * 1024 * 1024),
   OPS_STATE_DIR: process.env.QOOPIA_OPS_STATE_DIR || RUNTIME_PATHS.dataDir,
   LOG_DIR: RUNTIME_PATHS.logDir,
   BACKUP_DIR: RUNTIME_PATHS.backupDir,

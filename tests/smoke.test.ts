@@ -13,6 +13,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import os from "node:os";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { runMigrations } from "../src/db/migrate.ts";
@@ -70,13 +71,24 @@ describe("smoke: HTTP boot", () => {
     expect(body.status).toBe("ok");
     expect(body.version).toBe(PRODUCT_VERSION);
     expect(body.schema_version).toBeGreaterThan(0);
+    // Informational only: semantic recall degrades to FTS, so it never changes status or readiness.
+    expect(["ok", "unavailable", "not_loaded", "disabled"]).toContain((body as unknown as { embeddings: string }).embeddings);
     expect(body).toHaveProperty("build_commit");
     if (body.build_commit !== null) {
       expect(body.build_commit).toMatch(/^[0-9a-f]{40}$/);
-      expect(body.build_commit).toBe(body.release_sha);
+      expect<string | null>(body.build_commit).toBe(body.release_sha);
     }
     expect(Object.values(body.feature_flags).length).toBeGreaterThan(0);
     expect(Object.values(body.feature_flags).every((value) => typeof value === "boolean")).toBe(true);
+  });
+
+  test("unauthenticated probes do not disclose the machine hostname by default", async () => {
+    expect(process.env.QOOPIA_INSTANCE_ID).toBeUndefined();
+    for (const route of ["/health", "/ready"]) {
+      const body = (await (await fetch(`${baseUrl}${route}`)).json()) as { instance_id: string };
+      expect(body.instance_id).toBe(`canonical:${process.env.QOOPIA_PORT}`);
+      expect(body.instance_id).not.toContain(os.hostname());
+    }
   });
 
   test("/ready returns 200 ready with runtime metadata on a fully migrated database", async () => {
@@ -101,6 +113,8 @@ describe("smoke: HTTP boot", () => {
     expect(body.server_role).toBe("canonical");
     expect(body.instance_id).toBeTruthy();
     expect(body.writes_enabled).toBe(true);
+    // A writable instance proves it can take the write lock and has free space.
+    expect((body as unknown as { checks: Record<string, string> }).checks).toMatchObject({ storage: "ok", db_write: "ok" });
   });
 
   test("root endpoint identifies the current product runtime", async () => {

@@ -1,24 +1,22 @@
 import { createHash, createHmac } from "node:crypto";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { lookup } from "node:dns/promises";
 import https from "node:https";
-import { ulid } from "ulid";
-import type { Database } from "bun:sqlite";
-import { db as defaultDb } from "../db/connection.ts";
-import { QoopiaError, nowIso } from "../utils/errors.ts";
+import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
-import { v4Metrics } from "../utils/observability.ts";
 
-const EVENT_TYPES = new Set([
-  "candidate_proposed", "candidate_reviewed", "note_superseded",
-  "feedback_recorded", "export_created", "import_planned", "conflict_detected",
-]);
 const FORBIDDEN_PAYLOAD_KEY = /(?:^|_)(?:body|content|text|query|authorization|cookie|password|secret|token|api_key|private_key)(?:$|_)/i;
-const PRIVATE_V4 = [
-  [0x0a000000, 0xff000000], [0x7f000000, 0xff000000],
-  [0xa9fe0000, 0xffff0000], [0xac100000, 0xfff00000],
-  [0xc0a80000, 0xffff0000], [0x00000000, 0xff000000],
-] as const;
+// Non-public destinations (RFC 6890 special-purpose ranges). BlockList also
+// matches IPv4-mapped IPv6 (::ffff:a.b.c.d, any notation) against the IPv4
+// rules, so ::ffff:0:0/96 must not be added: it would block every IPv4.
+const PRIVATE_ADDRESSES = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
+  ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3],
+] as const) PRIVATE_ADDRESSES.addSubnet(network, prefix, "ipv4");
+for (const [network, prefix] of [
+  ["::", 96], ["64:ff9b::", 96], ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8],
+] as const) PRIVATE_ADDRESSES.addSubnet(network, prefix, "ipv6");
 
 export interface OutboxDestination {
   id: string;
@@ -26,8 +24,6 @@ export interface OutboxDestination {
   allowed_hosts: string[];
   signing_key: Uint8Array;
 }
-
-export const OUTBOX_MAX_ATTEMPTS = 5;
 
 function assertMetadataOnly(value: unknown, path = "payload", depth = 0): void {
   if (depth > 8) throw new QoopiaError("SIZE_LIMIT", "outbox payload nesting exceeds 8 levels");
@@ -54,21 +50,11 @@ function assertMetadataOnly(value: unknown, path = "payload", depth = 0): void {
 }
 
 function isPrivateAddress(address: string): boolean {
-  const family = isIP(address);
-  if (family === 4) {
-    const octets = address.split(".").map(Number);
-    const numeric = (((octets[0]! << 24) >>> 0) + (octets[1]! << 16) + (octets[2]! << 8) + octets[3]!) >>> 0;
-    return PRIVATE_V4.some(([base, mask]) => (numeric & mask) === base);
-  }
-  if (family === 6) {
-    const normalized = address.toLowerCase();
-    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(normalized);
-    if (mapped) return isPrivateAddress(mapped[1]!);
-    return normalized === "::" || normalized === "::1" || normalized.startsWith("fc") ||
-      normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") ||
-      normalized.startsWith("fea") || normalized.startsWith("feb");
-  }
-  return true;
+  // BlockList misses upper-case IPv4-mapped forms and scoped (%zone) addresses.
+  const normalized = address.toLowerCase().replace(/%.*$/, "");
+  const family = isIP(normalized);
+  if (family === 0) return true;
+  return PRIVATE_ADDRESSES.check(normalized, family === 6 ? "ipv6" : "ipv4");
 }
 
 async function resolvedDestination(
@@ -91,7 +77,8 @@ async function resolvedDestination(
     throw new QoopiaError("FORBIDDEN", "outbox signing key must contain at least 32 bytes");
   }
   if (!allowed.has(url.hostname.toLowerCase())) throw new QoopiaError("FORBIDDEN", "outbox destination host is not allowlisted");
-  if (isIP(url.hostname) && isPrivateAddress(url.hostname)) throw new QoopiaError("FORBIDDEN", "private outbox destination is forbidden");
+  const literal = url.hostname.replace(/^\[(.*)\]$/, "$1");
+  if (isIP(literal) && isPrivateAddress(literal)) throw new QoopiaError("FORBIDDEN", "private outbox destination is forbidden");
   const resolved = await resolver(url.hostname);
   if (resolved.length === 0 || resolved.some(({ address }) => isPrivateAddress(address))) {
     throw new QoopiaError("FORBIDDEN", "outbox destination resolved to a private or unusable address");
@@ -104,108 +91,6 @@ export async function validateOutboxDestination(
   resolver?: (hostname: string) => Promise<Array<{ address: string }>>,
 ): Promise<URL> {
   return (await resolvedDestination(destination, resolver)).url;
-}
-
-export function enqueueMemoryEvent(input: {
-  workspace_id: string;
-  event_type: string;
-  aggregate_kind: string;
-  aggregate_id: string;
-  payload: Record<string, unknown>;
-  destination_id?: string;
-  idempotency_key: string;
-  database?: Database;
-}): { id: string; state: "pending"; reused: boolean } {
-  if (process.env.QOOPIA_V4_EVENT_OUTBOX !== "true") {
-    throw new QoopiaError("FORBIDDEN", "QOOPIA_V4_EVENT_OUTBOX is disabled");
-  }
-  if (!EVENT_TYPES.has(input.event_type)) throw new QoopiaError("INVALID_INPUT", "unsupported outbox event_type");
-  assertMetadataOnly(input.payload);
-  const payload = JSON.stringify(input.payload);
-  if (Buffer.byteLength(payload) > 16_384) throw new QoopiaError("SIZE_LIMIT", "outbox payload exceeds 16 KiB");
-  const database = input.database ?? defaultDb;
-  const existing = database.query(
-    `SELECT id, event_type, aggregate_kind, aggregate_id, payload, destination_id, state
-       FROM memory_event_outbox WHERE workspace_id = ? AND idempotency_key = ?`,
-  ).get(input.workspace_id, input.idempotency_key) as Record<string, unknown> | null;
-  if (existing) {
-    if (existing.event_type !== input.event_type || existing.aggregate_kind !== input.aggregate_kind ||
-        existing.aggregate_id !== input.aggregate_id || existing.payload !== payload ||
-        (existing.destination_id ?? null) !== (input.destination_id ?? null)) {
-      throw new QoopiaError("CONFLICT", "outbox idempotency key reused with different input");
-    }
-    return { id: String(existing.id), state: "pending", reused: true };
-  }
-  const id = ulid();
-  database.query(
-    `INSERT INTO memory_event_outbox
-       (id, workspace_id, event_type, aggregate_kind, aggregate_id, payload,
-        destination_id, state, idempotency_key, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-  ).run(id, input.workspace_id, input.event_type, input.aggregate_kind, input.aggregate_id,
-    payload, input.destination_id ?? null, input.idempotency_key, nowIso(), nowIso());
-  v4Metrics.increment("v4_outbox_enqueued_total", { event_type: input.event_type });
-  return { id, state: "pending", reused: false };
-}
-
-export function leaseMemoryEvent(input: {
-  workspace_id: string;
-  destination_id: string;
-  lease_owner: string;
-  lease_ms?: number;
-  database?: Database;
-}): Record<string, unknown> | null {
-  const database = input.database ?? defaultDb;
-  const now = Date.now();
-  const nowText = new Date(now).toISOString();
-  const expires = new Date(now + (input.lease_ms ?? 30_000)).toISOString();
-  return database.transaction(() => {
-    const row = database.query(
-      `SELECT * FROM memory_event_outbox
-        WHERE workspace_id = ? AND destination_id = ? AND attempt_count < ?
-          AND ((state IN ('pending','failed') AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
-            OR (state = 'leased' AND lease_expires_at <= ?))
-        ORDER BY created_at ASC, id ASC LIMIT 1`,
-    ).get(input.workspace_id, input.destination_id, OUTBOX_MAX_ATTEMPTS, nowText, nowText) as Record<string, unknown> | null;
-    if (!row) return null;
-    const updated = database.query(
-      `UPDATE memory_event_outbox
-          SET state='leased', lease_owner=?, lease_expires_at=?, attempt_count=attempt_count+1,
-              next_attempt_at=NULL, last_error_code=NULL, updated_at=?
-        WHERE id=? AND workspace_id=? AND state=?`,
-    ).run(input.lease_owner, expires, nowText, String(row.id), input.workspace_id, String(row.state));
-    if (updated.changes !== 1) return null;
-    return database.query("SELECT * FROM memory_event_outbox WHERE id=? AND workspace_id=?")
-      .get(String(row.id), input.workspace_id) as Record<string, unknown>;
-  })();
-}
-
-
-export function markMemoryEventFailed(input: {
-  workspace_id: string;
-  id: string;
-  lease_owner: string;
-  error_code: string;
-  database?: Database;
-}): "failed" | "dead_letter" {
-  const database = input.database ?? defaultDb;
-  if (!/^[A-Z0-9_]{1,100}$/.test(input.error_code)) throw new QoopiaError("INVALID_INPUT", "outbox error_code is invalid");
-  return database.transaction(() => {
-    const row = database.query(
-      `SELECT attempt_count FROM memory_event_outbox
-        WHERE id=? AND workspace_id=? AND state='leased' AND lease_owner=?`,
-    ).get(input.id, input.workspace_id, input.lease_owner) as { attempt_count: number } | null;
-    if (!row) throw new QoopiaError("CONFLICT", "outbox failure lease is stale");
-    const state = row.attempt_count >= OUTBOX_MAX_ATTEMPTS ? "dead_letter" : "failed";
-    const next = state === "failed" ? new Date(Date.now() + Math.min(60_000, 1_000 * 2 ** row.attempt_count)).toISOString() : null;
-    database.query(
-      `UPDATE memory_event_outbox
-          SET state=?, next_attempt_at=?, last_error_code=?, lease_owner=NULL,
-              lease_expires_at=NULL, updated_at=? WHERE id=? AND workspace_id=?`,
-    ).run(state, next, input.error_code, nowIso(), input.id, input.workspace_id);
-    v4Metrics.increment("v4_outbox_delivery_total", { result: state, error_code: input.error_code });
-    return state;
-  })();
 }
 
 function postPinnedHttps(url: URL, address: string, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }> {

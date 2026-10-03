@@ -62,9 +62,9 @@ undelivered Telegram reply is reported as not kept instead of being invented. A 
 and ends after a switch to manual loses its text the same way. The conversation's own history lives in the
 provider's thread (Codex, Claude) — outside this setting, as stated in the UI.
 
-Outside this setting: the history kept by Claude, ChatGPT or Telegram themselves; AgentComm, skills, bridges
-and file operations, which have their own records and permissions; the skills task log (`agent-task`), which
-is the record of an owner-started task rather than session capture.
+Outside this setting: the history kept by Claude, ChatGPT or Telegram themselves; AgentComm, skill reads,
+bridges and file operations, which have their own records and permissions. Skill and knowledge writes and the
+agent-task transcript are memory writes and are refused in manual (see below).
 
 ## Enforcement
 
@@ -156,8 +156,9 @@ the same object. Live status is reported beside `config_digest`, not inside it. 
 separate: a protocol file on disk, a protocol read through `qoopia_protocol`, and a function actually
 executed are three different facts, and the contract claims only what the server can see.
 
-Ceiling: a connection opened with `?profile=full` sees the wider legacy discovery surface; the contract
-describes the agent, not that URL. OAuth scope narrows the agent's own answer, not the owner's overview.
+A connection's catalogue follows its stored access profile; a URL parameter such as `?profile=full`
+cannot widen it (only principals that predate migration 036 keep the legacy full catalogue). OAuth scope
+narrows the agent's own answer, not the owner's overview.
 
 ## Runtime support
 

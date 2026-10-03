@@ -42,6 +42,7 @@ import type { Server } from "node:http";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent, rotateAgentKey, deleteAgent } from "../src/admin/agents.ts";
+import { parseCookies } from "../src/dashboard-session.ts";
 import { startHttpServer } from "../src/http.ts";
 import { db } from "../src/db/connection.ts";
 import { env } from "../src/utils/env.ts";
@@ -51,7 +52,6 @@ let baseUrl = "";
 let host = "";
 
 let WORKSPACE_SLUG = "";
-let WORKSPACE_ID = "";
 let STEWARD_NAME = "";
 let STEWARD_KEY = "";
 let STEWARD_ID = "";
@@ -63,7 +63,6 @@ beforeAll(async () => {
     slug: "qdash-hardening-test",
   });
   WORKSPACE_SLUG = ws.slug;
-  WORKSPACE_ID = ws.id;
 
   const steward = createAgent({
     name: "qdash-hardening-steward",
@@ -214,7 +213,6 @@ describe("QDASHCOOKIE-#34: api_key rotation invalidates outstanding cookies", ()
     const throwaway = createAgent({
       name: "qdash-hardening-throwaway",
       workspaceSlug: WORKSPACE_SLUG,
-      type: "claude-privileged",
     });
 
     // Mint a cookie at the throwaway's current sv.
@@ -431,6 +429,7 @@ describe("QDASHCOOKIE-#35: logout cookie attributes and replay semantics", () =>
   test("/logout Set-Cookie carries the same attribute shape with Max-Age=0", async () => {
     const r = await fetch(`${baseUrl}/api/dashboard/logout`, {
       method: "POST",
+      headers: { "x-qoopia-csrf": "1" },
     });
     expect(r.status).toBe(200);
     const sc = getSetCookie(r, "qoopia_dash")!;
@@ -454,7 +453,7 @@ describe("QDASHCOOKIE-#35: logout cookie attributes and replay semantics", () =>
     // cookie scope.)
     const lr = await fetch(`${baseUrl}/api/dashboard/logout`, {
       method: "POST",
-      headers: { cookie: `qoopia_dash=${encodeURIComponent(cookieValue)}` },
+      headers: { cookie: `qoopia_dash=${encodeURIComponent(cookieValue)}`, "x-qoopia-csrf": "1" },
     });
     expect(lr.status).toBe(200);
 
@@ -469,6 +468,7 @@ describe("QDASHCOOKIE-#35: logout cookie attributes and replay semantics", () =>
     // the browser logout flow stays smooth even on stale state.
     const r = await fetch(`${baseUrl}/api/dashboard/logout`, {
       method: "POST",
+      headers: { "x-qoopia-csrf": "1" },
     });
     expect(r.status).toBe(200);
   });
@@ -482,7 +482,7 @@ describe("QDASHCOOKIE-#35: logout cookie attributes and replay semantics", () =>
     // the legit cookie's validity.
     const lr = await fetch(`${baseUrl}/api/dashboard/logout`, {
       method: "POST",
-      headers: { cookie: "qoopia_dash=tampered.value.here" },
+      headers: { cookie: "qoopia_dash=tampered.value.here", "x-qoopia-csrf": "1" },
     });
     expect(lr.status).toBe(200);
 
@@ -649,5 +649,27 @@ describe("QDASHCOOKIE-005: /login binds cookie sv to api_key_hash snapshot", () 
     });
     expect(r.status).toBe(401);
     expect(getSetCookie(r, "qoopia_dash")).toBeNull();
+  });
+});
+
+// --- F-180: an ambiguous cookie set is refused --------------------------
+
+describe("F-180: duplicate qoopia_dash cookies authenticate nobody", () => {
+  test("parseCookies drops a name that appears more than once", () => {
+    expect(parseCookies("a=1; qoopia_dash=x; b=2; qoopia_dash=y")).toEqual({ a: "1", b: "2" });
+    expect(parseCookies("qoopia_dash=x; xqoopia_dash=y")).toEqual({ qoopia_dash: "x", xqoopia_dash: "y" });
+  });
+
+  test("two valid cookies, in either order, give 401; one cookie among others still works", async () => {
+    const { cookieValue: mine } = await login();
+    const other = createAgent({ name: "qdash-hardening-tossed", workspaceSlug: WORKSPACE_SLUG });
+    const tossed = await fetch(`${baseUrl}/api/dashboard/login`, { method: "POST", headers: { authorization: `Bearer ${other.api_key}` } });
+    const theirs = decodeURIComponent(getSetCookie(tossed, "qoopia_dash")!.split(";")[0]!.split("=").slice(1).join("="));
+    const pair = [`qoopia_dash=${encodeURIComponent(mine)}`, `qoopia_dash=${encodeURIComponent(theirs)}`];
+    for (const cookie of [pair.join("; "), [...pair].reverse().join("; ")]) {
+      expect((await fetch(`${baseUrl}/api/dashboard/agents`, { headers: { cookie } })).status).toBe(401);
+    }
+    const single = await fetch(`${baseUrl}/api/dashboard/agents`, { headers: { cookie: `theme=dark; ${pair[0]}; lang=ru` } });
+    expect(single.status).toBe(200);
   });
 });

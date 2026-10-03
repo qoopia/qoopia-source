@@ -45,3 +45,42 @@ test("startup refuses a database with foreign-key corruption before listening", 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("startup refuses a database file it cannot write before listening (F-159)", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qoopia-startup-readonly-"));
+  const data = path.join(root, "data");
+  const env = {
+    ...process.env,
+    NODE_ENV: "test",
+    QOOPIA_ROOT: root,
+    QOOPIA_DATA_DIR: data,
+    QOOPIA_LOG_DIR: path.join(root, "logs"),
+    QOOPIA_BACKUP_DIR: path.join(root, "backups"),
+    QOOPIA_SERVER_ROLE: "canonical",
+    QOOPIA_HOST: "127.0.0.1",
+    QOOPIA_PORT: "0",
+    QOOPIA_ADMIN_SECRET: "a".repeat(64),
+    QOOPIA_SESSION_SECRET: "b".repeat(64),
+  };
+  try {
+    const setup = spawnSync("bun", ["-e", "import {runMigrations} from './src/db/migrate.ts'; import {closeDb} from './src/db/connection.ts'; runMigrations(); closeDb();"], { cwd: path.join(import.meta.dir, ".."), env, encoding: "utf8", timeout: 120_000 });
+    expect(setup.status).toBe(0);
+    fs.chmodSync(path.join(data, "qoopia.db"), 0o444);
+
+    const child = spawn("bun", ["src/index.ts"], { cwd: path.join(import.meta.dir, ".."), env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", chunk => output += chunk);
+    child.stderr.on("data", chunk => output += chunk);
+    const code = await Promise.race([
+      new Promise<number | null>(resolve => child.once("close", resolve)),
+      Bun.sleep(5_000).then(() => null),
+    ]);
+    if (code === null) child.kill("SIGKILL");
+    expect(code).toBe(1);
+    expect(output).toContain("is not writable");
+    expect(output).not.toContain("listening");
+    expect(output).not.toContain("SQLiteError");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

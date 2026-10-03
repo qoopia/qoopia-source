@@ -49,7 +49,7 @@ function load(folder:string,binding:StdioBinding):Stored|undefined {
 export function stdioAuthStatus(root:string,raw:unknown) {
   const binding=stdioBindingSchema.parse(raw),value=load(stdioFolder(root,binding),binding);
   return {format:'qoopia-connections/1',state:'requires_user_action',code:value?.tokens?'CLIENT_CALL_REQUIRED':'CLIENT_AUTH_REQUIRED',
-    credentials_present:!!value?.tokens,verified:false,next_action:value?.tokens?'Restart Claude Desktop and run the verification prompt.':'Approve this connection with Qoopia client-auth, then restart Claude Desktop.'};
+    credentials_present:!!value?.tokens,verified:false,next_action:value?.tokens?'Restart Claude Desktop and send the request from the Qoopia connection card in a conversation; its first qoopia_protocol call confirms the connection.':'Approve this connection with Qoopia client-auth, then restart Claude Desktop.'};
 }
 
 /** Restrict all credential-bearing requests to the selected installation. Never follow HTTP redirects. */
@@ -133,7 +133,7 @@ export async function authorizeStdioClient(root:string,raw:unknown,onReady:(step
   try{
     const existing=load(folder,binding),port=existing?Number(new URL(existing.redirect_uri).port):0;
     let provider:StdioOAuthProvider,accept!:(code:string)=>void,refuse!:(error:Error)=>void,used=false;
-    const code=new Promise<string>((resolve,reject)=>{accept=resolve;refuse=reject;});void code.catch(()=>{});
+    const code=new Promise<string>((resolve,reject)=>{accept=resolve;refuse=reject;});void code.catch(()=>{/* Pre-handled; awaited below. */});
     server=http.createServer((req,res)=>{
       res.setHeader('cache-control','no-store');res.setHeader('content-security-policy',"default-src 'none'; frame-ancestors 'none'");res.setHeader('referrer-policy','no-referrer');
       let url:URL;try{url=new URL(req.url??'',provider.redirectUrl);}catch{res.writeHead(400);res.end();return;}

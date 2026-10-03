@@ -11,6 +11,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
     var preparing: Process?
     var connecting = false
     var shuttingDown = false
+    var rollbackArmed = false
     var statusItem: NSStatusItem!
     var window: NSWindow!
     var webView: WKWebView!
@@ -114,31 +115,42 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
                 guard done.terminationStatus == 0, let result = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any], let binary = result["binary"] as? String, binary.hasPrefix("/") else {
                     self.presentError(self.text("Qoopia could not prepare this update", "Не удалось подготовить обновление Qoopia")); return
                 }
-                self.startWorkspace(URL(fileURLWithPath: binary))
+                self.startWorkspace(URL(fileURLWithPath: binary), updated: result["state"] as? String == "updated")
             }
         }
         do { try process.run() } catch { preparing = nil; presentError(text("Qoopia could not start", "Не удалось запустить Qoopia")) }
     }
-    func startWorkspace(_ binary: URL) {
+    func startWorkspace(_ binary: URL, updated: Bool = false) {
         let process = Process(), pipe = Pipe(); process.executableURL = binary; process.arguments = ["open", "--desktop"]
         var environment = ProcessInfo.processInfo.environment; environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"; process.environment = environment
-        process.standardOutput = pipe; process.standardError = FileHandle.nullDevice; child = process; outputBuffer = ""
+        process.standardOutput = pipe; process.standardError = FileHandle.nullDevice; child = process; outputBuffer = ""; rollbackArmed = updated
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let bytes = handle.availableData; guard !bytes.isEmpty else { handle.readabilityHandler = nil; return }
             DispatchQueue.main.async { self.consume(String(decoding: bytes, as: UTF8.self)) }
         }
         process.terminationHandler = { done in DispatchQueue.main.async {
             if self.shuttingDown { return }
-            if done.terminationStatus != 0 { self.presentError(self.text("Qoopia stopped unexpectedly", "Qoopia неожиданно остановилась")) }
+            if done.terminationStatus != 0 { if self.rollbackArmed { self.rollBackUpdate() } else { self.presentError(self.text("Qoopia stopped unexpectedly", "Qoopia неожиданно остановилась")) } }
         } }
         do { try process.run() } catch { child = nil; presentError(text("Qoopia could not start", "Не удалось запустить Qoopia")) }
+    }
+    // An updated runtime that exits before its first workspace event goes back to the previous one.
+    // rollback refuses once the new generation has been written; desktop-prepare then keeps the old runtime.
+    func rollBackUpdate() {
+        rollbackArmed = false
+        let process = Process(); process.executableURL = executable; process.arguments = ["rollback", "--commit"]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { done in DispatchQueue.main.async {
+            self.presentError(done.terminationStatus == 0 ? self.text("Update rolled back; your data is unchanged", "Обновление отменено; ваши данные не изменились") : self.text("Qoopia stopped unexpectedly", "Qoopia неожиданно остановилась"))
+        } }
+        do { try process.run() } catch { presentError(text("Qoopia stopped unexpectedly", "Qoopia неожиданно остановилась")) }
     }
     func consume(_ chunk: String) {
         outputBuffer += chunk
         while let newline = outputBuffer.firstIndex(of: "\n") {
             let line = String(outputBuffer[..<newline]); outputBuffer.removeSubrange(...newline)
             guard let bytes = line.data(using: .utf8), let event = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any], event["event"] as? String == "workspace", let raw = event["url"] as? String, let url = URL(string: raw), allowedWorkspace(url) else { continue }
-            var clean = URLComponents(url: url, resolvingAgainstBaseURL: false)!; clean.fragment = nil; workspaceURL = clean.url
+            var clean = URLComponents(url: url, resolvingAgainstBaseURL: false)!; clean.fragment = nil; workspaceURL = clean.url; rollbackArmed = false
             webView.load(URLRequest(url: url)); statusItem.button?.toolTip = text("Qoopia is running", "Qoopia работает")
         }
         if outputBuffer.utf8.count > 262144 { outputBuffer = "" }
@@ -259,7 +271,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
                 } else {
                     let alert = NSAlert()
                     alert.messageText = done.terminationStatus == 0 && apply ? (ru ? "Адрес добавлен" : "Address added") : (ru ? "Проверьте настройки клиента" : "Review client settings")
-                    alert.informativeText = done.terminationStatus == 0 && apply ? (ru ? "Откройте клиент, подтвердите подключение Qoopia и выполните запрос проверки из мастера. Подключение ещё не проверено." : "Open your client, authenticate its Qoopia connection, then run the wizard’s verification prompt. The connection is not verified yet.") : (ru ? "Не удалось добавить адрес. Откройте мастер подключений Qoopia и проверьте существующие настройки клиента." : "The address could not be added. Open the Qoopia connection wizard and review your existing client settings.")
+                    alert.informativeText = done.terminationStatus == 0 && apply ? (ru ? "Откройте клиент, подтвердите подключение Qoopia и отправьте запрос из карточки подключения: первый вызов протокола Qoopia подтвердит подключение." : "Open your client, authenticate its Qoopia connection, then send the request from the connection card: its first Qoopia protocol call confirms the connection.") : (ru ? "Не удалось добавить адрес. Откройте мастер подключений Qoopia и проверьте существующие настройки клиента." : "The address could not be added. Open the Qoopia connection wizard and review your existing client settings.")
                     alert.runModal()
                 }
                 self.connecting = false
@@ -283,7 +295,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
                 self.clientAuth = nil
                 let alert = NSAlert()
                 alert.messageText = done.terminationStatus == 0 ? (ru ? "Доступ подтверждён" : "Access approved") : (ru ? "Вход не завершён" : "Sign-in incomplete")
-                alert.informativeText = done.terminationStatus == 0 ? (ru ? "Перезапустите Claude Desktop и выполните запрос проверки из мастера Qoopia. Подключение ещё не проверено." : "Restart Claude Desktop and run the verification prompt from the Qoopia wizard. The connection is not verified yet.") : (ru ? "Адаптер добавлен. Откройте файл подключения снова, чтобы повторить подтверждение доступа в браузере." : "The adapter is added. Open the connection file again to retry consent in your browser.")
+                alert.informativeText = done.terminationStatus == 0 ? (ru ? "Перезапустите Claude Desktop и отправьте запрос из карточки подключения в настоящем чате: первый вызов протокола Qoopia подтвердит подключение." : "Restart Claude Desktop and send the request from the connection card in a real conversation: its first Qoopia protocol call confirms the connection.") : (ru ? "Адаптер добавлен. Откройте файл подключения снова, чтобы повторить подтверждение доступа в браузере." : "The adapter is added. Open the connection file again to retry consent in your browser.")
                 alert.runModal()
                 self.connecting = false
                 self.finishConnection()

@@ -2,25 +2,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {Database} from 'bun:sqlite';
-import { durableWrite, hash, privateDirectory, readJson, safePath, syncDirectory } from '../utils/fs.ts';
+import { durableWrite, hash, hasNulOrNewline, privateDirectory, readJson, safePath, syncDirectory } from '../utils/fs.ts';
 
 const ledgerSchema=z.object({format:z.literal('qoopia-autostart-ledger/1'),installation:z.string().min(1),platform:z.enum(['darwin','linux']),
   native_config:z.string(),config_sha256:z.string().regex(/^[a-f0-9]{64}$/),executable_sha256:z.string().regex(/^[a-f0-9]{64}$/),state:z.enum(['pending','enabled'])}).strict();
 type Ledger=z.infer<typeof ledgerSchema>;
-export type ServiceExecutor=(command:string,args:string[])=>void;
+type ServiceExecutor=(command:string,args:string[])=>void;
 export interface AutostartLifecycle { remove():{autostart:'never_enabled'|'removed';native_files_touched:number}; }
 
 export function linuxUserManagerEnvironment(platform:NodeJS.Platform,source:NodeJS.ProcessEnv):NodeJS.ProcessEnv {
   if(platform!=='linux')return {};
   const runtime=source.XDG_RUNTIME_DIR,bus=source.DBUS_SESSION_BUS_ADDRESS,env:NodeJS.ProcessEnv={};
-  if(runtime!==undefined){if(!path.isAbsolute(runtime)||/[\0\r\n]/.test(runtime))throw new Error('Invalid XDG_RUNTIME_DIR for Linux user manager');env.XDG_RUNTIME_DIR=runtime;}
-  if(bus!==undefined){if(!/^unix:(?:path|abstract)=/.test(bus)||/[\0\r\n]/.test(bus))throw new Error('Invalid DBUS_SESSION_BUS_ADDRESS for Linux user manager');env.DBUS_SESSION_BUS_ADDRESS=bus;}
+  if(runtime!==undefined){if(!path.isAbsolute(runtime)||hasNulOrNewline(runtime))throw new Error('Invalid XDG_RUNTIME_DIR for Linux user manager');env.XDG_RUNTIME_DIR=runtime;}
+  if(bus!==undefined){if(!/^unix:(?:path|abstract)=/.test(bus)||hasNulOrNewline(bus))throw new Error('Invalid DBUS_SESSION_BUS_ADDRESS for Linux user manager');env.DBUS_SESSION_BUS_ADDRESS=bus;}
   return env;
 }
 
-function clean(value:string){if(/[\0\r\n]/.test(value))throw new Error('Autostart paths cannot contain control characters');return value;}
+// XML 1.0 forbids C0 controls in the plist and a unit file line must stay one line.
+// eslint-disable-next-line no-control-regex
+function clean(value:string){if(/[\x00-\x1f\x7f]/.test(value))throw new Error('Autostart paths cannot contain control characters');return value;}
 function xml(value:string){return value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');}
-function systemd(value:string){return '"'+value.replaceAll('\\','\\\\').replaceAll('"','\\"')+'"';}
+// systemd expands %specifiers and $VAR even inside quotes: %% and $$ keep them literal.
+function systemd(value:string){return '"'+value.replaceAll('\\','\\\\').replaceAll('"','\\"').replaceAll('%','%%').replaceAll('$',()=>'$$')+'"';}
 function ownedDirectory(directory:string){
   if(!fs.existsSync(directory))return privateDirectory(directory);
   const stat=fs.lstatSync(safePath(directory));

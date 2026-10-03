@@ -11,6 +11,7 @@ import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {submitMyAgentAction,myAgentState,telegramAgentState,agentDirectory} from '../src/services/my-agent.ts';
+import {fakeFetch} from './helpers/fake-fetch.ts';
 
 beforeAll(()=>runMigrations());
 test('frequent Telegram and dashboard status reads do not scan agent files',()=>{
@@ -60,7 +61,7 @@ test('agent preparation acknowledges immediately, exposes progress, rejects dupl
   const owner=bootstrapOwner(db,'Performance fixture',undefined,slug);
   const original=globalThis.fetch;let release!:()=>void;
   const blocked=new Promise<void>(resolve=>{release=resolve;});
-  globalThis.fetch=(async()=>{await blocked;return new Response('fixture unavailable',{status:503});}) as typeof fetch;
+  globalThis.fetch=fakeFetch(async()=>{await blocked;return new Response('fixture unavailable',{status:503});});
   try{
     const start=performance.now();expect(submitMyAgentAction(owner.agent_id,{action:'setup',provider:'codex',acceptPermissions:true})).toEqual({accepted:true});
     expect(performance.now()-start).toBeLessThan(100);
@@ -76,7 +77,7 @@ test('subscription preparation stays responsive, rejects duplicate setup and exp
   const slug='subscription-perf-'+randomUUID();db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
   const owner=bootstrapOwner(db,'Subscription fixture',undefined,slug);
   const original=globalThis.fetch;let release!:()=>void;const blocked=new Promise<void>(r=>release=r);
-  globalThis.fetch=(async()=>{await blocked;return new Response('synthetic unavailable',{status:503});}) as typeof fetch;
+  globalThis.fetch=fakeFetch(async()=>{await blocked;return new Response('synthetic unavailable',{status:503});});
   try{
     const start=performance.now();expect(submitMemorySetupAction(owner.agent_id,{action:'select',runtime:'codex'})).toEqual({accepted:true});
     expect(performance.now()-start).toBeLessThan(100);await Bun.sleep(10);

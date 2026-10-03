@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Read-only launch checks; private status and transition log, no user content."""
 import argparse
+import base64
 import concurrent.futures
 import datetime
+import hashlib
+import hmac
 import json
 import os
 import re
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 UTC = datetime.timezone.utc
@@ -35,18 +40,51 @@ def expected_schema(value):
     return int(text)
 
 
+READINESS = ('memory', 'review')
+
+
+def not_ready(body):
+    """A structured /ready 503 names its failed checks; anything else stays a generic failure."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if not (isinstance(data, dict) and data.get('status') == 'not_ready' and isinstance(data.get('checks'), dict)):
+        return {'ok': False, 'error': 'HTTP_OR_NETWORK_FAILURE'}
+    # Only short plain check names reach status.json; the monitor never echoes a response body.
+    failed = sorted(k for k, v in data['checks'].items() if v != 'ok' and isinstance(k, str) and re.fullmatch(r'[a-z_]{1,40}', k))
+    return {'ok': False, 'error': 'NOT_READY', 'failed_checks': failed}
+
+
+def request_issues(results):
+    issues = []
+    for name, r in results.items():
+        if r['ok']:
+            continue
+        failed = (r.get('failed_checks') or ['unknown']) if r.get('error') == 'NOT_READY' else None
+        issues += [name + ':not_ready:' + check for check in failed] if failed else [name]
+    return issues
+
+
 def request(item):
     name, url = item
     started = time.monotonic()
     try:
-        args = ['curl', '--fail', '--silent', '--show-error', '--max-time', '12', '--connect-timeout', '5']
+        args = ['curl', '--silent', '--show-error', '--max-time', '12', '--connect-timeout', '5']
+        # Readiness keeps its 503 body (which check failed) instead of letting --fail discard it.
+        args += ['--write-out', '\n%{http_code}'] if name in READINESS else ['--fail']
         if name in ('downloads_tag', 'source_tag'):
             args += ['--head', '--location', '--output', '/dev/null', '--write-out', '%{url_effective}']
         r = subprocess.run(args + [url], capture_output=True, timeout=15)
         if r.returncode:
             return name, {'ok': False, 'error': 'HTTP_OR_NETWORK_FAILURE'}
+        body = r.stdout
+        if name in READINESS:
+            body, _, status = body.rpartition(b'\n')
+            if status != b'200':
+                return name, not_ready(body) if status == b'503' else {'ok': False, 'error': 'HTTP_OR_NETWORK_FAILURE'}
         text_response = name in ('website', 'appcast', 'downloads_tag', 'source_tag', 'downloads_readme')
-        data = r.stdout.decode() if text_response else json.loads(r.stdout)
+        data = body.decode() if text_response else json.loads(body)
         if not text_response and not isinstance(data, dict):
             raise ValueError('Expected object')
         return name, {'ok': True, 'duration_ms': round((time.monotonic() - started) * 1000), 'data': data}
@@ -118,17 +156,55 @@ def mirror_issues(path, version):
         return ['git_mirror:unavailable']
 
 
+def alert_channels(path):
+    """The owner's qoopia-alert-channels/1 policy, the same file server ops alerts use (QOOPIA_OPS_CHANNELS_FILE)."""
+    if not path or not os.path.exists(path):
+        return []
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 16384:
+        raise ValueError('ALERT_POLICY_UNSAFE')
+    policy = json.loads(Path(path).read_text())
+    if policy.get('format') != 'qoopia-alert-channels/1' or not isinstance(policy.get('channels'), list) or len(policy['channels']) > 2:
+        raise ValueError('ALERT_POLICY_INVALID')
+    channels = []
+    for channel in policy['channels']:
+        encoded = channel['signing_key_base64url']
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43,86}', encoded) or not channel['url'].startswith('https://') or urllib.parse.urlsplit(channel['url']).hostname not in channel['allowed_hosts']:
+            raise ValueError('ALERT_POLICY_INVALID')
+        channels.append((channel['url'], base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))))
+    return channels
+
+
+def deliver_alert(channels, alert):
+    """Signed envelope and receiver receipt as for server operational alerts (src/services/event-outbox.ts)."""
+    body = json.dumps({'id': alert['id'], 'event_type': 'operational_alert', 'payload': alert['payload']}, separators=(',', ':')).encode()
+    for url, key in channels:
+        signature = base64.urlsafe_b64encode(hmac.new(key, body, hashlib.sha256).digest()).rstrip(b'=').decode()
+        try:
+            r = subprocess.run(['curl', '--fail', '--silent', '--max-time', '12', '--connect-timeout', '5', '--proto', '=https',
+                                '-H', 'content-type: application/json', '-H', 'x-qoopia-event-id: ' + alert['id'], '-H', 'x-qoopia-signature: sha256=' + signature,
+                                '--data-binary', '@-', url], input=body, capture_output=True, timeout=15)
+            receipt = json.loads(r.stdout) if r.returncode == 0 and len(r.stdout) <= 4096 else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            continue
+        if isinstance(receipt, dict) and receipt.get('accepted') is True and receipt.get('event_id') == alert['id'] and receipt.get('payload_sha256') == hashlib.sha256(body).hexdigest():
+            return True
+    return False
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root', required=True)
     p.add_argument('--source', required=True)
     p.add_argument('--package-source', default=os.environ.get('QOOPIA_PACKAGE_SOURCE'), help='Expected published installer source; defaults to runtime source')
+    p.add_argument('--auth-source', default=os.environ.get('QOOPIA_AUTH_RELEASE_SHA'), help='Expected sign-in service release SHA; defaults to runtime source')
     p.add_argument('--schema-version', default=os.environ.get('QOOPIA_SCHEMA_VERSION'), help='Expected deployed database schema; required, also read from QOOPIA_SCHEMA_VERSION')
     p.add_argument('--version', default=os.environ.get('QOOPIA_RELEASE_VERSION'), help='Expected stable product version; required')
     p.add_argument('--ios-version', default=os.environ.get('QOOPIA_IOS_VERSION'), help='Explicit separately reviewed iOS beta version; required')
     p.add_argument('--ios-build', default=os.environ.get('QOOPIA_IOS_BUILD'), help='Explicit separately reviewed iOS build; required')
     p.add_argument('--analytics', default='/srv/qoopia-analytics/latest.json')
     p.add_argument('--git-mirror', default='/srv/qoopia/git-mirror')
+    p.add_argument('--alert-channels', default=os.environ.get('QOOPIA_OPS_CHANNELS_FILE'), help='Owner qoopia-alert-channels/1 policy that receives OK/ALERT transitions; nothing is sent when unset')
     a = p.parse_args()
     try:
         a.schema_version = expected_schema(a.schema_version)
@@ -155,8 +231,8 @@ def main():
                  ('source_tag', 'https://github.com/qoopia/qoopia-source/releases/latest')]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
         results = dict(pool.map(request, endpoints))
-    issues = [name for name, r in results.items() if not r['ok']]
-    for name, validate in [('release', lambda d: d.get('source') == (a.package_source or a.source)), ('auth', lambda d: d.get('ready') is True), ('memory', lambda d: d.get('release_sha') == a.source and d.get('schema_version') == a.schema_version and d.get('status') == 'ready' and bool(d.get('checks')) and all(v == 'ok' for v in d['checks'].values()))]:
+    issues = request_issues(results)
+    for name, validate in [('release', lambda d: d.get('source') == (a.package_source or a.source)), ('auth', lambda d: d.get('ready') is True and d.get('release_sha') == (a.auth_source or a.source)), ('memory', lambda d: d.get('release_sha') == a.source and d.get('schema_version') == a.schema_version and d.get('status') == 'ready' and bool(d.get('checks')) and all(v == 'ok' for v in d['checks'].values()))]:
         r = results[name]
         if r['ok'] and not validate(r['data']):
             issues.append(name + ':unexpected_state')
@@ -182,14 +258,27 @@ def main():
         previous = json.loads(current.read_text())
     except (OSError, ValueError):
         previous = {}
+    pending = previous.get('alert_pending')
     if previous.get('issues') != status['issues']:
+        transition = {'at': status['at'], 'status': status['status'], 'issues': status['issues']}
         with (root / 'transitions.jsonl').open('a') as f:
-            f.write(json.dumps({'at': status['at'], 'status': status['status'], 'issues': status['issues']}) + '\n')
+            f.write(json.dumps(transition) + '\n')
+        if previous or issues:
+            # Only the latest transition is owed; an undelivered one is retried every run.
+            pending = {'id': 'release-health-' + hashlib.sha256(json.dumps(transition).encode()).hexdigest()[:32],
+                       'payload': {'installation': 'release-health', 'component': 'public-release', 'subject': status['status'], 'cause': ','.join(status['issues'])[:2048] or None, 'at': status['at']}}
+    try:
+        channels = alert_channels(a.alert_channels)
+        state = 'not_configured' if not channels else 'idle' if not pending else 'delivered' if deliver_alert(channels, pending) else 'failed'
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        state = 'policy_invalid'
+    status['alert'] = {'state': state, 'event_id': pending and pending['id']}
+    status['alert_pending'] = None if state == 'delivered' else pending
     temp = root / 'status.tmp'
     temp.write_text(json.dumps(status, indent=2) + '\n')
     temp.replace(current)
     print(json.dumps(status))
-    return 1 if issues else 0
+    return 1 if issues or state in ('failed', 'policy_invalid') else 0
 
 
 if __name__ == '__main__':

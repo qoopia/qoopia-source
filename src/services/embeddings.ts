@@ -24,6 +24,7 @@ import {envFlag} from "../utils/env.ts";
 import { createHash } from "node:crypto";
 import { QoopiaError } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
+import { readBoundedText } from "../utils/http-json.ts";
 
 export const EMBED_PROVIDER = process.env.QOOPIA_EMBED_PROVIDER || (process.env.QOOPIA_EMBED_ENDPOINT ? 'ollama' : 'builtin');
 export const EMBED_MODEL = EMBED_PROVIDER==='builtin' ? 'multilingual-e5-small:761b726dd34f:q8:chunks-v1' : process.env.QOOPIA_EMBED_MODEL || 'bge-m3';
@@ -152,6 +153,8 @@ export async function embedText(text: string): Promise<Float32Array> {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: EMBED_MODEL, input: trimmed }),
+      // A redirect would carry note text past the endpoint allowlist.
+      redirect: "error",
       signal: ctrl.signal,
     });
     if (!res.ok) {
@@ -166,7 +169,8 @@ export async function embedText(text: string): Promise<Float32Array> {
           : `Embedder HTTP ${res.status}`,
       );
     }
-    const json = (await res.json()) as OllamaEmbedResponse;
+    // A 1024-d vector is ~25 KB of JSON; 1 MiB leaves room for any provider's formatting.
+    const json = JSON.parse(await readBoundedText(res, 1024 * 1024)) as OllamaEmbedResponse;
     const vec = json.embeddings?.[0];
     if (!Array.isArray(vec) || vec.length !== EMBED_DIM || !vec.every(v => typeof v === "number" && Number.isFinite(v)) || !vec.some(v => v !== 0)) {
       throw new QoopiaError(
@@ -250,6 +254,7 @@ export async function isEmbedderHealthy(): Promise<boolean> {
     const versionUrl = new URL(endpoint.toString());
     versionUrl.pathname = versionUrl.pathname.replace(/\/api\/embed$/, "/api/version");
     const res = await fetch(versionUrl, {
+      redirect: "error",
       signal: ctrl.signal,
     });
     clearTimeout(timer);

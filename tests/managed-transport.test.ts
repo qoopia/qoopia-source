@@ -12,6 +12,7 @@ import http from 'node:http';import {once} from 'node:events';
 import {transportSupervisor} from '../src/delivery/transport-supervisor.ts';
 import type {TransportConfig} from '../src/delivery/transport-config.ts';
 import {newIdentity} from '../src/bridges/protocol.ts';
+import {fakeFetch} from './helpers/fake-fetch.ts';
 
 test('managed wizard resumes email confirmation after restart, saves only private scoped credentials and keeps workspace owners isolated',async()=>{
   runMigrations();const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-managed-')),registry=new Database(':memory:'),origin='https://auth.example.test';
@@ -26,13 +27,13 @@ test('managed wizard resumes email confirmation after restart, saves only privat
   durableWrite(helper,'#!'+process.execPath+'\nsetInterval(()=>{},1000);\n',0o700);
   const handler=loginBroker(registry,{origin,resendKey:'fixture',from:'test@example.test',googleClientId:'fixture',googleClientSecret:'fixture',
     devices:{domain:'example.test',provider:{ensure:async()=>({id:randomUUID(),account:'a'.repeat(32)}),remove:async()=>{}}}},
-    (async(_input,init)=>{mail=JSON.parse(String(init?.body)).text;return Response.json({id:'sent'});}) as typeof fetch);
-  const network=(async(input,init)=>{
+    fakeFetch(async(_input,init)=>{mail=JSON.parse(String(init?.body)).text;return Response.json({id:'sent'});}));
+  const network=fakeFetch(async(input,init)=>{
     if(String(input).startsWith('http://127.0.0.1:'))return new Response('ready');
     if(String(input).endsWith('/mcp'))return new Response('',{status:401,headers:{'www-authenticate':'Bearer resource_metadata="'+new URL(String(input)).origin+'/.well-known/oauth-protected-resource"'}});
     if(offline)throw new Error('network offline');
     return handler(new Request(String(input),init),'synthetic');
-  }) as typeof fetch;
+  });
   let service=managedTransport(root,db,helper,network,origin);
   const act=(input:unknown)=>service.action(owner.agent_id,input) as Promise<any>;
   try{
@@ -93,7 +94,7 @@ test('pausing or stopping during an in-flight registry lease never reopens a pub
     let resolve!:(value:'active')=>void,calls=0;
     const lease=new Promise<'active'>(r=>resolve=r);
     const supervisor=transportSupervisor({root,upstreamPort:19377,binary:'/nonexistent-fixture',config:()=>config,
-      lease:()=>lease,request:(async()=>{calls++;return new Response('ready');}) as typeof fetch});
+      lease:()=>lease,request:fakeFetch(async()=>{calls++;return new Response('ready');})});
     try{
       const pending=supervisor.refresh();supervisor[operation]();resolve('active');await pending;
       expect(calls).toBe(0);expect(supervisor.status().state).toBe('disabled');
@@ -108,13 +109,13 @@ test('network setup acknowledges before provider response, rejects duplicates an
   const owner=bootstrapOwner(db,'Async network owner',undefined,workspace);
   privateDirectory(path.join(root,'config'));durableWrite(path.join(root,'config/owner-identity.json'),JSON.stringify({ownerId:owner.agent_id,email:'fixture@example.test'}));
   let release!:()=>void;const blocked=new Promise<void>(r=>release=r);
-  const transport=managedTransport(root,db,'/nonexistent-fixture',(async()=>{await blocked;return Response.json({id:'a'.repeat(43)});}) as typeof fetch,'https://auth.example.test');
+  const transport=managedTransport(root,db,'/nonexistent-fixture',fakeFetch(async()=>{await blocked;return Response.json({id:'a'.repeat(43)});}),'https://auth.example.test');
   try{
     const start=performance.now();expect(transport.submit(owner.agent_id,{action:'network-start',method:'google'})).toEqual({accepted:true,code:'ACTION_IN_PROGRESS'});expect(performance.now()-start).toBeLessThan(100);
-    expect(transport.status().operation).toMatchObject({state:'running'});
+    expect(transport.status()).toMatchObject({operation:{state:'running'}});
     expect(()=>transport.submit(owner.agent_id,{action:'network-start',method:'google'})).toThrow('running');
-    release();for(let i=0;i<100&&(transport.status().operation as any)?.state==='running';i++)await Bun.sleep(10);
-    expect(transport.status().operation).toMatchObject({state:'completed',result:{code:'ACCOUNT_CONFIRMATION_REQUIRED',open_url:'https://auth.example.test/google?request='+'a'.repeat(43)}});
+    release();for(let i=0;i<100&&(transport.status() as {operation?:{state?:string}}).operation?.state==='running';i++)await Bun.sleep(10);
+    expect(transport.status()).toMatchObject({operation:{state:'completed',result:{code:'ACCOUNT_CONFIRMATION_REQUIRED',open_url:'https://auth.example.test/google?request='+'a'.repeat(43)}}});
     expect(()=>JSON.stringify(transport.status())).not.toThrow();
   }finally{release();transport.stop();fs.rmSync(root,{recursive:true,force:true});}
 });

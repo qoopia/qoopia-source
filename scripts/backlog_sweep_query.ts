@@ -19,17 +19,17 @@
  *
  * Usage:
  *   bun scripts/backlog_sweep_query.ts <dry-run|apply>
+ *   Workspace: QOOPIA_WORKSPACE_SLUG (default "default").
  *
  * Exports:
  *   TEST_TOPIC_RE — exported for the unit test.
  */
 import { db } from "../src/db/connection.ts";
+import { workspaceIdBySlug } from "../src/admin/workspaces.ts";
 import { agentSend, agentSessionClose } from "../src/services/agent-comm.ts";
 
 export const TEST_TOPIC_RE =
   /^(?:SMOKE_|.*_PROOF$|.*_TEST_|WAKE_SLO_PROBE_)/;
-
-const WORKSPACE_ID = "01KMKRVYF2FN68D9N3C8BEGAHS";
 
 type Row = {
   id: string;
@@ -88,6 +88,7 @@ function main() {
     process.exit(2);
   }
   const apply = mode === "apply";
+  const workspaceId = workspaceIdBySlug();
   const now = new Date();
 
   const rows = db
@@ -161,7 +162,7 @@ function main() {
     for (const w of would_mark) {
       try {
         agentSend({
-          workspace_id: WORKSPACE_ID,
+          workspace_id: workspaceId,
           agent_id: w.row.sender_agent_id,
           to_agent: w.row.recipient_name,
           session_id: w.row.session_id,
@@ -175,7 +176,7 @@ function main() {
           },
         });
         agentSessionClose({
-          workspace_id: WORKSPACE_ID,
+          workspace_id: workspaceId,
           agent_id: w.row.sender_agent_id,
           session_id: w.row.session_id,
           reason: "superseded",

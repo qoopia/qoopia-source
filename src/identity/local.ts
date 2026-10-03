@@ -7,6 +7,7 @@ import { privateDirectory, safePath, readJson, durableWrite } from '../utils/fs.
 import { consumeLocalLogin } from '../delivery/local-login.ts';
 import { localOwner } from '../delivery/owner-onboarding.ts';
 import { isHttps, localOwnerLoginHandler } from '../dashboard-api.ts';
+import { getClientIp } from '../http/respond.ts';
 import { loginEmail, type LoginIdentity } from './broker.ts';
 
 export const LOGIN_ORIGIN = 'https://auth.qoopia.ai';
@@ -30,7 +31,7 @@ export function ownerIdentity(root:string): Binding | null {
 
 export function localIdentityLogin(root:string,database:Database,request:typeof fetch=fetch) {
   const claims=new Map<string,{ownerId:string;expires:number}>();
-  const attempts=new Map<string,{ownerId:string;version:number;id:string;verifier:string;expires:number;busy:boolean}>();
+  const attempts=new Map<string,{ownerId:string;version:number;id:string;verifier:string;expires:number;busy:boolean;ip:string;code?:string}>();
   const cookie=(req:IncomingMessage,name=claimCookie)=>req.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith(name+'='))?.slice(name.length+1)??'';
   const json=(res:ServerResponse,status:number,body:unknown)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(body));};
   const broker=async(route:string,body:unknown)=>{
@@ -44,7 +45,11 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
     for(const [key,claim] of claims)if(claim.expires<=now)claims.delete(key);
     for(const [key,attempt] of attempts)if(attempt.expires<=now)attempts.delete(key);
     try{
-      if(route===''&&req.method==='GET')return json(res,200,{enabled:true,linked:!!ownerIdentity(root),pending:attempts.has(cookie(req,pendingCookie))});
+      if(route===''&&req.method==='GET'){
+        // The pending cookie is this browser's; it shows its own confirmation code again after a reload.
+        const attempt=attempts.get(cookie(req,pendingCookie));
+        return json(res,200,{enabled:true,linked:!!ownerIdentity(root),pending:!!attempt,...(attempt?.code?{code:attempt.code}:{})});
+      }
       if(route==='/setup'){
         if(process.env.QOOPIA_STANDALONE!=='true')throw new Error('Server owner identity must be provisioned by the operator');
         if(typeof body.code!=='string')throw new Error('Open Qoopia from its launcher to finish setup');
@@ -59,16 +64,27 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
       }
       if(route==='/start'){
         if(!['google','email','account'].includes(String(body.method)))throw new Error('Choose Google or email');
-        if(attempts.size>=20)throw new Error('Too many pending sign-ins. Please wait a few minutes');
         const binding=ownerIdentity(root),claim=claims.get(hash(cookie(req)));
         if(!binding&&!claim)throw new Error('Open Qoopia from its launcher once to link this workspace');
+        // /poll would refuse any other address anyway; refusing here spends no e-mail on it.
+        if(body.method==='email'&&binding&&loginEmail(body.email)!==binding.email)throw new Error('Use the email or Google account already linked to this workspace');
         if(body.method==='account'&&(!binding||!isHttps(req)))throw new Error('Sign in with email to connect this workspace');
         const owner=localOwner(database,binding?.ownerId??claim!.ownerId),verifier=random();
-        const data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:'https://'+req.headers.host+'/dashboard'}:{}),challenge:hash(verifier)});
+        // F-125: e-mail and Google confirmations need the code this screen shows (account continuation has its own).
+        const bind=body.method!=='account';
+        const data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:'https://'+req.headers.host+'/dashboard'}:{}),...(bind?{bind}:{}),challenge:hash(verifier)});
         if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new Error('Invalid sign-in service response');
-        const token=random();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:data.id,verifier,expires:now+600_000,busy:false});
+        const code=bind?String(data.confirm_code):undefined;
+        if(code!==undefined&&!/^\d{6}$/.test(code))throw new Error('Invalid sign-in service response');
+        // A client keeps its two newest pending sign-ins and the table its 20 newest, so anonymous
+        // starts can never refuse the owner's. ponytail: the broker's per-server hourly start
+        // allowance is still shared by every caller; closing that needs a per-installation allowance.
+        const ip=getClientIp(req),own=[...attempts].filter(([,attempt])=>attempt.ip===ip);
+        if(own.length>=2)attempts.delete(own[0]![0]);
+        if(attempts.size>=20)attempts.delete(attempts.keys().next().value!);
+        const token=random();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:data.id,verifier,expires:now+600_000,busy:false,ip,...(code?{code}:{})});
         res.setHeader('set-cookie',`${pendingCookie}=${token}; HttpOnly; SameSite=Strict; Path=/api/dashboard/identity; Max-Age=600${isHttps(req)?'; Secure':''}`);
-        return json(res,200,body.method==='account'?{accountUrl:LOGIN_ORIGIN+'/profile?app=ios&request='+data.id}:body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id}:{email:loginEmail(body.email)});
+        return json(res,200,body.method==='account'?{accountUrl:LOGIN_ORIGIN+'/profile?app=ios&request='+data.id}:body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id,code}:{email:loginEmail(body.email),code});
       }
       if(route==='/poll'){
         const token=cookie(req,pendingCookie),attempt=attempts.get(token);

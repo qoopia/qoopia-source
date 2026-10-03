@@ -8,6 +8,7 @@ import { db } from '../src/db/connection.ts';
 import { runMigrations } from '../src/db/migrate.ts';
 import { bootstrapOwner } from '../src/auth/pairings.ts';
 import { localOwnerLoginHandler,checkDashboardAuth,renewLocalOwnerSession,ownerIdentityRequestAllowed } from '../src/dashboard-api.ts';
+import { standaloneOwnerLoginHosts } from '../src/dashboard-session.ts';
 import { localIdentityLogin } from '../src/identity/local.ts';
 import { localSessionSecret } from '../src/delivery/local-login.ts';
 import { env } from '../src/utils/env.ts';
@@ -60,7 +61,7 @@ test('hosted owner login requires explicit enablement, trusted HTTPS and same or
  const owner=bootstrapOwner(db,'Hosted owner',undefined,'hosted-login');
  const previous={standalone:process.env.QOOPIA_STANDALONE,enabled:process.env.QOOPIA_OWNER_LOGIN,url:env.PUBLIC_URL,proxy:env.TRUST_PROXY};
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-hosted-login-'));
- const req={method:'POST',headers:{host:'memory.example.com',origin:'https://memory.example.com','x-forwarded-proto':'https'},socket:{remoteAddress:'127.0.0.1'}} as IncomingMessage;
+ const req={method:'POST',headers:{host:'memory.example.com',origin:'https://memory.example.com','x-forwarded-proto':'https'},socket:{remoteAddress:'127.0.0.1'}} as unknown as IncomingMessage; // partial request double
  let status=0,cookie='';
  const res={setHeader:()=>{},writeHead:(s:number,h:Record<string,string>)=>{status=s;cookie=h['set-cookie']??'';},end:()=>{}} as unknown as ServerResponse;
  try{
@@ -86,6 +87,55 @@ test('hosted owner login requires explicit enablement, trusted HTTPS and same or
   if(previous.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=previous.standalone;
   if(previous.enabled===undefined)delete process.env.QOOPIA_OWNER_LOGIN;else process.env.QOOPIA_OWNER_LOGIN=previous.enabled;
   fs.rmSync(root,{recursive:true,force:true});
+ }
+});
+
+test('standalone owner login accepts only the explicitly bound IP and keeps loopback peer-bound',()=>{
+ runMigrations();
+ const previous={standalone:process.env.QOOPIA_STANDALONE,host:process.env.QOOPIA_HOST};
+ const loopback=`127.0.0.1:${env.PORT}`,bound=`10.20.30.5:${env.PORT}`;
+ const request=(host:string,remoteAddress:string,origin?:string)=>
+  ({method:'POST',headers:{host,...(origin?{origin}:{})},socket:{remoteAddress}} as unknown as IncomingMessage);
+ try{
+  process.env.QOOPIA_STANDALONE='true';
+  // Default (no QOOPIA_HOST): loopback only, from a loopback peer only.
+  delete process.env.QOOPIA_HOST;
+  expect(standaloneOwnerLoginHosts()).toEqual([loopback]);
+  expect(ownerIdentityRequestAllowed(request(loopback,'127.0.0.1',`http://${loopback}`))).toBe(true);
+  expect(ownerIdentityRequestAllowed(request(loopback,'127.0.0.1'),false)).toBe(true);
+  expect(ownerIdentityRequestAllowed(request(bound,'10.20.30.9',`http://${bound}`))).toBe(false);
+  expect(ownerIdentityRequestAllowed(request(loopback,'10.20.30.9',`http://${loopback}`))).toBe(false);
+  // Explicit IP bind: that exact host is accepted from any peer reaching it.
+  process.env.QOOPIA_HOST='10.20.30.5';
+  expect(standaloneOwnerLoginHosts()).toEqual([loopback,bound]);
+  expect(ownerIdentityRequestAllowed(request(bound,'10.20.30.9',`http://${bound}`))).toBe(true);
+  expect(ownerIdentityRequestAllowed(request(loopback,'127.0.0.1',`http://${loopback}`))).toBe(true);
+  // Hardening: a remote peer that reaches the bound address cannot claim the loopback Host.
+  expect(ownerIdentityRequestAllowed(request(loopback,'10.20.30.9',`http://${loopback}`))).toBe(false);
+  for(const host of [`10.20.30.6:${env.PORT}`,'evil.example',`127.0.0.1:${env.PORT+1}`,`10.20.30.5:${env.PORT+1}`]){
+   expect(ownerIdentityRequestAllowed(request(host,'10.20.30.9',`http://${host}`))).toBe(false);
+  }
+  // A forged Origin is still refused on an accepted host.
+  expect(ownerIdentityRequestAllowed(request(bound,'10.20.30.9','https://evil.example'))).toBe(false);
+  expect(ownerIdentityRequestAllowed(request(bound,'10.20.30.9',`http://${loopback}`))).toBe(false);
+  // IPv6 literal binds use bracketed Host/Origin.
+  process.env.QOOPIA_HOST='fd7a:115c:a1e0::5';
+  const v6=`[fd7a:115c:a1e0::5]:${env.PORT}`;
+  expect(standaloneOwnerLoginHosts()).toEqual([loopback,v6]);
+  expect(ownerIdentityRequestAllowed(request(v6,'fd7a:115c:a1e0::9',`http://${v6}`))).toBe(true);
+  // Wildcards, loopback aliases and hostnames (DNS rebinding) state nothing trustworthy.
+  for(const value of ['0.0.0.0','::','*','::1','qoopia.local','10.20.30.5.nip.io']){
+   process.env.QOOPIA_HOST=value;
+   expect(standaloneOwnerLoginHosts()).toEqual([loopback]);
+   expect(ownerIdentityRequestAllowed(request(`${value}:${env.PORT}`,'10.20.30.9',`http://${value}:${env.PORT}`))).toBe(false);
+  }
+  // Disabled standalone still refuses regardless of the bind.
+  process.env.QOOPIA_HOST='10.20.30.5';
+  delete process.env.QOOPIA_STANDALONE;
+  expect(ownerIdentityRequestAllowed(request(bound,'10.20.30.9',`http://${bound}`))).toBe(false);
+ }finally{
+  if(previous.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=previous.standalone;
+  if(previous.host===undefined)delete process.env.QOOPIA_HOST;else process.env.QOOPIA_HOST=previous.host;
  }
 });
 

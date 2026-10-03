@@ -18,14 +18,15 @@
 import { z } from "zod";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
-import { QoopiaError, nowIso } from "../utils/errors.ts";
-import { createAgent, AGENT_NAME_RE } from "../admin/agents.ts";
+import { QoopiaError } from "../utils/errors.ts";
+import { createAgent, AGENT_NAME_RE, setSharedContext } from "../admin/agents.ts";
 import { currentToolAuth } from "../auth/policy.ts";
+import { seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
 import { surfaces, connectionId, connectionResource } from "../services/connection-identity.ts";
 import { env } from "../utils/env.ts";
 import { logActivity } from "../services/activity.ts";
 import { getRolePreset, ROLE_PRESET_NAMES } from "../admin/templates.ts";
-import { ulid } from "ulid";
+import { createNote } from "../services/notes.ts";
 import type { RiskClass } from "./tools.ts";
 import {
   listMemoryPolicies,
@@ -36,12 +37,14 @@ import {
 } from "../services/memory-policy.ts";
 import { decideSaveRequest, listSaveRequests } from "../services/memory-save-requests.ts";
 
-export interface AdminToolDef {
+interface AdminToolDef {
   name: string;
   description: string;
   // QSA-F / ADR-016: every admin tool is at least 'admin' risk; the field
   // is required so the per-agent profile filter has a value to read.
   risk: RiskClass;
+  /** Only the workspace owner (canManagePolicy) can use it: not offered to a steward. */
+  ownerOnly?: true;
   rawSchema: z.ZodRawShape;
   handler: (args: Record<string, unknown>, auth: AuthContext) => unknown;
 }
@@ -140,23 +143,18 @@ export const adminTools: AdminToolDef[] = [
 
         if (roleName) {
           const preset = getRolePreset(roleName);
-          const now = nowIso();
 
+          // Through createNote, so bootstrap notes get the same ms timestamps and
+          // temporal columns as every other note (owner = new agent, NOT steward).
           for (const note of preset.bootstrapNotes) {
-            const noteId = ulid();
-            db.prepare(
-              `INSERT INTO notes (id, workspace_id, agent_id, type, text, metadata, tags, source, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, '{}', ?, 'steward', ?, ?)`,
-            ).run(
-              noteId,
-              created.workspace_id,
-              created.id, // owner = new agent, NOT steward
-              note.type,
-              note.text,
-              JSON.stringify(note.tags),
-              now,
-              now,
-            );
+            createNote({
+              workspace_id: created.workspace_id,
+              agent_id: created.id,
+              type: note.type,
+              text: note.text,
+              tags: note.tags,
+              source: "steward",
+            });
             bootstrapCount++;
           }
 
@@ -198,7 +196,7 @@ export const adminTools: AdminToolDef[] = [
     name: "agent_list",
     risk: "read",
     description:
-      "List all agents in the workspace (or all workspaces for privileged steward). " +
+      "List all agents in your own workspace (steward or owner only; no agent reads another workspace). " +
       "Returns name, type, active status, and last_seen.",
     rawSchema: {},
     handler(_args, auth) {
@@ -228,6 +226,7 @@ export const adminTools: AdminToolDef[] = [
           last_seen: a.last_seen,
           created_at: a.created_at,
           workspace: a.workspace_slug,
+          shared_context: seesWholeWorkspace(a) ? null : sharesContext(a.id),
         })),
         total: all.length,
       };
@@ -446,10 +445,47 @@ export const adminTools: AdminToolDef[] = [
     },
   },
 
+  // --- agent_set_shared_context (ADR-020) ---
+  {
+    name: "agent_set_shared_context",
+    risk: "admin",
+    description:
+      "Turn one agent's shared context on or off. On (the default for every new agent) it reads " +
+      "the notes and conversation transcripts of every agent in this workspace; off it reads only its " +
+      "own. Private notes stay with their author, the steward and the owner. The steward and the " +
+      "owner always read the whole workspace; no agent reads another workspace. Audited; repeating " +
+      "a command that already holds is not an error.",
+    rawSchema: {
+      agent: z
+        .string()
+        .min(1)
+        .max(128)
+        .describe("Agent id, or its exact name when that name is unique in the workspace"),
+      enabled: z.boolean().describe("true = reads its siblings' context, false = only its own"),
+    },
+    handler: (args, auth) => {
+      assertSteward(auth);
+      const requested = args.agent as string;
+      let target: string;
+      try {
+        target = memoryPolicy(auth.workspace_id, requested).agent_id;
+      } catch {
+        target = resolveAgentByName(auth.workspace_id, requested).agent_id;
+      }
+      return setSharedContext({
+        workspace_id: auth.workspace_id,
+        agent_id: target,
+        enabled: args.enabled as boolean,
+        actor_id: auth.agent_id,
+      });
+    },
+  },
+
   // --- memory_policy_list ---
   {
     name: "memory_policy_list",
-    risk: "admin",
+    // A pure read; assertSteward below still keeps it to stewards and the owner.
+    risk: "read",
     description:
       "Show the memory policy of every active agent in this workspace: auto (session " +
       "content is captured automatically) or manual (captured only on an explicit request). " +
@@ -477,6 +513,7 @@ export const adminTools: AdminToolDef[] = [
   {
     name: "memory_policy_set",
     risk: "admin",
+    ownerOnly: true,
     description:
       "Turn automatic memory on (auto) or off (manual) for one agent. Only the workspace " +
       "owner may change it; a steward may not. Existing memory is never deleted and stays " +
@@ -546,6 +583,7 @@ export const adminTools: AdminToolDef[] = [
   {
     name: "memory_save_list",
     risk: "admin",
+    ownerOnly: true,
     description:
       "Owner only. Notes that «only on request» agents prepared and that wait for the owner's " +
       "confirmation. They are not memory yet: recall does not see them and they expire after 24 hours.",
@@ -561,6 +599,7 @@ export const adminTools: AdminToolDef[] = [
   {
     name: "memory_save_decide",
     risk: "admin",
+    ownerOnly: true,
     description:
       "Owner only. Confirm (accept=true) or decline one prepared save. Confirming writes exactly " +
       "the prepared note once; repeating it returns the same note. An agent can never confirm its own request.",

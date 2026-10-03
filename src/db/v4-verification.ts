@@ -8,9 +8,9 @@ import {
   readSchemaVersion,
 } from "./v4-migrations.ts";
 
-export const ACCEPTED_LEGACY_SOURCE_SHA256 =
+const ACCEPTED_LEGACY_SOURCE_SHA256 =
   "5f1fac7c121c6cb05eb563617f021cd9df33351fb5cddac5fc531aa7f2cae206";
-export const ACCEPTED_RECONCILIATION_MANIFEST_SHA256 =
+const ACCEPTED_RECONCILIATION_MANIFEST_SHA256 =
   "dc88824bd03b8fa6d6db9798d3289082ea38421f23b05065961e1450deba7cc9";
 
 const RECONCILIATION_KEYS = [
@@ -31,7 +31,7 @@ interface ReconciliationRow {
   status: string;
 }
 
-export interface V4VerificationOptions {
+interface V4VerificationOptions {
   db: Database;
   dbPath: string;
   expectSchema: number;
@@ -41,7 +41,7 @@ export interface V4VerificationOptions {
   expectLegacyActive: number;
 }
 
-export interface V4VerificationReport {
+interface V4VerificationReport {
   ok: boolean;
   schema: {
     actual: number;

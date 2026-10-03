@@ -1,15 +1,17 @@
 import {startMemoryMaintenance,stopMemoryMaintenance} from './services/continuity.ts';
+import {stopBuiltinEmbeddings} from './services/builtin-embeddings.ts';
 import {
+  assertSchemaNotAhead,
   getPendingMigrations,
 } from "./db/migrate.ts";
-import { closeDb, db } from "./db/connection.ts";
-import { assertDatabaseIntegrity } from "./db/sqlite.ts";
+import { closeDb, db, DB_PATH } from "./db/connection.ts";
+import { assertDatabaseIntegrity, assertDatabaseWritable } from "./db/sqlite.ts";
 import { startMaintenance, stopMaintenance } from "./services/retention.ts";
 import {
   startAgentWakeWorker,
   stopAgentWakeWorker,
 } from "./services/agent-wake.ts";
-import { startHttpServer } from "./http.ts";
+import { shutdownHttpServer, startHttpServer } from "./http.ts";
 import { logger } from "./utils/logger.ts";
 import { isReadOnlyInstance } from "./utils/instance-role.ts";
 
@@ -29,6 +31,12 @@ import { isReadOnlyInstance } from "./utils/instance-role.ts";
 // `bun run migrate` is the only supported migration entry point. It performs
 // a read-only integrity preflight and a 0600 VACUUM INTO backup before apply.
 assertDatabaseIntegrity(db, "Startup database");
+try {
+  assertSchemaNotAhead("Startup");
+} catch (error) {
+  logger.error((error as Error).message);
+  process.exit(1);
+}
 const pending = getPendingMigrations();
 if (pending.length > 0) {
   if (isReadOnlyInstance()) {
@@ -49,6 +57,12 @@ if (pending.length > 0) {
 }
 
 if (!isReadOnlyInstance()) {
+  try {
+    assertDatabaseWritable(db, `Database ${DB_PATH}`);
+  } catch (error) {
+    logger.error(`Refusing to start: ${(error as Error).message}`);
+    process.exit(1);
+  }
   startMaintenance();
   startMemoryMaintenance();
   startAgentWakeWorker();
@@ -59,16 +73,14 @@ function shutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down...`);
   stopMaintenance();
   stopMemoryMaintenance();
+  stopBuiltinEmbeddings();
   stopAgentWakeWorker();
-  server.close(() => {
+  // Agent process trees are stopped before exit even when a stream keeps the
+  // server from closing; the helper gives up after 5 s like the old fallback.
+  void shutdownHttpServer(server).finally(() => {
     closeDb();
     process.exit(0);
   });
-  // Fallback in case close hangs
-  setTimeout(() => {
-    closeDb();
-    process.exit(0);
-  }, 5000).unref();
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

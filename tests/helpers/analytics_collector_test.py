@@ -21,6 +21,15 @@ class CollectorTest(unittest.TestCase):
   db.executemany('insert into analytics_events values (?,1000,?,?,?)',[(str(i),'server','profile_login','{}') for i in range(10005)]);db.commit();db.close()
   m.import_events(self.s,self.root/'events.sqlite');m.import_events(self.s,self.root/'events.sqlite')
   self.assertEqual(self.s.db.execute('select count(*) from events').fetchone()[0],10005)
+ def test_download_clicks_summary_counts_browser_clicks_only(self):
+  import time;now=int(time.time()*1000)
+  rows=[('a',now,'browser','download_click','{"page":"home","platform":"mac","version":"5.0.14","referrer":"direct"}'),('b',now,'browser','download_click','{"page":"home","platform":"mac","version":"5.0.14","referrer":"search"}'),
+        ('c',now,'browser','download_click','{"page":"home","platform":"linux"}'),('d',now-40*86400000,'browser','download_click','{"platform":"mac","version":"5.0.13"}'),('e',now,'browser','site_view','{"page":"home"}'),('f',now,'server','download_click','{}')]
+  self.s.db.executemany('insert into events values (?,?,?,?,?)',[(i,src,at,k,d) for i,at,src,k,d in rows])
+  c=self.s.export()['download_clicks']
+  self.assertEqual((c['total'],c['last_7d'],c['last_30d']),(4,3,3))
+  self.assertEqual({(r['platform'],r['version']):r['clicks'] for r in c['by_release']},{('mac','5.0.14'):2,('linux','unknown'):1,('mac','5.0.13'):1})
+  self.assertEqual(sum(r['clicks'] for r in c['daily']),4)
  def test_stale_bridge_does_not_block_export_or_backup(self):
   stale=self.root/'stale.json';stale.write_text(json.dumps({'format':'qoopia-provider-metrics/1','observed_at':'2020-01-01T00:00:00+00:00','sources':{}}))
   report=self.root/'latest.json';backup=self.root/'backups'

@@ -13,8 +13,7 @@ import { createAgent } from "./agents.ts";
 import { env } from "../utils/env.ts";
 import { ensureSafeDir } from "../utils/fs-perms.ts";
 import { getRolePreset, listRolePresets } from "./templates.ts";
-import { ulid } from "ulid";
-import { nowIso } from "../utils/errors.ts";
+import { createNote } from "../services/notes.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -166,7 +165,7 @@ export async function install(opts: InstallOpts = {}) {
     const created = createAgent({
       name: agentName,
       workspaceSlug,
-      type: agentType as "standard" | "claude-privileged" | "steward",
+      type: agentType as "standard" | "steward",
     });
     agentKey = created.api_key;
 
@@ -174,22 +173,15 @@ export async function install(opts: InstallOpts = {}) {
     if (agentType === "steward" && stewardRole) {
       try {
         const preset = getRolePreset(stewardRole);
-        const now = nowIso();
         for (const note of preset.bootstrapNotes) {
-          const noteId = ulid();
-          db.prepare(
-            `INSERT INTO notes (id, workspace_id, agent_id, type, text, metadata, tags, source, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, '{}', ?, 'installer', ?, ?)`,
-          ).run(
-            noteId,
-            created.workspace_id,
-            created.id,
-            note.type,
-            note.text,
-            JSON.stringify(note.tags),
-            now,
-            now,
-          );
+          createNote({
+            workspace_id: created.workspace_id,
+            agent_id: created.id,
+            type: note.type,
+            text: note.text,
+            tags: note.tags,
+            source: "installer",
+          });
           bootstrapCount++;
         }
         systemPrompt = preset.systemPrompt;
@@ -216,7 +208,7 @@ export async function install(opts: InstallOpts = {}) {
       type: "ingest-daemon",
     });
     fs.mkdirSync(path.dirname(INGEST_KEY_PATH), { recursive: true });
-    fs.writeFileSync(INGEST_KEY_PATH, ingestCreated.api_key, "utf8");
+    fs.writeFileSync(INGEST_KEY_PATH, ingestCreated.api_key, { encoding: "utf8", mode: 0o600 });
     fs.chmodSync(INGEST_KEY_PATH, 0o600);
     step(`Ingest daemon 'tailer' created, key saved to ${INGEST_KEY_PATH}`);
   } else {
@@ -231,11 +223,11 @@ export async function install(opts: InstallOpts = {}) {
     "utf8",
   );
 
-  // QRERUN-001: persist a randomly-generated QOOPIA_ADMIN_SECRET into the
-  // plist so /oauth/authorize is always gated on owner consent. Reuse an
-  // existing one if found (idempotent install) — never silently rotate it,
-  // because that would invalidate any consent flow already trusted by
-  // Claude.ai etc.
+  // Persist a randomly-generated QOOPIA_ADMIN_SECRET into the plist: the
+  // server refuses to start without it, and it keys dashboard session
+  // cookies when QOOPIA_SESSION_SECRET is unset. Reuse an existing one if
+  // found (idempotent install) — never silently rotate it, because that
+  // would sign out every dashboard session.
   const adminSecretPath = path.join(env.DATA_DIR, "admin-secret");
   let adminSecret: string;
   if (fs.existsSync(adminSecretPath)) {
@@ -278,7 +270,7 @@ export async function install(opts: InstallOpts = {}) {
   const plistDir = path.join(os.homedir(), "Library/LaunchAgents");
   fs.mkdirSync(plistDir, { recursive: true });
   const plistPath = path.join(plistDir, "com.qoopia.mcp.plist");
-  fs.writeFileSync(plistPath, plist, "utf8");
+  fs.writeFileSync(plistPath, plist, { encoding: "utf8", mode: 0o600 });
   // QTHIRD-002 / QFOURTH-002: the plist embeds QOOPIA_ADMIN_SECRET — lock
   // it down to owner-only so other local users can't read the secret out
   // of the launchd config. fs.writeFileSync uses the process umask by
@@ -298,7 +290,7 @@ export async function install(opts: InstallOpts = {}) {
   // 6. Load service (unload first if already loaded)
   try {
     execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
-  } catch {}
+  } catch { /* Not loaded yet is normal; the load below reports real failures. */ }
   try {
     execSync(`launchctl load "${plistPath}"`, { stdio: "ignore" });
     step("LaunchAgent loaded");
@@ -344,7 +336,7 @@ export async function install(opts: InstallOpts = {}) {
       }
       try {
         execSync(`launchctl unload "${archivePlistPath}"`, { stdio: "ignore" });
-      } catch {}
+      } catch { /* Not loaded yet is normal; the load below reports real failures. */ }
       try {
         execSync(`launchctl load "${archivePlistPath}"`, { stdio: "ignore" });
         step("archive-stale cron loaded (Sunday 03:00 weekly)");
@@ -370,7 +362,7 @@ export async function install(opts: InstallOpts = {}) {
         up = true;
         break;
       }
-    } catch {}
+    } catch { /* Not listening yet; retry until the deadline, which is reported below. */ }
     await new Promise((r) => setTimeout(r, 300));
   }
   if (up) step(`Server responding on http://localhost:${env.PORT}`);

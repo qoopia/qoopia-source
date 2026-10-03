@@ -4,13 +4,16 @@ import type { Server } from "node:http";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
+import { legacyPrivilegedAgent } from "./helpers/legacy-agent.ts";
 import { startHttpServer } from "../src/http.ts";
 import { createNote } from "../src/services/notes.ts";
+import { getV4FeatureFlags } from "../src/utils/health-metadata.ts";
 
 let server: Server;
 let baseUrl = "";
 let STEWARD_KEY = "";
 let STANDARD_KEY = "";
+let PRIVILEGED_KEY = "";
 let NOTE_ID = "";
 const originalFlags = new Map<string, string | undefined>();
 
@@ -33,6 +36,7 @@ beforeAll(async () => {
   const standard = createAgent({ name: "dashboard-v4-standard", workspaceSlug: ws.slug });
   STEWARD_KEY = steward.api_key;
   STANDARD_KEY = standard.api_key;
+  PRIVILEGED_KEY = legacyPrivilegedAgent("dashboard-v4-privileged", ws.slug).api_key;
   NOTE_ID = createNote({
     workspace_id: ws.id,
     agent_id: steward.id,
@@ -58,7 +62,7 @@ afterAll(async () => {
 function request(path: string, token: string, init: RequestInit = {}) {
   return fetch(`${baseUrl}${path}`, {
     ...init,
-    headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+    headers: { authorization: `Bearer ${token}`, ...init.headers },
   });
 }
 
@@ -79,10 +83,24 @@ describe("P07 V4 dashboard API", () => {
     const body = await response.json() as any;
     // Migration 039 adds bridge folders above the memory index.
     // The dashboard must report the highest applied schema, not the old V4 set.
-    expect(body.operations.schema_version).toBe(47);
+    expect(body.operations.schema_version).toBe(48);
     expect(body.operations.production_apply_controls).toBe(false);
     expect(body.runtime_acceptance.status).toBe("deferred_to_p10");
     expect(body.feature_flags.dashboard).toBe(true);
+    // One source of truth with /health and /ready.
+    expect(body.feature_flags).toEqual(getV4FeatureFlags());
+  });
+
+  test("claude-privileged is not an owner/steward and gets 403 on every V4 route (F-169)", async () => {
+    for (const path of ["/api/dashboard/v4/state", `/api/dashboard/v4/chain?note_id=${NOTE_ID}`, `/api/dashboard/v4/lifecycle?note_id=${NOTE_ID}`]) {
+      expect((await request(path, PRIVILEGED_KEY)).status).toBe(403);
+    }
+    const post = await request("/api/dashboard/v4/recall", PRIVILEGED_KEY, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-qoopia-csrf": "1" },
+      body: JSON.stringify({ query: "dashboard synthetic recall target" }),
+    });
+    expect(post.status).toBe(403);
   });
 
   test("recall explorer returns visible results and privacy-safe explain data", async () => {

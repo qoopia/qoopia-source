@@ -53,21 +53,22 @@ export async function installedRuntime(operation:string,input:unknown,installati
   if(operation==='task'){
     const a=agentTaskSchema.parse(input),auth=reportAuth(owner,a.runtime_id);
     bindNativeConnection(db,a.native.connection,{runtime_id:a.runtime_id,runtime_kind:registration(db,owner.workspace_id,a.runtime_id).runtime_kind,workspace_id:owner.workspace_id});
-    const {startHttpServer}=await import('../http.ts'),server=startHttpServer();
+    const {startHttpServer,shutdownHttpServer}=await import('../http.ts'),server=startHttpServer();
     try{
       await new Promise<void>((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});
       return await runAgentTask(db,auth,a,nativeSource);
     }finally{
       server.closeAllConnections();
-      await new Promise<void>(resolve=>server.close(()=>resolve()));
+      await shutdownHttpServer(server);
     }
   }
   if(operation==='bind'){
-    const a=bindSchema.parse(input),r=registration(db,owner.workspace_id,a.connection.runtime_id);
+    const a=bindSchema.parse(input),managed=safePath(a.managed_root),relative=path.relative(installationRoot,managed);
+    const outside=relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative);
+    if(!relative||!outside)throw new Error('Managed task root must be outside the installation');
+    const r=registration(db,owner.workspace_id,a.connection.runtime_id);
     bindNativeConnection(db,a.connection,{runtime_id:r.id,runtime_kind:a.runtime_kind,workspace_id:owner.workspace_id});
     if(r.revision!==a.expected_revision)throw new Error('Runtime revision changed; inspect current registration');
-    const managed=safePath(a.managed_root),relative=path.relative(installationRoot,managed);
-    if(!relative||!relative.startsWith('..')&&!path.isAbsolute(relative))throw new Error('Managed task root must be outside the installation');
     return db.transaction(()=>{
       if(!r.reporter_id){
         const row=db.query('SELECT runtime_id FROM runtime_registrations WHERE id=?').get(r.id) as {runtime_id:string};
@@ -129,13 +130,13 @@ export async function installedRuntime(operation:string,input:unknown,installati
   // A stopped installation runs its existing HTTP handler only for this explicitly requested local task.
   // Binding and grants are checked before listening, then again in adapter immediately before native spawn.
   bindNativeConnection(db,a.native.connection,{runtime_id:l.runtime_id,runtime_kind:l.runtime_kind,workspace_id:owner.workspace_id});
-  const {startHttpServer}=await import('../http.ts');
+  const {startHttpServer,shutdownHttpServer}=await import('../http.ts');
   const server=startHttpServer();
   try{
     await new Promise<void>((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});
     return await runCsvTask(db,auth,task,nativeSource);
   }finally{
     server.closeAllConnections();
-    await new Promise<void>(resolve=>server.close(()=>resolve()));
+    await shutdownHttpServer(server);
   }
 }

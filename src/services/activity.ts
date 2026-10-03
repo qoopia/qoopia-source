@@ -2,8 +2,10 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { nowIso } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { timeBoundSql } from "../utils/temporal.ts";
+import { readLevel, visibleRowSql } from "../auth/principal.ts";
 
-export interface ActivityInput {
+interface ActivityInput {
   workspace_id: string;
   agent_id: string | null;
   action: string;
@@ -50,13 +52,13 @@ export function logActivity(input: ActivityInput): string {
   return id;
 }
 
-export interface ActivityListParams {
+interface ActivityListParams {
   workspace_id: string;
   /** QTHIRD-001: caller agent_id — needed to surface their own private
    *  activity rows alongside workspace-visibility ones. */
   caller_agent_id: string;
-  /** QTHIRD-001: true for steward / claude-privileged — bypass the
-   *  private filter for ops/audit. */
+  /** ADR-020: true for the steward and the owner — every row; otherwise the
+   *  caller's shared-context toggle decides (visibleRowSql). */
   is_admin: boolean;
   entity_type?: string;
   entity_id?: string;
@@ -72,9 +74,10 @@ export function listActivity(p: ActivityListParams) {
   const where: string[] = [`a.workspace_id = ?`];
   const params: any[] = [p.workspace_id];
 
-  // QTHIRD-001: hide activity for sibling private notes.
-  where.push(`(a.visibility = 'workspace' OR a.agent_id = ? OR ? = 1)`);
-  params.push(p.caller_agent_id, p.is_admin ? 1 : 0);
+  // QTHIRD-001 / ADR-020: siblings' rows only with shared context, never their private notes' rows.
+  where.push(visibleRowSql("a"));
+  params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
+
 
   if (p.entity_type) {
     where.push(`a.entity_type = ?`);
@@ -98,13 +101,12 @@ export function listActivity(p: ActivityListParams) {
     );
     params.push(p.agent, p.workspace_id);
   }
-  if (p.since) {
-    where.push(`a.created_at >= ?`);
-    params.push(p.since);
-  }
-  if (p.until) {
-    where.push(`a.created_at <= ?`);
-    params.push(p.until);
+  // Stored timestamps mix second and ms precision, so compare moments, not text.
+  for (const side of ["since", "until"] as const) {
+    if (!p[side]) continue;
+    const bound = timeBoundSql("a.created_at", side, p[side]);
+    where.push(bound.sql);
+    params.push(...bound.params);
   }
 
   const limit = Math.min(Math.max(p.limit || 50, 1), 500);

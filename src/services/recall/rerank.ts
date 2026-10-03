@@ -1,6 +1,7 @@
 import type { RecallParams, ResultRow } from "../recall.ts";
 import { memoryProfile } from "../memory-model.ts";
 import { logger } from "../../utils/logger.ts";
+import { readBoundedText } from "../../utils/http-json.ts";
 import {
   jinaRerankEndpoint,
   llmRerankEndpoint,
@@ -45,6 +46,8 @@ export async function rerankResults(
     const resp = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // Never re-POST the query and note passages to an origin nobody configured.
+      redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({ query, documents }),
     });
@@ -54,7 +57,7 @@ export async function rerankResults(
       );
       return { rows: candidates, mode: "rerank-fallback", fallback_reason: "rerank_http_error" };
     }
-    const data = (await resp.json()) as {
+    const data = JSON.parse(await readBoundedText(resp, 1024 * 1024)) as {
       results: Array<{ index: number; score: number }>;
       latency_ms?: number;
     };

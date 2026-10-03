@@ -6,26 +6,39 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # A new advisory against unchanged main must surface without waiting for a push.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Superseded runs of a branch or pull request are cancelled; every main commit finishes.
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   build:
+    # Required check on main. Pull requests here come from forks, so the job runs for
+    # every pull request under this one name.
     name: typecheck + tests
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1 # Upgrade tests use the verified public source-only fixture.
+          persist-credentials: false
 
       - name: Setup Bun
         # QSEC-008: pin Bun to keep CI reproducible. Bump deliberately when
         # ready to validate against a new runtime.
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.11 # Must match the distributed runtime and its license notice.
 
@@ -47,12 +60,6 @@ jobs:
       - name: Lint (V4.1 strict, warnings are errors)
         run: bun run lint:v41
 
-      - name: Dependency advisories
-        run: bun audit
-
-      - name: Vendored pdf.js version
-        run: bun run sec:vendored-pdfjs
-
       - name: Generated locale runtime matches its catalog
         run: bun scripts/build-ui-locales.ts --check
 
@@ -62,7 +69,9 @@ jobs:
           python3 tests/test_release_metadata.py
 
       - name: Release health monitor tests
-        run: python3 tests/test_release_health.py
+        run: |
+          python3 tests/test_release_health.py
+          python3 tests/test_sync_source_mirror.py
 
       - name: Public explanation parity and discovery guardrails
         run: |
@@ -84,13 +93,66 @@ jobs:
       - name: Bounded V4 qualification
         run: |
           mkdir -p artifacts/v4/evidence/P09-ci
-          bun test benchmarks/v4/metrics.test.ts
+          bun test benchmarks/v4
           bun run benchmarks/v4/run.ts --baseline v3 --candidate v4-flags-off --scales 1 --runs 3 --seed 400 --json artifacts/v4/evidence/P09-ci/off.json
           bun run benchmarks/v4/run.ts --baseline v3 --candidate v4-flags-on --scales 1 --runs 3 --seed 400 --holdout --json artifacts/v4/evidence/P09-ci/on.json
           bun run benchmarks/v4/gate.ts --budgets docs/v4/performance-budgets.json --reports artifacts/v4/evidence/P09-ci
 
       - name: Upload V4 qualification evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qoopia-v4-qualification
           path: artifacts/v4/evidence/P09-ci/*.json
+
+  advisories:
+    # Live advisory feed: a newly published advisory must not hide whether the
+    # commit's own tests pass.
+    name: ${{ github.event_name == 'pull_request' && 'dependency advisories (fork pull request)' || 'dependency advisories' }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.11 # Must match the distributed runtime and its license notice.
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Dependency advisories
+        run: bun audit
+
+      - name: Vendored pdf.js version
+        run: bun run sec:vendored-pdfjs
+
+  linux-bundle:
+    # Release inputs (Debian packages, model, cloudflared) come from the network;
+    # a daily test-fixture build shows a vanished or changed input the day it breaks.
+    name: linux-x64 test-fixture bundle
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.11 # Must match the distributed runtime and its license notice.
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build a test-fixture Linux bundle
+        run: bun run bundle:build --test-fixture --out "$RUNNER_TEMP/qoopia-bundle"

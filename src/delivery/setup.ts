@@ -6,8 +6,8 @@ import {dataFile,readCurrent} from './operations.ts';
 import {readJson,safePath} from '../utils/fs.ts';
 import {nativePackageSchema} from './native-provision.ts';
 
-export type SetupRuntime='codex'|'claude_code';
-export type SetupStatus={
+type SetupRuntime='codex'|'claude_code';
+type SetupStatus={
  format:'qoopia-setup-status/1';stage:string;runtime:SetupRuntime|null;next_action:string|null;
  detail:string;read_only:true;
 };
@@ -20,22 +20,33 @@ export function inspectSetup(root:string,requested?:string):SetupStatus{
  const pointer=path.join(root,'current.json');
  if(!fs.existsSync(pointer))return {...base,stage:'INSTALL_REQUIRED',runtime:null,next_action:`qoopia install${commandRoot(root)}`,detail:'No installation pointer exists.'};
  const current=readCurrent(root),database=new Database(dataFile(root,current),{readonly:true});
- let owners=0;
- try{owners=(database.query('SELECT count(*) AS n FROM workspace_owners').get() as {n:number}).n;}finally{database.close();}
+ let owners=0,clients:string[]=[];
+ try{
+  owners=(database.query('SELECT count(*) AS n FROM workspace_owners').get() as {n:number}).n;
+  // OAuth client connections of the owner whose agent is still active (what connections status reports).
+  if(owners===1&&database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_connections'").get())
+   clients=(database.query(`SELECT c.state FROM client_connections c JOIN workspace_owners o ON o.actor_id=c.owner_id AND o.workspace_id=c.workspace_id
+    JOIN agents a ON a.id=c.agent_id AND a.workspace_id=c.workspace_id AND a.active=1 WHERE c.state IN ('verified','awaiting_client')`).all() as {state:string}[]).map(row=>row.state);
+ }finally{database.close();}
  if(owners===0)return {...base,stage:'OWNER_BOOTSTRAP_REQUIRED',runtime:null,next_action:`qoopia start${commandRoot(root)}`,
   detail:'Start the server; its local output gives the single owner-login action. Setup cannot bootstrap owner authority.'};
  if(owners>1)return {...base,stage:'OWNER_SELECTION_REQUIRED',runtime:null,next_action:null,
   detail:'More than one owner is bound. Re-run the eventual connect command with an explicit --owner-id; setup does not disclose identifiers.'};
+ if(requested===undefined){
+  if(clients.includes('verified'))return {...base,stage:'CLIENT_CONNECTED',runtime:null,next_action:null,
+   detail:`A client connection is verified. Review connections with qoopia connections status${commandRoot(root)}.`};
+  if(clients.length)return {...base,stage:'CLIENT_CALL_REQUIRED',runtime:null,next_action:`qoopia connections status${commandRoot(root)}`,
+   detail:'A client connection waits for its first call. Status shows its MCP URL and the step to finish in that client.'};
+  return {...base,stage:'CONNECTION_REQUIRED',runtime:null,next_action:`qoopia connections plan --input ABSOLUTE_SELECTION_JSON${commandRoot(root)}`,
+   detail:'Connect a client with its own OAuth connection: run qoopia open and choose Connections, or, while Qoopia runs, plan a selection naming surface, access_mode and request_key, then apply it with --commit. No API key is written into client files. The legacy native runtime path is setup --runtime codex|claude_code.'};
+ }
  const selected=(['codex','claude_code'] as const).filter(runtime=>{
   const file=path.join(root,'native-runtimes',runtime+'.json');
   if(!fs.existsSync(file))return false;
   try{return nativePackageSchema.parse(readJson(safePath(file))).runtime===runtime;}catch{return false;}
  });
- let runtime:SetupRuntime|undefined;
- if(requested!==undefined){if(requested!=='codex'&&requested!=='claude_code')throw new Error('Setup runtime must be codex or claude_code');runtime=requested;}
- else if(selected.length===1)runtime=selected[0];
- if(!runtime)return {...base,stage:'RUNTIME_SELECTION_REQUIRED',runtime:null,next_action:`qoopia setup --runtime codex${commandRoot(root)}`,
-  detail:'No single selected runtime can be inferred. The next action is read-only and selects Codex for this setup check; use --runtime claude_code instead if desired.'};
+ if(requested!=='codex'&&requested!=='claude_code')throw new Error('Setup runtime must be codex or claude_code');
+ const runtime:SetupRuntime=requested;
  if(!selected.includes(runtime))return {...base,stage:'RUNTIME_PROVISION_REQUIRED',runtime,next_action:`qoopia runtime provision --runtime ${runtime}${commandRoot(root)}`,
   detail:'Review the existing provision preview, then apply its saved plan explicitly. Setup performs no network, login, or installation.'};
  const connections=safePath(path.join(root,'connections'));

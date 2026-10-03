@@ -7,7 +7,7 @@ fs.mkdirSync(out,{recursive:true,mode:0o700});
 const db=new Database(':memory:');
 let origin='';const broker=loginBroker(db,{origin:'https://fixture.qoopia.test',resendKey:'fixture',from:'fixture@example.test',googleClientId:'fixture',googleClientSecret:'fixture'},(async()=>{throw Error('External identity calls disabled in preview');}) as unknown as typeof fetch);
 const root=path.resolve('marketing-site');
-const csp=fs.readFileSync(path.join(root,'_headers'),'utf8').split('Content-Security-Policy: ')[1]!.trim();
+const csp=fs.readFileSync(path.join(root,'_headers'),'utf8').split('Content-Security-Policy: ')[1]!.split('\n')[0]!.trim();
 const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
  const url=new URL(req.url);
  if(url.pathname==='/profile')return broker(new Request('https://fixture.qoopia.test/profile'+url.search),'fixture');

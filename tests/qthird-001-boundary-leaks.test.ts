@@ -257,7 +257,7 @@ describe("QTHIRD-001: workspace notes still surface in activity for siblings", (
     });
     const row = result.items.find((r) => r.entity_id === id);
     expect(row).toBeDefined();
-    // Workspace-visibility activity keeps its informative preview.
-    expect(row!.summary).toContain("qthird-shared-marker");
+    // F-102: the row stays visible but names the note instead of copying its text.
+    expect(row!.summary).toBe(`Created note ${id}`);
   });
 });

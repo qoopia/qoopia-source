@@ -27,7 +27,7 @@ export function sha256File(filename: string): string {
   return hash.digest("hex");
 }
 
-export interface BackupReport {
+interface BackupReport {
   source: string;
   output: string;
   created_at: string;
@@ -92,7 +92,7 @@ export function createVerifiedBackup(input: {
   }
 }
 
-export interface RestoreRehearsalReport {
+interface RestoreRehearsalReport {
   source_sha256: string;
   restored_sha256: string;
   source_logical_hash: string;

@@ -4,7 +4,7 @@
  * Пишет по одному JSON-объекту на строку в $QOOPIA_LOG_DIR/audit.log. Формат
  * совместим с jq / logstash. Высокочастотные события (успешные auth по
  * каждому request) НЕ логируются — только security-relevant: отказы, rate-limit,
- * workspace-mismatch, admin-secret fails, OAuth grants.
+ * workspace-mismatch, OAuth grants.
  *
  * Писатель append-only, synchronous write (volume низкий, синхронность упрощает
  * отладку инцидента — событие уже на диске к моменту отправки ответа).
@@ -14,9 +14,8 @@ import path from "node:path";
 import { env } from "./env.ts";
 import { logger } from "./logger.ts";
 
-export type AuditEvent =
+type AuditEvent =
   | "auth_failure"
-  | "admin_secret_fail"
   | "workspace_mismatch"
   | "ingest_forbidden"
   | "rate_limit_trigger"
@@ -25,9 +24,9 @@ export type AuditEvent =
   | "oauth_revoke"
   | "oauth_consent";
 
-export type AuditResult = "allow" | "deny" | "error";
+type AuditResult = "allow" | "deny" | "error";
 
-export interface AuditRecord {
+interface AuditRecord {
   ts: string;
   event: AuditEvent;
   result: AuditResult;

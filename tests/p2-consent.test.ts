@@ -24,6 +24,8 @@ test('T-08 native consent changes with license/renderer/script; high risk and sy
   const secret='ghp_'+'Z9'.repeat(20),nested=writeTar(new Map([['inside.txt',Buffer.from(secret)]]));
   expect(()=>assertPortableMembers(new Map([['nested.tar',nested]]))).toThrow();
   expect(()=>assertPortableMembers(new Map([['/absolute.txt',Buffer.from('fixture')]]))).toThrow();
+  expect(()=>assertPortableMembers(new Map([['SKILL.md',Buffer.from('Docs: https://example.test/docs/guide.html')]]))).not.toThrow(); // F-083
+  expect(()=>assertPortableMembers(new Map([['SKILL.md',Buffer.from('Run /Users/example/bin/tool')]]))).toThrow('requires redaction');
   expect(projection(f.database,f.auth.workspace_id,first.version.id).descriptor.members['SKILL.md']).toBeTruthy();
  }finally{f.database.close();}
 });

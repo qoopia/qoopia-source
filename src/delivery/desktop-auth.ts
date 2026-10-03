@@ -21,7 +21,7 @@ export async function startDesktopAuth(root:string,raw:unknown):Promise<Status> 
   flows.set(id,flow);
   void authorizeStdioClient(root,binding,step=>{
     flow.status={format:'qoopia-connections/1',state:'requires_user_action',code:'CLIENT_AUTHORIZATION_REQUIRED',...step,
-      next_action:'Open this page and approve only this connection. Then restart Claude Desktop and run the verification prompt.'};
+      next_action:'Open this page and approve only this connection. Then restart Claude Desktop and send the request from the Qoopia connection card in a conversation; its first qoopia_protocol call confirms the connection.'};
   },{signal:flow.cancel.signal}).then(result=>{flow.status=result;},error=>{
     flow.status={format:'qoopia-connections/1',state:'requires_user_action',code:error instanceof StdioAccessError?error.code:'CLIENT_AUTH_REFUSED',
       next_action:'Start client sign-in again. Your memory and other connections are preserved.'};

@@ -44,6 +44,19 @@ test('T26 explicitly authorized test-fixture trust is serialized into Darwin and
   }finally{f.cleanup();}
 });
 
+test('T26 a path with systemd specifiers or control characters is written verbatim or refused [F-053]',()=>{
+  const f=fixture();try{
+    // systemd expands %h and ${VAR} and collapses $$ even inside quotes; %% and $$ are the literal forms.
+    const root=path.join(f.root,'a%h${HOME}$$x'),config=path.join(f.nativeDir,'qoopia.service');fs.mkdirSync(root,{mode:0o700});
+    new UserAutostart({root,installation:'fixture-instance',platform:'linux',configFile:config,execute:()=>{}}).install(f.executable);
+    expect(fs.readFileSync(config,'utf8')).toContain('--root "'+f.root+'/a%%h$${HOME}$$$$x"');
+    for(const name of ['ctl\x01x','del\x7fx','tab\tx']){
+      const bad=path.join(f.root,name);fs.mkdirSync(bad,{mode:0o700});
+      expect(()=>new UserAutostart({root:bad,installation:'fixture-instance',platform:'darwin',configFile:path.join(f.nativeDir,'bad.plist'),execute:()=>{}}).install(f.executable)).toThrow('control characters');
+    }
+  }finally{f.cleanup();}
+});
+
 test('T26 default child argv omits test-fixture trust on Darwin and Linux',()=>{
   const f=fixture();try{
     f.service.install(f.executable);

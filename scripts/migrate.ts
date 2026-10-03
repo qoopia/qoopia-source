@@ -9,9 +9,11 @@
  *
  * Exit codes:
  *   0 — no pending migrations, or migrations applied successfully
- *   1 — migration failed; backup remains in place for restore
+ *   1 — migration failed (backup remains in place for restore), or the
+ *       database schema is newer than this build
  */
 import {
+  assertSchemaNotAhead,
   backupDbBeforeMigrate,
   getPendingMigrations,
   runMigrations,
@@ -25,6 +27,7 @@ try {
   if (env.SERVER_ROLE !== "canonical") {
     throw new Error("Migrate refused: QOOPIA_SERVER_ROLE must be canonical");
   }
+  assertSchemaNotAhead("Migrate");
   const pending = getPendingMigrations();
   if (pending.length === 0) {
     logger.info("No pending migrations.");
@@ -47,7 +50,7 @@ try {
   try {
     closeDb();
   } catch {
-    /* ignore */
+    /* Exit code 1 already reports the failure; close is best-effort. */
   }
   process.exit(1);
 }

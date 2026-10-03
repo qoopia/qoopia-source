@@ -5,32 +5,20 @@
  * dashboard-api.ts held two unrelated subjects. This is the first: who the
  * caller is and whether the request may act. The second, the read models the
  * dashboard renders, stays behind. http.ts, identity/local.ts and the tests
- * already 
-
-import { opsSummary } from "./delivery/ops-state.ts";
-import { inspectScheduledBackups } from "./delivery/doctor-checks.ts";
-/**
- * Dashboard V4 — read-only HTTP API for the agent monitor dashboard.
+ * already import these names from dashboard-api.ts, which re-exports them.
  *
  * Authorization model (QSEC-001, Codex review 2026-04-25):
- *   - `steward` and `claude-privileged` agents see the whole workspace
- *     (this is the dashboard/admin view).
- *   - `standard` agents can ONLY see their own agent record, sessions,
- *     messages, notes, and search. Cross-agent access returns 403.
- *   - `ingest-daemon` and any other type get 403 from dashboard endpoints.
+ *   - the `steward` and the human `owner` see the whole workspace and hold
+ *     the management rights (isAdmin).
+ *   - every other agent (`standard`, and a legacy `claude-privileged` row,
+ *     which ADR-020 makes an ordinary agent) sees its siblings when its
+ *     shared-context toggle is on, otherwise only itself (403).
+ *   - `ingest-daemon` and any other type are not dashboard principals:
+ *     checkDashboardAuth returns null and the routes answer 401.
  *
  * Before this change, any valid agent Bearer token could read every other
  * agent's transcripts and memory in the same workspace. The new auth context
  * carries `isAdmin` and `agent_id` so each handler can enforce scope.
- *
- * Routes (read GETs unless noted):
- *   POST /api/dashboard/login   — exchange Bearer for session cookie
- *   POST /api/dashboard/logout  — clear session cookie
- *   GET  /api/dashboard/agents
- *   GET  /api/dashboard/agents/:agent_id/sessions
- *   GET  /api/dashboard/sessions/:session_id/messages
- *   GET  /api/dashboard/agents/:agent_id/notes?type=...&limit=...
- *   GET  /api/dashboard/agents/:agent_id/search?q=...
  *
  * QDASH-COOKIE (Codex review 2026-04-26 follow-up):
  *   The browser dashboard no longer keeps the Bearer in JS storage. POST
@@ -63,6 +51,7 @@ import { inspectScheduledBackups } from "./delivery/doctor-checks.ts";
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHmac, randomBytes, timingSafeEqual as cryptoTimingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import { db } from "./db/connection.ts";
 import { authenticate, type AuthContext } from "./auth/middleware.ts";
 import { env } from "./utils/env.ts";
@@ -70,6 +59,7 @@ import { ADMIN_TYPES } from "./auth/principal.ts";
 import { json } from "./utils/http-json.ts";
 
 /** ingest-daemon and unknown types must NOT see dashboard data. */
+// A legacy "claude-privileged" row signs in as the ordinary agent it is (ADR-020).
 export const ALLOWED_TYPES = new Set(["owner", "steward", "claude-privileged", "standard"]);
 
 export interface DashboardAuth {
@@ -91,16 +81,26 @@ export interface DashboardAuth {
   granted_scope?: AuthContext["granted_scope"];
 }
 
-/** Parse a Cookie header into a name→value map. Empty/missing → {}. */
+/**
+ * Parse a Cookie header into a name→value map. Empty/missing → {}. A name sent
+ * more than once is ambiguous (a sibling origin can toss a second qoopia_dash
+ * next to the real one) and is left out, so every reader fails closed.
+ */
 export function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
+  const seen = new Set<string>();
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
     const name = part.slice(0, eq).trim();
     const value = part.slice(eq + 1).trim();
     if (!name) continue;
+    if (seen.has(name)) {
+      delete out[name];
+      continue;
+    }
+    seen.add(name);
     try {
       out[name] = decodeURIComponent(value);
     } catch {
@@ -287,11 +287,14 @@ export function verifySession(value: string): SessionPayload | null {
 export function isHttps(req: IncomingMessage): boolean {
   const sock = (req as unknown as { socket?: { encrypted?: boolean } }).socket;
   if (sock && sock.encrypted) return true;
-  if (!env.TRUST_PROXY) return false;
-  const peer = (req.socket?.remoteAddress || "").toLowerCase();
-  if (!env.TRUSTED_PROXIES.includes(peer)) return false;
+  if (!fromTrustedProxy(req)) return false;
   const xfp = (req.headers["x-forwarded-proto"] as string | undefined) || "";
   return xfp.split(",")[0]?.trim().toLowerCase() === "https";
+}
+
+/** X-Forwarded-* headers count only from a configured proxy peer with TRUST_PROXY on. */
+function fromTrustedProxy(req: IncomingMessage): boolean {
+  return env.TRUST_PROXY && env.TRUSTED_PROXIES.includes((req.socket?.remoteAddress || "").toLowerCase());
 }
 
 /** Build the Set-Cookie value for a freshly-signed dashboard session. */
@@ -367,7 +370,7 @@ export function authFromSessionCookie(req: IncomingMessage): DashboardAuth | nul
  * Authenticate dashboard requests. Authorization: Bearer is the primary path
  * (curl, scripts, the login flow). The signed `qoopia_dash` cookie is the
  * fallback used only by the browser dashboard. Both go through the same
- * eligibility filter (steward/standard/claude-privileged).
+ * eligibility filter (ALLOWED_TYPES).
  */
 export function checkDashboardAuth(req: IncomingMessage): DashboardAuth | null {
   const header = (req.headers["authorization"] as string | undefined) || "";
@@ -416,13 +419,11 @@ export function addOrigin(allowed: Set<string>, raw: string): void {
   }
 }
 
-export function addHostOrigins(allowed: Set<string>, rawHost: string, rawProto = "https"): void {
+/** One origin: the host with the scheme actually in use, never its downgraded twin. */
+export function addHostOrigins(allowed: Set<string>, rawHost: string, rawProto: string): void {
   const host = rawHost.split(",")[0]?.trim();
-  if (!host) return;
-  const proto = rawProto.split(",")[0]?.trim() || "https";
-  allowed.add(`http://${host}`);
-  allowed.add(`https://${host}`);
-  if (proto === "http" || proto === "https") allowed.add(`${proto}://${host}`);
+  const proto = rawProto.split(",")[0]?.trim().toLowerCase();
+  if (host && (proto === "http" || proto === "https")) allowed.add(`${proto}://${host}`);
 }
 
 export function dashboardAllowedOrigins(req: IncomingMessage): string[] {
@@ -431,22 +432,26 @@ export function dashboardAllowedOrigins(req: IncomingMessage): string[] {
   for (const raw of env.DASHBOARD_ALLOWED_ORIGINS) addOrigin(allowed, raw);
 
   // Local tests and reverse proxies can present a Host that differs from
-  // QOOPIA_PUBLIC_URL. Keep the historical Host behavior and also honor
-  // forwarded host/proto so cloudflared/nginx deployments do not fail closed
-  // when the upstream Host is rewritten to the container service name.
-  addHostOrigins(allowed, firstHeaderValue(req.headers["host"]));
-  addHostOrigins(
-    allowed,
-    firstHeaderValue(req.headers["x-forwarded-host"]),
-    firstHeaderValue(req.headers["x-forwarded-proto"]),
-  );
+  // QOOPIA_PUBLIC_URL: allow the request's own Host with the scheme in use,
+  // and a trusted proxy's forwarded host/proto when the upstream Host is
+  // rewritten to the container service name. Anything else must be listed in
+  // QOOPIA_PUBLIC_URL or QOOPIA_DASHBOARD_ALLOWED_ORIGINS.
+  addHostOrigins(allowed, firstHeaderValue(req.headers["host"]), isHttps(req) ? "https" : "http");
+  if (fromTrustedProxy(req)) {
+    addHostOrigins(
+      allowed,
+      firstHeaderValue(req.headers["x-forwarded-host"]),
+      firstHeaderValue(req.headers["x-forwarded-proto"]),
+    );
+  }
   return [...allowed];
 }
 
 export function dashboardOriginDiagnostics(req: IncomingMessage): Record<string, unknown> {
   return {
     origin: firstHeaderValue(req.headers["origin"]),
-    referer: firstHeaderValue(req.headers["referer"]),
+    // Origin only: a same-origin Referer can carry ?ticket= or ?next=.
+    referer: (() => { try { return new URL(firstHeaderValue(req.headers["referer"])).origin; } catch { return ""; } })(),
     host: firstHeaderValue(req.headers["host"]),
     forwarded_host: firstHeaderValue(req.headers["x-forwarded-host"]),
     forwarded_proto: firstHeaderValue(req.headers["x-forwarded-proto"]),
@@ -481,6 +486,17 @@ export function originAllowed(req: IncomingMessage): boolean {
 }
 
 /**
+ * Origin check for a dashboard mutation, plus X-Qoopia-CSRF when the browser
+ * attached the session cookie: a same-site no-cors request carries the cookie
+ * with `Origin: null` or none, which originAllowed tolerates, but it cannot set
+ * a custom header. A Bearer is never attached by the browser, so it needs only
+ * the Origin check.
+ */
+export function dashboardMutationAllowed(req: IncomingMessage, auth: Pick<DashboardAuth, "source">): boolean {
+  return originAllowed(req) && (auth.source !== "cookie" || req.headers["x-qoopia-csrf"] === "1");
+}
+
+/**
  * POST /api/dashboard/login — validates the Bearer in the Authorization
  * header, then replies 200 with Set-Cookie carrying a signed session payload
  * (NOT the Bearer itself). The cookie payload is `{agent_id, exp}` HMAC'd
@@ -499,13 +515,32 @@ export function ownerIdentityEnabled() {
   return process.env.QOOPIA_STANDALONE === 'true' || process.env.QOOPIA_OWNER_LOGIN === 'true';
 }
 
+/**
+ * Standalone owner login is confined to the address the operator explicitly
+ * bound the server to. The default bind is loopback, so default behaviour is
+ * unchanged. An operator who sets QOOPIA_HOST to one specific private IP (a
+ * headless install reached over a private network such as a tailnet) gets that
+ * exact host:port accepted as well. Wildcard binds carry no statement about
+ * which address is reachable, and hostnames would trust DNS (rebinding), so
+ * only IP literals count. The first entry is always the loopback host.
+ */
+export function standaloneOwnerLoginHosts(): string[] {
+  const bound = (process.env.QOOPIA_HOST || '').trim();
+  const hosts = ['127.0.0.1'];
+  if (isIP(bound) && !['0.0.0.0', '::', '127.0.0.1', '::1'].includes(bound)) hosts.push(bound);
+  return hosts.map(host => (host.includes(':') ? `[${host}]` : host) + `:${env.PORT}`);
+}
+
 /** Hosted login is opt-in, HTTPS-only, and confined to configured dashboard hosts. */
 export function ownerIdentityRequestAllowed(req: IncomingMessage, mutation = true) {
   if (!ownerIdentityEnabled()) return false;
   if (process.env.QOOPIA_STANDALONE === 'true') {
-    const host = `127.0.0.1:${env.PORT}`;
-    return req.headers.host === host && ['127.0.0.1','::ffff:127.0.0.1'].includes(req.socket?.remoteAddress ?? '') &&
-      (!mutation || req.headers.origin === `http://${host}`);
+    const host = req.headers.host ?? '';
+    const [loopback, ...bound] = standaloneOwnerLoginHosts();
+    const loopbackPeer = ['127.0.0.1','::ffff:127.0.0.1'].includes(req.socket?.remoteAddress ?? '');
+    // The loopback host is trusted only from a loopback peer, whatever else is bound.
+    if (host === loopback ? !loopbackPeer : !bound.includes(host)) return false;
+    return !mutation || req.headers.origin === `http://${host}`;
   }
   if (!isHttps(req)) return false;
   return [env.PUBLIC_URL, ...env.DASHBOARD_ALLOWED_ORIGINS].some(value => {
@@ -516,16 +551,18 @@ export function ownerIdentityRequestAllowed(req: IncomingMessage, mutation = tru
   });
 }
 
-/** Called after the launcher capability or the bound identity proof is consumed. */
-export function localOwnerLoginHandler(req: IncomingMessage, res: ServerResponse, ownerId: string) {
+/** Called after the launcher capability or the bound identity proof is consumed. A native form
+ * submission (`redirect`) is answered with 303 to that page instead of the fetch JSON. */
+export function localOwnerLoginHandler(req: IncomingMessage, res: ServerResponse, ownerId: string, redirect?: string) {
   if (!ownerIdentityRequestAllowed(req) || !originAllowed(req)) {
     json(res,403,{error:'forbidden'});return;
   }
   const owner = db.query(`SELECT a.id,a.session_version FROM workspace_owners o JOIN agents a ON a.id=o.actor_id AND a.workspace_id=o.workspace_id
     WHERE a.id=? AND a.principal_kind='human' AND a.authority_profile='owner' AND a.active=1`).get(ownerId) as {id:string;session_version:number}|null;
   if(!owner){json(res,401,{error:'owner_unavailable'});return;}
-  res.writeHead(200,{'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff',
-    'set-cookie':buildSessionCookie(req,signSession(owner.id,owner.session_version,null))});
+  const cookie=buildSessionCookie(req,signSession(owner.id,owner.session_version,null));
+  if(redirect){res.writeHead(303,{location:redirect,'cache-control':'no-store','set-cookie':cookie});res.end();return;}
+  res.writeHead(200,{'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff','set-cookie':cookie});
   res.end(JSON.stringify({ok:true}));
 }
 

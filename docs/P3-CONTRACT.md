@@ -1,6 +1,11 @@
 # P3 contract — candidate work, NOT DONE
 
-Authority: complete `../spec/QOOPIA-UNIFIED-TZ.md` (1013 lines), `../P2-ACCEPTANCE.md`, `../SUBSCRIPTION-POLICY.md`, and `../P2-OPUS-FINAL-REVIEW.json`, read before design. Base: accepted P2 `35e8890789cfb87302470125e4cad1d3318b5cc0`. No P2 evidence is rewritten. This is independent delivery within one Qoopia 5.0.0 release train, not a public release.
+> Phase status here is as of 2026-09-06; current state: `python3 scripts/project-status.py --live`.
+> In-repo P3 evidence moved out of the tree on 2026-10-02 (evidence archive (`evidence-archive.md`, private record)).
+> The `spec/`, `P2-*` and `P3-*.md` records named below are not in this repository: they live in the
+> owner's private phase workspace and were never committed.
+
+Authority: complete `spec/QOOPIA-UNIFIED-TZ.md` (1013 lines), `P2-ACCEPTANCE.md`, `SUBSCRIPTION-POLICY.md`, and `P2-OPUS-FINAL-REVIEW.json` from that private phase workspace, read before design. Base: accepted P2 `35e8890789cfb87302470125e4cad1d3318b5cc0`. No P2 evidence is rewritten. This is independent delivery within one Qoopia 5.0.0 release train, not a public release.
 
 ## Exact section 20 scope
 
@@ -52,7 +57,7 @@ Release: exact SHA/version/migration range/OS/arch/checksums/SBOM/notices, contr
 
 ## Constraints and review notes
 
-No credentials/global profiles/Keychain/native user skill roots/production data, browser/OAuth, remote hosts/containers/service installs, host packages, push/deploy/release, Git metadata mutations or nested model qualification. All AI uses existing Claude/GPT subscriptions; deterministic FTS/compiler/testing uses no model. No paid API or local-model fallback. Packaging-only fixture guard move must remove runtime dependency on `artifacts/p2`; historical files stay intact. Evaluate shared `nativeModelStatus` callers and cover explicit mismatch before GPT unknown; never promote strict Codex unknown.
+No credentials/global profiles/Keychain/native user skill roots/production data, browser/OAuth, remote hosts/containers/service installs, host packages, push/deploy/release, Git metadata mutations or nested model qualification. All AI uses existing Claude/GPT subscriptions; deterministic FTS/compiler/testing uses no model. No paid API or local-model fallback. Packaging-only fixture guard move must remove runtime dependency on the P2 evidence directory (`c44d6fc:artifacts/p2`); historical files stay intact. Evaluate shared `nativeModelStatus` callers and cover explicit mismatch before GPT unknown; never promote strict Codex unknown.
 
 VoiceOver/screen-reader: **NOT RUN — excluded by owner**, no automatic deferral or personal obligation. Preserve labels/keyboard behavior. Leo verifies candidate and commits locally after review; different-model Opus reviews afterward, neither is claimed run here. Third repeated correction of one defect class stops at root boundary.
 
@@ -64,9 +69,11 @@ VoiceOver/screen-reader: **NOT RUN — excluded by owner**, no automatic deferra
 4. Select private signing-key recovery custody/encryption policy before claiming portable signing continuity. Current implementation can preserve public trust and clearly report absent private recovery.
 5. Any post-target-write rollback with data loss needs a concrete new owner decision; never implied by this GO. Future relay/index operator/funding decisions are outside P3.
 
-6. Before enabling notifications outside disposable tests, the owner selects up to two receivers implementing the explicit ID/digest acceptance contract in `P3-EVIDENCE.md` and supplies the private installation-local channel policy. No destination, signing credential or automation is provisioned by this slice; missing channels keep alerts visibly pending.
+6. Before enabling notifications outside disposable tests, the owner selects up to two receivers implementing the explicit ID/digest acceptance contract below and supplies the private installation-local channel policy. No destination, signing credential or automation is provisioned by this slice; missing channels keep alerts visibly pending.
 
-Execution matrix and real command ledger will be recorded separately in `docs/P3-EVIDENCE.md` and `artifacts/p3/`; no mandatory gate becomes PASS from partial unit evidence.
+   **Receiver acceptance contract.** For ops only, the sender POSTs the existing envelope `{id,event_type:"operational_alert",payload:{installation,component,subject,cause}}` with event ID and HMAC headers. A cooperating receiver validates and accepts the exact envelope and returns bounded JSON `{accepted:true,event_id:<same id>,payload_sha256:<SHA-256 of exact request body>}` over the authenticated destination transport. Confirmation requires 2xx **and** matching ID/digest/boolean receipt. A bare 200/204, malformed/oversized response, wrong ID/digest, redirect, timeout, error, or two failed channels remains pending. This confirms receiver acceptance, not human acknowledgement or downstream task completion. Retry uses the same event ID/body; resolve→fire allocates a new event ID. The disposable test receiver records received IDs/digests independently; test transport substitution points only to its loopback listener and does not weaken the shipped HTTPS/SSRF rules. No external receiver qualification is asserted.
+
+Execution matrix and real command ledger were recorded in `c44d6fc:docs/P3-EVIDENCE.md`; the P3 artifact directory stayed local and was never committed; no mandatory gate becomes PASS from partial unit evidence.
 
 ## Current-contract addendum — accepted final-campaign equivalences (2026-09-06)
 

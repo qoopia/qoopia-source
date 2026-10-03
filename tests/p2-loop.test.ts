@@ -28,7 +28,7 @@ test('T-04 RU/EN deterministic redaction, one-off refusal, dedupe and no portabl
     const secret='ghp_'+'Z9'.repeat(20);
     const args={kind:'manual',locale:'ru',title:'Проверить CSV '+secret,slug:'redacted',text:'1. Прочитать CSV.\n2. Сложить суммы. '+secret,metadata:{private:secret},filename:'/Users/owner/'+secret+'.md',expected_revision:0,idempotency_key:randomUUID()};
     const d=captureSkill(f.auth,args,f.database);
-    expect(d.data.outcome).toBe('drafted');expect(JSON.stringify(d)).not.toContain(secret);expect(d.data.findings.length).toBeGreaterThan(0);
+    expect(d.data.outcome).toBe('drafted');expect(JSON.stringify(d)).not.toContain(secret);expect(d.data.findings).toEqual(expect.arrayContaining([expect.any(String)]));
     expect(captureSkill(f.auth,{...args,idempotency_key:randomUUID()},f.database).data.reused).toBe(true);
     expect(captureSkill(f.auth,{...args,slug:'oneoff',text:'Только один раз. 1. Restart',idempotency_key:randomUUID()},f.database).data.outcome).toBe('refused');
     const rows=f.database.query('SELECT response_json FROM authority_commands').all();expect(JSON.stringify(rows)).not.toContain(secret);

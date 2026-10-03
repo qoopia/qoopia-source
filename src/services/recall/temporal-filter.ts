@@ -104,6 +104,32 @@ export function skippedComponentExclusionSql(alias: string): string {
 }
 
 /**
+ * Фильтр archived (без `include_archived`). Legacy supersede архивирует цель
+ * (`metadata.status='archived'`, `superseded_by`), а R2 запрещает трогать
+ * metadata. В as-of режиме такая нота — история: если её интервал закрыт,
+ * её отбирает темпоральный предикат. Ручной archive (без `superseded_by`) и
+ * незакрытые цели пропущенных компонент остаются скрытыми, current belief —
+ * без изменений.
+ */
+export function archivedExclusionSql(alias: string, filter: TemporalFilter | null): string {
+  const status = `json_extract(${alias}.metadata, '$.status')`;
+  const notArchived = `(${status} IS NULL OR ${status} != 'archived')`;
+  if (!filter || filter.current_only) return notArchived;
+  return `(${notArchived} OR (json_extract(${alias}.metadata, '$.superseded_by') IS NOT NULL AND ${alias}.invalidated_at_ms IS NOT NULL))`;
+}
+
+/** JS-зеркало `archivedExclusionSql` для уже прочитанной строки recall. */
+export function archivedRowHidden(
+  row: { metadata?: unknown; invalidated_at?: string | null },
+  filter: TemporalFilter | null,
+): boolean {
+  const metadata = row.metadata as Record<string, unknown> | null | undefined;
+  if (metadata?.status !== "archived") return false;
+  if (!filter || filter.current_only) return true;
+  return metadata.superseded_by == null || row.invalidated_at == null;
+}
+
+/**
  * Предикаты §3.2 для таблицы `notes` под указанным алиасом. Условие по
  * `deleted_at` сюда не входит — им управляет `temporalDeletedSql`.
  */

@@ -12,6 +12,7 @@ import {db} from '../src/db/connection.ts';
 import {env} from '../src/utils/env.ts';
 import {runMigrations} from '../src/db/migrate.ts';
 import {checkDashboardAuth} from '../src/dashboard-api.ts';
+import {fakeFetch} from './helpers/fake-fetch.ts';
 
 test('account continuation uses the existing workspace owner and browser, rejects a different identity or rotated session',async()=>{
   runMigrations();const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-account-')),remote=new Database(':memory:');
@@ -21,8 +22,8 @@ test('account continuation uses the existing workspace owner and browser, reject
   const owner=bootstrapOwner(db,'Account owner',undefined,'account-login');
   fs.mkdirSync(path.join(root,'config'),{mode:0o700});
   fs.writeFileSync(path.join(root,'config/owner-identity.json'),JSON.stringify({ownerId:owner.agent_id,email:'owner@example.test'}),{mode:0o600});
-  const broker=loginBroker(remote,{origin:LOGIN_ORIGIN,resendKey:'test',from:'test@example.test',googleClientId:'test',googleClientSecret:'test'},(async()=>{throw Error('No email should be sent');}) as typeof fetch);
-  const local=localIdentityLogin(root,db,(async(input,init)=>broker(new Request(String(input),init),'test')) as typeof fetch);
+  const broker=loginBroker(remote,{origin:LOGIN_ORIGIN,resendKey:'test',from:'test@example.test',googleClientId:'test',googleClientSecret:'test'},fakeFetch(async()=>{throw Error('No email should be sent');}));
+  const local=localIdentityLogin(root,db,fakeFetch(async(input,init)=>broker(new Request(String(input),init),'test')));
   const handoff=accountHandoff(remote),jar=new Map<string,string>();
   const call=async(route:string,body:Record<string,unknown>={},cookies=jar)=>{
     let status=0,result='';const headers:Record<string,string>={};

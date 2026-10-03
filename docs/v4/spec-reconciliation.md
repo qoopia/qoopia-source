@@ -4,9 +4,9 @@ Baseline inspected: `integration/v4@b6c169b9c72a2f983933610072b4909ef61261c3`, m
 
 ## Normative precedence
 
-For P02-P09 execution, precedence is: (1) accepted [ADR-V4-0001](../decisions/ADR-V4-0001-migration-coordinate-rebase.md), (2) accepted `ADR-V4-001.md` through `ADR-V4-010.md`, (3) `docs/v4/**` machine-readable contracts and this reconciliation, then (4) the copied source TZ. A lower layer cannot override a higher layer.
+For P02-P09 execution, precedence is: (1) accepted ADR-V4-0001 (`ADR-V4-0001-migration-coordinate-rebase.md`, private record), (2) accepted `ADR-V4-001.md` through `ADR-V4-010.md`, (3) `docs/v4/**` machine-readable contracts and this reconciliation, then (4) the copied source TZ. A lower layer cannot override a higher layer.
 
-The committed copied TZ at `artifacts/v4/inputs/QOOPIA_V4_PROFESSIONAL_TZ.md` changed from the pre-fix handoff blob `11e510e0e140d88f8a8c22ad314012dde96f6d73` (SHA-256 `e8e04c89e45a8cafe4988631302a6ed27e307cf949849504aedfb5cc77c24f1d`) to operative blob `4fce830f1104707339f96da4e069eac7dfd504b3` (SHA-256 `8c7ea852b750613425c2803c7cf929a7a60456ee364fb89629567e1b74767bd4`). The exact `git diff --unified=4 870ec4f775b8e8e930478affaf4bd7909e80a015..f4b2e90f746dc2b0f830d7064d747bb528302f96 -- artifacts/v4/inputs/QOOPIA_V4_PROFESSIONAL_TZ.md` has `9` additions, `10` deletions, and the following eight contextual hunks—three semantic copied-input edits plus five residual coordinate fixes:
+The copied TZ, archived at `origin/archive/v4-phase-artifacts-20260729:artifacts/v4/inputs/QOOPIA_V4_PROFESSIONAL_TZ.md` (also `git show c44d6fc:<same path>`), changed from the pre-fix handoff blob `11e510e0e140d88f8a8c22ad314012dde96f6d73` (SHA-256 `e8e04c89e45a8cafe4988631302a6ed27e307cf949849504aedfb5cc77c24f1d`) to operative blob `4fce830f1104707339f96da4e069eac7dfd504b3` (SHA-256 `8c7ea852b750613425c2803c7cf929a7a60456ee364fb89629567e1b74767bd4`). The exact `git diff --unified=4 870ec4f775b8e8e930478affaf4bd7909e80a015..f4b2e90f746dc2b0f830d7064d747bb528302f96 -- artifacts/v4/inputs/QOOPIA_V4_PROFESSIONAL_TZ.md` has `9` additions, `10` deletions, and the following eight contextual hunks—three semantic copied-input edits plus five residual coordinate fixes:
 
 | Hunk | Diff header | Class | Exact mutation | Authority consumed |
 |---|---|---|---|---|
@@ -25,7 +25,7 @@ No other copied-TZ bytes changed. With zero context Git renders the adjacent del
 
 | Source wording | Accepted reality | Frozen resolution |
 |---|---|---|
-| Original V4 coordinates followed the older pre-stabilization plan | accepted baseline already owns migrations 25 and 26 | [ADR-V4-0001](../decisions/ADR-V4-0001-migration-coordinate-rebase.md) and [ADR-V4-007](../decisions/ADR-V4-007.md): only 027-032; target 32 |
+| Original V4 coordinates followed the older pre-stabilization plan | accepted baseline already owns migrations 25 and 26 | ADR-V4-0001 (`ADR-V4-0001-migration-coordinate-rebase.md`, private record) and ADR-V4-007 (`ADR-V4-007.md`, private record): only 027-032; target 32 |
 | Several later phase inputs retained the former target fixture label | P02 now ends at schema 32 | every P03-P09 fixture and verification target is schema 32 |
 | P06 input named the former trace migration for delivery receipts | delivery receipts are assigned to the final V4 migration | P06 consumes migration 032 |
 | Export/import tools are public-contract work while service implementation belongs to P08 | P05 precedes P08 | P01/P05 freeze schemas; P08 receives only a narrow handler-binding exception guarded by contract diff |

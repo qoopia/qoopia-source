@@ -10,21 +10,21 @@ import { inventory, hash, durableWrite, privateDirectory } from '../src/utils/fs
 import { OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../src/delivery/bundle.ts';
 import { snapshotInfo } from '../src/delivery/snapshot.ts';
 
-function fixture() {
+function fixture(installedVersion='5.0.0-p3.0') {
   const outer=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-t24-'))),root=path.join(outer,'installation');
   const {privateKey,publicKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
-  const bundle=(name:string)=>{
+  const bundle=(name:string,version='5.0.0-p3.0')=>{
     const dir=path.join(outer,name);privateDirectory(dir);
     for(const file of ['qoopia','assets/src/public/dashboard.html', 'assets/src/public/brand/dashboard.js','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
       privateDirectory(path.dirname(path.join(dir,file)));durableWrite(path.join(dir,file),name);
     }
     durableWrite(path.join(dir,OPS_READER_MEMBER),JSON.stringify(OPS_READER_CAPABILITY));
-    const raw=JSON.stringify({format:'qoopia-bundle/1',version:'5.0.0-p3.0',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:37,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
+    const raw=JSON.stringify({format:'qoopia-bundle/1',version,horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:37,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
     durableWrite(path.join(dir,'manifest.json'),raw);durableWrite(path.join(dir,'manifest.sig'),sign(null,Buffer.from(raw),privateKey));return dir;
   };
   const migrate=(_bundle:string,generationRoot:string)=>{privateDirectory(path.join(generationRoot,'data'));const file=path.join(generationRoot,'data','qoopia.db');if(!fs.existsSync(file)){const f=ownerFixture(37);durableWrite(file,f.database.serialize());f.database.close();}};
-  const delivery=new Delivery(root,trust,true,migrate),first=bundle('first'),next=bundle('next'),current=delivery.install(first,3737);
-  return {outer,root,trust,delivery,next,current,cleanup:()=>fs.rmSync(outer,{recursive:true,force:true})};
+  const delivery=new Delivery(root,trust,true,migrate),first=bundle('first',installedVersion),next=bundle('next',installedVersion),current=delivery.install(first,3737);
+  return {outer,root,trust,delivery,next,current,bundle,cleanup:()=>fs.rmSync(outer,{recursive:true,force:true})};
 }
 
 function writeWorkspace(root:string,current:ReturnType<typeof readCurrent>,name:string) {
@@ -41,8 +41,8 @@ test('T24 exact update plan catches up legitimate writes made after preview',()=
     const selected=readCurrent(f.root),db=new Database(dataFile(f.root,selected),{readonly:true});
     try{expect((db.query('SELECT name FROM workspaces LIMIT 1').get() as {name:string}).name).toBe('S1-after-preview');}finally{db.close();}
     expect(result.update_report).toMatchObject({format:'qoopia-update-cutover/1',plan_digest:plan.plan_digest,source_generation:f.current.generation,source_plan_hash:plan.source.logical_hash,barrier_sequence:1,barrier_sequence_semantics:'local_cutover_event_ordinal_not_source_audit_sequence',source_writes_caught_up:true,target_generation:selected.generation,rollback_disposition:'eligible_until_first_target_write; automatic_refusal_after_target_write'});
-    expect(result.update_report.barrier_source_hash).not.toBe(plan.source.logical_hash);
-    expect(result.update_report.timeline.map(event=>event.stage)).toEqual(['preview','writer_barrier','final_snapshot','target_staged','atomic_pointer']);
+    expect(result.update_report!.barrier_source_hash).not.toBe(plan.source.logical_hash);
+    expect(result.update_report!.timeline.map(event=>event.stage)).toEqual(['preview','writer_barrier','final_snapshot','target_staged','atomic_pointer']);
     expect(fs.readFileSync(dataFile(f.root,f.current))).toEqual(oldBytes);
   }finally{f.cleanup();}
 });
@@ -83,4 +83,19 @@ test('T24 staged and committed crash boundaries select one whole generation',()=
       const release=lockInstallation(f.root);release();
     }finally{f.cleanup();}
   }
+});
+
+test('F-235 update refuses an older signed bundle unless the approved plan names the downgrade',()=>{
+  const f=fixture('5.0.14');try{
+    const older=f.bundle('older','5.0.9'),newer=f.bundle('newer','5.0.15'),pointer=fs.readFileSync(path.join(f.root,'current.json'));
+    expect(()=>f.delivery.previewUpdate(older)).toThrow('UPDATE_DOWNGRADE_REFUSED');
+    expect(f.delivery.previewUpdate(newer)).toMatchObject({downgrade:false,source:{version:'5.0.14'},target:{version:'5.0.15'}});
+    const plan=f.delivery.previewUpdate(older,true);
+    expect(plan).toMatchObject({downgrade:true,source:{version:'5.0.14'},target:{version:'5.0.9'}});
+    const {plan_digest:_,...body}={...plan,downgrade:false},forged={...body,plan_digest:hash(JSON.stringify(body))};
+    expect(()=>f.delivery.update(older,forged,forged.plan_digest)).toThrow('UPDATE_DOWNGRADE_REFUSED');
+    expect(fs.readFileSync(path.join(f.root,'current.json'))).toEqual(pointer);
+    const result=f.delivery.update(older,plan,plan.plan_digest);
+    expect(JSON.parse(fs.readFileSync(path.join(f.root,'bundles',result.bundle,'manifest.json'),'utf8')).version).toBe('5.0.9');
+  }finally{f.cleanup();}
 });

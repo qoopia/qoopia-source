@@ -5,7 +5,7 @@ import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
 import { confirmMemory, queueAccessReinforcement, setMemoryPin } from "./memory-lifecycle.ts";
-import { assertWriteScope, isAdmin } from "../auth/principal.ts";
+import { assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
 
 export const RECALL_FEEDBACK_TYPES = [
   "helpful",
@@ -67,7 +67,7 @@ export function recordRecallFeedback(input: {
   if ((input.feedback === "pin" || input.feedback === "unpin") && !PIN_TYPES.has(input.auth.type)) {
     throw new QoopiaError("FORBIDDEN", "pin and unpin require owner or steward capability");
   }
-  getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, isAdmin(input.auth));
+  getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
 
   const result = db.transaction(() => {
     const existing = db.prepare(
@@ -88,7 +88,7 @@ export function recordRecallFeedback(input: {
       return { id: existing.id, created: false };
     }
 
-    getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, isAdmin(input.auth));
+    getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
     if (input.trace_id) {
       const trace = db.prepare(
         `SELECT 1

@@ -3,13 +3,15 @@
  * Validates that valid Bearer tokens resolve to the correct agent context
  * and that bogus / missing / inactive tokens are rejected.
  */
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { authenticate } from "../src/auth/middleware.ts";
 import { db } from "../src/db/connection.ts";
 import { generateApiKey } from "../src/auth/api-keys.ts";
+import { getClient } from "../src/auth/oauth.ts";
+import { logger } from "../src/utils/logger.ts";
 
 let WORKSPACE_ID = "";
 let AGENT_ID = "";
@@ -70,4 +72,16 @@ describe("authenticate (API key)", () => {
     const ctx = authenticate(req);
     expect(ctx?.agent_id).toBe(AGENT_ID);
   });
+});
+
+test("a client whose stored redirect_uris cannot be parsed is refused and logged [F-057]", () => {
+  db.prepare(`INSERT INTO oauth_clients (id, name, agent_id, workspace_id, client_secret_hash, redirect_uris, created_at)
+    VALUES ('qc_corrupt', 'Corrupt', ?, ?, '', 'not json', datetime('now'))`).run(AGENT_ID, WORKSPACE_ID);
+  const warn = spyOn(logger, "warn");
+  try {
+    expect(getClient("qc_corrupt")?.redirect_uris).toEqual([]);
+    expect(warn.mock.calls.map(([message, context]) => [message, context])).toEqual([
+      ["OAuth client has unparseable redirect_uris; every redirect will be refused", { client_id: "qc_corrupt" }],
+    ]);
+  } finally { warn.mockRestore(); }
 });

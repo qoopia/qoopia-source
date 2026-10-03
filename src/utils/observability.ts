@@ -3,9 +3,9 @@ const LABEL_NAME = /^[a-z][a-z0-9_]{0,49}$/;
 const MAX_LABELS = 8;
 const MAX_LABEL_VALUE = 64;
 
-export type MetricLabels = Readonly<Record<string, string>>;
+type MetricLabels = Readonly<Record<string, string>>;
 
-export interface MetricPoint {
+interface MetricPoint {
   name: string;
   labels: MetricLabels;
   count: number;

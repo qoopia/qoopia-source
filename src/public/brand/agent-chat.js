@@ -3,8 +3,12 @@ window.QoopiaChat = function ({api, esc, humanSize, onUnauthorized}) {
   const panel=document.querySelector('#chatPanel'),body=document.querySelector('#chatBody'),launcher=document.querySelector('#chatLauncher');
   const $=selector=>panel.querySelector(selector);
   let disposed=false,mounted=false,refresh=async()=>{},returnFocus=launcher;
-  function close(){panel.hidden=true;launcher.setAttribute('aria-expanded','false');if(returnFocus?.isConnected)returnFocus.focus({preventScroll:true});}
-  function open(){if(disposed)return;returnFocus=document.activeElement;panel.hidden=false;launcher.setAttribute('aria-expanded','true');if(!mounted){mounted=true;mount(body);}else void refresh();$('#chatTitle').focus({preventScroll:true});}
+  // On a phone the open panel covers the page, so the page behind it leaves the tab order (F-316).
+  const small=matchMedia('(max-width:600px)');
+  const modal=()=>{const on=!panel.hidden&&small.matches;for(const el of document.body.children)if(el!==panel)el.inert=on;};
+  small.addEventListener('change',modal);
+  function close(){panel.hidden=true;modal();launcher.setAttribute('aria-expanded','false');if(returnFocus?.isConnected)returnFocus.focus({preventScroll:true});}
+  function open(){if(disposed)return;returnFocus=document.activeElement;panel.hidden=false;modal();launcher.setAttribute('aria-expanded','true');if(!mounted){mounted=true;mount(body);}else void refresh();$('#chatTitle').focus({preventScroll:true});}
   launcher.hidden=false;launcher.onclick=()=>panel.hidden?open():close();
   $('#chatClose').onclick=close;
   $('#chatExpand').onclick=()=>{const expanded=panel.classList.toggle('expanded');$('#chatExpand').setAttribute('aria-pressed',String(expanded));};
@@ -145,5 +149,5 @@ window.QoopiaChat = function ({api, esc, humanSize, onUnauthorized}) {
     $('#agentText').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!$('#agentSend').disabled&&!busy)$('#agentCompose').requestSubmit();}});
   }
 
-  return {open,dispose(){disposed=true;clearInterval(timer);document.removeEventListener('keydown',onKey);document.removeEventListener('visibilitychange',onVisible);body.replaceChildren();panel.hidden=true;launcher.hidden=true;launcher.onclick=null;launcher.setAttribute('aria-expanded','false');}};
+  return {open,dispose(){disposed=true;clearInterval(timer);document.removeEventListener('keydown',onKey);document.removeEventListener('visibilitychange',onVisible);small.removeEventListener('change',modal);body.replaceChildren();panel.hidden=true;modal();launcher.hidden=true;launcher.onclick=null;launcher.setAttribute('aria-expanded','false');}};
 };

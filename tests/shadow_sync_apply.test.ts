@@ -26,16 +26,16 @@ import { join } from "node:path";
 import {
   buildPlan,
   applyPlan,
-  configureWritableSyncConnection,
   renderApplyReport,
   parseIsoToMs,
   SYNC_BUSY_TIMEOUT_MS,
   type ApplyResult,
 } from "../src/services/shadow_sync.ts";
+import { configureWritableDatabase } from "../src/db/sqlite.ts";
 
 // -------------------- fixtures --------------------
 
-const WORKSPACE = "01KMKRVYF2FN68D9N3C8BEGAHS";
+const WORKSPACE = "01JAAAAAAAAAAAAAAAAAAAAAAA"; // synthetic
 const MIGRATIONS_DIR = join(import.meta.dir, "..", "migrations");
 const MIGRATION_017 = readFileSync(join(MIGRATIONS_DIR, "017-updated-at-ms.sql"), "utf-8");
 const MIGRATION_018 = readFileSync(join(MIGRATIONS_DIR, "018-activity-origin-host.sql"), "utf-8");
@@ -487,7 +487,7 @@ describe("applyPlan conflict safety", () => {
 describe("applyPlan writable connection safeguards", () => {
   test("writable handles enable FK checks and a bounded busy timeout", () => {
     const db = new Database(corPath);
-    configureWritableSyncConnection(db);
+    configureWritableDatabase(db, { busyTimeoutMs: SYNC_BUSY_TIMEOUT_MS });
     const fk = db.query("PRAGMA foreign_keys").get() as { foreign_keys: number };
     const busy = db.query("PRAGMA busy_timeout").get() as { timeout: number };
     db.close();

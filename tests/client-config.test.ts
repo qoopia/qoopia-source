@@ -13,6 +13,7 @@ test('native config supports vendor override directories and resumes the selecte
       const variable=surface==='codex'?'CODEX_HOME':'CLAUDE_CONFIG_DIR';
       expect(nativeClientDirectory(surface,{[variable]:directory})).toBe(directory);
       expect(()=>nativeClientDirectory(surface,{[variable]:'relative'})).toThrow('absolute');
+      for(const control of ['\0','\r','\n'])expect(()=>nativeClientDirectory(surface,{[variable]:directory+control})).toThrow('absolute');
       const defaults=configureNativeClient(root,binding,'plan',home);
       const custom=configureNativeClient(root,binding,'plan',home,directory);
       expect(custom.plan_digest).not.toBe(defaults.plan_digest);
@@ -43,7 +44,7 @@ test('native OAuth configuration preserves unrelated settings, survives retries 
       const applied=act('apply');expect(applied.code).toBe('CLIENT_AUTH_REQUIRED');expect(applied.verified).toBe(false);
       const changed=fs.readFileSync(file,'utf8');expect(changed).toContain('fixture-private-value');
       expect(act('apply').code).toBe('CLIENT_AUTH_REQUIRED');expect(fs.readFileSync(file,'utf8')).toBe(changed);
-      expect(act('status').configuration_present).toBe(true);
+      expect(act('status')).toMatchObject({configuration_present:true});
       const dir=path.join(root,'client-configs',id),files=fs.readdirSync(dir);
       expect(files.filter(f=>f.endsWith('.bak'))).toHaveLength(1);
       for(const name of files)expect(fs.statSync(path.join(dir,name)).mode&0o777).toBe(0o600);
@@ -54,7 +55,7 @@ test('native OAuth configuration preserves unrelated settings, survives retries 
       const restored=fs.readFileSync(file,'utf8');
       if(surface==='codex')expect(restored).toBe(before+'# A new unrelated comment\n');
       else expect(JSON.parse(restored)).toEqual(JSON.parse(before));
-      expect(act('status').configuration_present).toBe(false);
+      expect(act('status')).toMatchObject({configuration_present:false});
       act('apply');fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(binding.mcp_url,'https://changed.example/mcp'));
       const drifted=fs.readFileSync(file,'utf8');expect(()=>act('remove')).toThrow('changed outside');expect(()=>act('apply')).toThrow('changed outside');
       expect(fs.readFileSync(file,'utf8')).toBe(drifted);
@@ -71,6 +72,33 @@ test('native file import refuses mismatched resource identities and linked confi
     const target=path.join(root,'unrelated.json');durableWrite(target,'{"keep":true}');fs.symlinkSync(target,path.join(home,'.claude.json'));
     expect(()=>configureNativeClient(root,binding,'apply',home)).toThrow();expect(fs.readFileSync(target,'utf8')).toBe('{"keep":true}');
     expect(fs.existsSync(path.join(root,'client-configs'))).toBe(false);
+    // An explicitly selected profile is unaffected by that dotfile link [F-230].
+    const selected=privateDirectory(path.join(root,'selected'));
+    expect(configureNativeClient(root,binding,'plan',home,selected).protocol).toMatchObject({instruction_file:path.join(fs.realpathSync(selected),'CLAUDE.md')});
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('a local instruction refusal still adds the MCP entry and names its code and file [F-224]',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-refused-kit-')));
+  try{
+    const cases:Record<string,(profile:string)=>string>={
+      INSTRUCTIONS_LINKED_PATH:profile=>{const dotfile=path.join(root,'dotfiles-CLAUDE.md');durableWrite(dotfile,'# my dotfiles\n');fs.symlinkSync(dotfile,path.join(profile,'CLAUDE.md'));return path.join(profile,'CLAUDE.md');},
+      INSTRUCTIONS_UNSAFE_MODE:profile=>{fs.chmodSync(profile,0o775);return profile;},
+      INSTRUCTIONS_TOO_LARGE:profile=>{durableWrite(path.join(profile,'CLAUDE.md'),'# notes\n'+'- rule\n'.repeat(4300));return path.join(profile,'CLAUDE.md');},
+    };
+    for(const [code,setup] of Object.entries(cases)){
+      const home=privateDirectory(path.join(root,code)),profile=privateDirectory(path.join(home,'.claude')),file=setup(profile),id=randomUUID();
+      const entry=path.join(profile,'CLAUDE.md'),snapshot=()=>fs.existsSync(entry)?fs.readFileSync(entry,'utf8'):null,before=snapshot();
+      const binding={format:'qoopia-client-connection/1',connection_id:id,workspace_id:'fixture',surface:'claude_code',access_mode:'read',mcp_url:'http://127.0.0.1:3737/mcp/c/'+id};
+      const plan=configureNativeClient(root,binding,'plan',home);
+      expect(plan.code).toBe('CLIENT_CONFIG_APPLY_REQUIRED');
+      expect(plan.protocol).toMatchObject({state:'refused',code,file,delivery:'mcp',tool:'qoopia_protocol'});
+      const applied=configureNativeClient(root,binding,'apply',home);
+      expect(applied.code).toBe('CLIENT_AUTH_REQUIRED');expect(applied.protocol).toMatchObject({state:'refused',code,file});
+      expect(JSON.parse(fs.readFileSync(path.join(home,'.claude.json'),'utf8')).mcpServers[applied.configuration_name]).toEqual({type:'http',url:binding.mcp_url});
+      expect(snapshot()).toBe(before);
+      expect(fs.existsSync(path.join(profile,'qoopia-protocol.md'))).toBe(false);
+    }
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 

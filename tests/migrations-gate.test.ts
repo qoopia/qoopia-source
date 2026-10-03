@@ -21,6 +21,7 @@ import {
   assertSchemaCurrent,
   backupDbBeforeMigrate,
   getPendingMigrations,
+  latestShippedMigration,
   runMigrations,
 } from "../src/db/migrate.ts";
 import { db } from "../src/db/connection.ts";
@@ -67,6 +68,21 @@ describe("QSA-D: getPendingMigrations() reflects schema_versions state", () => {
       ).run(max.version, max.description);
     }
     expect(getPendingMigrations()).toEqual([]);
+  });
+});
+
+describe("an older build refuses a newer schema", () => {
+  test("a schema_versions row above the newest shipped migration fails the gate", () => {
+    runMigrations();
+    const ahead = latestShippedMigration() + 1;
+    db.prepare("INSERT INTO schema_versions (version, description) VALUES (?, ?)").run(ahead, "written by newer software");
+    try {
+      expect(getPendingMigrations()).toEqual([]);
+      expect(() => assertSchemaCurrent("test operation")).toThrow(`database schema ${ahead} is newer than this build`);
+    } finally {
+      db.prepare("DELETE FROM schema_versions WHERE version = ?").run(ahead);
+    }
+    expect(() => assertSchemaCurrent("test operation")).not.toThrow();
   });
 });
 

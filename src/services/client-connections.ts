@@ -9,15 +9,16 @@ import {sha256Hex} from '../auth/api-keys.ts';
 import {env} from '../utils/env.ts';
 import {nowIso, QoopiaError} from '../utils/errors.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
-import {surfaces, connectionId, type ConnectionRow as Row, connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection} from './connection-identity.ts';
-export {surfaces, connectionId, connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection};
+import {surfaces, connectionId, type ConnectionRow as Row, connectionResource, publicConnection} from './connection-identity.ts';
+export {publicConnection};
 import {configureNativeClient} from '../delivery/client-config.ts';
+import {connectionRedirectsAllowed} from '../auth/dcr-policy.ts';
 import {desktopAuthStatus,startDesktopAuth,cancelDesktopAuth} from '../delivery/desktop-auth.ts';
 
 const clientDirectory=z.string().startsWith('/').max(4096).optional();
 const agentName=z.string().trim().regex(AGENT_NAME_RE,'Use 1–64 letters, digits, spaces, underscores or hyphens');
 const selection = {surface:z.enum(surfaces), access_mode:z.enum(['read','read_write']), agent_name:agentName.optional(), request_key:z.string().min(1).max(100),transport:z.enum(['auto','local','remote']).default('auto')};
-export const connectionActionSchema = z.discriminatedUnion('action',[
+const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('plan'),...selection}).strict(),
   z.object({action:z.literal('apply'),...selection}).strict(),
   z.object({action:z.literal('status'),id:connectionId.optional()}).strict(),
@@ -25,16 +26,19 @@ export const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('verify'),id:connectionId}).strict(),
   z.object({action:z.literal('disconnect'),id:connectionId}).strict(),
   z.object({action:z.literal('label'),id:connectionId,agent_name:agentName,surface:z.enum(['muse_app','muse_code']).optional()}).strict(),
-  z.object({action:z.literal('client-plan'),id:connectionId,config_directory:clientDirectory}).strict(),
-  z.object({action:z.literal('client-apply'),id:connectionId,config_directory:clientDirectory}).strict(),
+  // language: the owner's dashboard language for the local Qoopia instructions written into the client profile.
+  z.object({action:z.literal('client-plan'),id:connectionId,config_directory:clientDirectory,language:z.enum(['ru','en']).optional()}).strict(),
+  z.object({action:z.literal('client-apply'),id:connectionId,config_directory:clientDirectory,language:z.enum(['ru','en']).optional()}).strict(),
   z.object({action:z.literal('client-status'),id:connectionId,config_directory:clientDirectory}).strict(),
   z.object({action:z.literal('client-remove'),id:connectionId,config_directory:clientDirectory}).strict(),
   z.object({action:z.literal('client-export'),id:connectionId}).strict(),
   z.object({action:z.literal('client-auth-start'),id:connectionId}).strict(),
   z.object({action:z.literal('client-auth-status'),id:connectionId}).strict(),
 ]);
-export function connectionRegistrationAuth(id:string):AuthContext {
+export function connectionRegistrationAuth(id:string,redirectUris:unknown):AuthContext {
+  if(!connectionId.safeParse(id).success)throw new QoopiaError('NOT_FOUND','Connection unavailable');
   const row=publicConnection(id);
+  if(!connectionRedirectsAllowed(row.surface,redirectUris))throw new QoopiaError('INVALID_INPUT','redirect_uris are not this client’s callback');
   if((db.query('SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?').get(row.agent_id) as {n:number}).n>=20)
     throw new QoopiaError('RATE_LIMITED','Connection registration limit reached');
   return {agent_id:row.agent_id,workspace_id:row.workspace_id,agent_name:row.surface,source:'api-key',type:'standard'};
@@ -58,11 +62,28 @@ function status(row:Row) {
       format:'qoopia-client-connection/1',connection_id:row.id,workspace_id:row.workspace_id,surface:row.surface,access_mode:row.access_mode,mcp_url:connectionResource(row.id)})}:{}),
     next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_app'?'Send this exact MCP URL to the Muse.app cloud agent. Use its supported remote MCP runtime and secure OAuth callback; do not use Muse Code CLI commands or paste callback codes into chat. Then read qoopia_protocol from that agent.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then call qoopia_protocol in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then call qoopia_protocol in a Bot conversation.':'Add the MCP URL in the selected client, consent, then call qoopia_protocol.'};
 }
+const EXTERNAL_ACCESS_NEXT='Run connections network-plan, then network-start --input METHOD_JSON --commit; apply this selection after external access is enabled.';
+/** Where a new connection for this selection is served; plan and apply refuse the same selections. */
+function servedOrigin(input:{surface:typeof surfaces[number];transport:'auto'|'local'|'remote'}) {
+  const native=input.surface==='codex'||input.surface==='claude_code'||input.surface==='claude_desktop'&&process.platform==='darwin';
+  const local=input.transport==='local'||input.transport==='auto'&&native&&process.env.QOOPIA_STANDALONE==='true';
+  if(local&&!native)throw new QoopiaError('UNSUPPORTED','This client requires the managed external connection');
+  const origin=resourceOrigin(local&&process.env.QOOPIA_STANDALONE==='true'?`http://127.0.0.1:${env.PORT}`:env.PUBLIC_URL);
+  if((input.transport==='remote'||!native)&&!origin.startsWith('https:'))throw new QoopiaError('NOT_READY','Enable external access before preparing this client',{next_action:EXTERNAL_ACCESS_NEXT});
+  if(local&&!origin.startsWith('http:'))throw new QoopiaError('UNSUPPORTED','A local client must run on the installation machine; use the server connection here');
+  return origin;
+}
 export function connectionAction(ownerId:string,raw:unknown) {
   const input=connectionActionSchema.parse(raw),owner=localOwner(db,ownerId);authorize(db,owner,'owner');
-  if(input.action==='plan')return {format:'qoopia-connections/1',state:'requires_user_action',code:'APPLY_REQUIRED',selection:input,
+  if(input.action==='plan'){
+    try{servedOrigin(input);}catch(error){
+      if(!(error instanceof QoopiaError)||error.code!=='NOT_READY')throw error;
+      return {format:'qoopia-connections/1',state:'requires_user_action',code:'EXTERNAL_ACCESS_REQUIRED',selection:input,next_action:EXTERNAL_ACCESS_NEXT};
+    }
+    return {format:'qoopia-connections/1',state:'requires_user_action',code:'APPLY_REQUIRED',selection:input,
     workspace_id:owner.workspace_id,read:true,write:input.access_mode==='read_write',transcript_capture:false,model_authorization:'separate',
     next_action:'Apply this selection to create one independently revocable connection. No memory is copied.'};
+  }
   if(input.action==='apply')return db.transaction(()=>{
     const previous=db.query('SELECT * FROM client_connections WHERE owner_id=? AND request_key=?').get(ownerId,input.request_key) as Row|null;
     if(previous){
@@ -70,12 +91,7 @@ export function connectionAction(ownerId:string,raw:unknown) {
         input.transport==='local'&&!previous.origin.startsWith('http:')||input.transport==='remote'&&!previous.origin.startsWith('https:'))throw new QoopiaError('IDEMPOTENCY_MISMATCH','Request key was used for another selection');
       return {format:'qoopia-connections/1',connection:status(previous),created:false};
     }
-    const native=input.surface==='codex'||input.surface==='claude_code'||input.surface==='claude_desktop'&&process.platform==='darwin';
-    const local=input.transport==='local'||input.transport==='auto'&&native&&process.env.QOOPIA_STANDALONE==='true';
-    if(local&&!native)throw new QoopiaError('UNSUPPORTED','This client requires the managed external connection');
-    const origin=resourceOrigin(local&&process.env.QOOPIA_STANDALONE==='true'?`http://127.0.0.1:${env.PORT}`:env.PUBLIC_URL);
-    if((input.transport==='remote'||!native)&&!origin.startsWith('https:'))throw new QoopiaError('NOT_READY','Enable external access before preparing this client');
-    if(local&&!origin.startsWith('http:'))throw new QoopiaError('UNSUPPORTED','A local client must run on the installation machine; use the server connection here');
+    const origin=servedOrigin(input);
     const workspace=db.query('SELECT slug FROM workspaces WHERE id=?').get(owner.workspace_id) as {slug:string};
     const id=randomUUID(),agent=createAgent({name:input.agent_name??input.surface+' '+id.slice(0,8),workspaceSlug:workspace.slug,type:'standard'});
     // Discard the initial API key. The selected client obtains its own OAuth grant after consent.
@@ -105,7 +121,7 @@ export function connectionAction(ownerId:string,raw:unknown) {
       if(!('configuration_present' in nativeStatus)||nativeStatus.configuration_present!==true)return {format:'qoopia-connections/1',state:'requires_user_action',code:'CLIENT_CONFIG_REQUIRED',next_action:'Add this connection to Claude Desktop first.'};
       return startDesktopAuth(root,binding);
     }
-    return configureNativeClient(JSON.parse(layout).root,binding,input.action.slice(7) as 'plan'|'apply'|'status'|'remove',undefined,'config_directory' in input?input.config_directory:undefined);
+    return configureNativeClient(JSON.parse(layout).root,binding,input.action.slice(7) as 'plan'|'apply'|'status'|'remove',undefined,'config_directory' in input?input.config_directory:undefined,'language' in input?input.language:undefined);
   }
   if(input.action==='disconnect')return db.transaction(()=>{
     if(process.env.QOOPIA_STANDALONE_LAYOUT)cancelDesktopAuth(JSON.parse(process.env.QOOPIA_STANDALONE_LAYOUT).root,row.id);
@@ -117,7 +133,7 @@ export function connectionAction(ownerId:string,raw:unknown) {
   if(row.state==='revoked')throw new QoopiaError('REVOKED','Create a new connection to reconnect');
   if(input.action==='label')return db.transaction(()=>{
     if(input.surface&&row.surface!=='muse_app'&&row.surface!=='muse_code')throw new QoopiaError('INVALID_INPUT','Only Muse connections can change their Muse surface');
-    if(db.query('SELECT 1 FROM agents WHERE workspace_id=? AND name=? AND active=1 AND id!=?').get(row.workspace_id,input.agent_name,row.agent_id))
+    if(db.query('SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?) AND active=1 AND id!=?').get(row.workspace_id,input.agent_name,row.agent_id))
       throw new QoopiaError('CONFLICT','An active agent already uses this name');
     db.query('UPDATE agents SET name=? WHERE id=? AND workspace_id=?').run(input.agent_name,row.agent_id,row.workspace_id);
     if(input.surface)db.query('UPDATE client_connections SET surface=? WHERE id=?').run(input.surface,row.id);

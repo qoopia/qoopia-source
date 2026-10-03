@@ -202,6 +202,16 @@ describe("V4 migrations 027-032", () => {
     })).toThrow("Unsupported forward schema 33");
     fixture.db.close();
   });
+
+  test("targets past 35 are refused before any write: code backfills run only in runMigrations", () => {
+    const db = new Database(":memory:");
+    expect(() => applyMigrationsToDatabase(db, {
+      migrationsDir: MIGRATIONS_DIR,
+      targetVersion: 36,
+    })).toThrow("supports targets <= 35");
+    expect(db.query("SELECT name FROM sqlite_master").all()).toEqual([]);
+    db.close();
+  });
 });
 
 describe("V4 workspace constraints", () => {

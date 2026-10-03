@@ -84,7 +84,7 @@ test('V1 ordinary task with no assigned skills preserves useful output for the n
   const executor:NativeTaskExecutor=async launch=>{prompts.push(launch.args.at(-1)!);return {exit_code:0,stdout:response(prompts.length===1?'First useful answer':'Remembered answer'),stderr:''};};
   try {
     const first=await runAgentTask(f.database,f.reportAuth,{runtime_id:f.runtimeId,session:'First task',task:'Give a useful answer.',native:f.native},{PATH:'/no-native'},executor);
-    expect(first.status).toBe('completed');expect(first.run_ids).toEqual([]);expect(first.skills).toEqual([]);
+    expect(first.status).toBe('completed');if(first.status!=='completed')throw new Error(first.error_description);expect(first.run_ids).toEqual([]);expect(first.skills).toEqual([]);
     expect(first.task_authorization_id).toBeString();
     // «Only on request» covers a task started for this agent: its transcript is that agent's
     // session content whoever launched it, so it is refused instead of written behind its back.
@@ -135,7 +135,7 @@ test('V1 general task uses frozen loadout and persists output for a later native
   };
   try {
     const first=await runAgentTask(f.database,f.reportAuth,{runtime_id:f.runtimeId,session:'Quarterly plan',task:'Draft the first useful plan.',native:f.native},{PATH:'/no-native'},executor);
-    expect(first.status).toBe('completed');expect(first.output).toBe('First useful answer');expect(first.model_status).toBe('verified');
+    expect(first.status).toBe('completed');if(first.status!=='completed')throw new Error(first.error_description);expect(first.output).toBe('First useful answer');expect(first.model_status).toBe('verified');
     expect(f.database.query('SELECT count(*) n FROM skill_runs WHERE loadout_id=?').get(first.loadout_id)).toEqual({n:1});
     expect(f.database.query("SELECT count(*) n FROM runtime_observations WHERE loadout_id=? AND kind='observed_execution'").get(first.loadout_id)).toEqual({n:1});
     expect(fs.readFileSync(first.output_file,'utf8')).toBe('First useful answer\n');

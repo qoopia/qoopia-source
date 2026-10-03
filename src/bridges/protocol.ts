@@ -28,7 +28,7 @@ export async function newIdentity():Promise<Identity> {
     signPrivate:await exportJWK(sign.privateKey) as Identity['signPrivate'],encryptPrivate:await exportJWK(encrypt.privateKey) as Identity['encryptPrivate']};
 }
 
-export const rpcSchema=z.object({op:z.string().regex(/^[a-z-]{1,32}$/),body:z.record(z.unknown())}).strict();
+const rpcSchema=z.object({op:z.string().regex(/^[a-z-]{1,32}$/),body:z.record(z.unknown())}).strict();
 export async function signRPC(keys:Identity,relay:string,op:string,body:Record<string,unknown>) {
   const signature=await new SignJWT(rpcSchema.parse({op,body})).setProtectedHeader({alg:'Ed25519',typ:'qoopia-bridge-rpc+jwt'})
     .setIssuer(peerId(keys)).setAudience(relay).setIssuedAt().setExpirationTime('60s').setJti(randomUUID())

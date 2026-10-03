@@ -3,25 +3,25 @@ import { Database } from "bun:sqlite";
 
 export const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 
-export interface WritableDatabaseOptions {
+interface WritableDatabaseOptions {
   create?: boolean;
   wal?: boolean;
   busyTimeoutMs?: number;
 }
 
-export interface ReadonlyDatabaseOptions {
+interface ReadonlyDatabaseOptions {
   queryOnly?: boolean;
   busyTimeoutMs?: number;
 }
 
-export interface ForeignKeyViolation {
+interface ForeignKeyViolation {
   table: string;
   rowid: number | null;
   parent: string;
   fkid: number;
 }
 
-export interface IntegrityPreflightResult {
+interface IntegrityPreflightResult {
   ok: boolean;
   quick_check: string[];
   foreign_key_violations: ForeignKeyViolation[];
@@ -136,6 +136,18 @@ export function inspectDatabaseIntegrity(
     quick_check: quickCheck,
     foreign_key_violations: foreignKeyViolations,
   };
+}
+
+/** Refuse to start on a database the process cannot write. SQLite silently opens such a file
+ * read-only, and the first write would then crash the server after it bound the port. The probe
+ * changes no row; a busy lock is not a permissions problem, so only SQLITE_READONLY* refuses. */
+export function assertDatabaseWritable(db: Database, label = "database"): void {
+  try {
+    db.query("UPDATE schema_versions SET version = version WHERE 0").run();
+  } catch (error) {
+    if (String((error as { code?: unknown }).code ?? "").startsWith("SQLITE_READONLY"))
+      throw new Error(`${label} is not writable (check file and directory ownership and the mount mode)`);
+  }
 }
 
 /** Refuse an operational write workflow when its starting database is dirty. */

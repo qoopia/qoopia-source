@@ -50,7 +50,7 @@ function startStub() {
       if (url.pathname === "/api/embed") {
         return req.json().then((body: any) => {
           const input = String(body.input || "");
-          const vec = new Array(EMBED_DIM).fill(0);
+          const vec = Array.from({ length: EMBED_DIM }, () => 0);
           if (input.includes("wantvec-A")) vec[0] = 1;
           else if (input.includes("wantvec-B")) vec[1] = 1;
           else vec[2] = 1; // unrelated direction

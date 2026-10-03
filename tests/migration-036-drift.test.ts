@@ -19,7 +19,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { contentSchema, COMPILER, contentDigest, missingRequirements } from "../src/skills/format.ts";
-import { canonical } from "../src/skills/commands.ts";
+import { canonical } from "../src/skills/canonical.ts";
 
 // Mirrors the field mapping in src/db/migration-036-backfill.ts.
 const LEGACY_SKILL = {

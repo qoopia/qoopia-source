@@ -5,10 +5,11 @@
  *   - /oauth/register rejects OAuth access tokens (api-key only); a steward
  *     OAuth bearer cannot mint new clients.
  *   - /api/dashboard/oauth-consent (GET, approve, deny) rejects OAuth bearers
- *     and standard agents. Approval/denial is steward/claude-priv via static
- *     key or signed cookie.
- *   - finalize verifies the *approving agent's current workspace* still
- *     matches the ticket's workspace (not the registering client owner's).
+ *     and ordinary agents. Approval/denial is the steward or the owner via
+ *     static key or signed cookie (ADR-020).
+ *   - finalizeConsentTicket (run by approve) verifies the *approving agent's
+ *     current workspace* still matches the ticket's workspace (not the
+ *     registering client owner's).
  *   - cross-workspace deny attempts are audited (parity with GET/approve).
  */
 import {
@@ -32,7 +33,9 @@ import { db } from "../src/db/connection.ts";
 import { sha256Hex } from "../src/auth/api-keys.ts";
 import { authLimiter, dashboardLimiter } from "../src/utils/rate-limit.ts";
 import {
+  approveConsentTicket,
   createConsentTicket,
+  finalizeConsentTicket,
   redeemConsentTicket,
 } from "../src/auth/oauth.ts";
 
@@ -47,7 +50,6 @@ let STEWARD_A_ID = "";
 let STEWARD_B_KEY = "";
 let STEWARD_B_ID = "";
 let STANDARD_A_KEY = "";
-let STANDARD_A_ID = "";
 
 let CLIENT_A_ID = "";
 const REDIRECT_URI = "https://example.com/cb-eligibility";
@@ -214,7 +216,6 @@ beforeAll(async () => {
     workspaceSlug: wsA.slug,
     type: "standard",
   });
-  STANDARD_A_ID = standardA.id;
   STANDARD_A_KEY = standardA.api_key;
 
   server = startHttpServer();
@@ -395,81 +396,52 @@ describe("QSA-H: consent surface rejects standard agents", () => {
   });
 });
 
+// F-076: approve redeems in the same request through finalizeConsentTicket,
+// which still refuses an approved agent that is no longer active in the
+// ticket's workspace. These tests exercise that shared helper directly.
 describe("QSA-H: finalize re-checks the approving agent's eligibility", () => {
-  test("approver workspace drifted between approve and finalize → 400, no token minted", async () => {
-    // Fresh ticket + approve as steward A.
+  const codeCount = () => (db
+    .prepare(`SELECT COUNT(*) AS c FROM oauth_tokens WHERE client_id = ? AND token_type = 'code'`)
+    .get(CLIENT_A_ID) as { c: number }).c;
+
+  test("approved agent belongs to another workspace → no code, ticket not redeemed", async () => {
     const { ticketId } = await startAuthorize(CLIENT_A_ID);
-    const ui = await getConsent(ticketId, STEWARD_A_KEY);
-    const nonce = extractNonce(await ui.text());
-    const ap = await postApprove(ticketId, nonce, STEWARD_A_KEY);
-    expect(ap.status).toBe(302); // redirected to /oauth/authorize/finalize
+    // Steward B's workspace differs from the ticket's: the same predicate a
+    // real approver drift trips.
+    expect(approveConsentTicket(ticketId, STEWARD_B_ID)).toBe(true);
+    const before = codeCount();
 
-    // Simulate drift via the cleanest path the live schema allows: directly
-    // mutate the ticket's approved_by_agent_id to point at steward B (whose
-    // current workspace_id != ticket.workspace_id). Two unique indexes
-    // (`idx_one_steward` per-workspace + the partial agent-name index) make
-    // moving an agent across workspaces non-trivial without tearing down
-    // siblings; pivoting the *ticket* exercises the same `approver.workspace_id
-    // !== ticket.workspace_id` branch the real drift triggers.
-    db.prepare(
-      `UPDATE consent_tickets SET approved_by_agent_id = ? WHERE id = ?`,
-    ).run(STEWARD_B_ID, ticketId);
+    expect(finalizeConsentTicket(ticketId, STEWARD_B_ID)).toBeNull();
 
-    const finalizeUrl = new URL(
-      `${baseUrl}/oauth/authorize/finalize`,
-    );
-    finalizeUrl.searchParams.set("ticket", ticketId);
-    const fz = await fetch(finalizeUrl.toString(), { redirect: "manual" });
-    expect(fz.status).toBe(400);
-
-    // Ticket must NOT be redeemed.
     const row = db
       .prepare(`SELECT redeemed FROM consent_tickets WHERE id = ?`)
       .get(ticketId) as { redeemed: number } | undefined;
     expect(row).toBeDefined();
     expect(row!.redeemed).toBe(0);
-
-    // No authorization-code row was minted for this client by this attempt.
-    const codes = db
-      .prepare(
-        `SELECT COUNT(*) AS c FROM oauth_tokens
-          WHERE client_id = ? AND token_type = 'code'`,
-      )
-      .get(CLIENT_A_ID) as { c: number };
-    expect(codes.c).toBe(0);
+    expect(codeCount()).toBe(before);
   });
 
-  test("approver was deactivated between approve and finalize → 400", async () => {
-    // Spin up a dedicated steward in WS A so we can deactivate it without
-    // disrupting the other tests (which depend on STEWARD_A staying alive).
+  test("approved agent was deactivated → no code, ticket not redeemed", async () => {
+    // A dedicated approved agent in WS A so deactivating it does not disturb other tests.
+    // The ticket's approved agent is the one the grant binds (an ordinary agent since ADR-020).
     const tempSteward = createAgent({
       name: "qsah-temp-steward-a",
       workspaceSlug: "qsa-h-ws-a",
-      type: "claude-privileged", // claude-privileged is admin too; avoids the
-                                  // one-active-steward-per-workspace index
     });
 
     const { ticketId } = await startAuthorize(CLIENT_A_ID);
-    const ui = await getConsent(ticketId, tempSteward.api_key);
-    const nonce = extractNonce(await ui.text());
-    const ap = await postApprove(ticketId, nonce, tempSteward.api_key);
-    expect(ap.status).toBe(302);
-
-    // Deactivate the approver before finalize.
+    expect(approveConsentTicket(ticketId, tempSteward.id)).toBe(true);
     db.prepare(`UPDATE agents SET active = 0 WHERE id = ?`).run(tempSteward.id);
+    const before = codeCount();
 
-    const finalizeUrl = new URL(
-      `${baseUrl}/oauth/authorize/finalize`,
-    );
-    finalizeUrl.searchParams.set("ticket", ticketId);
-    const fz = await fetch(finalizeUrl.toString(), { redirect: "manual" });
-    expect(fz.status).toBe(400);
+    expect(finalizeConsentTicket(ticketId, tempSteward.id)).toBeNull();
 
     const row = db
       .prepare(`SELECT redeemed FROM consent_tickets WHERE id = ?`)
       .get(ticketId) as { redeemed: number } | undefined;
     expect(row).toBeDefined();
     expect(row!.redeemed).toBe(0);
+    expect(codeCount()).toBe(before);
   });
 });
 
@@ -576,12 +548,11 @@ describe("QSA-H round 2 / CRITICAL #1: dashboard /clients rejects OAuth bearers"
 
 describe("QSA-H round 2 / HIGH #1: redeemConsentTicket is atomically gated on approver state", () => {
   test("approver flipped to active=0 after approve → redeemConsentTicket returns false, ticket stays unredeemed", async () => {
-    // Spin up a dedicated approver so we can deactivate without disturbing
+    // Spin up a dedicated approved agent so we can deactivate without disturbing
     // siblings (idx_one_steward forbids two active stewards per workspace).
     const tempApprover = createAgent({
       name: "qsah-r2-atomic-approver",
       workspaceSlug: "qsa-h-ws-a",
-      type: "claude-privileged",
     });
 
     // Mint an approved ticket directly. We bypass the HTTP approve path so
@@ -625,12 +596,11 @@ describe("QSA-H round 2 / HIGH #1: redeemConsentTicket is atomically gated on ap
   });
 
   test("approver moved to a different workspace → redeemConsentTicket returns false", async () => {
-    // Use a fresh claude-privileged approver in WS A (we cannot move a
+    // Use a fresh ordinary approved agent in WS A (we cannot move a
     // steward out of WS A without breaking idx_one_steward in WS B).
     const tempApprover = createAgent({
       name: "qsah-r2-atomic-approver-ws",
       workspaceSlug: "qsa-h-ws-a",
-      type: "claude-privileged",
     });
 
     const ticket = createConsentTicket({
@@ -646,7 +616,7 @@ describe("QSA-H round 2 / HIGH #1: redeemConsentTicket is atomically gated on ap
       `UPDATE consent_tickets SET approved_by_agent_id = ? WHERE id = ?`,
     ).run(tempApprover.id, ticket.id);
 
-    // Direct UPDATE to relocate the approver. claude-privileged is not
+    // Direct UPDATE to relocate the approver. An ordinary agent is not
     // covered by idx_one_steward, so this is safe schema-wise.
     db.prepare(`UPDATE agents SET workspace_id = ? WHERE id = ?`).run(
       WS_B_ID,

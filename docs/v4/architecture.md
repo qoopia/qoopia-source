@@ -48,7 +48,7 @@ Dependencies point inward: transport adapters may call domain services; domain s
 | Traces/feedback | dedicated services | no raw query or hidden candidate; 30-day trace detach/delete transaction preserves durable feedback |
 | AgentComm receipts | `src/services/agent-delivery.ts` | ledger first; idempotent consumer lease; wake not correctness |
 | Export/DR | `src/services/export.ts` and V4 scripts | complete signed bundle, plan first, no secret-bearing response |
-| Event outbox | `src/services/event-outbox.ts` | post-commit, metadata only, SSRF-safe delivery |
+| Event outbox | `src/services/event-outbox.ts` | signed, metadata-only, SSRF-safe delivery transport used by ops alerts |
 | UI | existing dashboard modules | service ACL parity, no independent authorization logic |
 
 ## Critical sequences

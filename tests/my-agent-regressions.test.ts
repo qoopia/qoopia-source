@@ -1,5 +1,5 @@
-import {test,expect,beforeAll} from 'bun:test';
-import {spawn} from 'node:child_process';
+import {test,expect,beforeAll,setSystemTime,spyOn} from 'bun:test';
+import {spawn,spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -11,8 +11,10 @@ import {myAgentAction,myAgentState,agentDirectory,stopMyAgents,expireIdleMyAgent
 import {saveMessage} from '../src/services/sessions.ts';
 import {checkpointSession} from '../src/services/continuity.ts';
 import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
+import * as agentProcess from '../src/services/agent-process.ts';
 beforeAll(()=>runMigrations());
 async function until(predicate:()=>boolean){const end=Date.now()+5000;while(!predicate()){if(Date.now()>end)throw new Error('Regression fixture timed out');await Bun.sleep(10);}}
+const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH';}};
 function ownerFixture(){
   const slug='rc4-'+randomUUID();db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
   const owner=bootstrapOwner(db,'Regression owner',undefined,slug),agent=createAgent({name:'Regression steward',workspaceSlug:slug,type:'steward'});
@@ -25,6 +27,7 @@ function ownerFixture(){
     const send=m=>process.stdout.write(JSON.stringify(m)+'\\n');let thread,turn;
     for await(const line of readline.createInterface({input:process.stdin})){
       const m=JSON.parse(line);if(m.method==='initialized')continue;
+      if(m.id===900){send({id:901,method:'item/tool/requestUserInput',params:{threadId:thread,turnId:turn,questions:[{id:'q',question:'Synthetic question?'}]}});continue;}
       fs.appendFileSync('rpc-trace.jsonl',JSON.stringify(m)+'\\n');let result={};
       if(m.method==='model/list')result={data:[{model:'fixture-fast',displayName:'Fixture fast',isDefault:true},{model:'fixture-deep',displayName:'Fixture deep'}]};
       if(m.method==='account/read')result={account:{type:'chatgpt'}};
@@ -34,7 +37,11 @@ function ownerFixture(){
       if(m.method==='turn/start'){
         const text=m.params.input[0].text;
         if(text==='run-child'){
-          spawn('/bin/sh',['-c',"printf ready > child-ready; sleep 1.5; printf SHOULD_NOT_EXIST > child-finished"],{cwd:process.cwd(),detached:true,stdio:'ignore'});
+          spawn('/bin/sh',['-c',"printf $$ > child-ready; sleep 1.5; printf SHOULD_NOT_EXIST > child-finished"],{cwd:process.cwd(),detached:true,stdio:'ignore'});
+        }else if(text==='progress'){
+          let n=0;const timer=setInterval(()=>{send({method:'item/commandExecution/outputDelta',params:{threadId:thread,turnId:turn,itemId:'c',delta:'line '+(++n)+'\\n'}});if(n===15)clearInterval(timer);},100);
+        }else if(text==='garbage'){
+          process.stdout.write('not a protocol message\\n');
         }else if(text==='hang'){
           // A native turn that never emits progress or a completion event.
         }else if(text==='stream'){
@@ -78,21 +85,96 @@ test('an unresponsive native turn ends with a visible failure and releases its p
   }finally{await stopMyAgents();process.env.PATH=oldPath;}
 });
 
+test('an idle turn whose process cannot be stopped tells the owner to press Stop [F-054]',async()=>{
+  const f=ownerFixture(),oldPath=process.env.PATH;
+  const terminate=spyOn(agentProcess,'terminateAgentProcess').mockImplementationOnce(async()=>{throw new Error('EPERM');});
+  try{
+    process.env.PATH=f.bin+path.delimiter+oldPath;
+    const c=await myAgentAction(f.owner,{action:'new',title:'Stuck turn'});
+    await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'stuck-once',text:'hang'});
+    expireIdleMyAgentRuns(Date.now()+15*60_000+1000);
+    await until(()=>terminate.mock.calls.length>0);await Bun.sleep(50);
+    expect(myAgentState(f.owner).runs[0]).toMatchObject({state:'failed',error:'Agent termination could not be confirmed. Try Stop again before continuing.'});
+  }finally{terminate.mockRestore();await stopMyAgents();process.env.PATH=oldPath;}
+});
+
+test('command output and an answered approval count as activity for the idle expiry',async()=>{
+  const f=ownerFixture(),oldPath=process.env.PATH;
+  try{
+    process.env.PATH=f.bin+path.delimiter+oldPath;
+    const c=await myAgentAction(f.owner,{action:'new',title:'Long build'});
+    await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'progress-once',text:'progress'});
+    await Bun.sleep(1200);
+    expireIdleMyAgentRuns(Date.now()+15*60_000-500);
+    expect(myAgentState(f.owner).runs[0]?.state).toBe('running');
+    await myAgentAction(f.owner,{action:'stop'});
+    await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'approval-once',text:'approval'});
+    await until(()=>myAgentState(f.owner).approvals.length===1);
+    await Bun.sleep(1000);
+    await myAgentAction(f.owner,{action:'approve',id:myAgentState(f.owner).approvals[0]!.id,accept:true});
+    expireIdleMyAgentRuns(Date.now()+15*60_000-500);
+    expect(myAgentState(f.owner).runs.at(-1)?.state).toBe('running');
+    // Declining a question uses its own refusal path; the run must leave 'approval' too.
+    await until(()=>myAgentState(f.owner).approvals.length===1);
+    await myAgentAction(f.owner,{action:'approve',id:myAgentState(f.owner).approvals[0]!.id,accept:false});
+    expect(myAgentState(f.owner).approvals).toEqual([]);
+    expect(myAgentState(f.owner).runs.at(-1)?.state).toBe('running');
+  }finally{await stopMyAgents();process.env.PATH=oldPath;}
+},15000);
+
+test('a provider protocol error and an expired approval end the task as failed, not as a Stop',async()=>{
+  const f=ownerFixture(),oldPath=process.env.PATH;
+  try{
+    process.env.PATH=f.bin+path.delimiter+oldPath;
+    const c=await myAgentAction(f.owner,{action:'new',title:'Failure labels'});
+    await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'garbage-once',text:'garbage'});
+    await until(()=>!myAgentState(f.owner).running);
+    expect(myAgentState(f.owner).runs[0]).toMatchObject({state:'failed',error:'The agent process stopped unexpectedly. Start a new turn to continue.'});
+    for(const provider of ['codex','claude_code']){
+      if(provider==='claude_code'){
+        db.query("UPDATE qoopia_agent_settings SET provider='claude_code' WHERE owner_id=?").run(f.owner);
+        durableWrite(path.join(f.bin,'claude'),'#!'+process.execPath+'\n'+`
+          import readline from 'node:readline';
+          const args=process.argv.slice(2),send=m=>process.stdout.write(JSON.stringify(m)+'\\n');
+          if(args[0]==='auth'){send({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'pro'});process.exit(0);}
+          for await(const line of readline.createInterface({input:process.stdin})){
+            const m=JSON.parse(line);
+            if(m.type==='control_request')send({type:'control_response',response:{subtype:'success',request_id:m.request_id,response:{}}});
+            if(m.type==='user')send({type:'control_request',request_id:'permission',request:{subtype:'can_use_tool',tool_name:'Bash',input:{command:'fixture approval'}}});
+          }
+        `,0o700);
+      }
+      const conversation=await myAgentAction(f.owner,{action:'new',title:'Expiring approval '+provider});
+      await myAgentAction(f.owner,{action:'send',conversation:conversation.id,requestId:'expire-'+provider,text:'approval'});
+      await until(()=>myAgentState(f.owner).approvals.length===1);
+      setSystemTime(new Date(Date.now()+301_000));
+      try{myAgentState(f.owner);}finally{setSystemTime();}
+      await until(()=>!myAgentState(f.owner).running);
+      expect(myAgentState(f.owner,conversation.id).runs[0]).toMatchObject({state:'failed',error:'The approval request expired after 5 minutes. Start a new turn to continue.'});
+    }
+  }finally{await stopMyAgents();process.env.PATH=oldPath;}
+},15000);
+
 test('dashboard Stop kills detached tool descendants, preserves unrelated processes, and resumes without replay',async()=>{
   const f=ownerFixture(),oldPath=process.env.PATH;let control:ReturnType<typeof spawn>|undefined;
   try{
     process.env.PATH=f.bin+path.delimiter+oldPath;
     const c=await myAgentAction(f.owner,{action:'new',title:'Stop regression'});
     const run=await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'stop-once',text:'run-child'});
-    await until(()=>fs.existsSync(path.join(f.cwd,'child-ready')));
-    control=spawn('/bin/sh',['-c','sleep 1.7; printf control > unrelated-finished'],{cwd:f.cwd,stdio:'ignore'});
+    const ready=path.join(f.cwd,'child-ready');
+    await until(()=>fs.existsSync(ready)&&Number(fs.readFileSync(ready,'utf8'))>0);
+    const child=Number(fs.readFileSync(ready,'utf8'));
+    control=spawn('/bin/sleep',['30'],{cwd:f.cwd,stdio:'ignore'});
     await myAgentAction(f.owner,{action:'stop'});
     expect(myAgentState(f.owner).runs[0]!.state).toBe('interrupted');
     expect(myAgentState(f.owner).running).toBe(false);
     await myAgentAction(f.owner,{action:'send',conversation:c.id,requestId:'next',text:'next independent turn'});
     await until(()=>myAgentState(f.owner).runs.at(-1)?.state==='completed');
-    await until(()=>fs.existsSync(path.join(f.cwd,'unrelated-finished')));
+    // Event-based: once the child is gone it can never write; the unrelated process
+    // is still running (not killed, not left frozen by Stop's SIGSTOP).
+    await until(()=>!alive(child));
     expect(fs.existsSync(path.join(f.cwd,'child-finished'))).toBe(false);
+    expect(spawnSync('/bin/ps',['-o','stat=','-p',String(control.pid)],{encoding:'utf8'}).stdout.trim()).toMatch(/^[SR]/);
     const trace=fs.readFileSync(path.join(f.cwd,'rpc-trace.jsonl'),'utf8').trim().split('\n').map(v=>JSON.parse(v));
     expect(trace.filter(m=>m.method==='turn/start'&&m.params.input[0].text==='run-child')).toHaveLength(1);
     expect(trace.some(m=>m.method==='thread/resume')).toBe(true);
@@ -112,7 +194,7 @@ test('new dashboard thread receives the selected saved context; snapshot survive
     process.env.PATH=f.bin+path.delimiter+oldPath;
     const a=await myAgentAction(f.owner,{action:'new',title:'Cedar project'});
     seed(a.id,'Cedar harbour 593: violet emblem, seven benches, Saturday opening. Next: lighting plan.');
-    await checkpointSession(f.workspace,f.agent,a.id,async()=>({text:'Cedar harbour 593: violet emblem; seven benches; Saturday opening. Next: lighting plan.',model:'synthetic-summary'}));
+    await checkpointSession(f.workspace,f.agent,a.id,async()=>({text:'Cedar harbour 593: violet emblem; seven benches; Saturday opening. Next: lighting plan.',model:'synthetic-summary',observed_models:['synthetic-summary']}));
     seed(a.id,'Unsummarized decision: lighting must be warm.');
     const b=await myAgentAction(f.owner,{action:'new',title:'Continue with context'});
     // Both a later edit in A and an unrelated owner must stay out of B's snapshot.
@@ -136,7 +218,7 @@ test('new dashboard thread receives the selected saved context; snapshot survive
     // The memory model receives the same prior working state when it creates
     // the first checkpoint for B; an empty intermediate conversation retains it.
     let summaryInput:any;
-    await checkpointSession(f.workspace,f.agent,b.id,async(_workspace,_prompt,input)=>{summaryInput=input;return {text:'Cedar harbour 593; next: lighting plan.',model:'synthetic-summary'};});
+    await checkpointSession(f.workspace,f.agent,b.id,async(_workspace,_prompt,input)=>{summaryInput=input;return {text:'Cedar harbour 593; next: lighting plan.',model:'synthetic-summary',observed_models:['synthetic-summary']};});
     expect(summaryInput.previous).toContain('Cedar harbour 593');
     const empty=await myAgentAction(f.owner,{action:'new',title:'Empty intermediate conversation'});
     const next=await myAgentAction(f.owner,{action:'new',title:'After empty intermediate'});

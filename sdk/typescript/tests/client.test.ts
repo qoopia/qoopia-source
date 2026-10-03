@@ -48,6 +48,29 @@ describe("Qoopia TypeScript SDK", () => {
     expect(attempts).toBe(5);
   });
 
+  test("reads a text/event-stream reply and retries only transient failures", async () => {
+    const statuses = [503, 200, 401, 200];
+    let attempts = 0;
+    const client = new QoopiaClient({
+      endpoint: "https://qoopia.example/mcp",
+      tokenProvider: () => "token",
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        const status = statuses[attempts++]!, id = JSON.parse(String(init?.body)).id;
+        if (status !== 200) return new Response("", { status });
+        const reply = attempts === 4
+          ? { jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: "FEATURE_DISABLED: QOOPIA_V4_RELATIONS" }] } }
+          : { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "{\"items\":[]}" }] } };
+        return new Response(`event: message\ndata: ${JSON.stringify(reply)}\n\n`, { status, headers: { "content-type": "text/event-stream" } });
+      }) as unknown as typeof fetch,
+    });
+    expect(await client.recall<{ items: unknown[] }>({ query: "sse" })).toEqual({ items: [] });
+    expect(attempts).toBe(2);
+    await expect(client.brief()).rejects.toMatchObject({ code: 401 });
+    expect(attempts).toBe(3);
+    await expect(client.recall({ query: "x", latest_only: true })).rejects.toMatchObject({ code: "FEATURE_DISABLED" });
+    expect(attempts).toBe(4);
+  });
+
   test("errors never include the bearer token", async () => {
     const client = new QoopiaClient({
       endpoint: "https://qoopia.example/mcp",

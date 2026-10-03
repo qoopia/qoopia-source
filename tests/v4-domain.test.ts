@@ -227,8 +227,12 @@ describe("V4 note relations", () => {
     const previous = note(standard, "timestamp previous");
     const current = note(standard, "timestamp current");
     const futureMs = Date.now() + 10 * 365 * 24 * 60 * 60 * 1000;
+    // The note-write allocator's high-water is database-wide (F-339), so the future row must not
+    // outlive this test: every later test's notes would otherwise be stamped ten years ahead.
+    const original = db.prepare(`SELECT updated_at, updated_at_ms FROM notes WHERE id = ?`).get(foreign) as { updated_at: string; updated_at_ms: number };
     db.prepare(`UPDATE notes SET updated_at = ?, updated_at_ms = ? WHERE id = ?`)
       .run(new Date(futureMs).toISOString(), futureMs, foreign);
+    try {
     createNoteRelation({
       auth: standard,
       source_note_id: current,
@@ -237,6 +241,9 @@ describe("V4 note relations", () => {
     });
     expect(getNote(workspace, current, standard.agent_id, false).updated_at_ms).toBeLessThan(futureMs);
     expect(getNote(workspace, previous, standard.agent_id, false).updated_at_ms).toBeLessThan(futureMs);
+    } finally {
+      db.prepare(`UPDATE notes SET updated_at = ?, updated_at_ms = ? WHERE id = ?`).run(original.updated_at, original.updated_at_ms, foreign);
+    }
   });
 });
 

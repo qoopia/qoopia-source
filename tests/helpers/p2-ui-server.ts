@@ -11,5 +11,5 @@ runMigrations();const owner=bootstrapOwner(db,'UI fixture','Disposable UI test')
 const target=redeemPairing(issuePairing(auth,{profile:'memory-worker',name:'Disposable Codex',runtime_id:'codex',expected_revision:1,idempotency_key:'ui-target'},db).one_time_code!,db);
 redeemPairing(issuePairing(auth,{profile:'runtime-reporter',name:'Disposable reporter',runtime_id:'codex',target_agent_id:target.data.agent_id,expected_revision:1,idempotency_key:'ui-report'},db).one_time_code!,db);
 configureRuntime(auth,{runtime_id:target.data.runtime_registration_id,runtime_kind:'codex',runtime_version:RUNTIMES.codex.version,platform:'darwin-arm64',expected_revision:2,idempotency_key:'ui-configure'},db);
-const server=startHttpServer();server.once('error',error=>{console.error(error.code);process.exit(2);});
+const server=startHttpServer();server.once('error',error=>{console.error((error as NodeJS.ErrnoException).code);process.exit(2);});
 server.once('listening',()=>{const address=server.address() as {port:number};writeFileSync(process.argv[2]!,JSON.stringify({url:`http://127.0.0.1:${address.port}`,api_key:owner.api_key}),{mode:0o600});});

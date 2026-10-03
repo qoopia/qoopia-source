@@ -8,13 +8,13 @@
  *      cookie (or Bearer for tests) and the operator's workspace must
  *      match the ticket's workspace.
  *   3. Approve POST consumes a single-use nonce, marks the ticket
- *      approved, and 302s to /oauth/authorize/finalize?ticket=...
- *   4. Finalize redeems the ticket and emits the OAuth code, redirecting
- *      back to the client's redirect_uri with code+state.
+ *      approved, redeems it and 302s straight to the client's redirect_uri
+ *      with code+state+iss (F-076: no separate finalize hop, so the ticket
+ *      id alone never yields a code).
+ *   4. GET /oauth/authorize/finalize is retired and always answers 400.
  *
  * The /oauth/* endpoints intentionally never read the dashboard cookie
- * (ADR-015 invariant). Tests below pin that boundary by using only the
- * ticket id as state across the boundary.
+ * (ADR-015 invariant).
  */
 import {
   afterAll,
@@ -40,11 +40,9 @@ let server: Server;
 let baseUrl = "";
 
 let WS_A_ID = "";
-let WS_B_ID = "";
 let STEWARD_A_KEY = "";
 let STEWARD_A_ID = "";
 let STEWARD_B_KEY = "";
-let STEWARD_B_ID = "";
 
 let CLIENT_A_ID = "";
 const REDIRECT_URI_A = "https://example.com/cb-a";
@@ -203,7 +201,6 @@ beforeAll(async () => {
     name: "Consent Bridge WS B",
     slug: "consent-bridge-ws-b",
   });
-  WS_B_ID = wsB.id;
 
   const sa = createAgent({
     name: "consent-bridge-steward-a",
@@ -218,7 +215,6 @@ beforeAll(async () => {
     workspaceSlug: wsB.slug,
     type: "steward",
   });
-  STEWARD_B_ID = sb.id;
   STEWARD_B_KEY = sb.api_key;
 
   server = startHttpServer();
@@ -304,12 +300,7 @@ describe("ADR-017: /oauth/authorize is a thin redirect", () => {
 
     const approval = await postApprove(ticketId, nonce, STEWARD_A_KEY);
     expect(approval.status).toBe(302);
-
-    const finalize = await fetch(
-      `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-      { redirect: "manual" },
-    );
-    expect(finalize.status).toBe(302);
+    expect(new URL(approval.headers.get("location")!).searchParams.get("code")).toMatch(/^qc_/);
 
     const rows = (fs.existsSync(auditPath)
       ? fs.readFileSync(auditPath, "utf8").slice(auditOffset).split("\n")
@@ -387,13 +378,18 @@ describe("ADR-017: /oauth/authorize is a thin redirect", () => {
     expect(after).toBe(before);
   });
 
-  test("malformed S256 code_challenge → 400 invalid_request", async () => {
-    const { status } = await startAuthorize({
+  test("malformed S256 code_challenge → error=invalid_request on the registered callback", async () => {
+    const { status, redirectLocation } = await startAuthorize({
       clientId: CLIENT_A_ID,
       redirectUri: REDIRECT_URI_A,
       challenge: "short-not-a-valid-s256-challenge",
+      state: "s-bad-challenge",
     });
-    expect(status).toBe(400);
+    expect(status).toBe(302);
+    const location = new URL(redirectLocation);
+    expect(location.origin + location.pathname).toBe(REDIRECT_URI_A);
+    expect(location.searchParams.get("error")).toBe("invalid_request");
+    expect(location.searchParams.get("state")).toBe("s-bad-challenge");
   });
 
   test("legacy USER POST /oauth/authorize is gone → 405 Allow: GET", async () => {
@@ -469,6 +465,8 @@ describe("ADR-017: /api/dashboard/oauth-consent GET", () => {
     const html = await r.text();
     expect(html).toContain('action="/api/dashboard/oauth-consent/approve"');
     expect(html).toContain("Approve");
+    // F-130: the owner sees where the authorization is sent.
+    expect(html).toContain("<strong>example.com</strong>");
     const nonce = extractNonce(html);
     expect(nonce).toMatch(/^qcn_/);
 
@@ -482,7 +480,7 @@ describe("ADR-017: /api/dashboard/oauth-consent GET", () => {
 });
 
 describe("ADR-017: /api/dashboard/oauth-consent/approve guards", () => {
-  test("desktop consent keeps finalize on its origin when the public MCP origin differs", async () => {
+  test("desktop consent redirects straight to the client callback when the public MCP origin differs", async () => {
     const previous = env.PUBLIC_URL;
     env.PUBLIC_URL = "https://public-mcp.example";
     try {
@@ -492,11 +490,9 @@ describe("ADR-017: /api/dashboard/oauth-consent/approve guards", () => {
       const nonce = extractNonce(await consent.text());
       const approved = await postApprove(ticketId, nonce, STEWARD_A_KEY);
       expect(approved.status).toBe(302);
-      const location = approved.headers.get("location")!;
-      expect(location).toBe("/oauth/authorize/finalize?ticket=" + ticketId);
-      const finalized = await fetch(new URL(location, baseUrl), {redirect: "manual"});
-      expect(finalized.status).toBe(302);
-      expect(new URL(finalized.headers.get("location")!).origin).toBe(new URL(REDIRECT_URI_A).origin);
+      const callback = new URL(approved.headers.get("location")!);
+      expect(callback.origin).toBe(new URL(REDIRECT_URI_A).origin);
+      expect(callback.searchParams.get("code")).toMatch(/^qc_/);
     } finally { env.PUBLIC_URL = previous; }
   });
 
@@ -533,37 +529,23 @@ describe("ADR-017: /api/dashboard/oauth-consent/approve guards", () => {
     expect(row?.denied).toBe(0);
   });
 
-  test("reused nonce on approve POST → 403 second time", async () => {
+  test("stale nonce on approve POST → 403, ticket untouched", async () => {
     const { ticketId } = await startAuthorize({
       clientId: CLIENT_A_ID,
       redirectUri: REDIRECT_URI_A,
     });
-    const nonce = extractNonce(await (await getConsent(ticketId, STEWARD_A_KEY)).text());
-
-    // First approve consumes the nonce, but our caller is workspace A so
-    // it actually approves. Mint a fresh ticket for the strict reuse test.
-    const ok = await postApprove(ticketId, nonce, STEWARD_A_KEY);
-    expect(ok.status).toBe(302);
-    // Re-using the same nonce on a fresh ticket — but nonce binding is to
-    // ticket id, so `nonce` is wrong for a different ticket. Test directly
-    // by reusing on the SAME ticket (which is now approved → status check
-    // catches it before the nonce check). To pin nonce reuse specifically:
-    // start a fresh ticket, render once, then send the same nonce twice.
-    const { ticketId: freshTicket } = await startAuthorize({
-      clientId: CLIENT_A_ID,
-      redirectUri: REDIRECT_URI_A,
-    });
-    const freshNonce = extractNonce(
-      await (await getConsent(freshTicket, STEWARD_A_KEY)).text(),
-    );
-    // Need a second agent in workspace A so we can fail on nonce
-    // (workspace match passes). Reuse steward A.
-    const first = await postApprove(freshTicket, freshNonce, STEWARD_A_KEY);
-    expect(first.status).toBe(302);
-    const replay = await postApprove(freshTicket, freshNonce, STEWARD_A_KEY);
-    // Already approved, so the status branch fires before nonce — but the
-    // 4xx assertion is what we need either way.
-    expect(replay.status).toBeGreaterThanOrEqual(400);
+    const stale = extractNonce(await (await getConsent(ticketId, STEWARD_A_KEY)).text());
+    // A second render rotates the nonce; the first one is no longer valid.
+    await getConsent(ticketId, STEWARD_A_KEY);
+    const r = await postApprove(ticketId, stale, STEWARD_A_KEY);
+    expect(r.status).toBe(403);
+    const row = db
+      .prepare(`SELECT approved_by_agent_id, redeemed FROM consent_tickets WHERE id = ?`)
+      .get(ticketId) as { approved_by_agent_id: string | null; redeemed: number };
+    expect(row.approved_by_agent_id).toBeNull();
+    expect(row.redeemed).toBe(0);
+    // A double submit of a *consumed* nonce is the claude.ai double-POST case,
+    // covered under F-076 below: it replays the same callback, never a new code.
   });
 
   test("forged Origin → 403, ticket untouched", async () => {
@@ -614,48 +596,22 @@ describe("ADR-017: /api/dashboard/oauth-consent/approve guards", () => {
       await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
     );
 
+    // F-181: forwarded headers count only from a trusted proxy (the loopback test client).
+    const trustProxy = env.TRUST_PROXY;
+    env.TRUST_PROXY = true;
     const r = await postApprove(ticketId, nonce, STEWARD_A_KEY, {
       origin: "https://mcp.qoopia.ai",
       host: "qoopia-corsair:3738",
       "x-forwarded-host": "mcp.qoopia.ai",
       "x-forwarded-proto": "https",
-    });
+    }).finally(() => { env.TRUST_PROXY = trustProxy; });
     expect(r.status).toBe(302);
-    expect(r.headers.get("location")).toContain(
-      `/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-    );
-  });
-
-  test("happy path approve → 302 to /oauth/authorize/finalize?ticket=...; row.approved_by_agent_id set", async () => {
-    const { ticketId } = await startAuthorize({
-      clientId: CLIENT_A_ID,
-      redirectUri: REDIRECT_URI_A,
-      state: "s-happy-approve",
-    });
-    const nonce = extractNonce(
-      await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
-    );
-
-    const r = await postApprove(ticketId, nonce, STEWARD_A_KEY);
-    expect(r.status).toBe(302);
-    const loc = r.headers.get("location") || "";
-    expect(loc).toContain("/oauth/authorize/finalize?ticket=");
-    expect(loc).toContain(`ticket=${encodeURIComponent(ticketId)}`);
-
-    const row = db
-      .prepare(
-        `SELECT approved_by_agent_id, redeemed FROM consent_tickets WHERE id = ?`,
-      )
-      .get(ticketId) as
-      | { approved_by_agent_id: string | null; redeemed: number }
-      | undefined;
-    expect(row?.approved_by_agent_id).toBe(STEWARD_A_ID);
-    expect(row?.redeemed).toBe(0); // finalize hasn't run yet
+    expect(new URL(r.headers.get("location")!).origin).toBe(new URL(REDIRECT_URI_A).origin);
   });
 });
 
-describe("ADR-017: /oauth/authorize/finalize", () => {
-  test("no approval → 400 ticket not approved", async () => {
+describe("ADR-017 + F-076: approve redeems and redirects to the client", () => {
+  test("no approval → finalize with the ticket id is 400, no code", async () => {
     const { ticketId } = await startAuthorize({
       clientId: CLIENT_A_ID,
       redirectUri: REDIRECT_URI_A,
@@ -665,11 +621,11 @@ describe("ADR-017: /oauth/authorize/finalize", () => {
       { redirect: "manual" },
     );
     expect(r.status).toBe(400);
-    const body = (await r.json()) as { error_description?: string };
-    expect(body.error_description).toContain("not approved");
+    expect(r.headers.get("location")).toBeNull();
+    expect(await r.text()).toContain("Authorization already completed");
   });
 
-  test("happy path finalize → 302 to client redirect_uri with code+state, oauth_codes row bound to approver", async () => {
+  test("happy path approve → 302 to client redirect_uri with code+state+iss, code row bound to approver, ticket redeemed", async () => {
     const { ticketId } = await startAuthorize({
       clientId: CLIENT_A_ID,
       redirectUri: REDIRECT_URI_A,
@@ -680,18 +636,17 @@ describe("ADR-017: /oauth/authorize/finalize", () => {
     );
     const approveResp = await postApprove(ticketId, nonce, STEWARD_A_KEY);
     expect(approveResp.status).toBe(302);
-
-    const finalizeResp = await fetch(
-      `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-      { redirect: "manual" },
-    );
-    expect(finalizeResp.status).toBe(302);
-    const loc = finalizeResp.headers.get("location") || "";
+    const loc = approveResp.headers.get("location") || "";
     expect(loc).toContain(REDIRECT_URI_A);
     const u = new URL(loc);
     expect(u.searchParams.get("state")).toBe("s-finalize-happy");
+    expect(u.searchParams.get("iss")).toBe(env.OAUTH_ISSUER);
     const code = u.searchParams.get("code") || "";
     expect(code).toMatch(/^qc_/);
+    const approvedBy = db
+      .prepare(`SELECT approved_by_agent_id FROM consent_tickets WHERE id = ?`)
+      .get(ticketId) as { approved_by_agent_id: string | null };
+    expect(approvedBy.approved_by_agent_id).toBe(STEWARD_A_ID);
 
     // The oauth_tokens 'code' row is bound to the approving agent.
     const codeRow = db
@@ -732,13 +687,7 @@ describe("ADR-017: /oauth/authorize/finalize", () => {
     );
     const approveResp = await postApprove(ticketId, nonce, STEWARD_A_KEY);
     expect(approveResp.status).toBe(302);
-
-    const finalizeResp = await fetch(
-      `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-      { redirect: "manual" },
-    );
-    expect(finalizeResp.status).toBe(302);
-    const code = new URL(finalizeResp.headers.get("location") || "").searchParams.get("code") || "";
+    const code = new URL(approveResp.headers.get("location") || "").searchParams.get("code") || "";
     expect(code).toMatch(/^qc_/);
 
     const tokenResp = await exchangeCode({
@@ -752,7 +701,7 @@ describe("ADR-017: /oauth/authorize/finalize", () => {
     expect(body.error).toBe("invalid_request");
   });
 
-  test("replay finalize on redeemed ticket → repeats cached redirect", async () => {
+  test("approve POST on a ticket redeemed without a replay entry → shows completed HTML", async () => {
     const { ticketId } = await startAuthorize({
       clientId: CLIENT_A_ID,
       redirectUri: REDIRECT_URI_A,
@@ -760,52 +709,8 @@ describe("ADR-017: /oauth/authorize/finalize", () => {
     const nonce = extractNonce(
       await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
     );
-    await postApprove(ticketId, nonce, STEWARD_A_KEY);
-    // first finalize
-    const first = await fetch(
-      `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-      { redirect: "manual" },
-    );
-    expect(first.status).toBe(302);
-    // replay
-    const replay = await fetch(
-      `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-      { redirect: "manual" },
-    );
-    expect(replay.status).toBe(302);
-    expect(replay.headers.get("location")).toBe(first.headers.get("location"));
-  });
-
-  test("redeemed ticket without replay cache → shows completed HTML", async () => {
-    const { ticketId } = await startAuthorize({
-      clientId: CLIENT_A_ID,
-      redirectUri: REDIRECT_URI_A,
-    });
-    const nonce = extractNonce(
-      await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
-    );
-    await postApprove(ticketId, nonce, STEWARD_A_KEY);
-    db.prepare(`UPDATE consent_tickets SET redeemed = 1 WHERE id = ?`).run(ticketId);
-
-    const resp = await fetch(
-      `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-      { redirect: "manual" },
-    );
-    expect(resp.status).toBe(400);
-    expect(resp.headers.get("content-type")).toContain("text/html");
-    expect(await resp.text()).toContain("Authorization already completed");
-  });
-
-  test("approve POST on redeemed ticket → shows completed HTML", async () => {
-    const { ticketId } = await startAuthorize({
-      clientId: CLIENT_A_ID,
-      redirectUri: REDIRECT_URI_A,
-    });
-    const nonce = extractNonce(
-      await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
-    );
-    await postApprove(ticketId, nonce, STEWARD_A_KEY);
-    db.prepare(`UPDATE consent_tickets SET redeemed = 1 WHERE id = ?`).run(ticketId);
+    // Redeemed outside this process (e.g. before a restart): no cached callback.
+    db.prepare(`UPDATE consent_tickets SET approved_by_agent_id = ?, redeemed = 1 WHERE id = ?`).run(STEWARD_A_ID, ticketId);
 
     const resp = await postApprove(ticketId, nonce, STEWARD_A_KEY);
     expect(resp.status).toBe(400);
@@ -813,31 +718,27 @@ describe("ADR-017: /oauth/authorize/finalize", () => {
     expect(await resp.text()).toContain("Authorization already completed");
   });
 
-  test("expired ticket → 400 ticket expired", async () => {
+  test("expired ticket → approve is 400 ticket expired, no code", async () => {
     const { ticketId } = await startAuthorize({
       clientId: CLIENT_A_ID,
       redirectUri: REDIRECT_URI_A,
     });
-    // Approve normally, then jump expires_at into the past.
     const nonce = extractNonce(
       await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
     );
-    await postApprove(ticketId, nonce, STEWARD_A_KEY);
     db.prepare(
       `UPDATE consent_tickets SET expires_at = '2000-01-01T00:00:00Z' WHERE id = ?`,
     ).run(ticketId);
-    const r = await fetch(
-      `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-      { redirect: "manual" },
-    );
+    const r = await postApprove(ticketId, nonce, STEWARD_A_KEY);
     expect(r.status).toBe(400);
+    expect(r.headers.get("location")).toBeNull();
     const body = (await r.json()) as { error_description?: string };
     expect(body.error_description).toContain("expired");
   });
 });
 
 describe("ADR-017: deny path", () => {
-  test("deny POST → 302 to client redirect_uri with error=access_denied; finalize on denied ticket → 400", async () => {
+  test("deny POST → 302 to client redirect_uri with error=access_denied; approve on denied ticket → 400", async () => {
     const { ticketId } = await startAuthorize({
       clientId: CLIENT_A_ID,
       redirectUri: REDIRECT_URI_A,
@@ -860,13 +761,128 @@ describe("ADR-017: deny path", () => {
       .get(ticketId) as { denied: number };
     expect(row.denied).toBe(1);
 
-    // Finalize on denied ticket fails closed.
-    const finalize = await fetch(
+    // Approve on a denied ticket fails closed: no code.
+    const approve = await postApprove(ticketId, nonce, STEWARD_A_KEY);
+    expect(approve.status).toBe(400);
+    expect(approve.headers.get("location")).toBeNull();
+    const body = (await approve.json()) as { error_description: string };
+    expect(body.error_description).toBe("ticket denied");
+  });
+});
+
+describe("F-076: only the approving browser receives the code", () => {
+  async function approveAsStewardA(ticketId: string): Promise<Response> {
+    const nonce = extractNonce(
+      await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
+    );
+    return postApprove(ticketId, nonce, STEWARD_A_KEY);
+  }
+  async function finalizeWithTicketOnly(ticketId: string): Promise<Response> {
+    return fetch(
       `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
       { redirect: "manual" },
     );
-    expect(finalize.status).toBe(400);
-    const body = (await finalize.json()) as { error: string };
-    expect(body.error).toBe("access_denied");
+  }
+
+  test("a party holding only the ticket id gets no code, before or after the approver lands on the callback", async () => {
+    const { ticketId } = await startAuthorize({
+      clientId: CLIENT_A_ID,
+      redirectUri: REDIRECT_URI_A,
+      state: "s-f076-ticket-only",
+    });
+    const approved = await approveAsStewardA(ticketId);
+    expect(approved.status).toBe(302);
+
+    const raced = await finalizeWithTicketOnly(ticketId);
+    expect(raced.status).toBe(400);
+    expect(raced.headers.get("location")).toBeNull();
+    expect(await raced.text()).not.toContain("qc_");
+
+    const callback = new URL(approved.headers.get("location")!);
+    expect(callback.origin + callback.pathname).toBe(REDIRECT_URI_A);
+    expect(callback.searchParams.get("code")).toMatch(/^qc_/);
+
+    const replayed = await finalizeWithTicketOnly(ticketId);
+    expect(replayed.status).toBe(400);
+    expect(replayed.headers.get("location")).toBeNull();
+  });
+
+  test("a steward of another workspace replaying approve on a redeemed ticket gets no code", async () => {
+    const { ticketId } = await startAuthorize({
+      clientId: CLIENT_A_ID,
+      redirectUri: REDIRECT_URI_A,
+    });
+    const approved = await approveAsStewardA(ticketId);
+    expect(new URL(approved.headers.get("location")!).searchParams.get("code")).toMatch(/^qc_/);
+
+    const foreign = await postApprove(ticketId, "qcn_any", STEWARD_B_KEY);
+    expect(foreign.status).toBe(403);
+    expect(foreign.headers.get("location")).toBeNull();
+  });
+
+  test("a double-submitted approve from the approver reaches the same callback without minting a second code", async () => {
+    const { ticketId } = await startAuthorize({
+      clientId: CLIENT_A_ID,
+      redirectUri: REDIRECT_URI_A,
+    });
+    const nonce = extractNonce(
+      await (await getConsent(ticketId, STEWARD_A_KEY)).text(),
+    );
+    const first = await postApprove(ticketId, nonce, STEWARD_A_KEY);
+    const second = await postApprove(ticketId, nonce, STEWARD_A_KEY);
+    expect(first.status).toBe(302);
+    expect(second.status).toBe(302);
+    expect(second.headers.get("location")).toBe(first.headers.get("location"));
+    expect(new URL(first.headers.get("location")!).searchParams.get("code")).toMatch(/^qc_/);
+  });
+});
+
+describe("F-132: /oauth/authorize protocol negatives", () => {
+  const ticketCount = () =>
+    (db.prepare(`SELECT COUNT(*) AS n FROM consent_tickets`).get() as { n: number }).n;
+  const authorizeUrl = (params: Record<string, string | string[]>) => {
+    const url = new URL(`${baseUrl}/oauth/authorize`);
+    for (const [key, value] of Object.entries(params)) {
+      for (const v of Array.isArray(value) ? value : [value]) url.searchParams.append(key, v);
+    }
+    return url.toString();
+  };
+  const base = { response_type: "code", client_id: "", redirect_uri: REDIRECT_URI_A, state: "s-negative" };
+
+  test("redirect_uri must match exactly; every variant is refused here and never redirected", async () => {
+    const before = ticketCount();
+    for (const redirect_uri of [
+      REDIRECT_URI_A + "/",
+      "https://example.com/CB-A",
+      REDIRECT_URI_A + "?x=1",
+      REDIRECT_URI_A + "#f",
+      "https://user@example.com/cb-a",
+      "https://example.com:8443/cb-a",
+      "http://example.com/cb-a",
+    ]) {
+      const r = await fetch(authorizeUrl({ ...base, client_id: CLIENT_A_ID, redirect_uri, code_challenge: VALID_CHALLENGE }), { redirect: "manual" });
+      expect(r.status).toBe(400);
+      expect(r.headers.get("location")).toBeNull();
+    }
+    expect(ticketCount()).toBe(before);
+  });
+
+  test("plain PKCE, a missing challenge and a repeated resource go back to the client as errors", async () => {
+    const before = ticketCount();
+    const cases: Array<[Record<string, string | string[]>, string]> = [
+      [{ code_challenge: VALID_CHALLENGE, code_challenge_method: "plain" }, "invalid_request"],
+      [{}, "invalid_request"],
+      [{ code_challenge: VALID_CHALLENGE, resource: [`${env.PUBLIC_URL}/mcp`, `${env.PUBLIC_URL}/mcp`] }, "invalid_target"],
+    ];
+    for (const [extra, error] of cases) {
+      const r = await fetch(authorizeUrl({ ...base, client_id: CLIENT_A_ID, ...extra }), { redirect: "manual" });
+      expect(r.status).toBe(302);
+      const location = new URL(r.headers.get("location")!);
+      expect(location.origin + location.pathname).toBe(REDIRECT_URI_A);
+      expect(location.searchParams.get("error")).toBe(error);
+      expect(location.searchParams.get("state")).toBe("s-negative");
+      expect(location.searchParams.has("code")).toBe(false);
+    }
+    expect(ticketCount()).toBe(before);
   });
 });

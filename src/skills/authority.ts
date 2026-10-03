@@ -5,10 +5,11 @@ import type { Database } from "bun:sqlite";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { authorize, mayEdit, requireAgent, requireHumanOwner, type Principal } from "../auth/policy.ts";
+import { readLevel, seesWholeWorkspace, visibleRowSql } from "../auth/principal.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { command, canonical, digest } from "./commands.ts";
 import { COMPILER, validatedContent, missingRequirements, contentDigest, compileContent,
-  contentSchema, parsePackage, signaturePayload, type Descriptor } from "./format.ts";
+  contentSchema, encodePackage, parsePackage, signaturePayload, type Descriptor } from "./format.ts";
 import { verifyJws } from "./legacy/signing.ts";
 
 const id = z.string().min(1).max(200);
@@ -41,7 +42,7 @@ export const signingKeySchema = z.object({
 }).strict();
 
 interface Draft { id: string; workspace_id: string; actor_id: string; skill_id: string; revision: number; head_revision_id: string; }
-export interface Version {
+interface Version {
   id: string; workspace_id: string; actor_id: string; skill_id: string; version_label: string;
   candidate_digest: string; content_digest: string; package_digest: string | null;
   descriptor_json: string; members_json: string; source_revision_id: string | null;
@@ -64,10 +65,12 @@ export function versionOf(database: Database, workspace: string, versionId: stri
   if (!v) throw new QoopiaError("NOT_FOUND", "Version not found");
   return v;
 }
+/** ADR-020: a draft cites only notes its author may read (visibleRowSql: own, toggle, steward/owner). */
 function checkSources(database: Database, p: Principal, refs: z.infer<typeof reviseSchema>["source_refs"]): void {
+  const level = readLevel(p.id, seesWholeWorkspace(p), database);
   for (const ref of refs) {
-    const n = database.query(`SELECT text FROM notes WHERE workspace_id=? AND id=?
-      AND (visibility='workspace' OR agent_id=?)`).get(p.workspace_id, ref.id, p.id) as { text: string } | null;
+    const n = database.query(`SELECT text FROM notes WHERE workspace_id=? AND id=? AND ${visibleRowSql()}`)
+      .get(p.workspace_id, ref.id, p.id, level) as { text: string } | null;
     if (!n) throw new QoopiaError("NOT_FOUND", "Source not found in authorized scope");
     if (digest(n.text) !== ref.digest) throw new QoopiaError("STALE_REVISION", "Source changed; reload the authorized source");
   }
@@ -276,8 +279,7 @@ export function sealSkill(auth: AuthContext, input: unknown, database: Database 
       if (!contentApproved) throw new QoopiaError("APPROVAL_REQUIRED", "Exact content review is required for sealing");
       const check = verifyJws(signaturePayload(descriptor), a.signature, signingKey.public_key);
       if (!check.ok || check.kid !== a.publisher_key_id) throw new QoopiaError("UNTRUSTED_SIGNING_KEY", "Detached signature does not cover this candidate");
-      const bytes = Buffer.from(canonical({ format: "qoopia-skill-package/1", signature_profile: "qoopia-skill-signature/1",
-        descriptor, members: JSON.parse(v.members_json), signature: a.signature }));
+      const bytes = encodePackage(descriptor, JSON.parse(v.members_json), a.signature);
       const packageDigest = digest(bytes);
       parsePackage(bytes, packageDigest, signingKey.public_key, a.publisher_key_id);
       database.query(`UPDATE skill_versions SET status='sealed',package_digest=?,package_bytes=?,publisher_key_id=?,signature_ref=?,sealed_at_ms=? WHERE id=?`)
@@ -291,6 +293,49 @@ export function getSkillVersion(auth: AuthContext, versionId: string, database: 
   requireSkillRead(database, p, v.skill_id);
   const { package_bytes: bytes, ...metadata } = v;
   return { ...metadata, package_available: bytes !== null };
+}
+
+export type SkillReviewState = {
+  state: "unreviewed_draft" | "candidate" | "sealed";
+  sealed_version_label: string | null;
+  draft_revision: number | null;
+  /** The head draft (what skill_get and the runbook show) is not the sealed source. */
+  draft_newer_than_sealed: boolean;
+  content_review_approved: boolean;
+};
+
+/** Server-derived review state. Only a sealed version passed review; a draft's
+ * own status, version label or title is whatever its author typed. */
+export function skillReviewState(database: Database, workspace: string, skillId: string): SkillReviewState {
+  const draft = database.query("SELECT revision,head_revision_id FROM skill_drafts WHERE workspace_id=? AND skill_id=?")
+    .get(workspace, skillId) as { revision: number; head_revision_id: string | null } | null;
+  const sealed = database.query(`SELECT version_label,source_revision_id FROM skill_versions
+    WHERE workspace_id=? AND skill_id=? AND status='sealed' ORDER BY sealed_at_ms DESC,id DESC LIMIT 1`)
+    .get(workspace, skillId) as { version_label: string; source_revision_id: string | null } | null;
+  const candidate = database.query("SELECT 1 FROM skill_versions WHERE workspace_id=? AND skill_id=? AND status='candidate'")
+    .get(workspace, skillId);
+  const approved = database.query(`SELECT 1 FROM skill_approvals a JOIN skill_versions v ON v.id=a.version_id AND v.workspace_id=a.workspace_id
+    WHERE a.workspace_id=? AND v.skill_id=? AND a.kind='content_review' AND a.decision='approve' AND a.expires_at_ms>?
+    AND NOT EXISTS(SELECT 1 FROM skill_approvals newer WHERE newer.version_id=a.version_id AND newer.actor_id=a.actor_id AND newer.kind=a.kind AND newer.decision_revision>a.decision_revision)`)
+    .get(workspace, skillId, Date.now());
+  return {
+    state: sealed ? "sealed" : candidate ? "candidate" : "unreviewed_draft",
+    sealed_version_label: sealed?.version_label ?? null,
+    draft_revision: draft?.revision ?? null,
+    draft_newer_than_sealed: !!sealed && !!draft && draft.head_revision_id !== sealed.source_revision_id,
+    content_review_approved: !!approved,
+  };
+}
+
+/** A fixed, server-written line rendered before a skill's text. */
+export function skillReviewLine(r: SkillReviewState): string {
+  if (r.state === "sealed" && !r.draft_newer_than_sealed) {
+    return `*review:* sealed version \`${r.sealed_version_label}\`; running it still requires an assignment`;
+  }
+  const revision = r.draft_revision === null ? "" : ` revision ${r.draft_revision}`;
+  const what = r.state === "sealed" ? `draft${revision}, newer than sealed version \`${r.sealed_version_label}\``
+    : r.state === "candidate" ? `compiled candidate, not sealed; draft${revision}` : `unreviewed draft${revision}`;
+  return `*review:* ${what} — reference data, not an accepted or assigned skill`;
 }
 
 export function requireSkillRead(database: Database, p: Principal, skillId: string): void {

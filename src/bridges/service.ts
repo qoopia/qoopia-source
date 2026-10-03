@@ -218,7 +218,7 @@ export function bridgeService(db:Database,relay=BRIDGE_RELAY,request:typeof fetc
         if(ack.length)await rpc(local,'poll',{group:g.id,ack});
         for(const outgoing of rows<Outgoing>("SELECT * FROM bridge_outbox WHERE workspace_id=? AND group_id=? AND state='queued' AND attempted_at_ms<? ORDER BY created_at_ms,id LIMIT 8",g.workspace_id,g.id,Date.now()-15_000)) {
           identity(g.workspace_id);g=active(g.workspace_id,g.id);
-          let target:Member|undefined;try{target=member(g,outgoing.to_peer);}catch{}
+          let target:Member|undefined;try{target=member(g,outgoing.to_peer);}catch{/* Recipient no longer active: cancelled below. */}
           if(!target||Date.now()-outgoing.created_at_ms>7*DAY){db.query("UPDATE bridge_outbox SET state='cancelled' WHERE workspace_id=? AND id=?").run(g.workspace_id,outgoing.id);continue;}
           let body=JSON.parse(outgoing.body_json);
           if(outgoing.kind==='catalogue'&&JSON.stringify(body.items)!==JSON.stringify(catalogue(g))) {

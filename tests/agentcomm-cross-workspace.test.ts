@@ -135,7 +135,7 @@ describe("addressing crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "by name",
-      kind: "system",
+      kind: "status",
     });
     expect(byName.to).toBe("xws-guest");
     expect(messageRow(byName.id).recipient_agent_id).toBe(GUEST_AGENT);
@@ -145,7 +145,7 @@ describe("addressing crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: GUEST_AGENT,
       body: "by id",
-      kind: "system",
+      kind: "status",
     });
     expect(messageRow(byId.id).recipient_agent_id).toBe(GUEST_AGENT);
   });
@@ -158,7 +158,7 @@ describe("addressing crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "homing check",
-      kind: "system",
+      kind: "status",
     });
     expect(messageRow(sent.id).workspace_id).toBe(HOME);
     expect(sessionRow(sent.session_id).workspace_id).toBe(HOME);
@@ -173,7 +173,7 @@ describe("addressing crosses the workspace boundary", () => {
       agent_id: THIRD_TWIN,
       to_agent: "xws-twin",
       body: "self-addressed, but local",
-      kind: "system",
+      kind: "status",
     });
     expect(messageRow(sent.id).recipient_agent_id).toBe(THIRD_TWIN);
   });
@@ -185,7 +185,7 @@ describe("addressing crosses the workspace boundary", () => {
         agent_id: STEWARD,
         to_agent: "xws-twin",
         body: "which one?",
-        kind: "system",
+        kind: "status",
       }),
     ).toThrow(/ambiguous across workspaces/);
 
@@ -195,7 +195,7 @@ describe("addressing crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: GUEST_TWIN,
       body: "that one",
-      kind: "system",
+      kind: "status",
     });
     expect(messageRow(sent.id).recipient_agent_id).toBe(GUEST_TWIN);
   });
@@ -207,7 +207,7 @@ describe("addressing crosses the workspace boundary", () => {
         agent_id: STEWARD,
         to_agent: "nobody-at-all",
         body: "hello?",
-        kind: "system",
+        kind: "status",
       }),
     ).toThrow(/active agent not found/);
   });
@@ -221,7 +221,7 @@ describe("addressing crosses the workspace boundary", () => {
         agent_id: STEWARD,
         to_agent: "xws-parked",
         body: "still there?",
-        kind: "system",
+        kind: "status",
       }),
     ).toThrow(/active agent not found/);
   });
@@ -251,7 +251,7 @@ describe("delivery crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "cross-workspace delivery",
-      kind: "system",
+      kind: "status",
     });
     const result = await drainAgentWakeQueue({ eventId: sent.wake!.event_id });
 
@@ -272,7 +272,7 @@ describe("delivery crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "unconfirmed hop",
-      kind: "system",
+      kind: "status",
     });
     const result = await drainAgentWakeQueue({ eventId: sent.wake!.event_id });
 
@@ -292,7 +292,7 @@ describe("delivery crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "repointed wake",
-      kind: "system",
+      kind: "status",
     });
     db.prepare(`UPDATE agent_wake_events SET target_agent_id = ? WHERE message_id = ?`)
       .run(GUEST_BYSTANDER, sent.id);
@@ -312,7 +312,7 @@ describe("delivery crosses the workspace boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "forged home",
-      kind: "system",
+      kind: "status",
     });
     db.prepare(`UPDATE agent_comm_messages SET workspace_id = ? WHERE id = ?`)
       .run(GUEST, sent.id);
@@ -404,9 +404,42 @@ describe("a foreign participant can hold up its end of the thread", () => {
         to_agent: "xws-steward",
         session_id: opened.id,
         body: "butting in",
-        kind: "system",
+        kind: "status",
       }),
     ).toThrow(/agent session not found/);
+  });
+
+  test("a non-participant in the thread's home workspace cannot touch it either", () => {
+    const opened = agentSessionCreate({
+      workspace_id: HOME,
+      agent_id: STEWARD,
+      to_agent: "xws-guest",
+      topic: "steward and guest only",
+      message: "between us",
+    });
+    // Same workspace as the thread, but never part of it: workspace membership
+    // is still not the key.
+    expect(() =>
+      agentSend({
+        workspace_id: HOME,
+        agent_id: HOMEMATE,
+        to_agent: "xws-guest",
+        session_id: opened.id,
+        body: "injected",
+        kind: "status",
+      }),
+    ).toThrow(/agent session not found/);
+    expect(() =>
+      agentReply({ workspace_id: HOME, agent_id: HOMEMATE, session_id: opened.id, body: "redirected" }),
+    ).toThrow(/agent session not found/);
+    expect(() =>
+      agentSessionClose({ workspace_id: HOME, agent_id: HOMEMATE, session_id: opened.id }),
+    ).toThrow(/agent session not found/);
+    expect(sessionRow(opened.id).status).toBe("open");
+    const homemateMessages = db.prepare(
+      `SELECT count(*) AS n FROM agent_comm_messages WHERE session_id = ? AND sender_agent_id = ?`,
+    ).get(opened.id, HOMEMATE) as { n: number };
+    expect(homemateMessages.n).toBe(0);
   });
 
   test("an inbox returns what was addressed to the agent and nothing else", () => {
@@ -415,7 +448,7 @@ describe("a foreign participant can hold up its end of the thread", () => {
       agent_id: STEWARD,
       to_agent: HOMEMATE,
       body: "home-only traffic",
-      kind: "system",
+      kind: "status",
     });
     const guestInbox = agentInbox({ workspace_id: GUEST, agent_id: GUEST_AGENT, limit: 100 });
     expect(guestInbox.items.every((m) => m.to === "xws-guest")).toBe(true);
@@ -443,7 +476,7 @@ describe("memory does not cross the boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "opening a thread does not open the memory",
-      kind: "system",
+      kind: "status",
     });
 
     const guestText = listNotes({
@@ -479,7 +512,7 @@ describe("memory does not cross the boundary", () => {
       agent_id: STEWARD,
       to_agent: "xws-guest",
       body: "nothing is filed on your side",
-      kind: "system",
+      kind: "status",
     });
     expect(count("agent_comm_sessions", GUEST)).toBe(before.sessions);
     expect(count("agent_comm_messages", GUEST)).toBe(before.messages);

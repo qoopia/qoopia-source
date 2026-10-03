@@ -17,7 +17,7 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
 
-    "types": ["bun-types"]
+    "types": ["bun"]
   },
-  "include": ["src/**/*", "scripts/**/*"]
+  "include": ["src/**/*", "scripts/**/*", "tests/**/*", "benchmarks/**/*", "sdk/typescript/**/*"]
 }

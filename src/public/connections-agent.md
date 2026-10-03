@@ -4,11 +4,12 @@ Use the installation holding the explicitly selected workspace. Do not replace a
 selected server with a local database. Memory stays on that installation; account
 registration and tunnel metadata are separate. The release qualifies the tested
 Codex CLI, Claude Code, Claude Desktop and Claude Web combinations below.
-ChatGPT Web/Desktop remain experimental; their complete setup verification is
-not qualified. Record real client, version, plan and clean OS evidence separately.
+ChatGPT Web and Mac Desktop last passed real-client acceptance on 15 September 2026 with ChatGPT Pro;
+the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account. Record real client, version, plan and clean OS evidence separately.
 
 1. Open the installed Qoopia wizard with `qoopia open`, or use the running
-   installation's `qoopia connections` CLI. `--root /absolute/directory` selects an
+   installation's `qoopia connections` CLI. `qoopia` is not on PATH: on macOS it is
+   `/Applications/Qoopia.app/Contents/Resources/bundle/qoopia`; on Linux it is `./qoopia` in the extracted package. `--root /absolute/directory` selects an
    isolated installation; omitting it uses the platform's installed root.
 2. Save a selection JSON with `surface`, `access_mode` and a stable `request_key`.
    Surfaces: `chatgpt_web`, `chatgpt_desktop`, `claude_web`, `claude_desktop`,
@@ -84,9 +85,9 @@ The Claude Desktop adapter is a private OAuth client on macOS. Its stdio process
 
 For isolated Codex CLI acceptance with an existing ChatGPT subscription, a separate CODEX_HOME does not isolate account-level cloud connectors. Disable `features.apps`, `features.plugins` and `features.multi_agent` for the test invocation, then verify every recorded MCP call used the exact prepared server name. Never use a similarly named existing connector as a fallback.
 
-Qualification checkpoint (12 September 2026): clean Linux Codex CLI 0.153.3 and Claude Code 2.1.224, clean Mac Claude Desktop 1.52386.3 and Claude Web have passed actual scoped memory calls. Existing subscriptions were ChatGPT Pro and Claude Max; other plans are not qualified by these tests. ChatGPT Web read/add passed only in the isolated prototype; its verification was client-blocked. ChatGPT Desktop manual read/create/repeat/get also passed in a confirmed ChatGPT conversation against that prototype, with exactly one new note in the test database. The same app can open Codex tasks: choose New chat → Chat and verify the conversation type; the sidebar name is insufficient. Neither ChatGPT surface is a fully qualified setup path for this release. Physical Mac sleep/wake passed on a signed V14 isolated local installation, preserving the process, note and settings captured immediately before sleep; this does not convert the refused VM sleep into a pass. Do not retry a client safety block through another path or record it as a successful verification.
+Qualification checkpoint (12 September 2026): clean Linux Codex CLI 0.153.3 and Claude Code 2.1.224, clean Mac Claude Desktop 1.52386.3 and Claude Web have passed actual scoped memory calls. Existing subscriptions were ChatGPT Pro and Claude Max; other plans are not qualified by these tests. ChatGPT Web read/add passed only in the isolated prototype; its verification was client-blocked. ChatGPT Desktop manual read/create/repeat/get also passed in a confirmed ChatGPT conversation against that prototype, with exactly one new note in the test database. The same app can open Codex tasks: choose New chat → Chat and verify the conversation type; the sidebar name is insufficient. A later run on 15 September 2026 passed ChatGPT Pro Web and Mac Desktop setup, verification, writes and idempotent replay; the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account. Physical Mac sleep/wake passed on a signed V14 isolated local installation, preserving the process, note and settings captured immediately before sleep; this does not convert the refused VM sleep into a pass. Do not retry a client safety block through another path or record it as a successful verification.
 
-Native session memory profiles: `memory-link --file ABSOLUTE_QOOPIA_MEMORY --config-directory ABSOLUTE_PROFILE` selects the local client profile explicitly; otherwise a new binding honors CODEX_HOME / CLAUDE_CONFIG_DIR. Hooks, MCP configuration and the allowed transcript root all use that selection. A later invocation without an override resumes the recorded profile. A different explicit selection is refused for an existing binding; use a separate Qoopia `--root` for a separate client binding. Do not copy hooks to another profile or edit native_root manually. Review/trust hooks in the selected client, then verify capture and restoration in real sessions. These capabilities require a package containing this change; V16 RC1 (425a3e1) does not support the profile option for memory-link.
+Native session memory profiles: `memory-link --file ABSOLUTE_QOOPIA_MEMORY --config-directory ABSOLUTE_PROFILE` selects the local client profile explicitly; otherwise a new binding honors CODEX_HOME / CLAUDE_CONFIG_DIR. Hooks, MCP configuration and the allowed transcript root all use that selection. A later invocation without an override resumes the recorded profile. A different explicit selection is refused for an existing binding; use a separate Qoopia `--root` for a separate client binding. Re-running memory-link for the same server after its memory agent was reissued or its key rotated replaces this binding's hooks, `qoopia_memory` entry and record together, with backups; an entry someone changed is refused. Do not copy hooks to another profile or edit native_root manually. Review/trust hooks in the selected client, then verify capture and restoration in real sessions. These capabilities require a package containing this change; V16 RC1 (425a3e1) does not support the profile option for memory-link.
 
 Local primary agent: after connecting the intended native memory client, stop the local Qoopia service cleanly and use the installed binary's `steward` command. It lists only active agents in the selected local owner's workspace, without keys or notes. `steward --agent-id ID` previews the permission change; `steward --agent-id ID --commit --approve PLAN_DIGEST` applies that exact plan. If several owners exist, pass `--owner-id ID`. It refuses another workspace, revoked/human/read-only identities and replacement of an existing steward. Restart Qoopia and reconnect the client afterwards. Verify the selected agent in Connections and with actual memory calls. This assigns a workspace role to the connected agent; it does not create a background AI process or grant human-owner authority. The existing tool profile remains in force. This command requires the new candidate; V16 RC1 does not include it.
 
@@ -102,8 +103,19 @@ Native Codex/Claude Code connection apply and memory-link install the shared
 `qoopia-protocol.md` into the selected native profile. They add an owned block to
 the active global AGENTS.md/AGENTS.override.md or CLAUDE.md, preserving unrelated
 instructions. Edited Qoopia blocks or foreign documents are refused; inspect the
-conflict instead of overwriting it. Rerun the authorized native connection apply
-or memory-link with the current package to refresh an existing profile's kit.
+conflict instead of overwriting it. A refusal is returned as `protocol.state`
+`refused` with an `INSTRUCTIONS_*` code and the file; it does not block the MCP
+entry, because the client reads `qoopia_protocol` over MCP. `qoopia instructions
+refresh [--commit]` updates every memory-linked and client-linked profile, and a
+memory-linked profile's SessionStart hook refreshes its own kit. Deleting the
+Qoopia block by hand opts that profile out: the hook and refresh leave it out, and
+only an explicit connection apply or memory-link adds it again.
+`qoopia instructions remove --runtime codex|claude_code [--config-directory DIR] [--commit]`
+removes the block and the unchanged kit documents. `qoopia memory-unlink --runtime
+codex|claude_code [--commit]` removes memory-link's hooks, its `qoopia_memory`
+entry (it holds the agent key) and the managed instructions. Both preview without
+`--commit`, keep other hooks, servers and owner text, and refuse edited items.
+Revoke the agent in Qoopia separately.
 An instruction install is NOT_VERIFIED until a real new native session reports
 its loaded source. Project overrides, limits and client trust can affect loading.
 

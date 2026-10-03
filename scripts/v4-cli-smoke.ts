@@ -8,8 +8,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "qoopia-v4-cli-smoke-"));
 process.env.QOOPIA_DATA_DIR = path.join(root, "data");
 process.env.QOOPIA_LOG_DIR = path.join(root, "logs");
 process.env.QOOPIA_BACKUP_DIR = path.join(root, "backups");
-process.env.QOOPIA_ADMIN_SECRET ||= "fixture-admin-secret";
-process.env.QOOPIA_SESSION_SECRET ||= "fixture-session-secret";
+process.env.QOOPIA_ADMIN_SECRET ||= "fixture-admin-secret-at-least-32-bytes";
+process.env.QOOPIA_SESSION_SECRET ||= "fixture-session-secret-at-least-32-bytes";
 process.env.QOOPIA_AUTO_EMBED = "false";
 
 try {

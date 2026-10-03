@@ -87,9 +87,3 @@ export const dashboardLimiter = new RateLimiter({ windowMs: 60_000, maxHits: 200
 
 /** OAuth endpoints (атакуемые — credential stuffing, замер). */
 export const authLimiter = new RateLimiter({ windowMs: 60_000, maxHits: 20 });
-
-/**
- * @deprecated used to be the single global limiter. Left as alias to globalLimiter
- * so existing imports keep working during migration. Prefer per-route limiters.
- */
-export const apiLimiter = globalLimiter;

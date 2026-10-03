@@ -5,8 +5,8 @@
  *   - standard agent Bearer cannot register (403 forbidden)
  *   - steward in workspace A registers → row has correct
  *     agent_id, workspace_id, client_secret_hash
- *   - claude-privileged in workspace A registers → row has correct
- *     agent_id, workspace_id
+ *   - a legacy claude-privileged agent cannot register (ADR-020: an
+ *     ordinary agent); the pre-V1 claude.ai DCR still binds to its row
  *   - ADMIN_SECRET header alone (no Bearer) → 401 (regression: ADMIN_SECRET
  *     is no longer the auth identity for registration)
  *   - regression: wsCount > 1 no longer blocks registration in beta-style
@@ -28,6 +28,7 @@ import { createAgent } from "../src/admin/agents.ts";
 import { startHttpServer } from "../src/http.ts";
 import { db } from "../src/db/connection.ts";
 import { authLimiter } from "../src/utils/rate-limit.ts";
+import { legacyPrivilegedAgent } from "./helpers/legacy-agent.ts";
 
 let server: Server;
 let baseUrl = "";
@@ -41,7 +42,6 @@ let CLAUDE_PRIV_A_ID = "";
 let GPT_ID = "";
 let DEFAULT_WS_ID = "";
 let STANDARD_A_KEY = "";
-let STANDARD_A_ID = "";
 
 async function postRegister(
   body: Record<string, unknown>,
@@ -84,11 +84,7 @@ beforeAll(async () => {
   STEWARD_A_ID = stewardA.id;
   STEWARD_A_KEY = stewardA.api_key;
 
-  const cpA = createAgent({
-    name: "register-claude-priv-a",
-    workspaceSlug: wsA.slug,
-    type: "claude-privileged",
-  });
+  const cpA = legacyPrivilegedAgent("register-claude-priv-a", wsA.slug);
   CLAUDE_PRIV_A_ID = cpA.id;
   CLAUDE_PRIV_A_KEY = cpA.api_key;
   db.prepare(`UPDATE agents SET id = ? WHERE id = ?`).run(
@@ -102,12 +98,7 @@ beforeAll(async () => {
     slug: "default",
   });
   DEFAULT_WS_ID = defaultWs.id;
-  const gpt = createAgent({
-    name: "GPT",
-    workspaceSlug: defaultWs.slug,
-    type: "claude-privileged",
-    toolProfile: "full",
-  });
+  const gpt = legacyPrivilegedAgent("GPT", defaultWs.slug);
   GPT_ID = gpt.id;
 
   const standardA = createAgent({
@@ -115,7 +106,6 @@ beforeAll(async () => {
     workspaceSlug: wsA.slug,
     type: "standard",
   });
-  STANDARD_A_ID = standardA.id;
   STANDARD_A_KEY = standardA.api_key;
 
   // Place at least one agent in workspace B so wsCount > 1 in agent terms too.
@@ -316,6 +306,15 @@ describe("ADR-017 /oauth/register: steward in workspace A registers correctly", 
     };
     expect(body.error).toBe("invalid_request");
     expect(body.error_description).toContain("non-loopback http:// redirect URIs are not allowed");
+
+    // F-130 / RFC 6749 §3.1.2: no fragment, no embedded credentials.
+    for (const uri of ["https://example.com/cb#fragment", "https://example.com/cb#", "https://user:pw@example.com/cb"]) {
+      const bad = await postRegister(
+        { client_name: "redirect-fragment-userinfo-bad", redirect_uris: [uri] },
+        { authorization: `Bearer ${STEWARD_A_KEY}` },
+      );
+      expect(bad.status).toBe(400);
+    }
   });
 });
 
@@ -368,7 +367,7 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     });
-    const body = await r.json();
+    const body = await r.json() as { token_endpoint_auth_method: string; client_secret: string; client_secret_expires_at: number };
     expect(r.status).toBe(201);
     expect(body.token_endpoint_auth_method).toBe("client_secret_post");
     expect(body.client_secret).toStartWith("qcs_");
@@ -466,8 +465,8 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
   });
 });
 
-describe("ADR-017 /oauth/register: claude-privileged agent can register", () => {
-  test("claude-privileged Bearer → 201 + row carries that agent's id + workspace", async () => {
+describe("ADR-020 /oauth/register: a legacy claude-privileged agent is ordinary", () => {
+  test("claude-privileged Bearer → 403 and no client row", async () => {
     const r = await postRegister(
       {
         client_name: "ws-a-claudepriv-client",
@@ -475,18 +474,8 @@ describe("ADR-017 /oauth/register: claude-privileged agent can register", () => 
       },
       { authorization: `Bearer ${CLAUDE_PRIV_A_KEY}` },
     );
-    expect(r.status).toBe(201);
-    const body = (await r.json()) as { client_id: string };
-    const row = db
-      .prepare(
-        `SELECT agent_id, workspace_id FROM oauth_clients WHERE id = ?`,
-      )
-      .get(body.client_id) as
-      | { agent_id: string; workspace_id: string }
-      | undefined;
-    expect(row).toBeDefined();
-    expect(row!.agent_id).toBe(CLAUDE_PRIV_A_ID);
-    expect(row!.workspace_id).toBe(WS_A_ID);
+    expect(r.status).toBe(403);
+    expect(db.query("SELECT 1 FROM oauth_clients WHERE name = 'ws-a-claudepriv-client'").get()).toBeNull();
   });
 });
 

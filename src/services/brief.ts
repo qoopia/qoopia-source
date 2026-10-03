@@ -1,13 +1,14 @@
 import { db } from "../db/connection.ts";
 import { safeJsonParse, nowIso, QoopiaError } from "../utils/errors.ts";
+import { readLevel, visibleRowSql } from "../auth/principal.ts";
 
-export interface BriefParams {
+interface BriefParams {
   workspace_id: string;
   /** QRERUN-003 / ADR-014: agent_id of the caller — needed to surface
    *  their own private notes alongside workspace-visibility ones. */
   caller_agent_id: string;
-  /** QRERUN-003 / ADR-014: true for steward/claude-privileged; bypasses
-   *  the private-note filter. */
+  /** ADR-020: true for the steward and the owner — the whole workspace;
+   *  otherwise the caller's shared-context toggle decides. */
   is_admin: boolean;
   project?: string;
   agent?: string;
@@ -25,6 +26,8 @@ interface NoteRowLite {
 
 export function brief(p: BriefParams) {
   const limit = Math.min(Math.max(p.limit_per_section || 10, 1), 50);
+  const level = readLevel(p.caller_agent_id, p.is_admin);
+  const visible = [p.caller_agent_id, level];
 
   // Resolve project: accept ULID or exact name
   let projectId: string | null = null;
@@ -32,9 +35,9 @@ export function brief(p: BriefParams) {
   if (p.project) {
     const byId = db
       .prepare(
-        `SELECT id, text FROM notes WHERE id = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL`,
+        `SELECT id, text FROM notes WHERE id = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL AND ${visibleRowSql()}`,
       )
-      .get(p.project, p.workspace_id) as
+      .get(p.project, p.workspace_id, ...visible) as
       | { id: string; text: string }
       | undefined;
     if (byId) {
@@ -43,9 +46,9 @@ export function brief(p: BriefParams) {
     } else {
       const byName = db
         .prepare(
-          `SELECT id, text FROM notes WHERE text = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL LIMIT 1`,
+          `SELECT id, text FROM notes WHERE text = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL AND ${visibleRowSql()} LIMIT 1`,
         )
-        .get(p.project, p.workspace_id) as
+        .get(p.project, p.workspace_id, ...visible) as
         | { id: string; text: string }
         | undefined;
       if (byName) {
@@ -62,10 +65,11 @@ export function brief(p: BriefParams) {
 
   const extra: string[] = [];
   const extraParams: any[] = [];
-  // QRERUN-003 / ADR-014: hide private notes from non-owners (admins exempt).
+  // ADR-020: own notes, siblings' shared notes with the toggle on, all for steward/owner.
   // Always present so every note query in this function inherits the filter.
-  extra.push(`(visibility = 'workspace' OR agent_id = ? OR ? = 1)`);
-  extraParams.push(p.caller_agent_id, p.is_admin ? 1 : 0);
+  extra.push(visibleRowSql());
+  extraParams.push(...visible);
+
   if (projectId) {
     extra.push(`project_id = ?`);
     extraParams.push(projectId);
@@ -168,10 +172,11 @@ export function brief(p: BriefParams) {
   // visibility filter — leaking sibling identities and a count-based signal of
   // their private activity. p.agent is silently ignored for non-admins because
   // a non-admin filtering by another agent's name would just return an empty
-  // set anyway.
+  // set anyway. ADR-020: the siblings' rows are shared context, so a caller with
+  // the toggle on sees them too; notes_today counts only notes it may read.
   const agentActivityWhere: string[] = [`a.workspace_id = ?`, `a.active = 1`];
   const agentActivityParams: any[] = [p.workspace_id];
-  if (!p.is_admin) {
+  if (level === 0) {
     agentActivityWhere.push(`a.id = ?`);
     agentActivityParams.push(p.caller_agent_id);
   } else if (p.agent) {
@@ -183,14 +188,18 @@ export function brief(p: BriefParams) {
     : "";
   const agents = db
     .prepare(
+      // F-275: the raw created_at bound (two days back tolerates any stored
+      // precision or offset) lets idx_notes_created read only recent rows;
+      // datetime() keeps the exact one-day cut.
       `SELECT a.id, a.name, a.last_seen,
-         (SELECT COUNT(*) FROM notes n WHERE n.agent_id = a.id AND n.workspace_id = a.workspace_id
-           AND n.deleted_at IS NULL AND datetime(n.created_at) >= datetime('now', '-1 day')
-           ${notesTodayProjectFilter}) as notes_today
+         (SELECT COUNT(*) FROM notes n WHERE n.workspace_id = a.workspace_id
+           AND n.deleted_at IS NULL AND n.created_at >= date('now', '-2 day')
+           AND datetime(n.created_at) >= datetime('now', '-1 day') AND n.agent_id = a.id
+           AND ${visibleRowSql("n")} ${notesTodayProjectFilter}) as notes_today
        FROM agents a WHERE ${agentActivityWhere.join(" AND ")}
        ORDER BY a.last_seen DESC`,
     )
-    .all(...agentActivityParams) as Array<{
+    .all(...visible, ...agentActivityParams) as Array<{
     id: string;
     name: string;
     last_seen: string | null;
@@ -234,10 +243,10 @@ export function brief(p: BriefParams) {
       total: recentNotesTotal.c,
       items: recentNotes.map(preview),
     },
-    active_deals: {
-      total: activeDealsTotal.c,
-      items: activeDeals.map(preview),
-    },
+    // Legacy CRM section: only workspaces that actually keep deal notes see it.
+    ...(activeDealsTotal.c ? { active_deals: { total: activeDealsTotal.c, items: activeDeals.map(preview) } } : {}),
+    ...(!p.project && !p.agent && !openTasksTotalRow.c && !recentNotesTotal.c && !activeDealsTotal.c
+      ? { empty_workspace: { next: "Read qoopia_protocol; save the first memory with note_create; search it later with recall." } } : {}),
     agent_activity: agentActivity,
     cost: { tokens_returned: tokensReturned },
   };

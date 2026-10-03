@@ -7,6 +7,7 @@ import {pendingNoteEmbeddings,upsertNoteEmbedding} from './embedding-store.ts';
 import {autoEmbedEnabled} from './embeddings.ts';
 import {QoopiaError,safeJsonParse} from '../utils/errors.ts';
 import {redactSensitive} from '../utils/secret-guard.ts';
+import {backgroundFailure} from '../utils/logger.ts';
 import {scrubTelegramTransit} from './telegram-store.ts';
 import {duringManual,expireSaveRequests,hasManualHistory,memoryPolicy,memoryPolicyUnchanged} from './memory-policy.ts';
 
@@ -17,7 +18,7 @@ const dashboardSnapshot=z.object({
 });
 function dashboardPredecessor(metadata:Record<string,any>){const parsed=dashboardSnapshot.safeParse(metadata.dashboard_context);return parsed.success?parsed.data:null;}
 const sessionId=z.string().min(1).max(200);
-export const continuityEventSchema=z.object({session_id:sessionId,project:z.string().max(2048),runtime:z.enum(['claude_code','codex']),
+const continuityEventSchema=z.object({session_id:sessionId,project:z.string().max(2048),runtime:z.enum(['claude_code','codex']),
   event:z.enum(['start','progress','precompact','end','restore']),context_percent:z.number().min(0).max(100).optional(),
   previous_session_id:sessionId.optional(),messages:z.array(z.object({id:z.string().min(1).max(240),role:z.enum(['user','assistant','tool']),
     content:z.string().max(100_000),timestamp:z.string().max(80).optional()})).max(100).default([])}).strict();
@@ -132,6 +133,17 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
     return {...restoreContext(workspace,agent,event.session_id),accepted:event.messages.map(m=>m.id)};
   })();
 }
+/** Escaped-size budget for the summarizer source; memoryText adds its instruction and refuses over 140k. */
+const SOURCE_BUDGET=130_000;
+/** Head and tail of a text whose JSON-escaped form fits `budget` chars. Summarizer input only. */
+function excerpt(text:string,budget:number) {
+  let cut=text,size=JSON.stringify(cut).length,keep=text.length;
+  while(size>budget&&keep>0) {
+    keep=Math.floor(keep*Math.min(0.9,budget/size));const half=Math.floor(keep/2);
+    cut=text.slice(0,half)+`\n[… ${text.length-2*half} chars omitted]\n`+text.slice(text.length-half);size=JSON.stringify(cut).length;
+  }
+  return cut;
+}
 /** New messages stay in the journal until a checkpoint and its source cursor
  * commit together. Retries after a crash cannot skip or duplicate a revision. */
 export async function checkpointSession(workspace:string,agent:string,session:string,summarize=memoryText) {
@@ -144,25 +156,39 @@ export async function checkpointSession(workspace:string,agent:string,session:st
   const rows=db.query('SELECT id,role,content FROM session_messages WHERE session_id=? AND workspace_id=? AND agent_id=? AND id>? ORDER BY id LIMIT 100')
     .all(session,workspace,agent,old.through_message_id??0) as Array<{id:number;role:string;content:string}>;
   if(!rows.length)return {state:'unchanged'};
-  let size=0;const batch:typeof rows=[];
-  const batchLimit=Number.isInteger(meta.continuity_batch_limit)?Math.max(1,Math.min(100,meta.continuity_batch_limit)):100;
-  for(const row of rows){if(batch.length>=batchLimit||(batch.length&&size+row.content.length>50_000))break;batch.push(row);size+=batch.at(-1)!.content.length;}
-  if(note&&!meta.continuity_priority&&size<4000&&Date.now()-(old.updated_at_ms??0)<300_000)return {state:'waiting'};
   const predecessor=!note?(meta.continuity_previous?restoreContext(workspace,agent,meta.continuity_previous):dashboardPredecessor(meta)):null;
+  // memoryText refuses a prompt over 140k chars after JSON escaping, so the source is budgeted in
+  // that escaped form: quotes, newlines or binary output can multiply a message's size.
+  const previous=excerpt(note?.text??predecessor?.context??'',SOURCE_BUDGET/4);
+  let previousTail=predecessor?.tail??[];
+  while(previousTail.length&&JSON.stringify({previous,previous_tail:previousTail}).length>SOURCE_BUDGET/2)previousTail=previousTail.slice(1);
+  let size=0,room=SOURCE_BUDGET-JSON.stringify({previous,previous_tail:previousTail}).length;const batch:typeof rows=[];
+  const batchLimit=Number.isInteger(meta.continuity_batch_limit)?Math.max(1,Math.min(100,meta.continuity_batch_limit)):100;
+  for(const row of rows){
+    if(batch.length>=batchLimit||(batch.length&&size+row.content.length>50_000))break;
+    const cost=JSON.stringify(row).length+1;
+    // A message too large on its own is summarised from an excerpt; the journal keeps it whole and
+    // the cursor still moves past it.
+    if(cost>room){if(!batch.length){batch.push({...row,content:excerpt(row.content,room-(cost-JSON.stringify(row.content).length))});size=row.content.length;}break;}
+    batch.push(row);size+=row.content.length;room-=cost;
+  }
+  // Only a small remainder waits; a batch cut short by the limit or the budget has a backlog behind it.
+  if(note&&!meta.continuity_priority&&batch.length===rows.length&&size<4000&&Date.now()-(old.updated_at_ms??0)<300_000)return {state:'waiting'};
   let result:Awaited<ReturnType<typeof summarize>>;
   try {result=await summarize(workspace,
     'Update a concise working-state note, in the user language, at most 6000 characters. Preserve the goal, latest constraints, decisions with reasons, completed work and evidence, paths/links, unresolved issues and next step. Clearly record superseded/cancelled decisions. Distinguish requested/planned work from verified results. Do not invent facts. Keep useful prior facts unless new source evidence changes them. Return the full updated note in result.',
-    {previous:note?.text??predecessor?.context??'',previous_tail:predecessor?.tail??[],new_events:batch});
+    {previous,previous_tail:previousTail,new_events:batch});
   } catch(error) {
     // Retry a smaller source range after a timeout; never advance its cursor
-    // until the summary commits. A single source message remains indivisible.
+    // until the summary commits.
     if(error instanceof QoopiaError&&error.code==='MODEL_TIMEOUT'&&batch.length>1)
       db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_batch_limit',?) WHERE id=? AND workspace_id=? AND agent_id=?")
         .run(Math.ceil(batch.length/2),session,workspace,agent);
     throw error;
   }
-  const text=redactSensitive(result.text).text;
-  if(text.length>8000)throw new QoopiaError('SIZE_LIMIT','Context note exceeded its bounded size');
+  let text=redactSensitive(result.text).text;
+  // The model is asked for 6000 chars; a longer answer is cut at a line end rather than wasted.
+  if(text.length>8000){const end=text.lastIndexOf('\n',8000);text=text.slice(0,end>4000?end:8000).trimEnd();}
   return db.transaction(()=>{
     assertSession(workspace,agent,session);
     if(!memoryPolicyUnchanged(workspace,agent,policy.revision))return {state:'policy_changed'};
@@ -177,10 +203,15 @@ export async function checkpointSession(workspace:string,agent:string,session:st
       session_id:session,visibility:'private',text,metadata,tags:['session-context']}).id;
     if(note)updateNote({workspace_id:workspace,agent_id:agent,is_admin:false,id:note.id,text,metadata_replace:metadata});
     db.query("UPDATE sessions SET metadata=json_remove(json_set(metadata,'$.continuity_priority',0),'$.continuity_error','$.continuity_retry_at') WHERE id=?").run(session);
+    // A limit halved by earlier timeouts doubles back with each success.
+    if(meta.continuity_batch_limit!==undefined)db.query(`UPDATE sessions SET metadata=CASE WHEN ?1>=100 THEN json_remove(metadata,'$.continuity_batch_limit')
+      ELSE json_set(metadata,'$.continuity_batch_limit',?1) END WHERE id=?2`).run(batchLimit*2,session);
     return {state:'saved',note_id:noteId,revision:version,through_message_id:through};
   })();
 }
-let timer:ReturnType<typeof setInterval>|undefined,running=false,indexing=false;
+let timer:ReturnType<typeof setInterval>|undefined,running=false,indexing=false,embedRetryAt=0,embedFailures=0;
+// Per-note errors are logged by upsertNoteEmbedding; this catches the pass itself (e.g. its DB query).
+const embeddingFailed=backgroundFailure('Note embedding pass');
 export async function processMemoryMaintenance() {
   if(running)return;running=true;
   try {
@@ -188,13 +219,17 @@ export async function processMemoryMaintenance() {
     // A client that has not replayed a manual period within a month never will: its cursor moved
     // on long ago. Keeping the ids past that only grows the ledger.
     db.query('DELETE FROM manual_period_messages WHERE seen_at_ms<?').run(Date.now()-30*24*60*60*1000);
-    if(autoEmbedEnabled()&&!indexing) {
+    if(autoEmbedEnabled()&&!indexing&&Date.now()>=embedRetryAt) {
       indexing=true;
       // Archival indexing yields between passages and must not delay a current
       // session checkpoint while the subscription model is available.
       void (async()=>{for(const note of pendingNoteEmbeddings(undefined,16)) {
-        const r=await upsertNoteEmbedding(note.id,note.workspace_id,note.text);if(r.error)break;
-      }})().catch(()=>{}).finally(()=>{indexing=false;});
+        const r=await upsertNoteEmbedding(note.id,note.workspace_id,note.text);
+        // A missing or broken model fails every note: pause 10 s doubling to 10 min instead of a
+        // failed inference and a WARN every tick. The first success resumes the normal pace.
+        if(r.error){embedFailures++;embedRetryAt=Date.now()+Math.min(600_000,5000*2**embedFailures);break;}
+        embedFailures=0;embedRetryAt=0;
+      }})().catch(embeddingFailed).finally(()=>{indexing=false;});
     }
     if(memoryModelBusy())return;
     const sessions=db.query(`SELECT s.id,s.workspace_id,s.agent_id FROM sessions s JOIN agents a ON a.id=s.agent_id AND a.active=1
@@ -205,17 +240,30 @@ export async function processMemoryMaintenance() {
       ORDER BY COALESCE(json_extract(s.metadata,'$.continuity_priority'),0) DESC,s.last_active DESC LIMIT 16`)
       .all(Date.now()) as Array<{id:string;workspace_id:string;agent_id:string}>;
     for(const session of sessions) {
-      if(!memoryProfile(session.workspace_id))continue;
+      // A workspace without a usable profile steps out of the window for a while instead of
+      // aborting the tick or starving the sessions ranked after it, in any workspace.
+      let profile=null,invalid=false;
+      try{profile=memoryProfile(session.workspace_id);}catch{invalid=true;}
+      if(!profile) {
+        db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',?${invalid?",'$.continuity_error','INVALID_PROFILE'":''}) WHERE id=?`)
+          .run(Date.now()+300_000,session.id);
+        continue;
+      }
       try {const result=await checkpointSession(session.workspace_id,session.agent_id,session.id);if(result.state==='saved')break;}
       catch(error){
         const code=error instanceof QoopiaError?error.code:'DEPENDENCY_UNAVAILABLE';
-        // Login/quota errors need owner action. A short cooldown prevents a
-        // retry storm while the durable journal keeps all pending messages.
-        db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?) WHERE id=?")
-          .run(code,Date.now()+300_000,session.id);break;
+        // Sign-in, quota and an unusable runtime belong to the workspace's profile, so the cooldown
+        // covers all its pending sessions: the next tick must not launch the same failing model
+        // for the next session. Other errors stay with this session. The journal keeps everything.
+        const profileWide=['UNAUTHENTICATED','MODEL_QUOTA','MODEL_UNAVAILABLE','UNSUPPORTED'].includes(code);
+        db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?)
+          WHERE ${profileWide?"workspace_id=? AND json_extract(metadata,'$.continuity_enabled')=1":'id=?'}`)
+          .run(code,Date.now()+300_000,profileWide?session.workspace_id:session.id);break;
       }
     }
   } finally {running=false;}
 }
-export function startMemoryMaintenance(){if(!timer){timer=setInterval(()=>void processMemoryMaintenance().catch(()=>{}),5000);timer.unref();}}
+const maintenanceFailed=backgroundFailure('Memory maintenance');
+export function memoryMaintenanceTick(){return processMemoryMaintenance().catch(maintenanceFailed);}
+export function startMemoryMaintenance(){if(!timer){timer=setInterval(()=>void memoryMaintenanceTick(),5000);timer.unref();}}
 export function stopMemoryMaintenance(){if(timer)clearInterval(timer);timer=undefined;}

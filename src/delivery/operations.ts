@@ -11,9 +11,9 @@ import { safePath, privateDirectory, readJson, readJsonBytes, durableWrite, dura
 import { backupUnified, verifyBackup, snapshotInfo, invalidateRestoredAccess, backupOperations, snapshotExtent } from './snapshot.ts';
 import { disabledAutostart, type AutostartLifecycle } from './autostart.ts';
 const hex=z.string().regex(/^[a-f0-9]{64}$/),generationId=z.string().regex(/^generation-[a-f0-9-]{36}$/);
-const updatePlanBody=z.object({format:z.literal('qoopia-update-plan/1'),created_at:z.string().datetime(),source:z.object({generation:generationId,bundle:hex,instance:z.string().min(1).max(200),schema:z.number().int(),logical_hash:hex}).strict(),target:z.object({bundle_digest:hex,build_sha:z.string().regex(/^[a-f0-9]{40}$/),source_digest:hex,schema_min:z.number().int(),schema_max:z.number().int()}).strict()}).strict();
+const updatePlanBody=z.object({format:z.literal('qoopia-update-plan/1'),created_at:z.string().datetime(),source:z.object({generation:generationId,bundle:hex,instance:z.string().min(1).max(200),schema:z.number().int(),logical_hash:hex,version:z.string()}).strict(),target:z.object({bundle_digest:hex,build_sha:z.string().regex(/^[a-f0-9]{40}$/),source_digest:hex,schema_min:z.number().int(),schema_max:z.number().int(),version:z.string()}).strict(),downgrade:z.boolean()}).strict();
 const updatePlan=updatePlanBody.extend({plan_digest:hex}).strict();
-export type UpdatePlan=z.infer<typeof updatePlan>;
+type UpdatePlan=z.infer<typeof updatePlan>;
 const updateReport=z.object({format:z.literal('qoopia-update-cutover/1'),run_id:z.string().uuid(),plan_digest:hex,source_generation:generationId,source_plan_hash:hex,barrier_sequence:z.literal(1),barrier_sequence_semantics:z.literal('local_cutover_event_ordinal_not_source_audit_sequence'),barrier_source_hash:hex,source_writes_caught_up:z.boolean(),target_generation:generationId,target_hash:hex,timeline:z.array(z.object({stage:z.enum(['preview','writer_barrier','final_snapshot','target_staged','atomic_pointer']),at:z.string().datetime()}).strict()).length(5),rollback_disposition:z.literal('eligible_until_first_target_write; automatic_refusal_after_target_write'),key_recovery:z.object({public_trust_preserved:z.boolean(),private_keys:z.string(),registered_public_keys:z.number().int().nonnegative(),signing_continuity:z.string(),live_access:z.string()}).strict()}).strict();
 export type UpdateReport=z.infer<typeof updateReport>;
 export interface Current { format:'qoopia-installation/1'; generation:string; bundle:string; bundle_digest:string; instance:string; port:number; operations_generation?:string; previous?:Current; cutover_hash?:string; update_report?:UpdateReport; }
@@ -27,6 +27,14 @@ export function readCurrent(root: string): Current {
  if(c.bundle!==c.bundle_digest || (c.previous && (c.previous.bundle!==c.previous.bundle_digest || c.previous.instance!==c.instance)))throw new Error('Installation pointer invalid');
  if(c.operations_generation && !fs.existsSync(safePath(path.join(root,'operations',c.operations_generation,'operations-status.json'))))throw new Error('Selected operations journal missing');
  return c;
+}
+const ROLLED_BACK='rolled-back.json';
+/** The last rollback, when its target is still the selected bundle. */
+export function readRolledBack(root:string,c:Current) {
+  const file=path.join(root,ROLLED_BACK);if(!fs.existsSync(file))return null;
+  let value:unknown;try{value=readJson(file);}catch{return null;}
+  const parsed=z.object({format:z.literal('qoopia-rollback/1'),from:hex,to:hex}).strict().safeParse(value);
+  return parsed.success&&parsed.data.to===c.bundle?parsed.data:null;
 }
 export const dataFile = (root:string,c:Current) => safePath(path.join(root,'generations',c.generation,'data','qoopia.db'));
 export const operationsDirectory = (root:string,c:Current) => safePath(c.operations_generation
@@ -50,9 +58,16 @@ export function lockInstallation(root: string) {
   const d = new Database(filename,{create:true}); fs.chmodSync(filename,0o600);
   try { d.run('PRAGMA busy_timeout=0'); d.run('CREATE TABLE IF NOT EXISTS lock_state(id INTEGER PRIMARY KEY)'); d.run('BEGIN IMMEDIATE'); }
   catch { d.close(); throw new Error('Installation is busy; stop the server/other owner operation first'); }
-  return () => { try { d.run('ROLLBACK'); } finally { d.close(); } };
+  // Idempotent: start/open release on an error path and again from the exit hook.
+  let released=false;
+  return () => { if(released)return; released=true; try { d.run('ROLLBACK'); } finally { d.close(); } };
 }
-export type MigrationRunner = (bundle:string, generationRoot:string) => void;
+type MigrationRunner = (bundle:string, generationRoot:string) => void;
+const STORED_STATE_ACTIONS={
+  NOT_INSTALLED:'Qoopia is not installed here. Run qoopia install --commit (with the same --root, if you use one), then rerun doctor.',
+  TEST_FIXTURE_REQUIRES_FLAG:'This installation is a development test build. Rerun doctor with --allow-test-fixture; that flag does not establish publisher trust.',
+  DATA_PERMISSIONS:'Qoopia data must be owned by this user and private to it (directories 0700, files 0600). Fix ownership or permissions, then rerun doctor. No repair was attempted.',
+};
 export class Delivery {
   constructor(readonly root:string,readonly trust:string,readonly allowTest:boolean,readonly migrate:MigrationRunner,readonly fault?:(boundary:'preserved'|'staged'|'committed')=>void,
     readonly autostart:((installation:string)=>AutostartLifecycle)=()=>disabledAutostart) { safePath(root); }
@@ -65,25 +80,78 @@ export class Delivery {
     this.fault?.('committed');
   }
   private stageBundle(source:string) {
-    const verified = verifyBundle(source,this.trust,this.allowTest), final = path.join(this.root,'bundles',verified.digest);
-    if (!fs.existsSync(final)) {
+    const verified = verifyBundle(source,this.trust,this.allowTest), final = path.join(this.root,'bundles',verified.digest), created=!fs.existsSync(final);
+    if (created) {
       const stage=path.join(this.root,'bundles','stage-'+randomUUID());
-      copyInventory(source,stage,inventory(source)); verifyBundle(stage,this.trust,this.allowTest);
+      try { copyInventory(source,stage,inventory(source)); verifyBundle(stage,this.trust,this.allowTest); }
+      catch(error) { fs.rmSync(stage,{recursive:true,force:true}); throw error; }
       fs.renameSync(stage,final);syncDirectory(path.dirname(final));
     } else verifyBundle(final,this.trust,this.allowTest);
-    return { ...verified, root:final };
+    return { ...verified, root:final, created };
+  }
+  /** A failed install/update removes what it created, never what a readable pointer selects. */
+  private discard(created:string[]) {
+    let selected:string[]=[];
+    if(fs.existsSync(path.join(this.root,'current.json')))try{
+      const c=readCurrent(this.root);selected=[c.generation,c.bundle,...(c.previous?[c.previous.generation,c.previous.bundle]:[])];
+    }catch{return;}
+    for(const dir of created)if(!selected.includes(path.basename(dir)))fs.rmSync(dir,{recursive:true,force:true});
+  }
+  /** Without a pointer only a killed first install's own entries may remain: the lock file and
+   * stage or content-addressed bundles. None holds memory; stage directories are partial copies. */
+  private interruptedInstall() {
+    const list=(dir:string)=>fs.existsSync(path.join(this.root,dir))?fs.readdirSync(path.join(this.root,dir)):[];
+    if(!list('').every(name=>['operations.sqlite','bundles','generations'].includes(name))||!list('bundles').every(name=>name.startsWith('stage-')||/^[a-f0-9]{64}$/.test(name))||
+      !list('generations').every(name=>name.startsWith('stage-')))throw new Error('Fresh installation requires an empty root');
+    return ['bundles','generations'].flatMap(dir=>list(dir).filter(name=>name.startsWith('stage-')).map(name=>safePath(path.join(this.root,dir,name))));
   }
   install(bundle:string,port:number) {
     // Port is reserved by launcher BEFORE this method, with no initial data writes.
     if (fs.existsSync(path.join(this.root,'current.json'))) throw new Error('Already installed');
-    if (fs.existsSync(this.root) && fs.readdirSync(this.root).length) throw new Error('Fresh installation requires an empty root');
+    const preserved=path.join(this.root,'uninstalled.json');
+    if (!fs.existsSync(preserved)) this.interruptedInstall();
     return this.locked(()=>{
-      const b=this.stageBundle(bundle), id=generation(), dir=path.join(this.root,'generations',id);
-      privateDirectory(dir); this.migrate(b.root,dir);
-      const info=snapshotInfo(path.join(dir,'data','qoopia.db'));
-      const c:Current={format:'qoopia-installation/1',generation:id,bundle:b.digest,bundle_digest:b.digest,instance:info.instance,port};
-      this.commit(c); return c;
+      if (fs.existsSync(preserved)) return this.reinstall(bundle,preserved);
+      for (const stage of this.interruptedInstall()) fs.rmSync(stage,{recursive:true,force:true});
+      const created:string[]=[];
+      try {
+        const b=this.stageBundle(bundle), id=generation(), stage=path.join(this.root,'generations','stage-'+randomUUID()), dir=path.join(this.root,'generations',id);
+        if(b.created)created.push(b.root);created.push(stage,dir);
+        // Migrated under a stage name, so a killed install leaves nothing a retry must refuse.
+        privateDirectory(stage); this.migrate(b.root,stage);
+        const info=snapshotInfo(path.join(stage,'data','qoopia.db'));
+        fs.renameSync(stage,dir);
+        const c:Current={format:'qoopia-installation/1',generation:id,bundle:b.digest,bundle_digest:b.digest,instance:info.instance,port};
+        this.commit(c); return c;
+      } catch(error) { this.discard(created); throw error; }
     });
+  }
+  /** After uninstall: adopt its preserved generation as an update does, keeping instance and port
+   * so existing client connections still reach it. */
+  private reinstall(bundle:string,file:string) {
+    const c=pointer.parse(readJson(file)) as Current, created:string[]=[];
+    try {
+      const b=this.stageBundle(bundle);if(b.created)created.push(b.root);
+      const {id}=this.migratedCopy(c,snapshotInfo(dataFile(this.root,c)),b,created);
+      const result:Current={format:'qoopia-installation/1',generation:id,bundle:b.digest,bundle_digest:b.digest,instance:c.instance,port:c.port,
+        ...(c.operations_generation?{operations_generation:c.operations_generation}:{})};
+      this.commit(result);fs.unlinkSync(file);syncDirectory(this.root);return result;
+    } catch(error) { this.discard(created); throw error; }
+  }
+  /** Final snapshot of the selected generation, copied into a new generation and migrated there. */
+  private migratedCopy(c:Current,source:{schema:number},b:ReturnType<Delivery['stageBundle']>,created:string[]) {
+    readRecoveryOps(operationsDirectory(this.root,c),c.instance);
+    requireOpsJournalV3(b);
+    if(source.schema>b.manifest.schema_max || source.schema<b.manifest.schema_min)throw new Error('Schema outside target range refused');
+    const id=generation(), dir=path.join(this.root,'generations',id);created.push(dir);privateDirectory(path.join(dir,'data'));
+    const checkpoint=path.join(this.root,'backups','pre-update-'+randomUUID());
+    const barrierAt=new Date().toISOString(),finalSnapshot=backupUnified(dataFile(this.root,c),checkpoint,c.instance,operationsDirectory(this.root,c));
+    copyInventory(checkpoint,path.join(dir,'checkpoint'),inventory(checkpoint));
+    durableCopyFile(path.join(checkpoint,'snapshot.db'),path.join(dir,'data','qoopia.db'),finalSnapshot.size,finalSnapshot.sha256);
+    this.migrate(b.root,dir);const next=snapshotInfo(path.join(dir,'data','qoopia.db'));
+    if(next.schema>b.manifest.schema_max || next.schema<b.manifest.schema_min)throw new Error('Migrated schema outside target range');
+    if(next.instance!==c.instance)throw new Error('Update instance mismatch');
+    return {id,barrierAt,finalSnapshot,next};
   }
   backup(output:string) { return this.locked(()=>{const c=readCurrent(this.root);return backupUnified(dataFile(this.root,c),output,c.instance,operationsDirectory(this.root,c));}); }
   /** Exact local OS-owner preview binding, not a bearer credential or a new auth surface. */
@@ -173,14 +241,22 @@ export class Delivery {
       return {current:result,warning:RECOVERY_WARNING,delivery_authorized:true,sends_performed:0};
     });
   }
-  previewUpdate(bundle:string):UpdatePlan {
+  /** Installed->target versions. An older signed bundle is a rollback attack unless the owner approves a plan naming the downgrade. */
+  private updateVersions(c:Current,target:ReturnType<typeof verifyBundle>,allowDowngrade:boolean) {
+    const installed=verifyBundle(path.join(this.root,'bundles',c.bundle),this.trust,this.allowTest).manifest.version;
+    const downgrade=Bun.semver.order(target.manifest.version,installed)<0;
+    if(downgrade&&!allowDowngrade)throw new Error(`UPDATE_DOWNGRADE_REFUSED: ${installed} -> ${target.manifest.version}; preview with --allow-downgrade to review an explicit downgrade plan`);
+    return {installed,downgrade};
+  }
+  previewUpdate(bundle:string,allowDowngrade=false):UpdatePlan {
     const c=readCurrent(this.root),source=snapshotInfo(dataFile(this.root,c)),target=verifyBundle(bundle,this.trust,this.allowTest);
     requireOpsJournalV3(target);
     if(source.schema>target.manifest.schema_max || source.schema<target.manifest.schema_min)throw new Error('Schema downgrade refused');
-    const body={format:'qoopia-update-plan/1' as const,created_at:new Date().toISOString(),source:{generation:c.generation,bundle:c.bundle,instance:c.instance,schema:source.schema,logical_hash:source.logical_hash},target:{bundle_digest:target.digest,build_sha:target.manifest.build_sha,source_digest:target.manifest.source_digest,schema_min:target.manifest.schema_min,schema_max:target.manifest.schema_max}};
+    const versions=this.updateVersions(c,target,allowDowngrade);
+    const body={format:'qoopia-update-plan/1' as const,created_at:new Date().toISOString(),source:{generation:c.generation,bundle:c.bundle,instance:c.instance,schema:source.schema,logical_hash:source.logical_hash,version:versions.installed},target:{bundle_digest:target.digest,build_sha:target.manifest.build_sha,source_digest:target.manifest.source_digest,schema_min:target.manifest.schema_min,schema_max:target.manifest.schema_max,version:target.manifest.version},downgrade:versions.downgrade};
     return {...body,plan_digest:hash(JSON.stringify(body))};
   }
-  update(bundle:string,requested?:unknown,confirmation?:string):Current {
+  update(bundle:string,requested?:unknown,confirmation?:string):Current&{freed_bytes:number} {
     // Backward-compatible in-process helper; the shipped command always supplies the explicit plan and digest.
     if(requested===undefined){const plan=this.previewUpdate(bundle);return this.update(bundle,plan,plan.plan_digest);}
     return this.locked(()=>{
@@ -191,23 +267,35 @@ export class Delivery {
       if(confirmation!==plan_digest)throw new Error('UPDATE_CONFIRMATION_STALE');
       const c=readCurrent(this.root),source=snapshotInfo(dataFile(this.root,c)),verified=verifyBundle(bundle,this.trust,this.allowTest);
       if(c.generation!==plan.source.generation || c.bundle!==plan.source.bundle || c.instance!==plan.source.instance || source.schema!==plan.source.schema)throw new Error('UPDATE_PLAN_STALE');
-      if(verified.digest!==plan.target.bundle_digest || verified.manifest.build_sha!==plan.target.build_sha || verified.manifest.source_digest!==plan.target.source_digest || verified.manifest.schema_min!==plan.target.schema_min || verified.manifest.schema_max!==plan.target.schema_max)throw new Error('UPDATE_BUNDLE_STALE');
-      const b=this.stageBundle(bundle), old=source;
-      readRecoveryOps(operationsDirectory(this.root,c),c.instance);
-      requireOpsJournalV3(b);
-      if(old.schema>b.manifest.schema_max || old.schema<b.manifest.schema_min)throw new Error('Schema outside target range refused');
-      const id=generation(), dir=path.join(this.root,'generations',id);privateDirectory(path.join(dir,'data'));
-      const checkpoint=path.join(this.root,'backups','pre-update-'+randomUUID());
-      const barrierAt=new Date().toISOString(),finalSnapshot=backupUnified(dataFile(this.root,c),checkpoint,c.instance,operationsDirectory(this.root,c));
-      copyInventory(checkpoint,path.join(dir,'checkpoint'),inventory(checkpoint));
-      durableCopyFile(path.join(checkpoint,'snapshot.db'),path.join(dir,'data','qoopia.db'),finalSnapshot.size,finalSnapshot.sha256);
-      this.migrate(b.root,dir);const next=snapshotInfo(path.join(dir,'data','qoopia.db'));
-      if(next.schema>b.manifest.schema_max || next.schema<b.manifest.schema_min)throw new Error('Migrated schema outside target range');
-      if(next.instance!==c.instance)throw new Error('Update instance mismatch');
+      if(verified.digest!==plan.target.bundle_digest || verified.manifest.build_sha!==plan.target.build_sha || verified.manifest.source_digest!==plan.target.source_digest || verified.manifest.schema_min!==plan.target.schema_min || verified.manifest.schema_max!==plan.target.schema_max || verified.manifest.version!==plan.target.version)throw new Error('UPDATE_BUNDLE_STALE');
+      const versions=this.updateVersions(c,verified,plan.downgrade);
+      if(versions.installed!==plan.source.version || versions.downgrade!==plan.downgrade)throw new Error('UPDATE_PLAN_STALE');
+      const created:string[]=[];
+      try {
+      const b=this.stageBundle(bundle);if(b.created)created.push(b.root);
+      const {id,barrierAt,finalSnapshot,next}=this.migratedCopy(c,source,b,created);
       const stagedAt=new Date().toISOString(),update_report:UpdateReport={format:'qoopia-update-cutover/1',run_id:randomUUID(),plan_digest,source_generation:c.generation,source_plan_hash:plan.source.logical_hash,barrier_sequence:1,barrier_sequence_semantics:'local_cutover_event_ordinal_not_source_audit_sequence',barrier_source_hash:finalSnapshot.logical_hash,source_writes_caught_up:finalSnapshot.logical_hash!==plan.source.logical_hash,target_generation:id,target_hash:next.logical_hash,timeline:[{stage:'preview',at:plan.created_at},{stage:'writer_barrier',at:barrierAt},{stage:'final_snapshot',at:finalSnapshot.created_at},{stage:'target_staged',at:stagedAt},{stage:'atomic_pointer',at:new Date().toISOString()}],rollback_disposition:'eligible_until_first_target_write; automatic_refusal_after_target_write',key_recovery:next.key_recovery};
       const result:Current={...c,generation:id,bundle:b.digest,bundle_digest:b.digest,previous:{...c,previous:undefined},cutover_hash:next.logical_hash,update_report};
-      this.commit(result);return result;
+      this.commit(result);return {...result,freed_bytes:this.prune(result,c.previous)};
+      } catch(error) { this.discard(created); throw error; }
     });
+  }
+  /** After a committed update, under its lock: drop what neither the pointer nor its rollback target
+   * selects. Bundles are verified code; only the generation that just left the rollback window goes
+   * (its data was copied forward), never one a restore retained; the newest two pre-update backups stay.
+   * Never throws: the update is already committed. Returns the bytes freed. */
+  private prune(c:Current,dropped?:Current) {
+    const keep=new Set([c.generation,c.bundle,c.previous?.generation,c.previous?.bundle]);let freed=0;
+    const list=(dir:string)=>{try{return fs.readdirSync(path.join(this.root,dir)).map(name=>({name,file:safePath(path.join(this.root,dir,name))}));}catch{return [];}};
+    const remove=(dir:string)=>{try{const size=Object.values(inventory(dir)).reduce((sum,record)=>sum+record.size,0);fs.rmSync(dir,{recursive:true,force:true});freed+=size;}catch{/* left for a later update */}};
+    for(const {name,file} of list('bundles')){
+      if(name.startsWith('stage-'))remove(file);
+      else if(/^[a-f0-9]{64}$/.test(name)&&!keep.has(name))try{if(verifyBundle(file,this.trust,this.allowTest).digest===name)remove(file);}catch{/* unknown content stays */}
+    }
+    if(dropped&&!keep.has(dropped.generation))remove(path.join(this.root,'generations',dropped.generation));
+    const mtime=(file:string)=>{try{return fs.statSync(file).mtimeMs;}catch{return 0;}};
+    for(const {file} of list('backups').filter(entry=>entry.name.startsWith('pre-update-')).sort((a,b)=>mtime(b.file)-mtime(a.file)||b.name.localeCompare(a.name)).slice(2))remove(file);
+    return freed;
   }
   importCopy(apply:(generationRoot:string)=>unknown) {
     return this.locked(()=>{
@@ -229,6 +317,9 @@ export class Delivery {
       readRecoveryOps(operationsDirectory(this.root,c),c.instance);
       requireOpsJournalV3(verifyBundle(path.join(this.root,'bundles',old.bundle),this.trust,this.allowTest));
       if(snapshotInfo(dataFile(this.root,old)).instance!==c.instance)throw new Error('Rollback instance mismatch');
+      // Beside the pointer, which older runtimes parse strictly: the app carrying the
+      // rolled-back runtime must not reapply it on its next launch.
+      durableWrite(path.join(this.root,ROLLED_BACK),JSON.stringify({format:'qoopia-rollback/1',from:c.bundle,to:old.bundle}));
       this.commit(old);return old;
     });
   }
@@ -346,8 +437,13 @@ export class Delivery {
       const space=fs.statfsSync(path.dirname(file));
       checks.storage={status:space.bavail===0?'fail':'pass',reason:space.bavail===0?'NO_AVAILABLE_BLOCKS':'AVAILABLE_BLOCKS_REPORTED',action:'Write capability is unknown: doctor does not write a probe.',available_bytes:space.bavail*space.bsize};
       checks.config_drift = {status:'pass',reason:'VALIDATED_INSTALLATION_POINTER_AND_BUNDLE',action:'Live effective configuration drift remains unknown; no config values exported.'};
-    } catch {
-      checks.stored_state={status:'fail',reason:stage+'_INSPECTION_FAILED',action:'Preserve data; inspect permissions, corruption, or concurrent writer, then rerun doctor. No repair was attempted.'};
+    } catch(error) {
+      // Only a cause code leaves this catch; the message can carry paths.
+      const code=(error as NodeJS.ErrnoException).code,message=error instanceof Error?error.message:'';
+      const cause=stage==='POINTER'&&code==='ENOENT'?'NOT_INSTALLED':stage==='BUILD'&&message.includes('--allow-test-fixture')?'TEST_FIXTURE_REQUIRES_FLAG'
+        :message==='DATA_PERMISSIONS'||code==='EACCES'||code==='EPERM'?'DATA_PERMISSIONS':undefined;
+      checks.stored_state={status:'fail',reason:stage+'_INSPECTION_FAILED',...(cause?{cause,action:STORED_STATE_ACTIONS[cause]}
+        :{action:'Preserve data; inspect permissions, corruption, or concurrent writer, then rerun doctor. No repair was attempted.'})};
     }
     for(const name of ['build','schema','data_path','auth','native_adapter','backup','index','config_drift','storage','maintenance'])
       checks[name]??=unknown('NOT_INSPECTED','Resolve the stored-state finding and rerun doctor.');

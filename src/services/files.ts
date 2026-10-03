@@ -1,6 +1,7 @@
 import { assetPath } from "../utils/assets.ts";
 import { ulid } from "ulid";
 import { createHash } from "node:crypto";
+import { inflateRawSync } from "node:zlib";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
@@ -29,9 +30,47 @@ function isTextual(mime: string, filename: string): boolean {
   return TEXT_EXT.has(extOf(filename));
 }
 
+// ponytail: extraction runs in-process. mammoth builds the whole DOM (~2-3 KB RSS
+// per element), so a .docx is refused past these parsed-XML budgets and a PDF stops
+// between pages; a child process with its own memory limit is the upgrade path.
+const DOCX_XML_BYTES = 8 * 1024 * 1024;
+const DOCX_XML_TAGS = 200_000;
+const PDF_MAX_PAGES = 2_000;
+const PDF_BUDGET_MS = 20_000;
+
+/** mammoth's `file` input over the raw zip: only the parts mammoth reads are
+ * inflated, and inflate stops (throws) once their total passes the budget. */
+function boundedDocx(buf: Buffer) {
+  const eocd = buf.lastIndexOf(Buffer.from("PK\x05\x06", "latin1"));
+  if (eocd < 0) throw new Error("not a zip archive");
+  const parts = new Map<string, { method: number; start: number; size: number }>();
+  for (let i = 0, p = buf.readUInt32LE(eocd + 16); i < buf.readUInt16LE(eocd + 10); i++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("bad zip directory");
+    const nameEnd = p + 46 + buf.readUInt16LE(p + 28), local = buf.readUInt32LE(p + 42);
+    parts.set(buf.toString("utf8", p + 46, nameEnd), { method: buf.readUInt16LE(p + 10), size: buf.readUInt32LE(p + 20),
+      start: local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28) });
+    p = nameEnd + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+  }
+  let bytes = 0, tags = 0;
+  return {
+    exists: (name: string) => parts.has(name),
+    async read(name: string, encoding?: string) {
+      const part = parts.get(name);
+      if (!part || (part.method !== 0 && part.method !== 8)) throw new Error("unreadable docx part");
+      const raw = buf.subarray(part.start, part.start + part.size);
+      const out = part.method === 0 ? raw : inflateRawSync(raw, { maxOutputLength: DOCX_XML_BYTES - bytes + 1 });
+      if ((bytes += out.length) > DOCX_XML_BYTES) throw new Error("docx exceeds the extraction budget");
+      for (let i = out.indexOf(0x3c); i >= 0 && tags <= DOCX_XML_TAGS; i = out.indexOf(0x3c, i + 1)) tags++;
+      if (tags > DOCX_XML_TAGS) throw new Error("docx exceeds the extraction budget");
+      return encoding ? out.toString(encoding as BufferEncoding) : new Uint8Array(out);
+    },
+  };
+}
+
 // Best-effort text extraction. Never throws — returns null on any failure so the
-// upload always succeeds (the file is still stored + downloadable).
-export async function parseFileText(mime: string, filename: string, buf: Buffer): Promise<{text:string|null;status:'extracted'|'empty'|'unsupported'|'unavailable'|'failed'}> {
+// upload always succeeds (the file is still stored + downloadable). 'partial'
+// means a PDF stopped at its page, time or EXCERPT_MAX limit before the end.
+export async function parseFileText(mime: string, filename: string, buf: Buffer): Promise<{text:string|null;status:'extracted'|'partial'|'empty'|'unsupported'|'unavailable'|'failed'}> {
   try {
     if (isTextual(mime, filename)) return {text:buf.toString('utf8'),status:'extracted'};
     const ext = extOf(filename);
@@ -39,7 +78,7 @@ export async function parseFileText(mime: string, filename: string, buf: Buffer)
     if (ext === "docx" || m.includes("officedocument.wordprocessingml")) {
       const mammoth: any = await import("mammoth").catch(() => null);
       if (!mammoth) return {text:null,status:'unavailable'};
-      const r = await (mammoth.default?.extractRawText ?? mammoth.extractRawText)({ buffer: buf });
+      const r = await (mammoth.default?.extractRawText ?? mammoth.extractRawText)({ file: boundedDocx(buf) });
       return {text:r?.value?String(r.value):null,status:r?.value?'extracted':'empty'};
     }
     if (ext === "pdf" || m === "application/pdf") {
@@ -47,10 +86,21 @@ export async function parseFileText(mime: string, filename: string, buf: Buffer)
       if (!unpdf) return {text:null,status:'unavailable'};
       if (process.env.QOOPIA_BUNDLE_ASSETS) await unpdf.definePDFJSModule(() => import(assetPath('vendor/pdfjs.mjs')));
       const pdf = await unpdf.getDocumentProxy(new Uint8Array(buf));
-      const out = await unpdf.extractText(pdf, { mergePages: true });
-      if (typeof out?.text === "string") return {text:out.text,status:out.text?'extracted':'empty'};
-      if (Array.isArray(out?.text)) return {text:out.text.join('\n'),status:out.text.length?'extracted':'empty'};
-      return {text:null,status:'empty'};
+      try {
+        // Same text as unpdf.extractText({mergePages:true}), one page at a time.
+        const pages: string[] = [], last = Math.min(pdf.numPages, PDF_MAX_PAGES), deadline = Date.now() + PDF_BUDGET_MS;
+        let read = 0, chars = 0;
+        while (read < last && chars <= EXCERPT_MAX && Date.now() < deadline) {
+          const content = await (await pdf.getPage(++read)).getTextContent();
+          const page = content.items.filter((item: any) => item.str != null).map((item: any) => item.str + (item.hasEOL ? "\n" : "")).join("");
+          pages.push(page);
+          chars += page.length;
+        }
+        const text = pages.join("\n").replace(/\s+/g, " ");
+        return {text,status:read < pdf.numPages ? 'partial' : text ? 'extracted' : 'empty'};
+      } finally {
+        await pdf.destroy();
+      }
     }
   } catch {
     return {text:null,status:'failed'};
@@ -73,6 +123,22 @@ function rowMeta(r: any) {
 
 // ---- write path (dashboard, owner-only — caller enforces auth) ----
 
+const UNSAFE_NAME = /[\p{Cc}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u; // controls (NUL...) and bidi overrides
+
+/** Normalised folder + filename of one upload, or INVALID_INPUT with a reason the
+ * dashboard translates. Folders keep '/' (task outputs live in tasks/<id>); in
+ * filenames '/' and '\' become '_'. */
+export function validateFileUpload(p: { folder?: string; filename: string; bytes: Buffer }) {
+  const folder = (p.folder || "inbox").trim() || "inbox";
+  const filename = String(p.filename || "").trim().replace(/[/\\]/g, "_");
+  if (folder.length > 200 || UNSAFE_NAME.test(folder) || folder.includes("\\") || folder.split("/").some(s => s === "" || s === "." || s === ".."))
+    throw new QoopiaError("INVALID_INPUT", "invalid folder name", { reason: "invalid_folder" });
+  if (!filename || filename.length > 180 || filename === "." || filename === ".." || UNSAFE_NAME.test(filename))
+    throw new QoopiaError("INVALID_INPUT", `invalid file name: ${filename}`, { reason: "invalid_filename", file: filename });
+  if (!p.bytes || p.bytes.length === 0) throw new QoopiaError("INVALID_INPUT", `empty file: ${filename}`, { reason: "empty_file", file: filename });
+  return { folder, filename };
+}
+
 export async function fileUpload(p: {
   workspace_id: string;
   owner_agent_id: string;
@@ -82,12 +148,8 @@ export async function fileUpload(p: {
   mime?: string;
   bytes: Buffer;
 }) {
-  const folder = (p.folder || "inbox").trim() || "inbox";
-  const filename = String(p.filename || "").trim().replace(/[\/\\]/g, "_");
-  if (!filename) throw new QoopiaError("INVALID_INPUT", "filename is required");
-  if (folder.length > 200) throw new QoopiaError("INVALID_INPUT", "folder name too long");
+  const { folder, filename } = validateFileUpload(p);
   const buf = p.bytes;
-  if (!buf || buf.length === 0) throw new QoopiaError("INVALID_INPUT", "empty file");
   const size = buf.length;
   const sha256 = createHash("sha256").update(buf).digest("hex");
   const mime = p.mime || "application/octet-stream";
@@ -149,8 +211,9 @@ export function fileList(p: { workspace_id: string; folder?: string; owner?: str
   const params: any[] = [p.workspace_id];
   if (p.folder) { where.push("f.folder = ?"); params.push(p.folder); }
   if (p.owner) { where.push("o.name = ?"); params.push(p.owner); }
+  // F-274: rowMeta only needs to know an excerpt exists; do not read up to 200k chars per row.
   const rows = db.prepare(
-    `SELECT f.id, f.folder, f.filename, f.mime, f.size, f.created_at, f.text_excerpt, f.extraction_status
+    `SELECT f.id, f.folder, f.filename, f.mime, f.size, f.created_at, f.text_excerpt IS NOT NULL AS text_excerpt, f.extraction_status
      FROM files f JOIN agents o ON o.id = f.owner_agent_id
      WHERE ${where.join(" AND ")} ORDER BY f.created_at DESC LIMIT ?`,
   ).all(...params, limit) as any[];
@@ -168,12 +231,19 @@ export function fileGet(p: { workspace_id: string; id?: string; folder?: string;
   }
   if (!row) throw new QoopiaError("NOT_FOUND", "file not found");
   const base = { extraction_status:row.extraction_status, id: row.id, folder: row.folder, filename: row.filename, mime: row.mime, size: row.size, created_at: row.created_at };
-  let text: string | null = row.text_excerpt;
-  if (!text && isTextual(row.mime, row.filename)) {
-    try { text = Buffer.from(row.content).toString("utf8"); } catch { text = null; }
+  // Text files are re-read from the original bytes (the stored excerpt stops at
+  // EXCERPT_MAX); a UTF-8 window of 3 bytes per UTF-16 unit always covers GET_MAX.
+  let text: string | null = null, cut = false;
+  if (isTextual(row.mime, row.filename)) {
+    const bytes = Buffer.from(row.content);
+    text = bytes.subarray(0, 3 * GET_MAX).toString("utf8");
+    cut = bytes.length > 3 * GET_MAX;
+  } else if (row.text_excerpt) {
+    text = row.text_excerpt;
+    cut = row.extraction_status === "partial" || row.text_excerpt.length >= EXCERPT_MAX;
   }
   if (text != null) {
-    const truncated = text.length > GET_MAX;
+    const truncated = cut || text.length > GET_MAX;
     return { ...base, content: truncated ? text.slice(0, GET_MAX) : text, truncated };
   }
   return { ...base, content: null, note: "binary file — not text-extractable; download via dashboard", download_path: `/api/dashboard/files/${row.id}/download` };

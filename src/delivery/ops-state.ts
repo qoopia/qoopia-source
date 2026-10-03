@@ -19,7 +19,7 @@ const receiptSchema = z.object({ installation: z.string().min(1).max(200), event
 const legacySchema = z.object({ format: z.enum(['qoopia-ops/1', 'qoopia-ops/2']), delivery_hold: z.literal(RECOVERY_DELIVERY_HOLD).optional(), last_run: z.object({ at: z.string().datetime(), ok: z.boolean(), cause: z.string().regex(/^[A-Z_]{1,64}$/).nullable() }).strict().nullable(), alerts: z.array(alertSchema) }).strict();
 const schema = legacySchema.extend({format:z.literal(OPS_JOURNAL_FORMAT),receipts:z.array(receiptSchema).optional()});
 export type OpsState = Omit<z.infer<typeof schema>, 'format'> & {format:'qoopia-ops/1'|'qoopia-ops/2'|typeof OPS_JOURNAL_FORMAT};
-export type OpsReceipt = z.infer<typeof receiptSchema>;
+type OpsReceipt = z.infer<typeof receiptSchema>;
 export type OpsAlert = z.infer<typeof alertSchema>;
 // Reuse the existing delivery batch size for the diagnostic preview, not history retention.
 export const OPS_ALERT_BATCH_LIMIT = 20;

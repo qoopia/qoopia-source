@@ -11,9 +11,12 @@ describe('generated third-party notice coverage', () => {
     const provenance=JSON.parse(fs.readFileSync('scripts/vendor/licenses/isarray-1.0.0.json','utf8'));
     const readme=fs.readFileSync('node_modules/isarray/README.md','utf8');
     expect(result).toMatchObject({
-      status:'NOTICE_COVERAGE_CHECK',dependencies:120,covered:120,missing:[],
+      status:'NOTICE_COVERAGE_CHECK',dependencies:122,covered:122,missing:[],
       runtime_notice:{version:'1.3.11',source_commit:'a04817ce2b7f1a1e8b7cbf8af8f2c027ab072f1d',license_file:'LICENSE.md',license_source:'https://raw.githubusercontent.com/oven-sh/bun/a04817ce2b7f1a1e8b7cbf8af8f2c027ab072f1d/LICENSE.md',license_sha256:'7068a9711ef8196d654e143447ed7976b3678ce21145b9da16e1f786528f15bb',third_party_licenses:'INTEGRATED_IN_CANONICAL_LICENSE_MD'},
     });
+    // Nested copies (body-parser/node_modules/*) are separate resolved versions.
+    expect(result.ids).toEqual(expect.arrayContaining(['content-type@2.1.0','type-is@2.1.0','content-type@1.0.5']));
+    expect(new Set(result.ids).size).toBe(result.ids.length);
     const bunLicense=fs.readFileSync('scripts/vendor/licenses/bun-1.3.11-LICENSE.md','utf8');
     expect(hash(bunLicense)).toBe(result.runtime_notice.license_sha256);
     for(const marker of ['## JavaScriptCore','## Linked libraries','## Polyfills','## Additional credits','boringssl','libarchive','uWebsockets'])expect(bunLicense).toContain(marker);

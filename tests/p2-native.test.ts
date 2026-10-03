@@ -591,12 +591,12 @@ test('Configured functional progression requires exact frozen native read/artifa
  expect(nativeModelStatus('gpt-6-astra',nativeModelEvidence('codex',events(`cat ${path}`)))).toBe('unknown');
  const base={exit_code:0,revoked_during_run:false,native_execution_observed:true,model_status:'unknown' as const,
   native:{auth_mode:'subscription-store' as const,...QUALIFICATION_MODELS.codex,login_store:'/synthetic/store',login_backend:'file' as const},
-  outcome:{status:'unknown',stale:false}};
+  outcome:{outcome_id:randomUUID(),status:'unknown' as const,evidence_class:'self_report' as const,stale:false}};
  const assertions=[{name:'valid_summary',passed:true},{name:'invalid_refusal',passed:true}];
  expect(nativeQualificationCanContinue(base,assertions)).toBe(false);
  const functional={...base,native:{...base.native,configured_profile_functional:true as const}};
  expect(nativeQualificationCanContinue(functional,assertions)).toBe(true);expect(functional.model_status).toBe('unknown');expect(functional.outcome.status).toBe('unknown');
- for(const change of [{exit_code:1},{revoked_during_run:true},{native_execution_observed:false},{model_status:'mismatch' as const},{outcome:{status:'unknown',stale:true}},{outcome:{status:'failed',stale:false}}])
+ for(const change of [{exit_code:1},{revoked_during_run:true},{native_execution_observed:false},{model_status:'mismatch' as const},{outcome:{...base.outcome,stale:true}},{outcome:{...base.outcome,status:'failed' as const}}])
   expect(nativeQualificationCanContinue({...functional,...change},assertions)).toBe(false);
  for(const name of ['valid_summary','invalid_refusal'])expect(nativeQualificationCanContinue(functional,assertions.map(a=>({...a,passed:a.name!==name})))).toBe(false);
  expect(nativeQualificationCanContinue(functional,[])).toBe(false);

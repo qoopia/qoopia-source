@@ -217,6 +217,14 @@ describe("legacy-readonly DB invariant", () => {
           }),
         });
 
+        // A connection-scoped MCP URL is an MCP read like /mcp, not a refused HTTP mutation.
+        const scopedMcp = await fetch(baseUrl + "/mcp/c/00000000-0000-0000-0000-000000000000", {
+          method: "POST",
+          headers: { authorization: "Bearer " + apiKey, accept: "application/json, text/event-stream", "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+        });
+        const scopedMcpBody = await scopedMcp.text();
+
         const challenge = "A".repeat(43);
         const authorize = new URL(baseUrl + "/oauth/authorize");
         authorize.searchParams.set("response_type", "code");
@@ -225,6 +233,8 @@ describe("legacy-readonly DB invariant", () => {
         authorize.searchParams.set("code_challenge", challenge);
         authorize.searchParams.set("code_challenge_method", "S256");
         const oauthAuthorize = await fetch(authorize, { redirect: "manual" });
+        // The trailing-slash form is the same route and meets the same guard (F-156).
+        const oauthAuthorizeSlash = await fetch(baseUrl + "/oauth/authorize/" + authorize.search, { redirect: "manual" });
         const oauthFinalize = await fetch(
           baseUrl + "/oauth/authorize/finalize?ticket=" + encodeURIComponent(ticketId),
           { redirect: "manual" },
@@ -248,7 +258,9 @@ describe("legacy-readonly DB invariant", () => {
           mcp: mcp.status,
           mcpReturnedMarker: mcpBody.includes("legacy readonly recall marker"),
           oauthMcp: oauthMcp.status,
+          scopedMcpRefusedAsWrite: scopedMcpBody.includes("read_only_instance"),
           oauthAuthorize: oauthAuthorize.status,
+          oauthAuthorizeSlash: oauthAuthorizeSlash.status,
           oauthFinalize: oauthFinalize.status,
           oauthConsent: oauthConsent.status,
           unchanged: before === after,
@@ -271,8 +283,11 @@ describe("legacy-readonly DB invariant", () => {
       mcp: 200,
       mcpReturnedMarker: true,
       oauthMcp: 200,
+      scopedMcpRefusedAsWrite: false,
       oauthAuthorize: 503,
-      oauthFinalize: 503,
+      oauthAuthorizeSlash: 503,
+      // Retired endpoint (F-076): a static 400 page, no state transition.
+      oauthFinalize: 400,
       oauthConsent: 503,
       unchanged: true,
     });

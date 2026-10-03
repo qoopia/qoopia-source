@@ -31,7 +31,7 @@ process.env.QOOPIA_LOG_LEVEL = "error";
 process.env.QOOPIA_SERVER_ROLE = "canonical";
 delete process.env.QOOPIA_V4_BITEMPORAL;
 
-const { classifySupersedeComponents } = await import("../src/services/temporal-migration.ts");
+const { classifySupersedeComponents } = await import("../src/db/temporal-migration.ts");
 const { runPhaseA, runPhaseB, buildStagingPlan, writeReport } = await import(
   "./migrate-033-preflight.ts"
 );
@@ -157,7 +157,7 @@ function applyMigration033(handle: Database): void {
 // 1. Копии исходников, входящих в bundle.
 // ---------------------------------------------------------------------------
 fs.copyFileSync(
-  path.join(REPO_ROOT, "src/services/temporal-migration.ts"),
+  path.join(REPO_ROOT, "src/db/temporal-migration.ts"),
   path.join(OUT, "temporal-migration.ts"),
 );
 fs.copyFileSync(
@@ -661,7 +661,7 @@ writeText(
 // ---------------------------------------------------------------------------
 const TEMPORAL_PATHS = [
   "src/utils/temporal.ts",
-  "src/services/temporal-migration.ts",
+  "src/db/temporal-migration.ts",
   "src/services/note-temporal.ts",
   "src/services/recall/temporal-filter.ts",
   "src/db/migration-033-gate.ts",

@@ -12,12 +12,25 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { readBoundedText } from "../utils/http-json.ts";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const QOOPIA_URL = process.env.QOOPIA_URL ?? "http://localhost:3737";
+/** The ingest key is a bearer secret: send it only to HTTPS or a loopback
+ * Qoopia, and never to a default (the legacy :3737 instance is retired). */
+function qoopiaBaseUrl(): string {
+  const raw = process.env.QOOPIA_URL;
+  if (!raw) throw new Error("QOOPIA_URL is required (https://..., or http:// on loopback)");
+  const url = new URL(raw);
+  if (url.username || url.password ||
+    !(url.protocol === "https:" || url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))) {
+    throw new Error("QOOPIA_URL must be HTTPS, or http:// on loopback");
+  }
+  return raw.replace(/\/+$/, "");
+}
+let QOOPIA_URL = "";
 const INGEST_KEY_PATH =
   process.env.QOOPIA_INGEST_KEY_PATH ??
   path.join(os.homedir(), ".qoopia", "ingest.key");
@@ -45,13 +58,13 @@ const DIALOGUE_TOOL_WHITELIST = new Set([
 // ---------------------------------------------------------------------------
 
 const SENSITIVE_PATTERNS: RegExp[] = [
-  /\bq_[A-Za-z0-9_\-]{30,}/,          // Qoopia API keys
-  /\bqcs_[A-Za-z0-9_\-]{30,}/,        // Qoopia client secrets
-  /\bsk-ant-[A-Za-z0-9_\-]{30,}/,     // Anthropic API keys
+  /\bq_[A-Za-z0-9_-]{30,}/,          // Qoopia API keys
+  /\bqcs_[A-Za-z0-9_-]{30,}/,        // Qoopia client secrets
+  /\bsk-ant-[A-Za-z0-9_-]{30,}/,     // Anthropic API keys
   /Bearer\s+[A-Za-z0-9_\-.]{20,}/i,   // Generic bearer tokens
   /\bghp_[A-Za-z0-9]{30,}/,           // GitHub PATs
-  /\bAIza[A-Za-z0-9_\-]{30,}/,        // Google API keys
-  /api[_\-]?key\s*[:=]\s*\S{20,}/i,   // Generic api_key = ...
+  /\bAIza[A-Za-z0-9_-]{30,}/,        // Google API keys
+  /api[_-]?key\s*[:=]\s*\S{20,}/i,   // Generic api_key = ...
   /password\s*[:=]\s*\S{8,}/i,        // Generic password = ...
   /secret\s*[:=]\s*\S{20,}/i,         // Generic secret = ...
 ];
@@ -128,7 +141,7 @@ function validateIngestKeyPath(p: string): void {
     throw new Error(`QOOPIA_INGEST_KEY_PATH must not contain .. segments, got: ${p}`);
   }
   if (!fs.existsSync(p)) {
-    throw new Error(`Ingest key not found at ${p}. Run: qoopia admin register-ingest-daemon`);
+    throw new Error(`Ingest key not found at ${p}. Run \`qoopia install\` on a fresh setup, or \`qoopia admin rotate-key tailer --workspace <slug>\` and write the printed key to this path (mode 0600)`);
   }
   const st = fs.statSync(p);
   if (!st.isFile()) {
@@ -153,6 +166,11 @@ function getIngestKey(): string {
   return ingestKey;
 }
 
+/** A 4xx other than auth (401/403), timeout (408) or rate limit (429) refuses this record
+ * for good (invalid, secret-like, too large, conflicting, unknown agent): retrying it
+ * would stall every later line of the file, so it is skipped and logged instead. */
+const refusedForGood = (status: number) => status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status);
+
 async function postIngest(payload: IngestPayload): Promise<void> {
   const key = getIngestKey();
   const res = await fetch(`${QOOPIA_URL}/ingest/session`, {
@@ -161,6 +179,7 @@ async function postIngest(payload: IngestPayload): Promise<void> {
       "Content-Type": "application/json",
       Authorization: `Bearer ${key}`,
     },
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
     body: JSON.stringify({
       attributed_agent_id: payload.attributed_agent_id,
@@ -173,6 +192,10 @@ async function postIngest(payload: IngestPayload): Promise<void> {
       metadata: payload.metadata ?? {},
     }),
   });
+  if (refusedForGood(res.status)) {
+    console.warn(`[tailer] skipped ${payload.uuid} (session ${payload.session_id}): server refused it with HTTP ${res.status}`);
+    return;
+  }
   if (!res.ok) {
     throw new Error(`POST /ingest/session → ${res.status}`);
   }
@@ -183,27 +206,43 @@ async function postIngest(payload: IngestPayload): Promise<void> {
 // ---------------------------------------------------------------------------
 
 let allowlistCache: AllowlistEntry[] = [];
-let allowlistLoadedAt = 0;
+let allowlistLoadedAt = 0, allowlistRetryAt = 0, allowlistError: unknown = null;
+let allowlistLoading: Promise<AllowlistEntry[]> | null = null;
 const ALLOWLIST_TTL_MS = 60_000;
 
-async function fetchAllowlist(): Promise<AllowlistEntry[]> {
+/** Every file shares one in-flight request; after a failure callers fail fast until
+ * the server's Retry-After (else 10 s) passes, so N files never mean N requests. */
+function fetchAllowlist(): Promise<AllowlistEntry[]> {
   const now = Date.now();
-  if (now - allowlistLoadedAt < ALLOWLIST_TTL_MS) return allowlistCache;
+  if (now - allowlistLoadedAt < ALLOWLIST_TTL_MS) return Promise.resolve(allowlistCache);
+  // Do not acknowledge skipped lines when attribution is unavailable.
+  if (now < allowlistRetryAt) return Promise.reject(allowlistError);
+  allowlistLoading ??= loadAllowlist().finally(() => { allowlistLoading = null; });
+  return allowlistLoading;
+}
+
+async function loadAllowlist(): Promise<AllowlistEntry[]> {
+  let retryAfterSec = 10;
   try {
     const key = getIngestKey();
     const res = await fetch(`${QOOPIA_URL}/ingest/allowlist`, {
       headers: { Authorization: `Bearer ${key}` },
+      redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) throw new Error(`GET /ingest/allowlist → ${res.status}`);
-    allowlistCache = (await res.json()) as AllowlistEntry[];
-    allowlistLoadedAt = now;
+    if (!res.ok) {
+      retryAfterSec = Math.min(Number(res.headers.get("retry-after")) || 10, 60);
+      throw new Error(`GET /ingest/allowlist → ${res.status}`);
+    }
+    allowlistCache = JSON.parse(await readBoundedText(res, 1024 * 1024)) as AllowlistEntry[];
+    allowlistLoadedAt = Date.now();
+    return allowlistCache;
   } catch (err) {
     console.error("[tailer] allowlist fetch failed:", err);
-    // Do not acknowledge skipped lines when attribution is unavailable.
+    allowlistRetryAt = Date.now() + retryAfterSec * 1000;
+    allowlistError = err;
     throw err;
   }
-  return allowlistCache;
 }
 
 function resolveAgent(cwd: string, list: AllowlistEntry[]): string | null {
@@ -478,15 +517,34 @@ function isSafeWatchDir(p: string): boolean {
  * Drops the event silently (no enqueue) on any mismatch — the watcher
  * will fire again if the legitimate file keeps changing.
  */
-const reading=new Set<string>();
+const reading=new Set<string>(), stalled=new Map<string,string>();
 async function processNewLines(filePath: string) {
   if (reading.has(filePath)) return;
   reading.add(filePath);
-  try { await readNewLines(filePath); }
-  catch { /* Source remains the durable queue; retry on the next bounded sweep. */ }
+  try { await readNewLines(filePath); stalled.delete(filePath); }
+  catch (err) {
+    // Source remains the durable queue; retry on the next bounded sweep. Log each new reason once.
+    const reason = err instanceof Error ? err.message : String(err);
+    if (stalled.get(filePath) !== reason) console.error(`[tailer] ${filePath} waits for a retry: ${reason}`);
+    stalled.set(filePath, reason);
+  }
   finally { reading.delete(filePath); }
 }
+/** Drop a vanished session file: its watcher, retry state and cursor. */
+function forget(filePath: string) {
+  watchers.get(filePath)?.close();
+  watchers.delete(filePath);
+  stalled.delete(filePath);
+  if (fileCursors.delete(filePath)) persistCursors();
+}
+
 async function readNewLines(filePath: string) {
+  // An unchanged file costs one lstat: no allowlist request, open() or cursor write.
+  let size: number;
+  try { size = fs.lstatSync(filePath).size; }
+  catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") forget(filePath); return; }
+  const acknowledged = fileCursors.get(filePath) ?? 0;
+  if (size === acknowledged) return;
   const allowlist = await fetchAllowlist();
   // Re-run path-safety check immediately before open (was previously only
   // done in watchFile() at watch-time, leaving a TOCTOU window).
@@ -526,12 +584,25 @@ async function readNewLines(filePath: string) {
     let cursor = fileCursors.get(filePath) ?? 0;
     if (fdStat.size < cursor) cursor=0; // Truncated source: server UUID dedup makes replay safe.
     if (fdStat.size === cursor) return;
-    // ponytail: bounded 4 MiB reads; oversized incomplete records remain pending,
-    // never silently acknowledged. Native tool dumps should be stored as artifacts.
-    const buf = Buffer.alloc(Math.min(fdStat.size-cursor,4*1024*1024));
+    // ponytail: bounded 4 MiB reads. A complete record larger than that (a native tool
+    // dump) is skipped and logged; a record without its newline yet stays pending.
+    const window = 4*1024*1024;
+    const buf = Buffer.alloc(Math.min(fdStat.size-cursor,window));
     const {bytesRead}=await fd.read(buf,0,buf.length,cursor);
     const end=buf.subarray(0,bytesRead).lastIndexOf(10);
-    if (end<0) return; // Writer has not completed the JSONL record yet.
+    if (end<0) {
+      if (bytesRead<window) return; // Writer has not completed the JSONL record yet.
+      for (let at=cursor+bytesRead;;at+=buf.length) {
+        const {bytesRead:n}=await fd.read(buf,0,buf.length,at);
+        const newline=buf.subarray(0,n).indexOf(10);
+        if (newline>=0) {
+          console.warn(`[tailer] skipped a ${at+newline+1-cursor}-byte record in ${filePath}: larger than the 4 MiB read window`);
+          fileCursors.set(filePath,at+newline+1);
+          return;
+        }
+        if (n<buf.length) return; // Reached EOF: the oversized record is still being written.
+      }
+    }
     for (const line of buf.subarray(0,end+1).toString('utf8').split('\n').slice(0,-1)) {
       const result=extractText(line.trim());
       if (result) {
@@ -544,7 +615,7 @@ async function readNewLines(filePath: string) {
       fileCursors.set(filePath,cursor); // Only acknowledged or deliberately excluded records.
     }
   } finally {
-    persistCursors();
+    if ((fileCursors.get(filePath) ?? 0) !== acknowledged) persistCursors();
     await fd?.close();
   }
 }
@@ -612,11 +683,16 @@ function watchProjectsDir() {
 /** Server-acknowledged byte offsets + existing JSONL are the durable queue.
  * A crash can replay an acknowledged message, never skip an undelivered one. */
 if (import.meta.main) {
+  QOOPIA_URL = qoopiaBaseUrl();
   loadCursors();
   watchProjectsDir();
   // Watch events are hints, not delivery guarantees. A bounded sweep also
-  // retries after network recovery even when the conversation is idle.
-  setInterval(()=>{ for (const file of watchers.keys()) void processNewLines(file); },2_000);
+  // retries after network recovery even when the conversation is idle; it visits
+  // files one at a time, 2 s after the previous sweep ends.
+  // ponytail: one lstat per file per sweep plus one fs.watch per file; rely on the
+  // recursive directory watcher alone if session files reach the tens of thousands.
+  const sweep = async () => { for (const file of watchers.keys()) await processNewLines(file); setTimeout(sweep, 2_000); };
+  setTimeout(sweep, 2_000);
   process.on('SIGTERM',()=>{persistCursors();process.exit(0);});
   process.on('SIGINT',()=>{persistCursors();process.exit(0);});
   console.log('[tailer] ready');

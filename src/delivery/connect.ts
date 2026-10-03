@@ -56,7 +56,7 @@ export async function connectInstalled(raw: unknown, context: Context, approval?
   const uid = process.getuid?.(), stat = fs.lstatSync(safePath(DB_PATH));
   if (uid === undefined || uid === 0 || process.geteuid?.() !== uid || stat.uid !== uid || (stat.mode & 0o077)) throw new Error('Connect requires the private database owner local OS session');
   const owner = localOwner(db, input.ownerId), principal = authorize(db, owner, 'owner');
-  if (db.query('SELECT 1 FROM agents WHERE workspace_id=? AND name=?').get(owner.workspace_id, input.name)) throw new Error('Principal name already exists; connect never replaces an identity');
+  if (db.query('SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)').get(owner.workspace_id, input.name)) throw new Error('Principal name already exists; connect never replaces an identity');
   const config = configState(input, context.root);
   const endpoint = `http://127.0.0.1:${context.port}/mcp`;
   const changes = {

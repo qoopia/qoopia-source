@@ -21,6 +21,7 @@ import {prepareNativeKeychain,nativeOwnerHome} from '../delivery/native-keychain
 import {CodexAppServer} from './codex-app-server.ts';
 import {env} from '../utils/env.ts';
 import {QoopiaError} from '../utils/errors.ts';
+import {logger} from '../utils/logger.ts';
 import {saveMessage} from './sessions.ts';
 import {automaticMemoryOn} from './memory-policy.ts';
 import {restoreContext} from './continuity.ts';
@@ -45,7 +46,7 @@ export const unsavedTurn=(runId:string)=>unsaved.get(runId);
 /** Both must hold: the turn began under auto and the owner has not switched the agent since. */
 const keeps=(run:Run)=>!!run.memory&&automaticMemoryOn(run.memory.workspace_id,run.memory.agent_id);
 /** Control commands do not wait behind a slow turn/start RPC. */
-export async function stopMyAgent(ownerId:string){
+async function stopMyAgent(ownerId:string){
   agentOwner(ownerId);cancelTelegramQueue(ownerId);
   const previous=stopping.get(ownerId);if(previous)return previous;
   stopEpoch.set(ownerId,(stopEpoch.get(ownerId)??0)+1);
@@ -98,7 +99,7 @@ function artifacts(ownerId:string) {
       visited++;if(entry.name.startsWith('.')||entry.name==='node_modules'||entry.isSymbolicLink())continue;
       const full=path.join(folder,entry.name);
       if(entry.isDirectory())walk(full,depth+1);
-      else if(entry.isFile()){const relative=path.relative(root,full);try{files.push({path:relative,size:agentArtifact(ownerId,relative).size});}catch{}}
+      else if(entry.isFile()){const relative=path.relative(root,full);try{files.push({path:relative,size:agentArtifact(ownerId,relative).size});}catch{/* Unsafe or unreadable artifacts are not listed. */}}
     }}finally{directory.closeSync();}
   }
   walk(root,0);return files;
@@ -168,11 +169,25 @@ function finish(session:Live,state:string,error:string|null=null) {
   }
   session.run=undefined;session.rawAnswer='';session.lastActivityAt=undefined;session.approvals.clear();session.progress='';
 }
+/** finish() clears session.run, so the stopFailed handler cannot see the run a failed stop
+ * belongs to: report it on that run, or the owner gets no hint to press Stop. */
+function stopFinished(session:Live,state:string,error:string){
+  const run=session.run;finish(session,state,error);
+  void session.rpc.stop().catch(()=>{
+    if(run){run.error='Agent termination could not be confirmed. Try Stop again before continuing.';updateRun(run);}
+    logger.warn('Agent termination after an expired turn was not confirmed');
+  });
+}
+/** An unanswered approval fails its task, then frees the provider. finish() first, so the
+ * stop that follows is not reported as the owner's Stop. */
+function expireApprovals(session:Live){
+  if(![...session.approvals.values()].some(a=>a.expires<Date.now()))return;
+  stopFinished(session,'failed','The approval request expired after 5 minutes. Start a new turn to continue.');
+}
 /** A native turn with no events for 15 minutes is stuck, not an open-ended spinner. */
 export function expireIdleMyAgentRuns(at=Date.now()){
   for(const session of live.values())if(session.run&&session.run.state!=='approval'&&session.lastActivityAt&&at-session.lastActivityAt>15*60_000){
-    finish(session,'failed','The agent stopped responding for 15 minutes. Start a new turn to continue.');
-    void session.rpc.stop().catch(()=>{});
+    stopFinished(session,'failed','The agent stopped responding for 15 minutes. Start a new turn to continue.');
   }
 }
 function prepareAgentProfile(ownerId:string,provider:AgentProvider) {
@@ -198,7 +213,7 @@ async function runtime(ownerId:string):Promise<Live> {
     const native=await nativeRuntimeEnvironment(memoryRoot(),{PATH:process.env.PATH});
     const rpc=settings.provider==='claude_code'?new ClaudeAgentRuntime({binary:RUNTIMES.claude_code.binary,cwd,mcpConfig:path.join(profile,'qoopia-mcp.json'),env:{PATH:native.PATH,HOME:home,CLAUDE_CONFIG_DIR:profile,DISABLE_AUTOUPDATER:'1',QOOPIA_AGENT_KEY:secrets.key}}):new CodexAppServer({binary:RUNTIMES.codex.binary,cwd,env:{PATH:native.PATH,HOME:home,CODEX_HOME:profile,QOOPIA_AGENT_KEY:secrets.key}});
     const session:Live={rpc,provider:settings.provider,approvals:new Map(),progress:'',ready:new Set()};
-    rpc.on('closed',()=>{finish(session,'interrupted','Agent stopped. Start a new turn to continue.');if(live.get(ownerId)===session)live.delete(ownerId);});
+    rpc.on('closed',(unexpected?:boolean)=>{finish(session,unexpected?'failed':'interrupted',unexpected?'The agent process stopped unexpectedly. Start a new turn to continue.':'Agent stopped. Start a new turn to continue.');if(live.get(ownerId)===session)live.delete(ownerId);});
     rpc.on('stopFailed',()=>{if(session.run){session.run.error='Agent termination could not be confirmed. Try Stop again before continuing.';updateRun(session.run);}});
     rpc.on('notification',(message:any)=>{
       const p=message.params??{};
@@ -208,15 +223,16 @@ async function runtime(ownerId:string):Promise<Live> {
       const c=conversation(ownerId,session.run.conversation_id);
       if(p.threadId!==c.native_thread_id)return;
       if(p.turnId&&session.run.native_turn_id&&p.turnId!==session.run.native_turn_id)return;
+      // Any event of this turn is progress: command output, reasoning, tool progress, runtime activity.
+      session.lastActivityAt=Date.now();
       if(message.method==='item/agentMessage/delta'){
-        session.lastActivityAt=Date.now();
         session.rawAnswer=((session.rawAnswer??'')+String(p.delta??'')).slice(0,256_000);
         // Native providers emit token-sized chunks. Persist at a UI-friendly cadence,
         // then flush every last chunk in finish(), including on interruption.
         if(!session.answerFlushTimer){session.answerFlushTimer=setTimeout(()=>{session.answerFlushTimer=undefined;if(session.run){session.run.answer=safeAgentAnswer(session.rawAnswer??'');updateRun(session.run);}},250);session.answerFlushTimer.unref();}
       }
-      if(message.method==='item/started'){session.lastActivityAt=Date.now();session.progress=String(p.item?.type??'working');}
-      if(message.method==='turn/started'){session.lastActivityAt=Date.now();session.run.native_turn_id=p.turn?.id??session.run.native_turn_id;session.run.state='running';updateRun(session.run);}
+      if(message.method==='item/started')session.progress=String(p.item?.type??'working');
+      if(message.method==='turn/started'){session.run.native_turn_id=p.turn?.id??session.run.native_turn_id;session.run.state='running';updateRun(session.run);}
       if(message.method==='turn/completed')finish(session,p.turn?.status==='completed'?'completed':p.turn?.status==='interrupted'?'interrupted':'failed',p.turn?.error?'The model could not finish this task. Check your account and try again.':null);
     });
     rpc.on('request',(message:any)=>{
@@ -228,9 +244,9 @@ async function runtime(ownerId:string):Promise<Live> {
     });
     if(epoch!==(stopEpoch.get(ownerId)??0))throw new QoopiaError('CONFLICT','Agent start was cancelled');
     initializing.set(ownerId,rpc);
-    try{await rpc.start();if(epoch!==(stopEpoch.get(ownerId)??0)){await rpc.stop();throw new QoopiaError('CONFLICT','Agent start was cancelled');}}catch(error){void rpc.stop().catch(()=>{});throw error;}finally{if(initializing.get(ownerId)===rpc)initializing.delete(ownerId);}
+    try{await rpc.start();if(epoch!==(stopEpoch.get(ownerId)??0)){await rpc.stop();throw new QoopiaError('CONFLICT','Agent start was cancelled');}}catch(error){void rpc.stop().catch(()=>{/* The original start error is rethrown. */});throw error;}finally{if(initializing.get(ownerId)===rpc)initializing.delete(ownerId);}
     live.set(ownerId,session);
-    if(!accessTimer){accessTimer=setInterval(()=>{for(const [owner,current] of live){try{credentials(owner);if([...current.approvals.values()].some(a=>a.expires<Date.now()))current.rpc.stop();}catch{current.rpc.stop();}}expireIdleMyAgentRuns();},2000);accessTimer.unref();}
+    if(!accessTimer){accessTimer=setInterval(()=>{for(const [owner,current] of live){try{credentials(owner);expireApprovals(current);}catch{current.rpc.stop();}}expireIdleMyAgentRuns();},2000);accessTimer.unref();}
     try{const result=await rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');}catch{session.account=false;}
     if(session.account&&live.get(ownerId)===session)resumeTelegramAfterLogin(ownerId);
     return session;
@@ -239,7 +255,7 @@ async function runtime(ownerId:string):Promise<Live> {
 }
 export function myAgentState(ownerId:string,conversationId?:string,paging:{runBefore?:string;conversationOffset?:number;includeFiles?:boolean;runLimit?:number}={}) {
   const auth=agentOwner(ownerId),settings=agentSettings(ownerId),session=live.get(ownerId);
-  if(session&&[...session.approvals.values()].some(a=>a.expires<Date.now()))session.rpc.stop();
+  if(session)expireApprovals(session);
   const steward=db.query("SELECT id,name FROM agents WHERE workspace_id=? AND active=1 AND type='steward'").get(auth.workspace_id);
   let accessError:string|null=null;
   if(settings?.enabled)try{credentials(ownerId);}catch{live.get(ownerId)?.rpc.stop();accessError='Agent access needs attention. Review your agents and reconnect the local profile.';}
@@ -264,7 +280,7 @@ export function myAgentState(ownerId:string,conversationId?:string,paging:{runBe
 /** Telegram checks this every second. Do not scan files or load chat history for a status check. */
 export function telegramAgentState(ownerId:string) {
   const settings=agentSettings(ownerId),session=live.get(ownerId);
-  if(session&&[...session.approvals.values()].some(a=>a.expires<Date.now()))void session.rpc.stop();
+  if(session)expireApprovals(session);
   let access=true;
   if(settings?.enabled)try{credentials(ownerId);}catch{access=false;void session?.rpc.stop();}
   return {running:access&&!!session,account:access&&(session?.account??false),
@@ -362,14 +378,16 @@ export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{genera
       const approval=session.approvals.get(input.id);
       if(!approval||approval.expires<Date.now()||approval.runId!==session.run?.id)throw new QoopiaError('CONFLICT','This request expired. Stop the task and try again.');
       let result:unknown={decision:input.accept?'accept':'decline'};
-      if(approval.method==='item/tool/requestUserInput'&&!input.accept){session.rpc.refuse(approval.rpcId);session.approvals.delete(input.id);return {ok:true};}
+      const refused=approval.method==='item/tool/requestUserInput'&&!input.accept;
       if(approval.method==='item/tool/requestUserInput')result={answers:Object.fromEntries((approval.params.questions??[]).map((q:any)=>[q.id,{answers:[input.answers?.[q.id]??'']}]))};
       if(approval.method==='item/permissions/requestApproval')result={permissions:input.accept?approval.params.permissions:{},scope:'turn'};
       if(approval.method==='mcpServer/elicitation/request'){
         if(input.accept&&(!['form','openai/form','openaiForm'].includes(approval.params.mode)||approval.params.requestedSchema?.type!=='object'||Object.keys(approval.params.requestedSchema?.properties??{}).length>0||(approval.params.requestedSchema?.required?.length??0)>0))throw new QoopiaError('NOT_READY','This MCP request needs form input. Review its details before continuing.');
         result={action:input.accept?'accept':'decline',...(input.accept?{content:{}}:{})};
       }
-      session.rpc.respond(approval.rpcId,result);session.approvals.delete(input.id);
+      if(refused)session.rpc.refuse(approval.rpcId);else session.rpc.respond(approval.rpcId,result);
+      // Time spent waiting for the owner is not provider silence.
+      session.approvals.delete(input.id);session.lastActivityAt=Date.now();
       if(session.run){session.run.state=session.approvals.size?'approval':'running';updateRun(session.run);}return {ok:true};
     }
     if(epoch!==(stopEpoch.get(ownerId)??0))throw new QoopiaError('CONFLICT','Task cancelled');

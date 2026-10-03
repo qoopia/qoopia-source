@@ -1,10 +1,10 @@
 # Connections contract and release support
 
-The shipped release supports the tested Codex CLI, Claude Code, Claude Desktop
-and Claude Web combinations below. The next unreleased candidate additionally
-qualifies ChatGPT Pro Web through the synthetic acceptance recorded in
-[ChatGPT acceptance](chatgpt-acceptance-20260915.md). ChatGPT Desktop OAuth, verification, reading, writing and idempotent replay passed on Mac. Existing installed packages and their
-selected remote workspaces remain authoritative; this change is not a release.
+The release supports the tested Codex CLI, Claude Code, Claude Desktop and Claude
+Web combinations below. ChatGPT Pro Web and Mac Desktop passed real-client acceptance
+on 15 September 2026 (ChatGPT acceptance (`chatgpt-acceptance-20260915.md`, private record)): OAuth,
+verification, reading, writing and idempotent replay. Since then the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account.
+Existing installed packages and their selected remote workspaces remain authoritative.
 
 Owner API: `GET /api/dashboard/connection-setup` lists persisted progress;
 `POST` takes `action` and the same fields as `qoopia connections` below. It
@@ -18,7 +18,7 @@ consumes a local login capability privately and keeps its cookie in memory:
 qoopia connections plan --root /absolute/test-installation --input /absolute/selection.json
 qoopia connections apply --root /absolute/test-installation --input /absolute/selection.json --commit
 qoopia connections status --root /absolute/test-installation
-qoopia connections verify --root /absolute/test-installation --input /absolute/connection-id.json
+qoopia connections verify --root /absolute/test-installation --input /absolute/connection-id.json  # legacy one-use challenge
 qoopia connections resume --root /absolute/test-installation --input /absolute/connection-id.json
 qoopia connections disconnect --root /absolute/test-installation --input /absolute/connection-id.json --commit
 ```
@@ -40,8 +40,10 @@ binds them to the canonical resource. New connections cannot consent through
 the legacy resource. Disconnect deactivates the connection's principal and
 revokes all its tokens. Other connections and the workspace are preserved.
 
-Only `connection_verify` called through the authenticated connection can record
-verification. Setup returns a ten-minute one-use challenge. This proves an
+Verification is recorded only by an authenticated call on the exact OAuth connection:
+the client's first `qoopia_protocol` call verifies it, and the dashboard shows the
+result. No code is needed. The legacy `connections verify` action still returns a
+ten-minute one-use challenge for `connection_verify`, for older clients. Either proves an
 actual authenticated MCP call; the selected surface name is not a vendor
 attestation. Qualification through real vendor clients is tracked separately.
 A verified timestamp is historical evidence, not a current network-health claim.
@@ -53,8 +55,13 @@ existing note idempotency ledger. The edge never retries writes.
 
 The external edge uses a private local listener and allows only MCP and OAuth
 protocol routes. Dashboard cookies and asserted user/proxy identity headers never
-cross it. Local dashboard consent finalizes on the dashboard’s own origin before
-redirecting to the registered client; it does not detour through the external edge.
+cross it. Local dashboard consent redeems the ticket in the approve request and
+redirects straight to the registered client; it does not detour through the external
+edge. The ticket id alone never yields a code (`/oauth/authorize/finalize` is retired).
+Unauthenticated registration on a connection (`/oauth/register?connection=<id>`) accepts
+only the selected client's known callback: ChatGPT hosts for ChatGPT, the exact claude.ai
+callback for Claude Web, loopback for Codex and Claude Code. Other surfaces keep the
+generic HTTPS/loopback checks, and both consent pages show the callback host.
 Only dedicated, short-lived consent cookies are allowed on
 `/oauth/consent` routes. The edge preserves the consent page's CSP and frame guards.
 It has a body limit and absolute upstream timeout; outages return an error.
@@ -106,7 +113,7 @@ ChatGPT Web read/add succeeded in the isolated 040997f prototype, but the client
 blocked verification. ChatGPT Desktop manual read/create/repeat/get also passed
 in a confirmed ChatGPT conversation against that prototype; read-only database
 inspection found exactly one new note. Those prototype results did not qualify either surface for that release.
-Current-source ChatGPT Web and Desktop qualification, including writes and idempotent replay, are recorded in the linked acceptance report. No client
+The 15 September 2026 ChatGPT Web and Desktop run, including writes and idempotent replay, is recorded in the linked acceptance report; the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account. No client
 safety block is retried through another path, and no verified flag is set by an
 operator. The tests used existing ChatGPT Pro and Claude Max subscriptions and do
 not qualify other plans or client versions. The acceptance specification permits
@@ -235,8 +242,8 @@ For imported files, client-link returns binding_file and authentication_argv;
 client-auth --file BINDING --commit --open performs the same consent flow in a
 foreground command. Restarting an interrupted authorization generates fresh
 state and PKCE while retaining its DCR registration. Saved OAuth is still not a
-verified client call. Restart Claude Desktop and run the one-use verification
-prompt from a real conversation. Per-client revocation cancels a pending wizard
+verified client call. Restart Claude Desktop and send the request from the connection
+card in a real conversation; its first `qoopia_protocol` call confirms the connection. Per-client revocation cancels a pending wizard
 handoff and denies both existing access and refresh.
 
 The installed synthetic browser test uses local owner recovery because its owner

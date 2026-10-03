@@ -12,7 +12,8 @@ def sync(path):
         return subprocess.check_output(['git', '-C', str(path), *args], stderr=subprocess.DEVNULL, timeout=90, text=True).strip()
     if git('rev-parse', '--is-bare-repository') != 'true':
         raise ValueError('Only a bare mirror may be synced')
-    git('fetch', 'origin', '+refs/heads/*:refs/heads/*', '--tags')
+    # Explicit tag refspec: with --prune, --tags/--prune-tags would keep deleted tags.
+    git('fetch', '--prune', 'origin', '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*')
     local = git('rev-parse', 'refs/heads/main')
     remote = git('ls-remote', 'origin', 'refs/heads/main').split()[0]
     if local != remote:

@@ -21,7 +21,7 @@
  *     [--max-bytes=65536]
  *
  * The slugs file path is configurable so host callers can bind-mount
- * ~/.ductor-corsairmain/workspace/memory_system/mainmemory_refresh_slugs.txt
+ * ~/.<agent-home>/workspace/memory_system/mainmemory_refresh_slugs.txt
  * (host) onto an in-container path. The default in-container path is
  * /etc/qoopia/mainmemory_refresh_slugs.txt.
  *
@@ -35,7 +35,6 @@
  * markers), non-zero only on hard failures (workspace lookup, IO).
  */
 import fs from "node:fs";
-import path from "node:path";
 
 import { db } from "../src/db/connection.ts";
 import {

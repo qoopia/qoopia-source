@@ -173,7 +173,64 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   recall.description = beforeRecall.description;
   const recallProps = (recall.input_schema as {properties: Record<string, Record<string, Json>>}).properties;
   const oldRecallProps = (beforeRecall.input_schema as {properties: Record<string, Record<string, Json>>}).properties;
-  for (const field of ['query','deep','deep_llm']) recallProps[field]!.description=oldRecallProps[field]!.description!;
+  // ADR-020: cross_workspace is accepted but never leaves the workspace; types stay frozen.
+  if (!String(recallProps.cross_workspace?.description).includes('never leaves your own workspace')) throw new Error("ADR-020 recall cross_workspace description drift");
+  // ADR-020 states who reads other agents' transcripts in the sessions scope; the enum stays frozen.
+  if (!String(recallProps.scope?.description).includes('while your shared context is on')) throw new Error("ADR-020 recall sessions scope transcript-rule description drift");
+  for (const field of ['query','deep','deep_llm','cross_workspace','scope']) recallProps[field]!.description=oldRecallProps[field]!.description!;
+  const searchScope = (projected.canonical_tools.find((tool) => tool.name === "session_search")?.input_schema as {properties: Record<string, Record<string, Json>>} | undefined)?.properties.scope;
+  if (!String(searchScope?.description).includes('no search leaves your own workspace')) throw new Error("ADR-020 session_search scope description drift");
+  delete searchScope!.description;
+  // ADR-020 names who reads a 'private' note; the enum stays frozen.
+  const noteVisibility = (projected.canonical_tools.find((tool) => tool.name === "note_create")!.input_schema as {properties: Record<string, Record<string, Json>>}).properties.visibility!;
+  if (!String(noteVisibility.description).includes("this agent, the steward and the owner")) throw new Error("ADR-020 note_create visibility description drift");
+  noteVisibility.description = (historical.canonical_tools.find((tool) => tool.name === "note_create")!.input_schema as {properties: Record<string, Record<string, Json>>}).properties.visibility!.description!;
+  // ADR-020: agent_list never claimed a real cross-workspace reach; its copy now says so. Types and risk stay frozen.
+  const agentList = projected.canonical_tools.find((tool) => tool.name === "agent_list");
+  if (!agentList?.description.includes("no agent reads another workspace")) throw new Error("ADR-020 agent_list description drift");
+  agentList.description = historical.canonical_tools.find((tool) => tool.name === "agent_list")!.description;
+  // F-091: session_save asks for unique session ids (a taken id is refused). F-160 adds an
+  // optional retry key, checked here; the remaining types stay frozen.
+  const saveTool = projected.canonical_tools.find((tool) => tool.name === "session_save");
+  if (!saveTool?.description.includes("Use a unique session_id")) throw new Error("F-091 session_save must ask for a unique session_id");
+  if (!saveTool.description.includes("Supply message_id")) throw new Error("F-160 session_save must describe its retry key");
+  saveTool.description = historical.canonical_tools.find((tool) => tool.name === "session_save")!.description;
+  const saveSchema = saveTool.input_schema as { properties: Record<string, Json>; required?: string[] };
+  if (stable(saveSchema.properties.message_id) !== stable({ type: "string", minLength: 1, maxLength: 128 }) || saveSchema.required?.includes("message_id")) {
+    throw new Error("F-160 session_save message_id must stay an optional bounded string");
+  }
+  delete saveSchema.properties.message_id;
+  // F-199 bounds the agent_send topic like agent_session_create's; types stay frozen.
+  const agentSendProps = (projected.canonical_tools.find((tool) => tool.name === "agent_send")?.input_schema as {properties: Record<string, Record<string, Json>>} | undefined)?.properties;
+  if (agentSendProps?.topic?.maxLength !== 500) throw new Error("F-199 agent_send topic must be capped at 500 characters");
+  delete agentSendProps.topic.maxLength;
+  // F-137 reserves kind 'system' (the server never sends it); the rest of the enum is frozen.
+  if (stable(agentSendProps.kind?.enum) !== stable(["request", "ack", "reply", "status"])) throw new Error("F-137 agent_send must not accept kind 'system'");
+  agentSendProps.kind!.enum = ["request", "ack", "reply", "status", "system"];
+  // F-255 bounds note ids and tags at the MCP boundary and makes note_list a preview list; types stay frozen.
+  const propsOf = (name: string) => (projected.canonical_tools.find((tool) => tool.name === name)!.input_schema as {properties: Record<string, Record<string, Json>>}).properties;
+  for (const [name, fields] of [["note_create", ["project_id", "task_bound_id", "session_id"]], ["note_get", ["id"]], ["note_delete", ["id"]], ["note_update", ["id"]]] as const) {
+    for (const field of fields) {
+      if (propsOf(name)[field]?.maxLength !== 128) throw new Error(`F-255 ${name}.${field} must be capped at 128 characters`);
+      delete propsOf(name)[field]!.maxLength;
+    }
+  }
+  for (const name of ["note_create", "note_update", "note_list"]) {
+    const tags = propsOf(name).tags as {maxItems?: Json; items: Record<string, Json>};
+    if (tags.maxItems !== 50 || tags.items.maxLength !== 100) throw new Error(`F-255 ${name}.tags must be capped at 50 tags of 100 characters`);
+    delete tags.maxItems; delete tags.items.maxLength;
+  }
+  const noteList = projected.canonical_tools.find((tool) => tool.name === "note_list")!;
+  if (!noteList.description.includes("note_get returns the full note")) throw new Error("F-255 note_list must describe its preview items");
+  noteList.description = historical.canonical_tools.find((tool) => tool.name === "note_list")!.description;
+  // F-139: the runbook is described as reference data unless sealed; schema and risk stay frozen.
+  const runbookTool = projected.canonical_tools.find((tool) => tool.name === "skill_render_runbook");
+  if (!runbookTool?.description.includes("reference data, not an accepted or assigned skill")) throw new Error("F-139 skill_render_runbook must describe unsealed output as reference data");
+  runbookTool.description = historical.canonical_tools.find((tool) => tool.name === "skill_render_runbook")!.description;
+  // F-300: brief no longer advertises CRM deals and names its empty-workspace hint; schema and risk stay frozen.
+  const briefTool = projected.canonical_tools.find((tool) => tool.name === "brief");
+  if (!briefTool?.description.includes("on an empty workspace, how to start") || briefTool.description.includes("deals")) throw new Error("F-300 brief description drift");
+  briefTool.description = historical.canonical_tools.find((tool) => tool.name === "brief")!.description;
   for (const name of ["entity_upsert", "skill_upsert", "skill_mark_tested"]) {
     const tool = projected.canonical_tools.find((t) => t.name === name);
     if (!tool) throw new Error(`P1 compatibility facade missing: ${name}`);
@@ -216,9 +273,14 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   const memoryPolicyTools = ["memory_policy_list", "memory_policy_set", "memory_save_list", "memory_save_decide"];
   for (const name of memoryPolicyTools) {
     const tool = projected.canonical_tools.find((t) => t.name === name);
-    if (!tool || tool.risk !== "admin") throw new Error(`V1 memory policy tool missing or not admin-risk: ${name}`);
+    // F-256: the steward's policy view is a read; the owner's commands stay admin-risk.
+    if (!tool || tool.risk !== (name === "memory_policy_list" ? "read" : "admin")) throw new Error(`V1 memory policy tool missing or wrong risk: ${name}`);
   }
+  // ADR-020 adds the steward's shared-context switch: a new admin-risk tool beside the frozen ones.
+  if (projected.canonical_tools.find((t) => t.name === "agent_set_shared_context")?.risk !== "admin") throw new Error("ADR-020 agent_set_shared_context missing or wrong risk");
+  memoryPolicyTools.push("agent_set_shared_context");
   const prepare = projected.canonical_tools.find((t) => t.name === "connection_prepare");
+
   if (!prepare || prepare.risk !== "read" || !prepare.description.includes("creates no agent, credential or grant")) throw new Error("Connection preparation must remain read-only");
   projected.canonical_tools = projected.canonical_tools.filter((t) => !memoryPolicyTools.includes(t.name) && t.name !== "connection_prepare");
   return projected;

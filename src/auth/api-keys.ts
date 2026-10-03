@@ -18,7 +18,7 @@ export interface AgentRecord {
   id: string;
   workspace_id: string;
   name: string;
-  type: "standard" | "claude-privileged" | string;
+  type: string;
   api_key_hash: string;
   active: number;
   last_seen: string | null;
@@ -53,7 +53,7 @@ export function verifyApiKey(token: string): AgentRecord | null {
         nowIso(),
         row.id,
       );
-    } catch {}
+    } catch { /* last_seen is telemetry: a busy or locked DB must not fail authentication. */ }
   }
 
   return row;

@@ -87,7 +87,7 @@ describe("Flag OFF", () => {
     expect(row.valid_from).toBe(created.created_at);
     expect(row.invalidated_at_ms).toBeNull();
     // Никаких темпоральных полей в сериализованном виде.
-    const view = getNote(WORKSPACE_ID, created.id, AGENT_ID, false) as Record<string, unknown>;
+    const view = getNote(WORKSPACE_ID, created.id, AGENT_ID, false);
     expect("valid_from" in view).toBe(false);
     expect("valid_until_inferred" in view).toBe(false);
   });
@@ -588,6 +588,36 @@ describe("HIGH-3 — supersedeExistingNote invariants", () => {
       code = (error as { code: string }).code;
     }
     expect(code).toBe("INVALID_INPUT");
+  });
+
+  // Тот же интервал, что у note_create(supersedes_id): закрытый valid_until
+  // предшественника не удлиняется задним числом, будущая граница не ставится.
+  test.each([
+    ["beyond the predecessor's valid_until", "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z", "2026-03-01T00:00:00Z"],
+    ["in the future", "2026-01-01T00:00:00Z", null, "2099-06-01T00:00:00Z"],
+  ])("a successor valid_from %s is INVALID_INPUT and A is untouched", (_case, aFrom, aUntil, bFrom) => {
+    enableFlag();
+    const a = note(`A interval ${_case}`, { valid_from: aFrom, ...(aUntil ? { valid_until: aUntil } : {}) });
+    const b = note(`B interval ${_case}`, { valid_from: bFrom });
+    const before = raw(a.id);
+    let code = "";
+    try {
+      supersede(b.id, a.id, a.updated_at_ms);
+    } catch (error) {
+      code = (error as { code: string }).code;
+    }
+    expect(code).toBe("INVALID_INPUT");
+    expect(raw(a.id)).toEqual(before);
+    expect(raw(b.id).supersedes_id).toBeNull();
+  });
+
+  test("a successor valid_from inside the open interval still closes A", () => {
+    enableFlag();
+    const a = note("A interval inside", { valid_from: "2026-01-01T00:00:00Z", valid_until: "2026-02-01T00:00:00Z" });
+    const b = note("B interval inside", { valid_from: "2026-01-15T00:00:00Z" });
+    supersede(b.id, a.id, a.updated_at_ms);
+    expect(raw(a.id).valid_until_ms).toBe(Date.parse("2026-01-15T00:00:00Z"));
+    expect(raw(a.id).invalidated_at_ms).not.toBeNull();
   });
 });
 

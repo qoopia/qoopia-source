@@ -10,6 +10,7 @@ import { journalBundleFixture } from './helpers/p3-journal-bundle.ts';
 import { Delivery, dataFile, operationsDirectory, readCurrent, lockInstallation } from '../src/delivery/operations.ts';
 import { ownerFixture } from './helpers/p1-fixtures.ts';
 import { backupUnified, verifyBackup } from '../src/delivery/snapshot.ts';
+import { fakeFetch } from './helpers/fake-fetch.ts';
 const fixture=()=>fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'p3-scopeb-')));
 const destination={id:'fixture',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:new Uint8Array(32).fill(17)};
 function installation(){
@@ -24,7 +25,7 @@ test('compact receipt dominates old pending in both merge orders, refuses digest
   const saved=retentionState([pending]),local=compactOps(retentionState([full]));
   for(const [a,b] of [[saved,local],[local,saved]] as const){
    const merged=mergeRecoveryOps(a,b,'scopeb-fixture');expect(merged.alerts).toEqual([]);expect(merged.receipts).toEqual(local.receipts);
-   writeOps(root,merged);let io=0;await deliverOpsAlerts(root,[destination],{resolver:async()=>{io++;return [];},fetchImpl:async()=>{io++;throw new Error('no send');}});expect(io).toBe(0);
+   writeOps(root,merged);let io=0;await deliverOpsAlerts(root,[destination],{resolver:async()=>{io++;return [];},fetchImpl:fakeFetch(async()=>{io++;throw new Error('no send');})});expect(io).toBe(0);
    expect(opsSummary(root)).toMatchObject({pending:0,active:0,compact_receipts:1,total_alerts:1,omitted_alerts:1});
   }
   expect(()=>mergeRecoveryOps(retentionState([{...pending,cause:'DATABASE_FAILED'}]),local,'scopeb-fixture')).toThrow('event conflict');
@@ -66,7 +67,7 @@ test('new-machine restore from legacy/no-hold/held receipts always holds, old ba
    const d=new Delivery(path.join(f.outer,'restored-'+i),f.b.trust,true,()=>{}),result=d.restoreNew(input,f.b.bundle,4141);
    let ops=operationsDirectory(d.root,result.current);expect(readOps(ops).delivery_hold).toBe(RECOVERY_DELIVERY_HOLD);
    recordMaintenance(ops,f.c.instance,'BACKUP_FAILED',1000);let io=0;
-   const transport={resolver:async()=>{io++;return [];},fetchImpl:async()=>{io++;throw new Error('no network');}};
+   const transport={resolver:async()=>{io++;return [];},fetchImpl:fakeFetch(async()=>{io++;throw new Error('no network');})};
    await deliverOpsAlerts(ops,[destination],transport,2000);expect(io).toBe(0);expect(readOps(ops).alerts[0]!.attempts).toBe(0);
    ops=operationsDirectory(d.root,d.restore(backup).current);expect(readOps(ops).delivery_hold).toBe(RECOVERY_DELIVERY_HOLD);
    await deliverOpsAlerts(ops,[destination],transport,3000);expect(io).toBe(0);
@@ -82,7 +83,7 @@ test('exact serialized capacity accepts; one-byte growth refuses unchanged; atte
   const state=exactPendingBoundary();writeOps(root,state);const before=fs.readFileSync(opsFile(root));expect(before.length).toBe(MAX_JSON_BYTES);expect(opsSerializedSize(state)).toBe(before.length);
   const grow={...state,alerts:[...state.alerts]};grow.alerts[grow.alerts.length-1]={...grow.alerts.at(-1)!,attempts:10};
   expect(opsSerializedSize(grow)).toBe(MAX_JSON_BYTES+1);expect(()=>writeOps(root,grow)).toThrow('TOO_LARGE');expect(fs.readFileSync(opsFile(root))).toEqual(before);
-  let io=0;await expect(deliverOpsAlerts(root,[destination],{resolver:async()=>{io++;return [];},fetchImpl:async()=>{io++;throw new Error('no send');}},1)).rejects.toThrow('TOO_LARGE');expect(io).toBe(0);expect(fs.readFileSync(opsFile(root))).toEqual(before);
+  let io=0;await expect(deliverOpsAlerts(root,[destination],{resolver:async()=>{io++;return [];},fetchImpl:fakeFetch(async()=>{io++;throw new Error('no send');})},1)).rejects.toThrow('TOO_LARGE');expect(io).toBe(0);expect(fs.readFileSync(opsFile(root))).toEqual(before);
   const other=retentionState([retentionAlert(999999)]);expect(()=>mergeRecoveryOps(state,other,'scopeb-fixture')).toThrow('TOO_LARGE');expect(other.alerts).toHaveLength(1);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 },30000);

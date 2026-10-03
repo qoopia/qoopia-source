@@ -1,6 +1,6 @@
-import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
+import {type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {EventEmitter} from 'node:events';
-import {terminateAgentProcess} from './agent-process.ts';
+import {spawnAgentProcess,terminateAgentProcess} from './agent-process.ts';
 
 /** Private stdio transport. No browser can choose RPC methods or thread ids. */
 export class CodexAppServer extends EventEmitter {
@@ -9,18 +9,20 @@ export class CodexAppServer extends EventEmitter {
   private pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private buffer='';
   private stopping?:Promise<void>;
+  /** Set when the process ended or was aborted without an explicit stop(): a failure, not a user Stop. */
+  private unexpected=false;
   constructor(private options:{binary:string;cwd:string;env:NodeJS.ProcessEnv}) {super();}
   async start() {
     if(this.child)throw new Error('Agent process is already running');
-    this.stopping=undefined;this.buffer='';
-    this.child=spawn(this.options.binary,['app-server','--stdio'],{cwd:this.options.cwd,env:this.options.env,stdio:'pipe'});
+    this.stopping=undefined;this.buffer='';this.unexpected=false;
+    this.child=spawnAgentProcess(this.options.binary,['app-server','--stdio'],{cwd:this.options.cwd,env:this.options.env});
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data',(chunk:string)=>this.consume(chunk));
     // Stderr may contain credentials or tool output. It is never sent to telemetry.
     this.child.stderr.on('data',()=>{});
     this.child.stdin.on('error',()=>this.abort());
-    this.child.once('error',()=>this.fail());
-    this.child.once('close',()=>{if(!this.stopping)this.fail();});
+    this.child.once('error',()=>{if(!this.stopping)this.unexpected=true;this.fail();});
+    this.child.once('close',()=>{if(!this.stopping){this.unexpected=true;this.fail();}});
     await this.call('initialize',{clientInfo:{name:'qoopia',title:'My Qoopia agent',version:'1.0.0'},capabilities:{experimentalApi:false}});
     this.write({method:'initialized'});
   }
@@ -58,15 +60,15 @@ export class CodexAppServer extends EventEmitter {
     if(!this.child)return;
     this.child=undefined;
     for(const entry of this.pending.values()){clearTimeout(entry.timer);entry.reject(new Error('Agent process stopped'));}
-    this.pending.clear();this.emit('closed');
+    this.pending.clear();this.emit('closed',this.unexpected);
   }
-  private abort(){void this.stop().catch(()=>{});}
+  private abort(){if(!this.stopping)this.unexpected=true;void this.stop().catch(()=>{/* stop() already emitted stopFailed. */});}
   stop():Promise<void> {
     if(this.stopping)return this.stopping;
     const child=this.child;if(!child)return Promise.resolve();
     this.stopping=terminateAgentProcess(child).then(()=>this.fail()).catch(error=>{this.stopping=undefined;this.emit('stopFailed');throw error;});
     // Callers that stop on shutdown/revocation need no unhandled rejection.
     // An explicit dashboard Stop still awaits the original rejecting promise.
-    void this.stopping.catch(()=>{});return this.stopping;
+    void this.stopping.catch(()=>{/* See above: the caller still gets the rejection. */});return this.stopping;
   }
 }

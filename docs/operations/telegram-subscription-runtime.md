@@ -196,7 +196,7 @@ controlled fault injection, not deliberate exhaustion of a real subscription.
 
 Final checks: **1365 passed, 1 isolated skip, 0 failed**; separate T27 **2 passed**.
 Typecheck, project lint, strict changed-file/V4.1 lint, module boundaries and diff
-checks passed. Evidence: `../outputs/telegram-runtime-research-20260917/CLAUDE-ACCEPTANCE-0917.json`.
+checks passed. Evidence (owner's private workspace, not published): `outputs/telegram-runtime-research-20260917/CLAUDE-ACCEPTANCE-0917.json`.
 The MacBook SSH endpoint was unreachable at the final tunnel check; this does not
 invalidate the recorded native/Telegram runs, but current MacBook reachability
 is not claimed. This is development-fixture acceptance only. No release, deploy,

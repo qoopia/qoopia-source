@@ -141,21 +141,41 @@ describe("agent_inbox records delivery", () => {
   });
 
   test("only what the page actually returned is stamped", () => {
-    const older = send(PULLER, "older, off the page");
-    // The inbox orders by created_at DESC, id DESC. Two sends inside the same
-    // millisecond share created_at, so the tie falls to a random ULID suffix and
-    // "newest" becomes a coin flip — this test failed roughly every other run.
-    // The product does not promise an order for same-millisecond messages, so
-    // give them distinct timestamps instead of asserting one it never made.
+    const older = send(PULLER, "older, on the page");
+    // Undelivered messages come oldest first. Two sends inside the same
+    // millisecond share created_at, so the tie falls to a random ULID suffix
+    // and the order becomes a coin flip. The product does not promise an order
+    // for same-millisecond messages, so give them distinct timestamps instead
+    // of asserting one it never made.
     Bun.sleepSync(2);
-    const newer = send(PULLER, "newest, on the page");
+    const newer = send(PULLER, "newer, off the page");
 
     const inbox = agentInbox({ workspace_id: WORKSPACE, agent_id: PULLER, limit: 1 });
     expect(inbox.items).toHaveLength(1);
-    expect(inbox.items[0]!.id).toBe(newer.id);
+    expect(inbox.items[0]!.id).toBe(older.id);
 
-    expect(messageDeliveredAt(newer.id)).toBeTruthy();
-    expect(messageDeliveredAt(older.id)).toBeNull();
+    expect(messageDeliveredAt(older.id)).toBeTruthy();
+    expect(messageDeliveredAt(newer.id)).toBeNull();
+  });
+
+  test("repeated default reads deliver a backlog larger than one page, oldest first", () => {
+    // Reading is the only delivery a pull-only agent has, so the default view
+    // must reach every undelivered message, not the newest page over and over.
+    const backlog = createAgent({ name: "inboxdel-backlog", workspaceSlug: "inbox-delivery" }).id;
+    const sent = Array.from({ length: 25 }, (_, i) => {
+      if (i) Bun.sleepSync(2);
+      return send(backlog, `backlog ${i + 1}`).id;
+    });
+
+    const first = agentInbox({ workspace_id: WORKSPACE, agent_id: backlog }).items.map((m) => m.id);
+    const second = agentInbox({ workspace_id: WORKSPACE, agent_id: backlog }).items.map((m) => m.id);
+
+    expect(first).toEqual(sent.slice(0, 20));
+    expect(second.slice(0, 5)).toEqual(sent.slice(20));
+    expect(sent.filter((id) => !first.includes(id) && !second.includes(id))).toEqual([]);
+    expect(sent.filter((id) => messageDeliveredAt(id) === null)).toEqual([]);
+    // Once delivered, the same view is history again: newest first.
+    expect(second.slice(5, 8)).toEqual([sent[19], sent[18], sent[17]]);
   });
 
   test("a message already pulled leaves no wake to fail later", async () => {

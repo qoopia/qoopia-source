@@ -74,6 +74,14 @@ The schema sequence is a separate one-shot operation:
    mode-0600 `VACUUM INTO` backup, then applies pending migrations.
 6. Re-run integrity and record applied versions before starting the service.
 
+Recovery from a migration is a restore of the step 5 backup. The scripts under
+`migrations/rollback/` have no schema-version guard, and neither the `sqlite3`
+CLI nor `db.exec` stops at a failing statement: run against a newer schema they
+drop columns and triggers of later migrations and can leave a database that
+`bun run migrate` cannot repair (F-269). Use one only on a copy whose
+`SELECT MAX(version) FROM schema_versions` equals that script's number, inside
+`sqlite3` with `.bail on`, and never on production without owner approval.
+
 The known 13 historical AgentComm foreign-key violations are an intentional
 ordering dependency. The prepared-only repair plan is
 `docs/runbooks/phase3-existing-fk-repair-plan.md`. Until an owner-approved
@@ -140,4 +148,8 @@ outside this repository and require an explicit owner-approved fleet rollout.
 - distribute the canonical fleet tool bundle and fix active workspace
   instruction files;
 - clean duplicate OAuth clients or legacy NULL-workspace rows;
-- change live file modes, tokens, callbacks, or database contents.
+- change live file modes, tokens, callbacks, or database contents;
+- before removing `src/mcp/compat.ts`, check whether the production `.env`
+  sets `QOOPIA_ENABLE_V2_COMPAT=true` (the V2 alias rollback switch, off by
+  default) and whether the MCP access log shows calls to `create`, `update`,
+  `delete`, `list`, `get` or `note`.

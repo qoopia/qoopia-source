@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  cookieSigningSecretIssue,
   resolveRuntimePaths,
   validateReleaseInputs,
   validateRuntimeConfiguration,
@@ -18,7 +19,7 @@ function productionEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     QOOPIA_PORT: "3738",
     QOOPIA_EXPECTED_RELEASE_SHA: SHA,
     QOOPIA_RELEASE_STAMP_PATH: "/app/release.json",
-    QOOPIA_ADMIN_SECRET: "test-only-admin-secret",
+    QOOPIA_ADMIN_SECRET: "test-only-admin-secret-32-bytes-min",
     QOOPIA_PUBLIC_URL: "https://mcp.example.test",
     QOOPIA_AUTO_MIGRATE: "false",
     ...overrides,
@@ -57,6 +58,32 @@ describe("runtime configuration", () => {
       const message = String(error);
       expect(message).toContain("QOOPIA_DATA_DIR must resolve to /srv/qoopia/data");
       expect(message).toContain("QOOPIA_AUTO_MIGRATE must be false");
+    }
+  });
+
+  test("refuses a dashboard cookie-signing secret shorter than 32 bytes [F-194]", () => {
+    expect(() => validateRuntimeConfiguration(productionEnv({ QOOPIA_ADMIN_SECRET: "x" })))
+      .toThrow(/QOOPIA_ADMIN_SECRET must be at least 32 bytes/);
+    // QOOPIA_SESSION_SECRET, when set, is the key; it gets the same floor.
+    const longAdmin = "k".repeat(32);
+    expect(() => validateRuntimeConfiguration(productionEnv({ QOOPIA_ADMIN_SECRET: longAdmin, QOOPIA_SESSION_SECRET: "s".repeat(31) })))
+      .toThrow(/QOOPIA_SESSION_SECRET must be at least 32 bytes/);
+    expect(() => validateRuntimeConfiguration(productionEnv({ QOOPIA_ADMIN_SECRET: longAdmin, QOOPIA_SESSION_SECRET: "s".repeat(32) })))
+      .not.toThrow();
+    expect(cookieSigningSecretIssue({ QOOPIA_ADMIN_SECRET: "x" })).toMatch(/QOOPIA_ADMIN_SECRET must be at least 32 bytes/);
+    expect(cookieSigningSecretIssue({ QOOPIA_ADMIN_SECRET: "x", QOOPIA_SESSION_SECRET: "s".repeat(32) })).toBeNull();
+  });
+
+  test("every server start (dev included) refuses a short cookie-signing secret [F-194]", async () => {
+    const { assertOAuthReady } = await import("../src/http.ts");
+    const previous = process.env.QOOPIA_SESSION_SECRET;
+    try {
+      process.env.QOOPIA_SESSION_SECRET = "s".repeat(31);
+      expect(() => assertOAuthReady()).toThrow(/QOOPIA_SESSION_SECRET must be at least 32 bytes/);
+      process.env.QOOPIA_SESSION_SECRET = "s".repeat(32);
+      expect(() => assertOAuthReady()).not.toThrow();
+    } finally {
+      process.env.QOOPIA_SESSION_SECRET = previous;
     }
   });
 

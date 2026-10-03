@@ -1,13 +1,13 @@
 import type { Database } from "bun:sqlite";
 
-export interface TraceExpiryOptions {
+interface TraceExpiryOptions {
   cutoff: string;
   batchSize?: number;
   /** Test-only fault hook used to prove detach/delete atomicity. */
   afterDetach?: () => void;
 }
 
-export interface TraceExpiryResult {
+interface TraceExpiryResult {
   selected: number;
   detached_feedback: number;
   deleted_items: number;

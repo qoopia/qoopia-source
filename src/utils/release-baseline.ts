@@ -4,12 +4,12 @@ import { spawnSync } from "node:child_process";
 
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 
-export interface ReleaseStamp {
+interface ReleaseStamp {
   commit_sha: string;
   dirty: false;
 }
 
-export interface VerifiedReleaseBaseline {
+interface VerifiedReleaseBaseline {
   commitSha: string | null;
   mode: "immutable-release" | "clean-checkout" | "development-override";
   sourceTreeVerified: boolean;

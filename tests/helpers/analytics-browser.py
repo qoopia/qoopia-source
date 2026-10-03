@@ -13,6 +13,12 @@ try:
    page.route('https://auth.qoopia.ai/analytics/events',lambda route:(requests.append(json.loads(route.request.post_data)),route.fulfill(status=204,headers={'access-control-allow-origin':'*'})))
    page.goto('http://127.0.0.1:'+str(server.server_port)+'/');page.wait_for_load_state('networkidle')
    assert requests==[],'No events may leave before opt-in'
+   page.locator('#download-action a').evaluate('(link)=>link.addEventListener("click",event=>event.preventDefault())')
+   page.locator('#download-action a').click(no_wait_after=True);page.wait_for_timeout(100)
+   clicks=[x for x in requests if x['kind']=='download_click']
+   assert len(clicks)==1 and len(requests)==1,'Exactly one anonymous download click without opt-in'
+   assert set(clicks[0])=={'id','kind','page','platform','referrer','version'} and clicks[0]['platform'] in ('mac','linux') and clicks[0]['page']=='home',clicks[0]
+   requests.clear()
    page.locator('.site-analytics summary').click();page.locator('.site-analytics input').check();page.wait_for_timeout(100)
    assert len([x for x in requests if x['kind']=='site_view'])==1
    page.locator('#download-action a').evaluate('(link)=>link.addEventListener("click",event=>event.preventDefault())')
@@ -24,6 +30,6 @@ try:
    protected=browser.new_context();protected.add_init_script("Object.defineProperty(navigator,'globalPrivacyControl',{get:()=>true}); localStorage.setItem('qoopia.site-analytics.v1','allow');")
    tab=protected.new_page();denied=[];tab.route('https://auth.qoopia.ai/**',lambda route:(denied.append(route.request.url),route.abort()));tab.goto('http://127.0.0.1:'+str(server.server_port)+'/');tab.wait_for_load_state('networkidle')
    expect(tab.locator('.site-analytics input')).to_be_disabled();assert denied==[]
-   (out/'browser-checks.json').write_text(json.dumps({'status':'PASS','checks':['no request before opt-in','one page event after opt-in','download click collected','no content/identity/token fields','opt-out persists','GPC overrides stored opt-in'],'events_inspected':requests},indent=2))
+   (out/'browser-checks.json').write_text(json.dumps({'status':'PASS','checks':['no page/performance request before opt-in','anonymous download click without opt-in','one page event after opt-in','download click collected','no content/identity/token fields','opt-out persists','GPC overrides stored opt-in'],'events_inspected':requests},indent=2))
   finally:browser.close()
 finally:server.shutdown();server.server_close()

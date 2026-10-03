@@ -2,18 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { verify } from 'node:crypto';
 import { z } from 'zod';
-import { inventory, readJson, hash } from '../utils/fs.ts';
+import { inventory, readJson, readJsonBytes, hash } from '../utils/fs.ts';
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 export const bundleSchema = z.object({
   format: z.literal('qoopia-bundle/1'), version: z.string().regex(/^5\.0\.(?:0|[1-9][0-9]*)(?:-[a-z0-9.-]+)?$/),
   horizon: z.literal('QOOPIA-V-1'), api_version: z.literal(1), build_sha: z.string().regex(/^[a-f0-9]{40}$/),
   source_digest: hex, target: z.enum(['darwin-arm64', 'linux-x64']), bun_version: z.string(),
-  schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43),z.literal(44),z.literal(45),z.literal(46),z.literal(47)]),
+  schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43),z.literal(44),z.literal(45),z.literal(46),z.literal(47),z.literal(48)]),
   signing: z.enum(['test-fixture', 'publisher']), publisher_key_sha256: hex,
   platform_signing: z.enum(['NOT_RUN', 'externally_verified']),
   members: z.record(z.object({ size: z.number().int().nonnegative(), sha256: hex, mode: z.union([z.literal(0o600),z.literal(0o644),z.literal(0o700),z.literal(0o755)]) }).strict()),
 }).strict();
-export type BundleManifest = z.infer<typeof bundleSchema>;
 // An inventory member keeps the existing signed manifest envelope compatible.
 // Absence is NOT evidence that an old binary understands holds or journal pointers.
 export const OPS_READER_MEMBER = 'OPS-JOURNAL-READER.json';
@@ -25,8 +24,9 @@ export function requireOpsJournalV3(bundle: ReturnType<typeof verifyBundle>) {
   }
 }
 export function verifyBundle(root: string, publicKey: string, allowTest = false, target = `${process.platform}-${process.arch}`) {
-  const raw = fs.readFileSync(path.join(root, 'manifest.json'));
-  const m = bundleSchema.parse(readJson(path.join(root, 'manifest.json')));
+  // One bounded read: the signature and the trusted member table come from the same bytes.
+  const raw = readJsonBytes(path.join(root, 'manifest.json'));
+  const m = bundleSchema.parse(JSON.parse(raw.toString('utf8')));
   if (m.publisher_key_sha256 !== hash(publicKey)) throw new Error('Publisher trust root mismatch');
   if (!verify(null, raw, publicKey, fs.readFileSync(path.join(root, 'manifest.sig')))) throw new Error('Bundle signature invalid');
   if (m.signing === 'test-fixture' && !allowTest) throw new Error('Development test signing is not publisher trust; explicit --allow-test-fixture required');
@@ -41,6 +41,7 @@ export function verifyBundle(root: string, publicKey: string, allowTest = false,
   if(m.schema_max>=45&&!m.members['assets/migrations/045-agent-memory-policy.sql'])throw new Error('Required agent memory policy migration missing');
   if(m.schema_max>=46&&!m.members['assets/migrations/046-manual-message-ledger.sql'])throw new Error('Required manual boundary migration missing');
   if(m.schema_max>=47&&!m.members['assets/migrations/047-client-surfaces.sql'])throw new Error('Required client surface migration missing');
+  if(m.schema_max>=48&&!m.members['assets/migrations/048-read-path-indexes.sql'])throw new Error('Required read path index migration missing');
   if(m.schema_max>=44&&!m.members['assets/migrations/044-telegram-recovery.sql'])throw new Error('Required Telegram recovery migration missing');
   if(m.schema_max>=43&&!m.members['assets/migrations/043_my_agent_provider.sql'])throw new Error('Required agent provider migration missing');
   if(m.schema_max>=42&&!m.members['assets/migrations/042-my-agent.sql'])throw new Error('Required agent conversation migration missing');

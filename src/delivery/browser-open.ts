@@ -20,3 +20,14 @@ export function openBrowser(url:string,environment:NodeJS.ProcessEnv,platform:No
   }
   return false;
 }
+
+/** Without a desktop browser (SSH session, server) the caller keeps serving and prints how to reach it; the single-use setup code is never printed. */
+export function presentWorkspace(port:number,code:string,environment:NodeJS.ProcessEnv,open=openBrowser,print:(line:string)=>void=console.log):boolean {
+  const url=`http://127.0.0.1:${port}/dashboard`;
+  print('\nWelcome to Qoopia. Complete sign-in in your browser.\n'+url+'\n');
+  // The single-use OS capability is cleared from browser history before any request.
+  if(open(url+'#setup='+code,environment))return true;
+  print('No browser could be opened here; Qoopia keeps running.\n'+
+    `From another computer: ssh -L ${port}:127.0.0.1:${port} USER@THIS-HOST, open http://127.0.0.1:${port}/local-login there, and enter the code from "qoopia owner-login" run on this host.`);
+  return false;
+}

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,16 +35,23 @@ if (!COMMIT_SHA_RE.test(commitSha)) {
   throw new Error("Release build refused: HEAD is not a full commit SHA");
 }
 
+// OCI labels: package version and the commit time (reproducible, unlike build time).
+const version = (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version;
+const created = capture("git", ["show", "-s", "--format=%cI", "HEAD"]);
+
+// --identity builds the sign-in service image (qoopia-auth) under the same gates.
+const identity = process.argv.includes("--identity");
+const dockerfile = identity ? "deploy/identity.Dockerfile" : "Dockerfile";
 const tagIndex = process.argv.indexOf("--tag");
 const requestedTag = tagIndex >= 0 ? process.argv[tagIndex + 1] : undefined;
-const tag = requestedTag || `qoopia:${commitSha.slice(0, 12)}`;
+const tag = requestedTag || `${identity ? "qoopia-auth" : "qoopia"}:${commitSha.slice(0, 12)}`;
 
 // Tests compare the pinned old release with the upgrade. Supply Git history
 // without copying operator Git configuration or worktree-specific alternates.
 const history = mkdtempSync(join(tmpdir(), "qoopia-build-history-"));
 try {
 capture("git", ["bundle", "create", join(history, "history.bundle"), "HEAD"]);
-const contextArgs = ["--build-context", `history=${history}`];
+const contextArgs = ["-f", dockerfile, "--build-context", `history=${history}`];
 
 // Build the verification target explicitly so modern builders cannot prune it
 // as unused. The runtime target also copies its success marker as a second,
@@ -67,6 +74,10 @@ const runtimeBuild = spawnSync(
     "runtime",
     "--build-arg",
     `QOOPIA_GIT_SHA=${commitSha}`,
+    "--build-arg",
+    `QOOPIA_VERSION=${version}`,
+    "--build-arg",
+    `QOOPIA_CREATED=${created}`,
     "--label",
     `org.opencontainers.image.revision=${commitSha}`,
     "--tag",

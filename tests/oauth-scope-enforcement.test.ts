@@ -102,13 +102,9 @@ async function approve(ticketId: string, nonce: string, bearer: string): Promise
   });
 }
 
-async function finalize(ticketId: string): Promise<string> {
-  const r = await fetch(
-    `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-    { redirect: "manual" },
-  );
-  expect(r.status).toBe(302);
-  const code = new URL(r.headers.get("location")!).searchParams.get("code") || "";
+/** The approve 302 goes straight to the client callback with the code (F-076). */
+function callbackCode(approval: Response): string {
+  const code = new URL(approval.headers.get("location")!).searchParams.get("code") || "";
   expect(code).toMatch(/^qc_/);
   return code;
 }
@@ -147,7 +143,7 @@ async function issueToken(scope = ""): Promise<{
   const nonce = extractNonce(await ui.text());
   const approval = await approve(ticketId, nonce, STEWARD_KEY);
   expect(approval.status).toBe(302);
-  const code = await finalize(ticketId);
+  const code = callbackCode(approval);
   const exchanged = await exchange(code, verifier);
   return {
     accessToken: exchanged.access_token,
@@ -203,7 +199,9 @@ async function parseMcpResponse(r: Response): Promise<unknown> {
   const text = await r.text();
   try {
     return JSON.parse(text);
-  } catch {}
+  } catch {
+    // SSE body: parse data frames below.
+  }
 
   const frames = text
     .split("\n")
@@ -284,7 +282,7 @@ afterAll(async () => {
 });
 
 describe("OAuth scope validation + persistence", () => {
-  test("unknown scope is rejected at /oauth/authorize", async () => {
+  test("unknown scope is sent back to the registered redirect_uri (RFC 6749 §4.1.2.1)", async () => {
     const { verifier, challenge } = pkce();
     const url = new URL(`${baseUrl}/oauth/authorize`);
     url.searchParams.set("response_type", "code");
@@ -295,9 +293,13 @@ describe("OAuth scope validation + persistence", () => {
     url.searchParams.set("scope", "mcp:read totally:unknown");
     url.searchParams.set("state", verifier);
     const r = await fetch(url.toString(), { redirect: "manual" });
-    expect(r.status).toBe(400);
-    const body = await r.json() as { error?: string };
-    expect(body.error).toBe("invalid_scope");
+    expect(r.status).toBe(302);
+    const location = new URL(r.headers.get("location")!);
+    expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+    expect(location.searchParams.get("error")).toBe("invalid_scope");
+    expect(location.searchParams.get("state")).toBe(verifier);
+    expect(location.searchParams.get("iss")).toBeTruthy();
+    expect(location.searchParams.has("code")).toBe(false);
   });
 
   test("normalized scope is shown on consent and copied into code/access/refresh rows", async () => {
@@ -311,7 +313,7 @@ describe("OAuth scope validation + persistence", () => {
 
     const approval = await approve(ticketId, nonce, STEWARD_KEY);
     expect(approval.status).toBe(302);
-    const code = await finalize(ticketId);
+    const code = callbackCode(approval);
     const exchanged = await exchange(code, verifier);
     expect(exchanged.scope).toBe("mcp:read mcp:write");
 
@@ -435,6 +437,6 @@ describe("OAuth consent gate", () => {
     expect(r.status).toBe(403);
     const body = await r.json() as { error?: string; error_description?: string };
     expect(body.error).toBe("forbidden");
-    expect(body.error_description || "").toContain("steward or claude-privileged");
+    expect(body.error_description || "").toContain("steward or the workspace owner");
   });
 });

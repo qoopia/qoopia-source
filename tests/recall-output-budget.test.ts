@@ -4,6 +4,8 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { createNote, getNote } from "../src/services/notes.ts";
 import { recall, recallBaseline } from "../src/services/recall.ts";
+import { getRecallTrace } from "../src/services/recall-traces.ts";
+import { saveMessage, sessionExpand } from "../src/services/sessions.ts";
 
 let workspaceId = "";
 let agentId = "";
@@ -101,13 +103,13 @@ describe("default recall output budget", () => {
     const serialized = JSON.stringify(result);
     const disclosedIds = [
       ...result.results.map((row) => row.id),
-      ...result.completeness.omitted_results.ids,
+      ...result.completeness.omitted_results!.ids,
     ];
 
     expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(4_000);
     expect(result.completeness.status).toBe("partial");
     expect(result.completeness.omitted_fields).toContain("sanitized_query");
-    expect(result.results.length + result.completeness.omitted_results.count).toBe(10);
+    expect(result.results.length + result.completeness.omitted_results!.count).toBe(10);
     expect(new Set(disclosedIds)).toEqual(new Set(createdIds));
   });
 
@@ -155,5 +157,63 @@ describe("default recall output budget", () => {
     expect(completeness.omitted_results.count).toBeGreaterThan(0);
     expect(disclosedIds).toEqual(baseline.results.map((row) => row.id));
     expect(disclosedIds).not.toContain(privateNote.id);
+  });
+
+  test("trace=true keeps trace_id and drops results instead (F-104)", async () => {
+    const marker = "recallbudgettraceid";
+    for (let i = 0; i < 40; i++) {
+      createNote({ workspace_id: workspaceId, agent_id: agentId, type: "memory", text: `${marker} filler note ${i} with more words to fill the envelope` });
+    }
+    process.env.QOOPIA_V4_RECALL_EXPLAIN = "true";
+    try {
+      const result = await recall({
+        workspace_id: workspaceId, caller_agent_id: agentId, is_admin: false, query: marker,
+        scope: "notes", limit: 50, mode: "fts5", deep: false, deep_llm: false, explain: true, trace: true,
+      }) as Awaited<ReturnType<typeof recall>> & { trace_id?: string };
+      expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(4_000);
+      expect(result.completeness.status).toBe("partial");
+      expect(typeof result.trace_id).toBe("string");
+      const auth = { workspace_id: workspaceId, agent_id: agentId, agent_name: "recall-budget-agent", type: "standard", source: "api-key" } as const;
+      expect(getRecallTrace({ auth, trace_id: result.trace_id! }).items.length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.QOOPIA_V4_RECALL_EXPLAIN;
+    }
+  });
+
+  test("scope=sessions and scope=all are bounded too, with a working session_expand pointer (F-107)", async () => {
+    const marker = "recallbudgetsessions";
+    const body = `${marker} ${"long transcript line about harbour logistics\n".repeat(1_500)}`;
+    for (let i = 0; i < 3; i++) {
+      saveMessage({ session_id: "recall-budget-session", workspace_id: workspaceId, agent_id: agentId, role: "user", content: `${body} ${i}` });
+      createNote({ workspace_id: workspaceId, agent_id: agentId, type: "memory", text: `${body} note ${i}` });
+    }
+    for (const scope of ["sessions", "all"] as const) {
+      const result = await recall({ workspace_id: workspaceId, caller_agent_id: agentId, is_admin: false, query: marker, scope, limit: 50, mode: "fts5" });
+      expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(4_000);
+      expect(result.completeness.status).toBe("partial");
+      expect(result.results.length + (result.completeness.omitted_results?.count ?? 0)).toBe(scope === "sessions" ? 3 : 6);
+      for (const row of result.results.filter((r) => r.source === "sessions")) {
+        const request = row.full_body_request as { tool: string; arguments: { start_id: number; end_id: number; session_id: string } };
+        expect(request.tool).toBe("session_expand");
+        const expanded = sessionExpand({ workspace_id: workspaceId, agent_id: agentId, ...request.arguments });
+        expect(expanded.messages.map((m) => String(m.id))).toEqual([row.id]);
+        expect(expanded.messages[0]!.content.startsWith(body)).toBe(true);
+      }
+    }
+  });
+});
+
+describe("recall excerpt budget is shared across kept rows (F-305)", () => {
+  test("ten 2 KB notes: most rows kept and every kept row carries a useful excerpt", async () => {
+    const marker = "recallbudgetsharedexcerpt";
+    for (let i = 0; i < 10; i++) {
+      createNote({ workspace_id: workspaceId, agent_id: agentId, type: "memory",
+        text: `${marker} row ${i} ` + "content words ".repeat(150) });
+    }
+    const result = await recallNote(marker);
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(4_000);
+    expect(result.results.length + result.completeness.omitted_results!.count).toBe(10);
+    expect(result.results.length).toBeGreaterThanOrEqual(4);
+    for (const row of result.results) expect(Array.from(row.text).length).toBeGreaterThanOrEqual(100);
   });
 });

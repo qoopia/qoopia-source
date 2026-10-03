@@ -18,7 +18,15 @@ Existing `version`, `release_sha`, `server_role`, `instance_id`, and `writes_ena
 
 - `schema_version` as an integer;
 - `feature_flags` as booleans only, without raw environment/config values;
-- `build_commit` as the immutable full SHA.
+- `build_commit` as the immutable full SHA (always equal to `release_sha`, kept for existing diagnostics);
+- `embeddings` on `/health`: `ok`, `unavailable`, `not_loaded` (no indexing attempt yet) or `disabled`, from the last note indexing attempt. It is informational: recall falls back to FTS, so it never changes `status` or readiness.
+
+`/ready` answers 503 `not_ready` unless every `checks` value is `ok`:
+
+- `schema_version`: `ok`, `unavailable`, `uninitialized`, or `ahead` (the database was migrated by newer software than this build);
+- `pending_migrations`: `ok`, `unavailable`, or `pending`;
+- `storage`: `ok`, `degraded` (a write failed with SQLITE_FULL since start), or `low_space` (free space on the data volume below `QOOPIA_MIN_FREE_BYTES`, default 64 MiB);
+- `db_write` (writable instances only): `ok`, `busy` (another process held the write lock across two probes, at least 10 s apart), `readonly`, or `error`. The probe takes the lock for at most 200 ms and runs at most every 10 s. `writes_enabled` is false unless it is `ok`.
 
 ## V3 server/client matrix
 

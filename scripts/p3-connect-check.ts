@@ -36,7 +36,7 @@ try {
     child = Bun.spawn([binary, 'start', ...common], { cwd: outer, env: isolated, stdout: 'ignore', stderr: 'ignore' });
     for (let i = 0; i < 100; i++) {
       if (child.exitCode !== null) throw new Error('Compiled server exited');
-      try { const response = await fetch(`http://127.0.0.1:${current.port}/health`); if (response.ok) return; } catch {}
+      try { const response = await fetch(`http://127.0.0.1:${current.port}/health`); if (response.ok) return; } catch { /* Not listening yet; retry until the deadline. */ }
       await Bun.sleep(50);
     }
     throw new Error('Compiled server start timeout');

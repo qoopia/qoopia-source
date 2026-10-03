@@ -6,7 +6,7 @@ import { ownerFixture, completeContent } from "./helpers/p1-fixtures.ts";
 import { Database } from "bun:sqlite";
 
 test("T-05/T-22: actual CLI process uses the shared writer and rechecks current authorization", async () => {
-  const { database, owner } = ownerFixture(47), directory = mkdtempSync(join(tmpdir(), "p1-cli-"));
+  const { database, owner } = ownerFixture(48), directory = mkdtempSync(join(tmpdir(), "p1-cli-"));
   try {
     const data = join(directory, "data"); mkdirSync(data);
     const filename = join(data, "qoopia.db"); writeFileSync(filename, database.serialize());
@@ -41,3 +41,11 @@ test("T-05/T-22: actual CLI process uses the shared writer and rechecks current 
     current.close();
   } finally { database.close(); rmSync(directory, { recursive: true, force: true }); }
 }, 15_000);
+
+test("CLI usage lists every dispatched skill subcommand", async () => {
+  const source = await Bun.file(join(import.meta.dir, "..", "src/cli.ts")).text();
+  const listed = new Set(/^\s+skill ([a-z|-]+) --input/m.exec(source)![1]!.split("|"));
+  const dispatched = [...source.matchAll(/"skill:([a-z-]+)"\s*:/g)].map(match => match[1]!);
+  expect(dispatched.length).toBeGreaterThan(10);
+  expect(dispatched.filter(name => !listed.has(name))).toEqual([]);
+});

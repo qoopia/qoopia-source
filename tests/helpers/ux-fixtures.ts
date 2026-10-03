@@ -7,11 +7,12 @@ import {loginBroker} from '../../src/identity/broker.ts';
 import {confirmationMail} from '../../src/identity/messages.ts';
 import {profileView} from '../../src/identity/profile-view.ts';
 import {brandHead,brandLockup} from '../../src/brand.ts';
+import {fakeFetch} from './fake-fetch.ts';
 
 const out=resolve(process.argv[2]!);mkdirSync(out,{recursive:true});
 cpSync('src/public/brand',join(out,'brand'),{recursive:true});
 const db=new Database(':memory:'),origin='https://fixture.example.test';
-const broker=loginBroker(db,{origin,resendKey:'fixture',from:'fixture@example.test',googleClientId:'fixture',googleClientSecret:'fixture'},(async()=>{throw Error('No network in UX fixture');}) as typeof fetch);
+const broker=loginBroker(db,{origin,resendKey:'fixture',from:'fixture@example.test',googleClientId:'fixture',googleClientSecret:'fixture'},fakeFetch(async()=>{throw Error('No network in UX fixture');}));
 try{
   for(const lang of ['en','ru'] as const){
     for(const route of ['profile','confirm']){

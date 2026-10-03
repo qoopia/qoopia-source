@@ -23,9 +23,9 @@ test('P3 maintenance really expires traces, keeps durable feedback and reports v
  VALUES ('p3-feedback',?,'p3-feedback-note','p3-trace',?,'helpful','p3-feedback-key')`).run(owner.workspace_id,owner.agent_id);
  const result=runMaintenance();expect(result.ok).toBe(true);expect((result.report.recall_trace_expiry as {deleted_traces:number}).deleted_traces).toBeGreaterThan(0);
  expect(db.query("SELECT trace_id FROM recall_feedback WHERE id='p3-feedback'").get()).toEqual({trace_id:null});
- expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:47});
+ expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:48});
  const backups=fs.readdirSync(env.BACKUP_DIR).filter(n=>n.startsWith('qoopia-'));expect(backups.length).toBeGreaterThan(0);
- for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(47);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
+ for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(48);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
 });
 
 test('P3 task purge keeps only observable tombstones for immutable skill sources',()=>{
@@ -60,7 +60,13 @@ test('P3 task purge keeps only observable tombstones for immutable skill sources
  const revisionBefore=db.query("SELECT source_refs,source_digest FROM skill_draft_revisions WHERE source_digest IS NOT NULL AND workspace_id=?").get(owner.workspace_id);
  const captureBefore=db.query("SELECT source_refs,source_digest FROM skill_captures WHERE id='p3-session-capture'").get();
  const loadoutBefore=db.query("SELECT * FROM session_loadouts WHERE id='p3-loadout'").get();
+ const highWater=(db.query('SELECT MAX(updated_at_ms) AS ms FROM notes').get() as {ms:number}).ms;
  const result=runMaintenance();expect(result.ok).toBe(true);
+ // The tombstone is a note write: updated_at_ms moves with updated_at, past every earlier write.
+ const tomb=db.query("SELECT deleted_at,updated_at,updated_at_ms FROM notes WHERE id='p3-referenced-note'").get() as {deleted_at:string;updated_at:string;updated_at_ms:number};
+ expect(tomb.updated_at_ms).toBe(Date.parse(tomb.updated_at));
+ expect(tomb.updated_at_ms).toBeGreaterThan(highWater);
+ expect(tomb.deleted_at).toBe(tomb.updated_at);
 
  expect(result.report).toMatchObject({notes_purged:1,notes_tombstoned:1,sessions_purged:1,sessions_tombstoned:2,messages_purged:3});
  expect(db.query("SELECT source_refs,source_digest FROM skill_draft_revisions WHERE source_digest IS NOT NULL AND workspace_id=?").get(owner.workspace_id)).toEqual(revisionBefore);
@@ -134,4 +140,34 @@ test('round1 scheduled recovery preserves corrupt content and completes status a
   const latest=fs.readdirSync(env.BACKUP_DIR).filter(n=>!n.includes('2000-01-01')).map(n=>path.join(env.BACKUP_DIR,n));expect(latest).toHaveLength(1);
   expect(verifyBackup(latest[0]!,instance).format).toBe('qoopia-backup/2');expect(readOps(latest[0]!)).toEqual(state);
  }finally{env.BACKUP_DIR=original.backup;env.OPS_STATE_DIR=original.ops;fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('a referenced task-bound note or project becomes a tombstone instead of stopping maintenance and backups',async()=>{
+ const {createNote}=await import('../src/services/notes.ts');
+ runMigrations();db.query("INSERT INTO workspaces(id,name,slug) VALUES ('p3-fk-workspace','FK fixture','p3-fk-fixture')").run();
+ const owner=bootstrapOwner(db,'FK maintenance fixture',undefined,'p3-fk-workspace'),ws=owner.workspace_id,agent=owner.agent_id;
+ const task=createNote({workspace_id:ws,agent_id:agent,type:'task',text:'ship it',metadata:{status:'done'}});
+ db.query("UPDATE notes SET updated_at='2000-01-01T00:00:00Z' WHERE id=?").run(task.id);
+ const withFeedback=createNote({workspace_id:ws,agent_id:agent,text:'task-bound working note',task_bound_id:task.id});
+ db.query(`INSERT INTO recall_feedback(id,workspace_id,note_id,actor_agent_id,feedback,idempotency_key) VALUES ('p3-fk-feedback',?,?,?,'helpful','p3-fk-key')`).run(ws,withFeedback.id,agent);
+ const project=createNote({workspace_id:ws,agent_id:agent,type:'project',text:'Launch project',task_bound_id:task.id});
+ createNote({workspace_id:ws,agent_id:agent,text:'note filed under the project',project_id:project.id});
+ const plain=createNote({workspace_id:ws,agent_id:agent,text:'unreferenced task-bound note',task_bound_id:task.id});
+ const result=runMaintenance();
+ expect(result.ok).toBe(true);expect(result.report.backup).toMatchObject({verified:true});
+ expect(result.report.notes_tombstoned).toBeGreaterThanOrEqual(2);
+ const row=(id:string)=>db.query("SELECT text,deleted_at FROM notes WHERE id=?").get(id) as {text:string;deleted_at:string|null}|null;
+ for(const id of [withFeedback.id,project.id])expect(row(id)).toMatchObject({text:''});
+ expect(row(plain.id)).toBeNull();
+ expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+});
+
+test('F-280: activity_deleted counts activity rows, not FTS shadow writes',()=>{
+ runMigrations();db.query("INSERT INTO workspaces(id,name,slug) VALUES ('p3-activity-workspace','Activity fixture','p3-activity-fixture')").run();
+ const owner=bootstrapOwner(db,'Activity retention fixture',undefined,'p3-activity-workspace');
+ for(const id of ['f280-a','f280-b','f280-c'])db.query("INSERT INTO activity(id,workspace_id,agent_id,action,entity_type,entity_id,summary,created_at) VALUES (?,?,?,'fixture','note',?,'old activity','2000-01-01T00:00:00Z')").run(id,owner.workspace_id,owner.agent_id,id);
+ const old=(db.query("SELECT count(*) AS n FROM activity WHERE datetime(created_at) < datetime('now', ?)").get(`-${env.RETENTION_ACTIVITY_DAYS} days`) as {n:number}).n;
+ expect(old).toBeGreaterThanOrEqual(3);
+ const result=runMaintenance();expect(result.ok).toBe(true);
+ expect(result.report.activity_deleted).toBe(old);
 });

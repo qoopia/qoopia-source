@@ -1,4 +1,6 @@
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
-  Content-Security-Policy: default-src 'self'; img-src 'self'; style-src 'self' 'sha256-I/ZB69Zw7y/aUR9ndcbNttMUE8QzWd6Me4L4b4ODKlo=' 'sha256-eoc7pH8qQn+wRJqD3BcdmRCQIalPJ2OIvE+bNZORW+k='; script-src 'self'; connect-src 'self' https://auth.qoopia.ai; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Content-Security-Policy: default-src 'self'; img-src 'self'; style-src 'self' 'sha256-I/ZB69Zw7y/aUR9ndcbNttMUE8QzWd6Me4L4b4ODKlo='; script-src 'self'; connect-src 'self' https://auth.qoopia.ai; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'

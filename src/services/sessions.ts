@@ -2,11 +2,18 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { sanitizeFtsQuery } from "./recall.ts";
+import { readLevel, visibleTranscriptSql } from "../auth/principal.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, type MemoryOrigin } from "./memory-policy.ts";
+import { parseTimeBound } from "../utils/temporal.ts";
 
 const MAX_CONTENT = 100_000;
 const MAX_SUMMARY = 50_000;
+const EXPAND_PAGE = 500;
+
+/** F-091: an id held by another agent or workspace is refused exactly like a missing one,
+ * the same answer continuity gives, so no path tells which kind of owner holds it. */
+const unavailable = () => new QoopiaError("NOT_FOUND", "Session unavailable");
 
 export interface SessionSaveInput {
   workspace_id: string;
@@ -18,6 +25,9 @@ export interface SessionSaveInput {
   token_count?: number;
   /** Claude Code JSONL entry uuid — used for server-side dedup in ingest path */
   ingest_uuid?: string;
+  /** F-160: client retry key from MCP session_save. Deduplicated like ingest_uuid, but a
+   * reuse with a different message is a CONFLICT instead of a silent drop. */
+  message_id?: string;
   /** Defaults to "automatic": anything not proven to be a confirmed owner action obeys
    * the agent memory policy. Set by the server at the call site, never from a request body. */
   origin?: MemoryOrigin;
@@ -48,9 +58,7 @@ export function saveMessage(input: SessionSaveInput) {
     const existing = db
       .prepare(`SELECT agent_id FROM sessions WHERE id = ? AND workspace_id = ?`)
       .get(input.session_id, input.workspace_id) as { agent_id: string } | undefined;
-    if (existing && existing.agent_id !== input.agent_id) {
-      throw new QoopiaError("FORBIDDEN", `session ${input.session_id} belongs to another agent`);
-    }
+    if (existing && existing.agent_id !== input.agent_id) throw unavailable();
 
     // Upsert session — on conflict only update last_active,
     // preserve original agent_id (prevents cross-agent session hijack)
@@ -71,17 +79,13 @@ export function saveMessage(input: SessionSaveInput) {
     if (!ownerRow) {
       throw new QoopiaError("INTERNAL", "session upsert failed unexpectedly");
     }
-    if (ownerRow.workspace_id !== input.workspace_id) {
-      throw new QoopiaError(
-        "FORBIDDEN",
-        `session_id collision: owned by another workspace`,
-      );
-    }
+    if (ownerRow.workspace_id !== input.workspace_id) throw unavailable();
 
     // When ingest_uuid is provided (ingest-daemon path), use INSERT OR IGNORE for
     // server-side dedup. The UNIQUE index idx_session_messages_ingest_uuid on
     // (session_id, ingest_uuid) WHERE ingest_uuid IS NOT NULL makes this safe.
-    const insertSql = input.ingest_uuid
+    const key = input.ingest_uuid ?? input.message_id;
+    const insertSql = key
       ? `INSERT OR IGNORE INTO session_messages
           (workspace_id, session_id, agent_id, role, content, metadata, token_count, ingest_uuid, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -89,7 +93,7 @@ export function saveMessage(input: SessionSaveInput) {
           (workspace_id, session_id, agent_id, role, content, metadata, token_count, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
 
-    const insertParams = input.ingest_uuid
+    const insertParams = key
       ? [
           input.workspace_id,
           input.session_id,
@@ -98,7 +102,7 @@ export function saveMessage(input: SessionSaveInput) {
           input.content,
           JSON.stringify(input.metadata || {}),
           input.token_count ?? null,
-          input.ingest_uuid,
+          key,
           now,
         ]
       : [
@@ -114,9 +118,15 @@ export function saveMessage(input: SessionSaveInput) {
 
     const info = db.prepare(insertSql).run(...insertParams);
 
-    // OR IGNORE means changes=0 on duplicate — return dedup signal
-    if (input.ingest_uuid && info.changes === 0) {
-      return { saved: false, duplicate: true, session_id: input.session_id };
+    // OR IGNORE means changes=0 on duplicate — return dedup signal and the original row
+    if (key && info.changes === 0) {
+      const original = db
+        .prepare(`SELECT id, role, content FROM session_messages WHERE session_id = ? AND ingest_uuid = ?`)
+        .get(input.session_id, key) as { id: number; role: string; content: string };
+      if (input.message_id && (original.role !== input.role || original.content !== input.content)) {
+        throw new QoopiaError("CONFLICT", "message_id was already used for a different message");
+      }
+      return { saved: false, duplicate: true, session_id: input.session_id, id: original.id };
     }
 
     const id = Number(info.lastInsertRowid);
@@ -174,13 +184,8 @@ export function sessionRecent(p: SessionRecentParams) {
     .get(sessionId, p.workspace_id) as
     | { id: string; agent_id: string; created_at: string; last_active: string }
     | undefined;
-  if (!sess) {
-    throw new QoopiaError("NOT_FOUND", `session ${sessionId} not found`);
-  }
   // C3 fix: enforce agent ownership — agents cannot read each other's transcripts
-  if (sess.agent_id !== p.agent_id) {
-    throw new QoopiaError("FORBIDDEN", `session ${sessionId} belongs to another agent`);
-  }
+  if (!sess || sess.agent_id !== p.agent_id) throw unavailable();
 
   const rows = db
     .prepare(
@@ -250,8 +255,11 @@ export interface SessionSearchParams {
   agent_id: string;
   query: string;
   session_id?: string;
+  /** ADR-020: "workspace" and "all" are the same search of the caller's own workspace. */
   scope?: "own_agent" | "workspace" | "all";
-  privileged?: boolean;
+  /** The steward or the owner (seesWholeWorkspace): every agent's transcript, as recall
+   * scope 'sessions' gives it; otherwise the caller's shared-context toggle decides. */
+  is_admin?: boolean;
   limit?: number;
   since?: string;
   until?: string;
@@ -265,31 +273,24 @@ export function sessionSearch(p: SessionSearchParams) {
   const where: string[] = [`session_messages_fts MATCH ?`];
   const params: any[] = [sanitized];
 
-  if (scope === "all" && p.privileged) {
-    // no workspace filter — steward cross-workspace search
-  } else {
-    where.push(`sm.workspace_id = ?`);
-    params.push(p.workspace_id);
-    if (scope === "own_agent" || (scope === "workspace" && !p.privileged)) {
-      // H4 fix: standard agents can only search their own sessions.
-      // scope="workspace" for non-privileged is silently treated as "own_agent"
-      // to prevent cross-agent transcript exposure.
-      where.push(`sm.agent_id = ?`);
-      params.push(p.agent_id);
-    }
-  }
+  // ADR-020: never another workspace. Siblings' transcripts need the steward/owner
+  // role or the caller's shared-context toggle — the same rule as recall scope 'sessions'.
+  where.push(`sm.workspace_id = ?`, visibleTranscriptSql("sm"));
+  params.push(p.workspace_id, p.agent_id, scope === "own_agent" ? 0 : readLevel(p.agent_id, p.is_admin === true));
 
   if (p.session_id) {
     where.push(`sm.session_id = ?`);
     params.push(p.session_id);
   }
+  // Stored timestamps mix second and ms precision, so compare moments, not text.
+  // ponytail: strftime() keeps the created_at index out of a range scan; rows stay scoped above.
   if (p.since) {
-    where.push(`sm.created_at >= ?`);
-    params.push(p.since);
+    where.push(`strftime('%Y-%m-%dT%H:%M:%fZ', sm.created_at) >= ?`);
+    params.push(parseTimeBound(p.since, "since"));
   }
   if (p.until) {
-    where.push(`sm.created_at <= ?`);
-    params.push(p.until);
+    where.push(`strftime('%Y-%m-%dT%H:%M:%fZ', sm.created_at) <= ?`);
+    params.push(parseTimeBound(p.until, "until"));
   }
 
   const sql = `
@@ -361,13 +362,8 @@ export function sessionSummarize(input: SessionSummarizeInput) {
       `SELECT id, agent_id FROM sessions WHERE id = ? AND workspace_id = ?`,
     )
     .get(input.session_id, input.workspace_id) as { id: string; agent_id: string } | undefined;
-  if (!sess) {
-    throw new QoopiaError("NOT_FOUND", `session ${input.session_id} not found`);
-  }
   // C3 fix: enforce agent ownership for summarize
-  if (sess.agent_id !== input.agent_id) {
-    throw new QoopiaError("FORBIDDEN", `session ${input.session_id} belongs to another agent`);
-  }
+  if (!sess || sess.agent_id !== input.agent_id) throw unavailable();
 
   // H4 fix: validate that boundary messages belong to this session
   const startMsg = db
@@ -430,9 +426,9 @@ export function sessionExpand(p: {
   const rows = db
     .prepare(
       `SELECT id, session_id, agent_id, role, content, metadata, token_count, created_at
-       FROM session_messages WHERE ${where.join(" AND ")} ORDER BY id ASC`,
+       FROM session_messages WHERE ${where.join(" AND ")} ORDER BY id ASC LIMIT ?`,
     )
-    .all(...params) as Array<{
+    .all(...params, EXPAND_PAGE + 1) as Array<{
     id: number;
     session_id: string;
     agent_id: string | null;
@@ -442,6 +438,8 @@ export function sessionExpand(p: {
     token_count: number | null;
     created_at: string;
   }>;
+  const hasMore = rows.length > EXPAND_PAGE;
+  if (hasMore) rows.pop();
   const tokens = rows.reduce(
     (s, r) => s + Math.ceil(r.content.length / 4),
     0,
@@ -452,6 +450,8 @@ export function sessionExpand(p: {
       metadata: safeJsonParse(r.metadata, {} as Record<string, unknown>),
     })),
     count: rows.length,
+    has_more: hasMore,
+    next_start_id: hasMore ? rows[rows.length - 1]!.id + 1 : null,
     cost: { tokens_returned: tokens },
   };
 }

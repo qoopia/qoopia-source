@@ -4,7 +4,7 @@
  * All tests run against the per-process temp DB provisioned by
  * tests/setup.ts. Synthetic MAINMEMORY samples are written into a
  * fresh tmp dir per `describe` block; the real per-agent MAINMEMORY at
- * /home/askhat/.ductor-corsairmain/workspace/memory_system/MAINMEMORY.md
+ * ~/.<agent-home>/workspace/memory_system/MAINMEMORY.md
  * is NEVER read or written by this file. Test brief hard-codes this
  * rule.
  *
@@ -28,7 +28,6 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { getEntity, upsertEntity } from "../src/services/entities.ts";
 
 import {
-  applyMigration,
   classifySection,
   deriveSlug,
   durableEntityType,

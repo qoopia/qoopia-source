@@ -1,6 +1,13 @@
 {
   "schema_version": 1,
   "baseline_rule": "When the frozen V3 baseline is better than an absolute limit, the candidate may regress by at most 10 percent.",
+  "baseline_rule_gate": {
+    "candidate": "v4-flags-off",
+    "quantile": "p50",
+    "max_ratio": 1.1,
+    "noise_floor_ms": 1,
+    "scope": "Only flags-off serves the same request as V3 (flags-on adds hybrid, explain and lifecycle and has absolute budgets). Medians come from the same run; p95/p99 of three runs are too noisy for a ratio and are held to the absolute limits."
+  },
   "latency_ms": {
     "default_recall_p50_max": 75,
     "default_recall_p95_max": 250,
@@ -21,6 +28,15 @@
     "dashboard_initial_usable_render_max": 2000,
     "code_rollback_rto_max": 900000,
     "restore_rehearsal_rto_max": 1800000
+  },
+  "latency_ms_not_gated": {
+    "reason": "Informational: no V4 qualification report measures these yet, so benchmarks/v4/gate.ts cannot enforce them.",
+    "keys": [
+      "explain_overhead_p95_absolute_max", "explain_overhead_p95_percent_max", "deep_cross_encoder_p95_max", "deep_llm_judge_p95_max",
+      "mcp_non_search_read_p95_max", "mcp_normal_write_p95_max", "extraction_queue_ack_max", "extraction_50_messages_p95_max",
+      "agentcomm_persist_p95_max", "agentcomm_ack_healthy_consumer_p95_max", "agentcomm_close_synthetic_p95_max",
+      "dashboard_api_p95_max", "dashboard_initial_usable_render_max", "code_rollback_rto_max", "restore_rehearsal_rto_max"
+    ]
   },
   "quality": {
     "exact_lexical_recall_at_5_min": 0.98,

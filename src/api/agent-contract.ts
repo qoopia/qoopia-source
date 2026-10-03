@@ -2,7 +2,7 @@ import type {Database} from 'bun:sqlite';
 import type {AuthContext} from '../auth/middleware.ts';
 import {authorize,bootstrapToolAllowed,currentToolAuth,type AuthorityAction} from '../auth/policy.ts';
 import {grantedScopeAllowsRisk} from '../auth/oauth.ts';
-import {isToolAllowedForProfile,normalizeAgentProfile,toolCatalog,toolNames,type RiskClass} from '../mcp/tools.ts';
+import {isToolAllowedForProfile,normalizeAgentProfile,ownerAllowed,toolCatalog,toolNames,type RiskClass} from '../mcp/tools.ts';
 import {assertInstanceWriteAllowed} from '../utils/instance-role.ts';
 import {BRIDGE_READ_TOOLS,BRIDGE_TOOL_NAMES,bridgeRefusal} from '../bridges/api.ts';
 import {agentMemoryStatus} from '../services/memory-policy.ts';
@@ -24,7 +24,7 @@ const MECHANISMS:{id:string;title:string;match:RegExp;flag?:string}[]=[
   {id:'bridges',title:'Bridges and external material',match:/^bridge_/},
   {id:'files',title:'Files',match:/^file_/},
   {id:'transfer',title:'Export and import',match:/^(export_|import_)/},
-  {id:'management',title:'Agents, access and memory policy',match:/^(connection_prepare$|agent_(onboard|list|deactivate|set_profile)$|memory_(policy|save)_)/},
+  {id:'management',title:'Agents, access and memory policy',match:/^(connection_prepare$|agent_(onboard|list|deactivate|set_profile|set_shared_context)$|memory_(policy|save)_)/},
 ];
 const MCP_ONLY_SURFACES=['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','muse_code','muse_app','grok_bot'];
 
@@ -39,7 +39,7 @@ export function grantedTools(database:Database,auth:AuthContext,operations:reado
   // enforces: on a follower or with storage exhausted a write tool exists but always refuses,
   // and reporting it as available would be a promise the server cannot keep.
   const writable=(risk:RiskClass)=>{try{assertInstanceWriteAllowed(risk,'contract');return true;}catch{return false;}};
-  const registry=toolCatalog().filter(t=>(!t.admin||steward)&&bootstrapToolAllowed(t.name,bootstrap)&&isToolAllowedForProfile(t.risk,profile)&&grantedScopeAllowsRisk(auth.granted_scope,t.risk)&&writable(t.risk)).map(t=>t.name);
+  const registry=toolCatalog().filter(t=>(!t.admin||steward)&&(!t.ownerOnly||ownerAllowed(auth))&&bootstrapToolAllowed(t.name,bootstrap)&&isToolAllowedForProfile(t.risk,profile)&&grantedScopeAllowsRisk(auth.granted_scope,t.risk)&&writable(t.risk)).map(t=>t.name);
   const taken=new Set(toolNames('full').filter(name=>bootstrapToolAllowed(name,bootstrap)));
   const authority=operations.filter(op=>!op.humanOnly&&!taken.has(op.name)).filter(op=>{try{authorize(database,auth,op.action);return true;}catch{return false;}}).map(op=>op.name);
   const bridges=bridgeRefusal(auth)?[]:BRIDGE_TOOL_NAMES.filter(name=>{try{currentToolAuth(database,auth,BRIDGE_READ_TOOLS.includes(name)?'read':'write-low');return true;}catch{return false;}});

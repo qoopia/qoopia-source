@@ -4,7 +4,7 @@ import {Database} from 'bun:sqlite';import {randomUUID,randomBytes,createHash} f
 import {once} from 'node:events';import type {AddressInfo} from 'node:net';
 import {db} from '../src/db/connection.ts';import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';import {createWorkspace} from '../src/admin/workspaces.ts';
-import {connectionAction,connectionRegistrationAuth} from '../src/services/client-connections.ts';
+import {connectionAction,connectionRegistrationAuth,publicConnection} from '../src/services/client-connections.ts';
 import {registerClient,createConsentTicket,getConsentTicket} from '../src/auth/oauth.ts';
 import {loginBroker} from '../src/identity/broker.ts';
 import {remoteConnectionConsent} from '../src/identity/connection-consent.ts';
@@ -22,13 +22,20 @@ test('remote owner consent binds browser, account and exact client; real finaliz
   const emails:string[]=[];
   const broker=loginBroker(registry,{origin:loginOrigin,resendKey:'fixture',from:'test@example.test',googleClientId:'fixture',googleClientSecret:'fixture'},
     (async(_input,init)=>{emails.push(JSON.parse(String(init?.body)).text);return Response.json({id:'sent'});}) as typeof fetch);
-  const network=(async(input,init)=>broker(new Request(String(input),init),'synthetic')) as typeof fetch;
+  // F-125: the code a started sign-in shows; the confirmation page asks for it.
+  let code='';
+  const network=(async(input,init)=>{
+    const response=await broker(new Request(String(input),init),'synthetic');
+    if(String(input).endsWith('/requests')&&response.ok)code=String((await response.clone().json() as {confirm_code?:string}).confirm_code);
+    return response;
+  }) as typeof fetch;
   let handler=remoteConnectionConsent(root,db,network,loginOrigin);
   const server=startHttpServer();if(!server.listening)await once(server,'listening');
   const base='http://127.0.0.1:'+(server.address() as AddressInfo).port;
   const make=()=>{
     const connection=(connectionAction(owner.agent_id,{action:'apply',surface:'chatgpt_web',access_mode:'read_write',request_key:randomUUID()}) as any).connection;
-    const client=registerClient({client_name:'Synthetic <Client>',redirect_uris:['https://client.example/callback']},connectionRegistrationAuth(connection.id));
+    const redirect_uris=['https://chatgpt.com/connector_platform_oauth_redirect'];
+    const client=registerClient({client_name:'Synthetic <Client>',redirect_uris},connectionRegistrationAuth(connection.id,redirect_uris));
     const verifier=randomBytes(32).toString('base64url');
     const ticket=createConsentTicket({clientId:client.client_id,workspaceId:owner.workspace_id,redirectUri:client.redirect_uris[0]!,
       codeChallenge:createHash('sha256').update(verifier).digest('base64url'),codeChallengeMethod:'S256',scope:'mcp:read mcp:write',state:'client-state',resource:connection.mcp_url});
@@ -39,7 +46,7 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     // Real browser form POSTs suppress Origin under no-referrer; keep same-origin
     // submissions verifiable while withholding the consent URL from other sites.
     expect(response.headers.get('referrer-policy')).toBe('same-origin');
-    expect(response.headers.get('content-security-policy')).toContain("form-action 'self' https://client.example;");
+    expect(response.headers.get('content-security-policy')).toContain("form-action 'self' https://chatgpt.com;");
     const cookie=response.headers.get('set-cookie')!;expect(cookie).toContain('HttpOnly; Secure; SameSite=Strict; Path=/oauth/consent');
     let html=await response.text();
     if(process.env.QOOPIA_UX_FIXTURE_DIR){const file=path.join(process.env.QOOPIA_UX_FIXTURE_DIR,'consent-'+language+'.html');if(!fs.existsSync(file))fs.writeFileSync(file,html);}
@@ -55,7 +62,7 @@ test('remote owner consent binds browser, account and exact client; real finaliz
   };
   const confirm=async()=>{
     const token=new URL(emails.at(-1)!.match(/https:\/\/[^\s]+/)![0]).hash.slice(1);
-    expect((await broker(new Request(loginOrigin+'/confirm',{method:'POST',headers:{origin:loginOrigin,'content-type':'application/json'},body:JSON.stringify({token})}),'browser')).status).toBe(200);
+    expect((await broker(new Request(loginOrigin+'/confirm',{method:'POST',headers:{origin:loginOrigin,'content-type':'application/json'},body:JSON.stringify({token,code})}),'browser')).status).toBe(200);
   };
   try{
     const first=make(),browser=await session(first,'ru');
@@ -68,12 +75,14 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     }
     expect((await browser.post('start',{method:'email',email:binding.email},{cookie:'qoopia_dash=owner-cookie'})).result.status).toBe(403);
     expect(emails).toHaveLength(0);await browser.get();
-    const oldNonce=browser.nonce();expect((await browser.post('start',{method:'email',email:binding.email})).result.status).toBe(200);
+    const oldNonce=browser.nonce(),started=await browser.post('start',{method:'email',email:binding.email});
+    expect(started.result.status).toBe(200);expect(started.html).toContain('<strong>'+code+'</strong>');
     expect((await browser.post('check',{nonce:oldNonce})).result.status).toBe(403);await browser.get();
     expect((await browser.post('check')).html).toContain('подтверждения');
     expect(getConsentTicket(first.ticket.id)!.approved_by_agent_id).toBeNull();
     await confirm();const review=await browser.post('check');expect(review.html).toContain('Private remote space');
-    expect(review.html).toContain('Synthetic &lt;Client&gt;');expect(review.html).toContain('Чтение и запись памяти');
+    expect(review.html).toContain('Synthetic &lt;Client&gt;');expect(review.html).toContain('Чтение и добавление памяти');
+    expect(review.html).toContain('<dd>chatgpt.com</dd>');
     expect(getConsentTicket(first.ticket.id)!.approved_by_agent_id).toBeNull();
     const accountCookie=review.result.headers.get('set-cookie')!.split(';')[0]!;
     const another=make();
@@ -89,10 +98,13 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     expect(deniedTarget.searchParams.get('state')).toBe('client-state');expect(deniedTarget.searchParams.has('code')).toBe(false);
     const approvalNonce=browser.nonce();
     const allowed=await browser.post('approve');expect(allowed.result.status).toBe(303);
-    const agent=connectionRegistrationAuth(first.connection.id).agent_id;
+    const agent=publicConnection(first.connection.id).agent_id;
     expect(getConsentTicket(first.ticket.id)!.approved_by_agent_id).toBe(agent);expect(agent).not.toBe(owner.agent_id);
+    const target=new URL(allowed.result.headers.get('location')!);expect(target.origin+target.pathname).toBe(first.client.redirect_uris[0]!);
+    expect(target.searchParams.get('iss')).toBe(origin+'/oauth/c/'+first.connection.id);expect(target.searchParams.get('code')).toMatch(/^qc_/);
+    // F-076: the ticket id alone yields no code once approved.
     authLimiter.resetForTests();const final=await fetch(base+'/oauth/authorize/finalize?ticket='+first.ticket.id,{redirect:'manual'});
-    expect(final.status).toBe(302);const target=new URL(final.headers.get('location')!);expect(target.searchParams.get('iss')).toBe(origin+'/oauth/c/'+first.connection.id);
+    expect(final.status).toBe(400);expect(final.headers.get('location')).toBeNull();
     const replay=await browser.post('approve',{nonce:approvalNonce});expect(replay.result.status).toBe(303);expect(replay.result.headers.get('location')).toBe(target.href);
     expect((await browser.get()).result.headers.get('location')).toBe(target.href);
     expect((await handler(new Request(origin+'/oauth/consent?ticket='+first.ticket.id))).status).toBe(403);
@@ -107,11 +119,13 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     const direct=make(),dashboardCookie='qoopia_dash='+signSession(owner.agent_id,(db.query('SELECT session_version FROM agents WHERE id=?').get(owner.agent_id) as {session_version:number}).session_version);
     const reviewDirect=await fetch(base+'/api/dashboard/oauth-consent?ticket='+direct.ticket.id,{headers:{cookie:dashboardCookie},redirect:'manual'});
     expect(reviewDirect.status).toBe(200);const directHtml=await reviewDirect.text();expect(directHtml).toContain('Authorize access');
+    // read_write grants mcp:write, which never includes note_update or note_delete [F-302].
+    const scopes=/<ul class="scope-list">[\s\S]*?<\/ul>/.exec(directHtml)![0];expect(scopes).toContain('Add new memory records');expect(scopes).not.toMatch(/update/i);
     expect(getConsentTicket(direct.ticket.id)!.approved_by_agent_id).toBeNull();
     const directApprove=await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',headers:{cookie:dashboardCookie,origin,
       'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket:direct.ticket.id,nonce:directHtml.match(/name="nonce" value="([^"]+)"/)![1]!}),redirect:'manual'});
-    expect(directApprove.status).toBe(302);expect(getConsentTicket(direct.ticket.id)!.approved_by_agent_id).toBe(connectionRegistrationAuth(direct.connection.id).agent_id);
-    const strangerCookie='qoopia_dash='+signSession(connectionRegistrationAuth(first.connection.id).agent_id,0);
+    expect(directApprove.status).toBe(302);expect(getConsentTicket(direct.ticket.id)!.approved_by_agent_id).toBe(publicConnection(direct.connection.id).agent_id);
+    const strangerCookie='qoopia_dash='+signSession(publicConnection(first.connection.id).agent_id,0);
     const forbidden=make();
     expect((await fetch(base+'/api/dashboard/oauth-consent?ticket='+forbidden.ticket.id,{headers:{cookie:strangerCookie}})).status).toBe(403);
     const fallback=await fetch(base+'/api/dashboard/oauth-consent?ticket='+forbidden.ticket.id+'&session_check=1',{redirect:'manual'});

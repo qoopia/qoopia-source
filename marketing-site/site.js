@@ -8,7 +8,7 @@ if(platform){
    const action=document.querySelector('#download-action');action.replaceChildren();
    if(release.availability==='public'&&pkg.url&&new URL(pkg.url).protocol==='https:'){
     document.querySelector('#release-state').textContent=QI.msg('{version} is available for {platform}.',{version:release.version,platform:pkg.label});
-    const a=document.createElement('a');a.className='button';a.href=pkg.url;a.textContent=QI.msg('Download {format} ↓',{format:pkg.format});action.append(a);
+    const a=document.createElement('a');a.className='button';a.href=pkg.url;a.dataset.platform=platform.value;a.dataset.version=release.version;a.textContent=QI.msg('Download {format} ↓',{format:pkg.format});action.append(a);
     const checksum=document.createElement('p');checksum.className='release-meta';checksum.textContent='SHA-256: '+pkg.sha256;action.append(checksum);
    }
   }

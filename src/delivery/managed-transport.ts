@@ -11,7 +11,7 @@ import {QoopiaError} from '../utils/errors.ts';
 import {readTransport,writeTransport,type TransportConfig} from './transport-config.ts';
 import {transportSupervisor} from './transport-supervisor.ts';
 
-export const networkActionSchema=z.discriminatedUnion('action',[
+const networkActionSchema=z.discriminatedUnion('action',[
   z.object({action:z.literal('network-plan')}).strict(),z.object({action:z.literal('network-status')}).strict(),
   z.object({action:z.literal('network-start'),method:z.enum(['email','google']),language:z.enum(['en','ru']).optional()}).strict(),
   z.object({action:z.literal('network-resume')}).strict(),z.object({action:z.literal('network-enable')}).strict(),

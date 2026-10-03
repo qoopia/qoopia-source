@@ -25,7 +25,8 @@ import { assertNoSecrets } from "../utils/secret-guard.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { legacyMarkTested } from "../skills/compatibility.ts";
 import { db } from "../db/connection.ts";
-import type { SkillContent } from "../skills/format.ts";
+import { mdItem, mdLine, type SkillContent } from "../skills/format.ts";
+import { skillReviewLine, skillReviewState, type SkillReviewState } from "../skills/authority.ts";
 
 /**
  * Fields the skill_upsert caller MUST provide in metadata. Adding a
@@ -86,7 +87,7 @@ export interface SkillMetadata {
   [key: string]: unknown;
 }
 
-export interface SkillUpsertInput {
+interface SkillUpsertInput {
   expected_revision?: number;
   idempotency_key?: string;
   workspace_id: string;
@@ -232,14 +233,16 @@ export function skillUpsert(input: SkillUpsertInput, auth?: AuthContext): Upsert
   }, auth);
 }
 
-export interface SkillGetParams {
+interface SkillGetParams {
   workspace_id: string;
   id?: string;
   slug?: string;
 }
 
-export interface Skill extends Entity {
+interface Skill extends Entity {
   metadata: SkillMetadata;
+  /** Server-derived; never taken from the author's content. */
+  review_state: SkillReviewState;
 }
 
 /**
@@ -262,15 +265,17 @@ export function skillGet(p: SkillGetParams): Skill {
   const head = db.query(`SELECT r.content_json,r.legacy_runbook_json,r.actor_id,d.id AS draft_id,d.revision
     FROM skill_drafts d JOIN skill_draft_revisions r ON r.id=d.head_revision_id WHERE d.skill_id=? AND d.workspace_id=?`)
     .get(ent.id, p.workspace_id) as { content_json: string; legacy_runbook_json: string | null; actor_id: string; draft_id: string; revision: number } | null;
-  if (!head) return { ...ent, metadata: ent.metadata as SkillMetadata };
+  const review_state = skillReviewState(db, p.workspace_id, ent.id);
+  if (!head) return { ...ent, metadata: ent.metadata as SkillMetadata, review_state };
   const c = JSON.parse(head.content_json) as SkillContent;
   const original = head.legacy_runbook_json ? JSON.parse(head.legacy_runbook_json) : {};
   const last = db.query(`SELECT details_json FROM authority_events WHERE workspace_id=? AND subject_id=? AND kind='skill_test_self_reported' ORDER BY event_seq DESC LIMIT 1`)
     .get(p.workspace_id, ent.id) as { details_json: string } | null;
   const observation = last ? JSON.parse(last.details_json) : null;
-  return { ...ent, metadata: { ...original.metadata,
+  return { ...ent, review_state, metadata: { ...original.metadata,
     skill_version: original.metadata?.skill_version ?? `draft-${head.revision}`, owner_agent: head.actor_id,
-    trigger_conditions: c.trigger, scope: c.purpose, prerequisites: c.compatibility, exact_steps: c.procedure,
+    // Canonical content has no scope; keep the one a legacy writer supplied.
+    trigger_conditions: c.trigger, scope: original.metadata?.scope ?? c.purpose, prerequisites: c.compatibility, exact_steps: c.procedure,
     verification_gates: c.verification, failure_modes: c.failure_modes, rollback: c.rollback,
     related_code_paths: original.metadata?.related_code_paths ?? [], related_incidents: original.metadata?.related_incidents ?? [],
     draft_id: head.draft_id, revision: head.revision,
@@ -278,7 +283,7 @@ export function skillGet(p: SkillGetParams): Skill {
   } };
 }
 
-export interface SkillSearchParams {
+interface SkillSearchParams {
   workspace_id: string;
   query?: string;
   status?: EntityStatus;
@@ -289,17 +294,17 @@ export interface SkillSearchParams {
  * Search skill entities. Wraps entity_search with type='skill' pinned
  * so callers cannot accidentally widen the search across types.
  */
-export function skillSearch(p: SkillSearchParams): SearchHit[] {
+export function skillSearch(p: SkillSearchParams): Array<SearchHit & { review_state: SkillReviewState }> {
   return searchEntities({
     workspace_id: p.workspace_id,
     type: "skill",
     query: p.query,
     status: p.status,
     limit: p.limit,
-  });
+  }).map((hit) => ({ ...hit, review_state: skillReviewState(db, p.workspace_id, hit.id) }));
 }
 
-export interface SkillRunbook {
+interface SkillRunbook {
   id: string;
   slug: string;
   title: string;
@@ -308,21 +313,25 @@ export interface SkillRunbook {
 }
 
 /**
- * Render a skill as an actionable markdown runbook. Sections:
+ * Render a skill as a markdown runbook. Sections:
  * Trigger, Prerequisites, Steps, Verification, Failure modes,
  * Rollback, Code paths, Related incidents, Metadata. Operators
  * paste the rendered runbook into a session log when they execute
- * the skill — so the rendered form must be self-contained.
+ * the skill — so the rendered form must be self-contained, including
+ * the server-written review line: an unsealed draft is reference data.
  */
 export function skillRenderRunbook(p: SkillGetParams): SkillRunbook {
   const s = skillGet(p);
   const m = s.metadata;
+  const r = s.review_state;
+  const declared = r.state === "sealed" && !r.draft_newer_than_sealed ? "" : " (author-declared)";
 
   const lines: string[] = [];
-  lines.push(`# ${s.title}`);
+  lines.push(`# ${mdLine(s.title)}`);
   lines.push("");
+  lines.push(skillReviewLine(r));
   lines.push(
-    `*skill_version:* \`${m.skill_version}\` &middot; *owner:* \`${m.owner_agent}\` &middot; *status:* \`${s.status}\``,
+    `*skill_version:* \`${m.skill_version}\`${declared} &middot; *owner:* \`${m.owner_agent}\` &middot; *status:* \`${s.status}\``,
   );
   if (m.last_tested) {
     lines.push(
@@ -332,48 +341,48 @@ export function skillRenderRunbook(p: SkillGetParams): SkillRunbook {
   } else {
     lines.push(`*last_tested:* never`);
   }
-  lines.push(`*scope:* ${m.scope}`);
+  lines.push(mdItem("*scope:* ", m.scope, 0));
   lines.push("");
   if (s.summary) {
-    lines.push(s.summary);
+    lines.push(mdItem("", s.summary));
     lines.push("");
   }
 
   lines.push("## Trigger");
-  for (const t of m.trigger_conditions) lines.push(`- ${t}`);
+  for (const t of m.trigger_conditions) lines.push(mdItem("- ", t));
   lines.push("");
 
   lines.push("## Prerequisites");
-  for (const p of m.prerequisites) lines.push(`- ${p}`);
+  for (const p of m.prerequisites) lines.push(mdItem("- ", p));
   lines.push("");
 
   lines.push("## Steps");
   m.exact_steps.forEach((step, i) => {
-    lines.push(`${i + 1}. ${step}`);
+    lines.push(mdItem(`${i + 1}. `, step));
   });
   lines.push("");
 
   lines.push("## Verification");
-  for (const g of m.verification_gates) lines.push(`- [ ] ${g}`);
+  for (const g of m.verification_gates) lines.push(mdItem("- [ ] ", g, 2));
   lines.push("");
 
   lines.push("## Failure modes");
-  for (const f of m.failure_modes) lines.push(`- ${f}`);
+  for (const f of m.failure_modes) lines.push(mdItem("- ", f));
   lines.push("");
 
   lines.push("## Rollback");
-  lines.push(m.rollback);
+  lines.push(mdItem("", m.rollback));
   lines.push("");
 
   if (m.related_code_paths.length > 0) {
     lines.push("## Code paths");
-    for (const cp of m.related_code_paths) lines.push(`- \`${cp}\``);
+    for (const cp of m.related_code_paths) lines.push(`- \`${mdLine(cp)}\``);
     lines.push("");
   }
 
   if (m.related_incidents.length > 0) {
     lines.push("## Related incidents");
-    for (const inc of m.related_incidents) lines.push(`- ${inc}`);
+    for (const inc of m.related_incidents) lines.push(mdItem("- ", inc));
     lines.push("");
   }
 
@@ -389,7 +398,7 @@ export function skillRenderRunbook(p: SkillGetParams): SkillRunbook {
   };
 }
 
-export interface SkillMarkTestedInput {
+interface SkillMarkTestedInput {
   expected_revision?: number;
   idempotency_key?: string;
   workspace_id: string;

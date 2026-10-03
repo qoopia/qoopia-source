@@ -1,13 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { AuthContext } from "../auth/middleware.ts";
 import { authorize, type AuthorityAction, type Principal } from "../auth/policy.ts";
 import { QoopiaError } from "../utils/errors.ts";
-import { jcsCanonicalize, type JcsValue } from "./legacy/jcs.ts";
+import { canonical, digest } from "./canonical.ts";
 
-export function canonical(value: unknown): string { return jcsCanonicalize(value as JcsValue); }
-export function digest(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
-export interface CommandResult<T> { data: T; revision: number; request_id: string; operation_id: string; }
+export { canonical, digest } from "./canonical.ts";
+interface CommandResult<T> { data: T; revision: number; request_id: string; operation_id: string; }
 export interface CommandContext { id: string; now: number; principal: Principal; }
 
 /** Callback is synchronous: domain changes, audit, outbox and replay commit together. */

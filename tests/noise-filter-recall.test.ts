@@ -55,7 +55,7 @@ function startStub() {
       if (url.pathname === "/api/embed") {
         return req.json().then((body: any) => {
           const input = String(body.input || "");
-          const vec = new Array(EMBED_DIM).fill(0);
+          const vec = Array.from({ length: EMBED_DIM }, () => 0);
           if (input.includes("wantvec-target")) vec[0] = 1;
           else if (input.includes("wantvec-topn")) vec[7] = 1;
           else vec[9] = 1;
@@ -342,7 +342,7 @@ function beforeAll_makeNote(text: string) {
  * Noise filter v2 (refs PR #25) — extend the short-text vector filter
  * from type='project' to type IN ('project','task') with default
  * length<40. type='memory' must remain UNTOUCHED so short memory
- * anchors ("Aidan port 18789", "Tailscale IP 100.81.108.26") still
+ * anchors ("Aidan port 18789", "Tailscale IP <host-ip>") still
  * surface via vector recall.
  *
  * Probe on prod showed two queries ("крашнулся", "починили") still

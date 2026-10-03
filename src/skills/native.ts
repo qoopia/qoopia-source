@@ -8,12 +8,12 @@ import { assertPortableMembers, checkMembers } from './format.ts';
 import { checkPath } from './legacy/archive.ts';
 import { QoopiaError, type QoopiaErrorCode } from '../utils/errors.ts';
 
-export type FileMap=Record<string,{sha256:string;size:number}>;
+type FileMap=Record<string,{sha256:string;size:number}>;
 interface Owned { installation:string; runtime:string; skill_id:string; version_id:string; projection_digest:string; operation_id:string; epoch:number; files:FileMap; removed?:boolean; }
 interface Ledger { format:'qoopia-native-ledger/1'; installation:string; runtime:string; targets:Record<string,Owned>; }
 interface Journal { format:'qoopia-native-journal/1'; target:string; stage:string; backup:string; old:Owned|null; next:Owned; }
 export type Boundary='staged'|'intent'|'old_renamed'|'new_renamed'|'readback'|'ledger_committed';
-export interface NativeOperation { root:string; installation:string; runtime:string; target:string; skill_id:string; version_id:string;
+interface NativeOperation { root:string; installation:string; runtime:string; target:string; skill_id:string; version_id:string;
   projection_digest:string; operation_id:string; epoch:number; files:Map<string,Buffer>; guard:()=>void; fault?:(boundary:Boundary)=>void; }
 function refuse(code:QoopiaErrorCode,message:string):never {throw new QoopiaError(code,message);}
 export function existingRoot(root:string):string {
@@ -75,7 +75,7 @@ export function createRunSnapshot(root:string,attempts:readonly {loadout_id:stri
   const validate=()=>{for(const [path,pin] of pins){const stat=directory(path);if(stat.dev!==pin.dev||stat.ino!==pin.ino)refuse('MANUAL_DRIFT','Runtime bookkeeping boundary was replaced');}};
   return ()=>{validate();const files=hashNativeTree(root,homes);validate();return files;};
 }
-export interface NativeBinaryPin {path:string;dev:number;ino:number;uid:number;}
+interface NativeBinaryPin {path:string;dev:number;ino:number;uid:number;}
 const codexArg0Names=['apply_patch','applypatch','codex-execve-wrapper'] as const;
 function codexArg0(home:string,expected?:NativeBinaryPin){
   const ownedDirectory=(path:string)=>{

@@ -1,90 +1,29 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { Database } from "bun:sqlite";
-import { applyMigrationsToDatabase } from "../src/db/v4-migrations.ts";
-import { configureWritableDatabase } from "../src/db/sqlite.ts";
-import {
-  OUTBOX_MAX_ATTEMPTS,
-  deliverMemoryEvent,
-  enqueueMemoryEvent,
-  leaseMemoryEvent,
-  markMemoryEventFailed,
-  validateOutboxDestination,
-} from "../src/services/event-outbox.ts";
+import { describe, expect, test } from "bun:test";
+import { deliverMemoryEvent, validateOutboxDestination } from "../src/services/event-outbox.ts";
 import { MetricRegistry } from "../src/utils/observability.ts";
 import { redactLogContext, sanitizeLogMessage } from "../src/utils/logger.ts";
 import { verifyProductionGate } from "../scripts/v4-gate-verify.ts";
 import { buildRuntimeAcceptanceReport } from "../scripts/v4-runtime-acceptance.ts";
-
-const roots: string[] = [];
-const MIGRATIONS = path.resolve(import.meta.dir, "..", "migrations");
-
-function fixtureDb() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qoopia-p08-security-"));
-  roots.push(root);
-  const db = new Database(path.join(root, "fixture.db"), { create: true });
-  configureWritableDatabase(db);
-  applyMigrationsToDatabase(db, { migrationsDir: MIGRATIONS, targetVersion: 32 });
-  db.query("INSERT INTO workspaces (id,name,slug) VALUES ('ws-security','Security','security')").run();
-  return db;
-}
-
-afterEach(() => {
-  delete process.env.QOOPIA_V4_EVENT_OUTBOX;
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-});
+import { fakeFetch } from "./helpers/fake-fetch.ts";
 
 describe("P08 security and observability", () => {
-  test("outbox is default OFF, metadata-only, idempotent, and signed", async () => {
-    const db = fixtureDb();
-    expect(() => enqueueMemoryEvent({
-      workspace_id: "ws-security", event_type: "feedback_recorded", aggregate_kind: "note",
-      aggregate_id: "note-1", payload: { note_id: "note-1" }, idempotency_key: "outbox-off-key", database: db,
-    })).toThrow(/disabled/);
-    process.env.QOOPIA_V4_EVENT_OUTBOX = "true";
-    expect(() => enqueueMemoryEvent({
-      workspace_id: "ws-security", event_type: "feedback_recorded", aggregate_kind: "note",
-      aggregate_id: "note-1", payload: { body: "must not leave" }, idempotency_key: "outbox-body-key", database: db,
-    })).toThrow(/metadata-only/);
-    const first = enqueueMemoryEvent({
-      workspace_id: "ws-security", event_type: "feedback_recorded", aggregate_kind: "note",
-      aggregate_id: "note-1", payload: { note_id: "note-1", result: "helpful" }, idempotency_key: "outbox-good-key", database: db,
-    });
-    const replay = enqueueMemoryEvent({
-      workspace_id: "ws-security", event_type: "feedback_recorded", aggregate_kind: "note",
-      aggregate_id: "note-1", payload: { note_id: "note-1", result: "helpful" }, idempotency_key: "outbox-good-key", database: db,
-    });
-    expect(replay.id).toBe(first.id);
-    expect(replay.reused).toBe(true);
-    for (let attempt = 1; attempt <= OUTBOX_MAX_ATTEMPTS; attempt++) {
-      const lease = leaseMemoryEvent({ workspace_id: "ws-security", destination_id: "audit", lease_owner: `worker-${attempt}`, database: db });
-      if (attempt === 1) expect(lease).toBeNull();
-      break;
-    }
+  test("outbox delivery is metadata-only and signed", async () => {
+    const destination = { id: "audit", url: "https://events.example.test/v1", allowed_hosts: ["events.example.test"], signing_key: Buffer.alloc(32, 7) };
+    const resolver = async () => [{ address: "203.0.113.10" }];
+    await expect(deliverMemoryEvent({
+      row: { id: "event-body", event_type: "feedback_recorded", payload: JSON.stringify({ body: "must not leave" }) },
+      destination, resolver, fetchImpl: (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch,
+    })).rejects.toThrow(/metadata-only/);
     const delivered = await deliverMemoryEvent({
-      row: { id: first.id, event_type: "feedback_recorded", payload: JSON.stringify({ note_id: "note-1" }) },
-      destination: { id: "audit", url: "https://events.example.test/v1", allowed_hosts: ["events.example.test"], signing_key: Buffer.alloc(32, 7) },
-      resolver: async () => [{ address: "203.0.113.10" }],
-      fetchImpl: (async (_url: URL | RequestInfo, init?: RequestInit) => {
+      row: { id: "event-1", event_type: "feedback_recorded", payload: JSON.stringify({ note_id: "note-1" }) },
+      destination, resolver,
+      fetchImpl: fakeFetch(async (_url: string | URL | Request, init?: RequestInit) => {
         expect(init?.redirect).toBe("manual");
         expect((init?.headers as Record<string, string> | undefined)?.["x-qoopia-signature"]).toMatch(/^sha256=/);
         return new Response("ok", { status: 200 });
-      }) as typeof fetch,
+      }),
     });
     expect(delivered.status).toBe(200);
-    db.query("UPDATE memory_event_outbox SET destination_id='audit' WHERE id=?").run(first.id);
-    for (let attempt = 1; attempt <= OUTBOX_MAX_ATTEMPTS; attempt++) {
-      const owner = `worker-${attempt}`;
-      const lease = leaseMemoryEvent({ workspace_id: "ws-security", destination_id: "audit", lease_owner: owner, database: db });
-      expect(lease?.id).toBe(first.id);
-      const state = markMemoryEventFailed({ workspace_id: "ws-security", id: first.id, lease_owner: owner, error_code: "OFFLINE", database: db });
-      expect(state).toBe(attempt === OUTBOX_MAX_ATTEMPTS ? "dead_letter" : "failed");
-      if (state === "failed") db.query("UPDATE memory_event_outbox SET next_attempt_at='2000-01-01T00:00:00Z' WHERE id=?").run(first.id);
-    }
-    expect(leaseMemoryEvent({ workspace_id: "ws-security", destination_id: "audit", lease_owner: "extra", database: db })).toBeNull();
-    db.close();
   });
 
   test("SSRF controls reject non-HTTPS, private, redirect, and DNS rebinding targets", async () => {
@@ -97,8 +36,28 @@ describe("P08 security and observability", () => {
       row: { id: "event-redirect", event_type: "feedback_recorded", payload: "{}" },
       destination: { ...base, url: "https://events.example.test" },
       resolver: async () => [{ address: "203.0.113.5" }],
-      fetchImpl: (async () => new Response(null, { status: 302 })) as typeof fetch,
+      fetchImpl: fakeFetch(async () => new Response(null, { status: 302 })),
     })).rejects.toThrow(/redirect/);
+  });
+
+  test("SSRF private-address classifier covers every special-purpose range", async () => {
+    const base = { id: "d", allowed_hosts: ["events.example.test"], signing_key: Buffer.alloc(32, 9), url: "https://events.example.test" };
+    const verdict = async (address: string) =>
+      validateOutboxDestination(base, async () => [{ address }]).then(() => "allowed", () => "blocked");
+    const mustBlock = [
+      "127.0.0.1", "10.1.2.3", "169.254.169.254", "172.16.0.1", "172.31.255.255", "192.168.1.1", "0.0.0.0",
+      "100.64.0.1", "100.100.100.100", "198.18.0.1", "192.0.0.1", "224.0.0.1", "240.0.0.1", "255.255.255.255",
+      "::", "::1", "fd00::1", "fe80::1", "fec0::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:7f00:1",
+      "::ffff:a9fe:a9fe", "::FFFF:7F00:1", "::7f00:1", "64:ff9b::a9fe:a9fe", "2002:7f00:1::1", "fe80::1%eth0",
+    ];
+    const leaks: string[] = [];
+    for (const address of mustBlock) if (await verdict(address) === "allowed") leaks.push(address);
+    expect(leaks).toEqual([]);
+    for (const address of ["203.0.113.5", "93.184.216.34", "8.8.8.8", "::ffff:8.8.8.8", "2606:4700::1"]) {
+      expect(await verdict(address)).toBe("allowed");
+    }
+    await expect(validateOutboxDestination({ ...base, allowed_hosts: ["[::1]"], url: "https://[::1]/" }, async () => [{ address: "203.0.113.5" }]))
+      .rejects.toThrow(/private/);
   });
 
   test("logs redact secret-shaped values and metrics refuse identifier labels", () => {

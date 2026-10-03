@@ -74,7 +74,7 @@ export function workspaceState(ownerId:string) {
   return {owner:c.owner.agent_name,runtimes,sessions,busy,login};
 }
 const kindSchema=z.enum(['claude_code','codex']);
-export const workspaceActionSchema=z.discriminatedUnion('action',[
+const workspaceActionSchema=z.discriminatedUnion('action',[
   z.object({action:z.literal('connect'),runtime:kindSchema}).strict(),
   z.object({action:z.literal('login'),runtime:kindSchema}).strict(),
   z.object({action:z.literal('login-code'),runtime:kindSchema,code:z.string().trim().min(1).max(8192).refine(value=>!['\r','\n','\0'].some(c=>value.includes(c)),'Use a single-line authorization code')}).strict(),

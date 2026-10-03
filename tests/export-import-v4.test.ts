@@ -117,6 +117,54 @@ describe("P08 export/import and DR", () => {
     f.db.close();
   });
 
+  test("a message reference that the bundle does not carry is a MISSING_REFERENCE [F-049]", () => {
+    const f = fixture();
+    const signer = { private_key: f.privatePem };
+    // A pointer into another workspace survives export as a dangling reference: the bundle holds only ws-p08.
+    f.db.exec(`INSERT INTO workspaces (id,name,slug,settings) VALUES ('ws-o','Other','other','{}');
+      INSERT INTO agents (id,workspace_id,name,type,api_key_hash,metadata,tool_profile) VALUES ('agent-o','ws-o','Other','owner','hash-only','{}','full');
+      INSERT INTO agent_comm_sessions (id,workspace_id,topic,created_by_agent_id) VALUES ('s-o','ws-o','other','agent-o'),('s-p08','ws-p08','p08','agent-owner');
+      INSERT INTO agent_comm_messages (id,workspace_id,session_id,sender_agent_id,recipient_agent_id,kind,body) VALUES ('m-other','ws-o','s-o','agent-o','agent-o','request','x');
+      INSERT INTO agent_comm_messages (id,workspace_id,session_id,sender_agent_id,recipient_agent_id,kind,body,parent_message_id) VALUES ('m1','ws-p08','s-p08','agent-owner','agent-owner','reply','y','m-other');
+      INSERT INTO agent_wake_events (id,workspace_id,target_agent_id,session_id,message_id) VALUES ('w1','ws-p08','agent-owner','s-p08','m-other');`);
+    const plan = createExportPlan({ workspace_id: "ws-p08", actor_id: "agent-owner", release_sha: "p08-refs", include_ephemeral: true, signer, database: f.db });
+    const bundle = materializeExportBundle({
+      plan_hash: plan.plan_hash, idempotency_key: "p08-refs-idempotency", workspace_id: "ws-p08",
+      actor_id: "agent-owner", release_sha: "p08-refs", source_instance_id: "scratch", signer,
+      export_root: path.join(f.root, "exports"), database: f.db,
+    });
+    const target = new Database(path.join(f.root, "refs-target.db"), { create: true });
+    configureWritableDatabase(target);
+    applyMigrationsToDatabase(target, { migrationsDir: MIGRATIONS, targetVersion: 32 });
+    const result = validateImportPlan({
+      bundle_dir: bundle.output_dir, artifact_id: bundle.artifact_id, target_workspace_id: "ws-p08",
+      trust_store: { [bundle.signature_key_id]: f.publicPem }, database: target,
+    });
+    expect(result.valid).toBe(false);
+    expect(result.missing_references).toEqual(["agent_comm_messages:m-other"]);
+    expect(result.conflicts.map((c: any) => c.code)).toContain("MISSING_REFERENCE");
+    target.close();
+    f.db.close();
+  });
+
+  test("a partial bundle left by a failed or killed export blocks replay with a clear CONFLICT [F-058]", () => {
+    const f = fixture();
+    const signer = { private_key: f.privatePem };
+    const plan = createExportPlan({ workspace_id: "ws-p08", actor_id: "agent-owner", release_sha: "p08-partial", signer, database: f.db });
+    const artifactId = `v4-${createHash("sha256").update("ws-p08\np08-partial-key").digest("hex").slice(0, 32)}`;
+    fs.mkdirSync(path.join(f.root, "exports", artifactId, "data"), { recursive: true, mode: 0o700 });
+    let error: any;
+    try {
+      materializeExportBundle({
+        plan_hash: plan.plan_hash, idempotency_key: "p08-partial-key", workspace_id: "ws-p08", actor_id: "agent-owner",
+        release_sha: "p08-partial", source_instance_id: "scratch", signer, export_root: path.join(f.root, "exports"), database: f.db,
+      });
+    } catch (caught) { error = caught; }
+    expect(error?.code).toBe("CONFLICT");
+    expect(error?.message).toContain("partial export artifact");
+    f.db.close();
+  });
+
   test("agent primary-key collisions require explicit identity mapping", () => {
     const f = fixture();
     const signer = { private_key: f.privatePem };

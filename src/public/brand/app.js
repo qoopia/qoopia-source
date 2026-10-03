@@ -20,7 +20,7 @@
   registration=reg;
   const available=()=>{if(update&&reg.waiting&&navigator.serviceWorker.controller)update.hidden=false;};available();
   reg.addEventListener('updatefound',()=>{const worker=reg.installing;worker?.addEventListener('statechange',available);});
-  addEventListener('visibilitychange',()=>{if(!document.hidden)reg.update().catch(()=>{});});
+  addEventListener('visibilitychange',()=>{if(!document.hidden)reg.update().catch(()=>{/* Update check is retried on the next visibility change. */});});
  }).catch(()=>{/* Dashboard remains fully usable when installation is unavailable. */});
  if(update)update.onclick=()=>{if(registration?.waiting){requestedUpdate=true;registration.waiting.postMessage({type:'ACTIVATE_UPDATE'});}};
 })();

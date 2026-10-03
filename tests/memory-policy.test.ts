@@ -5,7 +5,7 @@ import {createWorkspace} from '../src/admin/workspaces.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {continuityEvent,checkpointSession,restoreContext,processMemoryMaintenance} from '../src/services/continuity.ts';
 import {saveMessage} from '../src/services/sessions.ts';
-import {memoryPolicy,setMemoryPolicy,listMemoryPolicies,resolveAgentByName} from '../src/services/memory-policy.ts';
+import {memoryPolicy,setMemoryPolicy,listMemoryPolicies,resolveAgentByName,duringManual} from '../src/services/memory-policy.ts';
 
 let workspace:string,owner:string,steward:string,aidan:string,liam:string,foreignWorkspace:string,foreignOwner:string;
 beforeAll(()=>{
@@ -141,7 +141,9 @@ test('the change is idempotent, revision-checked and logged without conversation
 });
 
 test('an ambiguous name is reported, never guessed',()=>{
-  createAgent({name:'Synthetic-Aidan',workspaceSlug:'memory-policy-check'});
+  // createAgent now refuses case-only variants; model one created before that guard.
+  const twin=createAgent({name:'synthetic-aidan-twin',workspaceSlug:'memory-policy-check'});
+  db.query("UPDATE agents SET name='Synthetic-Aidan' WHERE id=?").run(twin.id);
   expect(()=>resolveAgentByName(workspace,'synthetic-aidan')).toThrow('Several agents are named');
   expect(resolveAgentByName(workspace,'synthetic-liam').agent_id).toBe(liam);
   expect(()=>resolveAgentByName(workspace,'nobody')).toThrow('No active agent named');
@@ -197,4 +199,31 @@ test('repeated switches keep every new turn and no manual one, and a restart cha
     line('a1','Новый ход после возврата 1'),line('a2','Новый ход после возврата 2'),line('a3','Ход после перезапуска.')]);
   expect(kept()).toEqual(['Первый ход в auto.','Новый ход после возврата 1','Новый ход после возврата 2','Ход после перезапуска.']);
   expect(kept().filter(text=>text.includes('периода manual'))).toEqual([]);
+});
+
+test('a client stamp without a zone is never read in the server time zone',()=>{
+  const agent=createAgent({name:'synthetic-zoneless',workspaceSlug:'memory-policy-check'}).id,now=Date.now();
+  const log=db.query('INSERT INTO agent_memory_policy_log(workspace_id,agent_id,mode,revision,actor_id,created_at_ms) VALUES (?,?,?,?,?,?)');
+  log.run(workspace,agent,'manual',1,owner,now-14*3600000);log.run(workspace,agent,'auto',2,owner,now-3600000);
+  const inManual=duringManual(workspace,agent),twoHoursAgo=new Date(now-2*3600000).toISOString();
+  expect(inManual(twoHoursAgo)).toBe(true);
+  // Unparseable without a zone: it falls back to the server's receipt time under every TZ.
+  expect(inManual(twoHoursAgo.slice(0,19))).toBe(false);
+  expect(inManual(twoHoursAgo.replace('T',' ').slice(0,19))).toBe(false);
+});
+
+test('a replay that arrives days after a closed manual period still does not backfill it',()=>{
+  const offline=createAgent({name:'synthetic-offline',workspaceSlug:'memory-policy-check'}).id;
+  const known='claude_code:policy-offline-known',fresh='claude_code:policy-offline-new',DAY=86_400_000;
+  const msg=(id:string,content:string,ms:number)=>({id,role:'user',content,timestamp:new Date(ms).toISOString()});
+  const send=(session:string,event:string,items:unknown[])=>continuityEvent(workspace,offline,{session_id:session,project:'/policy',runtime:'claude_code',event,messages:items});
+  send(known,'start',[msg('o0','До отключения.',Date.now())]);
+  // The client never reached the server during a four-day manual period, so the ledger knows none of its ids.
+  const now=Date.now(),log=db.query('INSERT INTO agent_memory_policy_log(workspace_id,agent_id,mode,revision,actor_id,created_at_ms) VALUES (?,?,?,?,?,?)');
+  log.run(workspace,offline,'manual',1,owner,now-5*DAY);log.run(workspace,offline,'auto',2,owner,now-DAY);
+  for(const session of [known,fresh])send(session,'progress',[msg(session+'-1','Записано в manual 4 дня назад.',now-4*DAY),
+    msg(session+'-2','Записано в manual 3 дня назад.',now-3*DAY),msg(session+'-3','Записано после возврата в auto.',now-DAY/2)]);
+  const kept=(session:string)=>(db.query('SELECT content FROM session_messages WHERE session_id=? ORDER BY id').all(session) as {content:string}[]).map(r=>r.content);
+  expect(kept(known)).toEqual(['До отключения.','Записано после возврата в auto.']);
+  expect(kept(fresh)).toEqual(['Записано после возврата в auto.']);
 });

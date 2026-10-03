@@ -19,9 +19,9 @@ test('app login continues into only the saved workspace; a browser-delivered one
   };
   try{
     const empty=await(await call('/profile?app=ios&lang=ru')).text();expect(empty).toContain('Вход в Qoopia');expect(empty).not.toContain('My dashboard');expect(empty).not.toContain('Новости Qoopia');
-    await call('/profile/start',{method:'email',email:'owner@example.test'});
+    const confirmCode=(await (await call('/profile/start',{method:'email',email:'owner@example.test'})).json() as {code:string}).code;
     const token=new URL(mails[0]!.match(/https:\/\/[^\s]+/)![0]).hash.slice(1);
-    await call('/confirm',{token});expect((await call('/profile/poll',{})).status).toBe(200);
+    await call('/confirm',{token,code:confirmCode});expect((await call('/profile/poll',{})).status).toBe(200);
     await call('/profile/dashboard',{url:'https://workspace.example.test/dashboard'});
     const entry=await(await call('/profile?app=ios')).text();expect(entry).toContain('location.replace("https://workspace.example.test/dashboard?signin=account")');expect(entry).not.toContain('Open on iPhone');
     const flow=await start();

@@ -34,7 +34,7 @@ const authOf=(id:string):AuthContext=>{
 function advertised(auth:AuthContext) {
   const names:string[]=[],recorder={registerTool(name:string){names.push(name);return {};},tool(name:string){names.push(name);return {};}} as unknown as McpServer;
   const bootstrap=auth.legacy_skill_access===1?undefined:auth.authority_profile;
-  registerTools(recorder,()=>auth,'full',{isSteward:auth.type==='steward'||auth.type==='owner',bootstrapProfile:bootstrap,agentToolProfile:normalizeAgentProfile(auth.tool_profile,auth.agent_name)});
+  registerTools(recorder,()=>auth,'full',{isSteward:auth.type==='steward'||auth.type==='owner',bootstrapProfile:bootstrap,agentToolProfile:normalizeAgentProfile(auth.tool_profile,auth.agent_name),grantedScope:auth.granted_scope});
   registerAuthorityTools(recorder,()=>auth,new Set(toolNames('full').filter(name=>bootstrapToolAllowed(name,bootstrap))));
   registerBridgeTools(recorder,()=>auth);
   return names.filter(name=>name!=='qoopia_capabilities').sort();
@@ -51,6 +51,18 @@ test('the contract lists exactly the tools a real connection is offered, for eve
   expect(advertised(authOf(agents.standard!))).not.toContain('connection_prepare');
 });
 
+test('F-256: owner-only memory tools reach only the owner; a read-scoped steward keeps memory_policy_list',()=>{
+  const ownerOnly=['memory_policy_set','memory_save_list','memory_save_decide'];
+  const steward=authOf(agents.steward!),owner=authOf(agents.owner!),readSteward:AuthContext={...steward,granted_scope:['mcp:read']};
+  for(const name of ownerOnly){
+    expect([name,advertised(steward).includes(name),grantedTools(db,steward,authorityOperations).includes(name)]).toEqual([name,false,false]);
+    expect([name,advertised(owner).includes(name),grantedTools(db,owner,authorityOperations).includes(name)]).toEqual([name,true,true]);
+  }
+  expect(advertised(readSteward)).toContain('memory_policy_list');
+  expect(grantedTools(db,readSteward,authorityOperations)).toContain('memory_policy_list');
+  expect(grantedTools(db,readSteward,authorityOperations).sort()).toEqual(advertised(readSteward));
+});
+
 test('every registered tool belongs to a named mechanism',()=>{
   expect(agentContractFor(db,workspace,owner,authorityOperations)!.mechanisms.find(m=>m.id==='other')).toBeUndefined();
 });
@@ -60,7 +72,9 @@ test('each mechanism reports one of five states with a reason and an action',()=
   const standard=of(agents.standard!),reader=of(agents.reader!);
   expect(standard['memory.notes']).toMatchObject({status:'available',reason:null});
   expect(standard.management).toMatchObject({status:'forbidden',tools:[]});expect(standard.management!.action).toBeString();
-  expect(of(agents.steward!).management!.tools).toContain('memory_policy_set');
+  expect(of(agents.steward!).management!.tools).toContain('memory_policy_list');
+  expect(of(agents.steward!).management!.tools).not.toContain('memory_policy_set');
+  expect(of(owner).management!.tools).toContain('memory_policy_set');
   expect(reader['memory.notes']!.tools).toContain('recall');expect(reader['memory.notes']!.withheld).toContain('note_create');
   expect(standard.bridges).toMatchObject({status:'needs_setup'});
   if(process.env.QOOPIA_ENTITY_PAGES!=='true')expect(standard.knowledge).toMatchObject({status:'needs_setup'});

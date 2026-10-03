@@ -7,12 +7,16 @@ dist
 data
 logs
 backups
-.env
-.env.*
+**/.env
+**/.env.*
 !deploy/*.env.example
-*.log
-*.bak*
-*.tmp*
-*.swp
-*.swo
-*~
+**/*.log
+**/*.bak*
+**/*.tmp*
+**/*.swp
+**/*.swo
+**/*~
+**/.DS_Store
+# Local wrangler dev state (geolocation in cf.json, D1/KV files) and Python caches.
+**/.wrangler
+**/__pycache__

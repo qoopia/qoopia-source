@@ -3,8 +3,8 @@
  *   • /api/dashboard/agentcomm/threads — one row per agent pair
  *   • /api/dashboard/agentcomm/thread  — full transcript of one pair
  *
- * Bodies must come back VERBATIM (no truncation), and standard agents must
- * not be able to read a pair they are not part of.
+ * Bodies must come back VERBATIM (no truncation). ADR-020: an agent reads a
+ * pair it is not part of only while its shared-context toggle is on.
  */
 import {
   afterAll,
@@ -20,6 +20,7 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { startHttpServer } from "../src/http.ts";
 import { db } from "../src/db/connection.ts";
+import { acPairParams, acPairSql } from "../src/dashboard-api.ts";
 
 let server: Server;
 let baseUrl = "";
@@ -30,6 +31,7 @@ let LEO_KEY = "";
 let ALAN_ID = "";
 let ALAN_KEY = "";
 let OUTSIDER_KEY = "";
+let SHARED_KEY = "";
 let STEWARD_KEY = "";
 
 // Long enough to prove nothing clips it at 160/280 chars.
@@ -75,6 +77,9 @@ beforeAll(async () => {
   ALAN_KEY = alan.api_key;
   const outsider = createAgent({ name: "ac-outsider", workspaceSlug: ws.slug });
   OUTSIDER_KEY = outsider.api_key;
+  // ADR-020: the outsider's shared context is off; ac-shared keeps the default (on).
+  db.query("UPDATE agents SET metadata = json_set(metadata, '$.shared_context', json('false')) WHERE id = ?").run(outsider.id);
+  SHARED_KEY = createAgent({ name: "ac-shared", workspaceSlug: ws.slug }).api_key;
   const steward = createAgent({
     name: "ac-steward",
     workspaceSlug: ws.slug,
@@ -188,11 +193,30 @@ describe("AC-READ-001: AgentComm threads", () => {
     );
   });
 
-  test("an uninvolved standard agent sees no threads", async () => {
+  test("an uninvolved agent with shared context off sees no threads", async () => {
     const r = await get("/api/dashboard/agentcomm/threads", OUTSIDER_KEY);
     expect(r.status).toBe(200);
     const body = (await r.json()) as { items: any[] };
     expect(body.items.length).toBe(0);
+  });
+
+  test("an uninvolved agent with shared context on sees its siblings' threads (ADR-020)", async () => {
+    const r = await get("/api/dashboard/agentcomm/threads", SHARED_KEY);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: any[] };
+    expect(body.items.map((t) => t.pair_key)).toContain([LEO_ID, ALAN_ID].sort().join("|"));
+  });
+
+  test("overview AgentComm counts follow the toggle too", async () => {
+    const count = async (key: string) =>
+      ((await (await get("/api/dashboard/overview", key)).json()) as { comm: { messages_24h: number } }).comm.messages_24h;
+    db.query("UPDATE agent_comm_messages SET created_at = ? WHERE id = 'acm_3'").run(new Date().toISOString());
+    try {
+      expect(await count(SHARED_KEY)).toBeGreaterThan(0);
+      expect(await count(OUTSIDER_KEY)).toBe(0);
+    } finally {
+      db.query("UPDATE agent_comm_messages SET created_at = '2026-08-02T11:00:00Z' WHERE id = 'acm_3'").run();
+    }
   });
 
   test("unauthenticated requests are rejected", async () => {
@@ -238,7 +262,7 @@ describe("AC-READ-001: AgentComm transcript", () => {
     const p1 = (await first.json()) as any;
     expect(p1.messages.map((m: any) => m.id)).toEqual(["acm_3"]);
     expect(p1.has_more).toBe(true);
-    expect(p1.next_before).toBe("2026-08-02T11:00:00Z");
+    expect(p1.next_before).toBe("2026-08-02T11:00:00Z|acm_3");
 
     const second = await get(
       `${threadPath()}&limit=1&before=${encodeURIComponent(p1.next_before)}`,
@@ -255,9 +279,16 @@ describe("AC-READ-001: AgentComm transcript", () => {
     expect(r.status).toBe(200);
   });
 
-  test("an uninvolved standard agent is FORBIDDEN", async () => {
+  test("an uninvolved agent with shared context off is FORBIDDEN", async () => {
     const r = await get(threadPath(), OUTSIDER_KEY);
     expect(r.status).toBe(403);
+  });
+
+  test("an uninvolved agent with shared context on reads the thread in full", async () => {
+    const r = await get(threadPath(), SHARED_KEY);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { messages: Array<{ body: string }> };
+    expect(body.messages.map((m) => m.body)).toContain(LONG_BODY);
   });
 
   test("missing agent ids are a 400", async () => {
@@ -274,5 +305,98 @@ describe("AC-READ-001: AgentComm transcript", () => {
       headers: { authorization: `Bearer ${STEWARD_KEY}` },
     });
     expect(r.status).toBe(405);
+  });
+});
+
+// F-192: the transcript names only agents of this workspace or of a pair that has a thread here.
+describe("AgentComm transcript names stay inside the workspace", () => {
+  const thread = async (a: string, b: string, key: string) =>
+    (await (await get(`/api/dashboard/agentcomm/thread?a=${a}&b=${b}`, key)).json()) as any;
+
+  test("ids from another workspace are not resolved to names", async () => {
+    const other = createWorkspace({ name: "AgentComm Elsewhere", slug: "agentcomm-elsewhere" });
+    const gamma = createAgent({ name: "ac-gamma", workspaceSlug: other.slug }).id;
+    const delta = createAgent({ name: "ac-delta", workspaceSlug: other.slug }).id;
+    const viaSteward = await thread(gamma, delta, STEWARD_KEY);
+    expect([viaSteward.agent_a.name, viaSteward.agent_b.name]).toEqual([null, null]);
+    const viaParty = await thread(LEO_ID, gamma, LEO_KEY);
+    expect([viaParty.agent_a.name, viaParty.agent_b.name]).toEqual(["ac-leo", null]);
+  });
+
+  test("a federated pair with a thread stored here keeps both names", async () => {
+    const peerWs = createWorkspace({ name: "AgentComm Peer", slug: "agentcomm-peer" });
+    const peer = createAgent({ name: "ac-peer", workspaceSlug: peerWs.slug }).id;
+    insertMessage({ id: "acm_fed_1", session_id: "acs_1", sender: LEO_ID, recipient: peer, body: "federated", created_at: "2026-08-04T09:00:00Z" });
+    const body = await thread(LEO_ID, peer, STEWARD_KEY);
+    expect([body.agent_a.name, body.agent_b.name]).toEqual(["ac-leo", "ac-peer"]);
+  });
+});
+
+describe("dashboard pages keyset on (created_at, id)", () => {
+  async function walk(path: string, key: "messages" | "items", wanted: string[]) {
+    const seen: string[] = [];
+    let before: string | null = null;
+    for (let page = 0; page < 20 && wanted.some((id) => !seen.includes(id)); page++) {
+      const r = await get(`${path}&limit=2${before ? `&before=${encodeURIComponent(before)}` : ""}`, STEWARD_KEY);
+      const body = (await r.json()) as Record<string, any>;
+      seen.push(...body[key].map((row: { id: string }) => row.id));
+      before = body.next_before;
+      if (!before) break;
+    }
+    return seen.filter((id) => wanted.includes(id));
+  }
+
+  test("every AgentComm message of one second is seen exactly once", async () => {
+    const peer = createAgent({ name: "ac-burst", workspaceSlug: "agentcomm-read" }).id;
+    const ids = ["acm_burst_1", "acm_burst_2", "acm_burst_3"];
+    for (const id of ids) {
+      insertMessage({ id, session_id: "acs_1", sender: LEO_ID, recipient: peer, body: id, created_at: "2026-08-03T09:00:00Z" });
+    }
+    expect((await walk(`/api/dashboard/agentcomm/thread?a=${LEO_ID}&b=${peer}`, "messages", ids)).sort()).toEqual(ids);
+  });
+
+  test("every activity row of one second is seen exactly once", async () => {
+    const ids = ["act_burst_1", "act_burst_2", "act_burst_3"];
+    for (const id of ids) {
+      db.prepare(
+        `INSERT INTO activity (id, workspace_id, agent_id, action, entity_type, entity_id, summary, details, visibility, created_at)
+         VALUES (?, ?, ?, 'probe', 'note', ?, 'burst', '{}', 'workspace', '2099-01-01T00:00:00Z')`,
+      ).run(id, WORKSPACE_ID, LEO_ID, id);
+    }
+    expect((await walk("/api/dashboard/activity?x=1", "items", ids)).sort()).toEqual(ids);
+  });
+
+  test("a bare timestamp from an older page still pages; a broken cursor is a 400", async () => {
+    const legacy = await get(`${threadPath()}&limit=1&before=${encodeURIComponent("2026-08-02T11:00:00Z")}`, STEWARD_KEY);
+    expect(((await legacy.json()) as any).messages.map((m: any) => m.id)).toEqual(["acm_2"]);
+    for (const path of [threadPath(), "/api/dashboard/activity?x=1"]) {
+      expect((await get(`${path}&before=${encodeURIComponent("2026-08-02T11:00:00Z|")}`, STEWARD_KEY)).status).toBe(400);
+    }
+  });
+});
+
+describe("F-272: pair queries probe the recipient index per direction", () => {
+  const plan = (sql: string, params: unknown[]) =>
+    (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as never[])) as Array<{ detail: string }>).map((r) => r.detail);
+
+  test("last message and transcript page never scan the whole workspace", () => {
+    const cursor = " AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))";
+    for (const [sql, extra] of [
+      [acPairSql("m.id, m.created_at"), []],
+      [acPairSql("m.*", cursor), ["2026-08-02T11:00:00Z", "2026-08-02T11:00:00Z", "acm_3"]],
+    ] as const) {
+      const details = plan(sql, acPairParams(WORKSPACE_ID, LEO_ID, ALAN_ID, [...extra], 5));
+      const searches = details.filter((d) => d.startsWith("SEARCH m "));
+      expect(searches.length).toBe(2);
+      for (const d of searches) expect(d).toContain("recipient_agent_id=?");
+      expect(details.join(" ; ")).not.toContain("SCAN m");
+    }
+  });
+
+  test("a self-addressed pair is listed once", () => {
+    insertMessage({ id: "acm_self", session_id: "acs_1", sender: LEO_ID, recipient: LEO_ID, body: "note to self", created_at: "2026-08-04T09:00:00Z" });
+    const rows = db.query(acPairSql("m.id, m.created_at")).all(...(acPairParams(WORKSPACE_ID, LEO_ID, LEO_ID, [], 10) as never[])) as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).toEqual(["acm_self"]);
+    db.prepare(`DELETE FROM agent_comm_messages WHERE id = 'acm_self'`).run();
   });
 });

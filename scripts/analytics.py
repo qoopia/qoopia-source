@@ -55,7 +55,18 @@ class Store:
         github=json.loads(ecosystem['payload']).get('report') if ecosystem else None
         history=[dict(r) for r in self.db.execute("SELECT metric,dimensions,substr(observed_at,1,10) AS day,value FROM (SELECT *,row_number() OVER(PARTITION BY metric,dimensions,substr(observed_at,1,10) ORDER BY observed_at DESC) AS n FROM observations WHERE source='github_ecosystem' AND observed_at>=datetime('now','-90 days')) WHERE n=1 ORDER BY day DESC LIMIT 10000")]
         for r in history:r['dimensions']=json.loads(r['dimensions'])
-        return {'github_ecosystem':github,'github_history':history,'provider_freshness':freshness,'generated_at':utc(),'coverage':'Owned services and provider APIs only; independent user installations are not reporting telemetry. Browser events are untrusted counts, not unique users.','latest':latest,'source_runs':runs,'event_daily':events}
+        # Website download-button clicks (anonymous browser counts; not completed downloads or people).
+        where="FROM events WHERE source='browser' AND kind='download_click'"
+        dims="coalesce(json_extract(data,'$.platform'),'other') AS platform,coalesce(json_extract(data,'$.version'),'unknown') AS version"
+        first=self.db.execute("SELECT min(received_at) "+where).fetchone()[0]
+        clicks={'total':self.db.execute("SELECT count(*) "+where).fetchone()[0],
+                'last_7d':self.db.execute("SELECT count(*) "+where+" AND received_at>=(strftime('%s','now','-7 days')*1000)").fetchone()[0],
+                'last_30d':self.db.execute("SELECT count(*) "+where+" AND received_at>=(strftime('%s','now','-30 days')*1000)").fetchone()[0],
+                'since':datetime.datetime.fromtimestamp(first/1000,UTC).isoformat() if first else None,
+                'by_release':[dict(r) for r in self.db.execute("SELECT "+dims+",count(*) AS clicks,max(received_at) AS last_at "+where+" GROUP BY platform,version ORDER BY version DESC,platform LIMIT 500")],
+                'daily':[dict(r) for r in self.db.execute("SELECT date(received_at/1000,'unixepoch') AS day,"+dims+",coalesce(json_extract(data,'$.page'),'other') AS page,count(*) AS clicks "+where+" GROUP BY day,platform,version,page ORDER BY day DESC,platform,version,page LIMIT 2000")],
+                'note':'Anonymous website download-button clicks (UTC days). Not completed downloads, installs or unique people; browsers with GPC/DNT are not counted.'}
+        return {'download_clicks':clicks,'github_ecosystem':github,'github_history':history,'provider_freshness':freshness,'generated_at':utc(),'coverage':'Owned services and provider APIs only; independent user installations are not reporting telemetry. Browser events are untrusted counts, not unique users.','latest':latest,'source_runs':runs,'event_daily':events}
 
 def get(url,headers=None):
     req=urllib.request.Request(url,headers={'User-Agent':'Qoopia-Analytics/1','Accept':'application/json',**(headers or {})})
@@ -243,7 +254,7 @@ def main():
     if a.export:
         dest=Path(a.export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(s.export(),ensure_ascii=False,indent=2)+'\n');temp.replace(dest)
     if a.owner_export:
-        data=s.export();data={k:data[k] for k in ['generated_at','latest','event_daily','source_runs','github_ecosystem','github_history']}
+        data=s.export();data={k:data[k] for k in ['generated_at','latest','event_daily','source_runs','github_ecosystem','github_history','download_clicks']}
         dest=Path(a.owner_export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(data,ensure_ascii=False)+'\n')
         temp.replace(dest)
     if a.backup:

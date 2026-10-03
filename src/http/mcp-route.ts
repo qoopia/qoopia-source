@@ -23,10 +23,8 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
 
   const connectionId=/^\/mcp\/c\/([a-f0-9-]{36})$/.exec(new URL(req.url!,env.PUBLIC_URL).pathname)?.[1];
   const resourceBase=connectionId?connectionOrigin(connectionId):env.PUBLIC_URL;
-  // Authenticate
-  const body = method === "GET" || method === "DELETE" ? undefined : await readBody(req);
-  const fetchReq = nodeReqToFetchRequest(req, body);
-  const auth = authenticate(fetchReq);
+  // Authenticate from headers before reading the body, so an anonymous caller cannot make us buffer 1 MB.
+  const auth = authenticate(nodeReqToFetchRequest(req));
   if (!auth) {
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -43,9 +41,17 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
+  const body = method === "GET" || method === "DELETE" ? undefined : await readBody(req);
   if(connectionId){
     const connection=publicConnection(connectionId);
     if(auth.agent_id!==connection.agent_id||auth.workspace_id!==connection.workspace_id)return json(res,403,{error:'connection_mismatch'},req);
+  }
+  // Stateless transport: no session to stream to or delete, so no idle server per GET stream (F-261).
+  if (method === "GET" || method === "DELETE") {
+    const origin = getAllowedOrigin(req);
+    res.writeHead(405, { allow: "POST", ...(origin ? { "access-control-allow-origin": origin, vary: "Origin" } : {}) });
+    res.end();
+    return;
   }
   // QSA-F / ADR-016: normalize the agent's per-agent tool profile once
   // per request. Unknown / null values are coerced to 'read-only' with
@@ -79,9 +85,10 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
   // Run inside AsyncLocalStorage so concurrent requests never share auth context
   // Migration036 marks pre-existing principals. Their unchanged /mcp URL keeps its old discovery
   // surface; live profile and OAuth scope still gate every call. Recorded on the context so the
-  // agent contract describes this connection instead of a stricter hypothetical one.
-  const bootstrapProfile = auth.legacy_skill_access === 1 || new URL(req.url ?? "/mcp", "http://local").searchParams.get("profile") === "full"
-    ? undefined : auth.authority_profile;
+  // agent contract describes this connection instead of a stricter hypothetical one. A request
+  // parameter never widens a stored profile: `?profile=full` used to lift any connection's
+  // access profile to the full legacy catalogue (F-253).
+  const bootstrapProfile = auth.legacy_skill_access === 1 ? undefined : auth.authority_profile;
   auth.bootstrap_profile = bootstrapProfile ?? null;
 
   await authStorage.run(auth, async () => {
@@ -95,8 +102,9 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
       sessionIdGenerator: undefined,
     });
     res.on("close", () => {
-      try { transport.close(); } catch {}
-      try { server.close(); } catch {}
+      // Best-effort teardown on client disconnect; nothing to report to a closed response.
+      try { transport.close(); } catch { /* see above */ }
+      try { server.close(); } catch { /* see above */ }
     });
 
     await server.connect(transport);
@@ -105,7 +113,8 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
       try {
         parsedBody = JSON.parse(body.toString("utf8"));
       } catch {
-        return json(res, 400, { error: "invalid_json", message: "Request body is not valid JSON" }, req);
+        // The same JSON-RPC parse error the SDK answers for every other unparsable body.
+        return json(res, 400, { jsonrpc: "2.0", error: { code: -32700, message: "Parse error: Invalid JSON" }, id: null }, req);
       }
     }
     await transport.handleRequest(req, res, parsedBody);

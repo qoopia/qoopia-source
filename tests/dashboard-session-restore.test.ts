@@ -1,6 +1,5 @@
 import {test,expect} from 'bun:test';
 import {dashboardSource} from './helpers/dashboard-source.ts';
-import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 const html=dashboardSource;
 const start=html.lastIndexOf('  (async()=>{');
@@ -29,4 +28,27 @@ for(const signin of ['account','complete'])test('account continuation starts aga
   showLogin:()=>events.push('login'),startAccountLogin:async()=>events.push('account'),awaitEmailConfirmation:async()=>events.push('email'),loginError:()=>events.push('error'),
  });
  expect(events).toEqual(['login','account']);
+});
+
+// F-331: the boot check reads only r.ok; an unread body kept the request open until the 15 s timeout aborted it.
+for(const authorized of [true,false])test('the session check releases the response bodies it does not read: '+(authorized?'signed in':'signed out'),async()=>{
+ const released:string[]=[];
+ const body=(name:string)=>({cancel:async()=>{released.push(name);}});
+ await runInNewContext(restore,{
+  setupCode:null,accountCode:null,accountSignIn:null,AbortSignal,finishAccountSignIn(){},BASE:'',$:()=>({}),
+  fetch:async(url:string)=>url.endsWith('/identity')?{ok:false,body:body('identity')}:{ok:authorized,body:body('agents')},
+  consumeSafeNext:()=>false,showApp(){},boot(){},showLogin(){},loginError(){},
+ });
+ expect(released.sort()).toEqual(['agents','identity']);
+});
+
+// F-324: a signed-in owner on a slow link sees a neutral check, not the sign-in card, until the check answers.
+test('the sign-in card stays hidden while the session is being checked',()=>{
+ const start=html.indexOf('  const $ = (s) => document.querySelector(s);'),end=html.indexOf('  // ---------- API ----------',start);
+ const nodes:Record<string,any>={},inserted:string[]=[];
+ const document={querySelector:(s:string)=>(nodes[s]??={style:{}}),body:{insertAdjacentHTML:(_:string,markup:string)=>inserted.push(markup)}};
+ runInNewContext(html.slice(start,end),{document,QI:{msg:String}});
+ expect(nodes['#loginView'].style.display).toBe('none');
+ expect(inserted.join('')).toContain('Checking your session…');
+ expect(inserted.join('')).toContain('role="status"');
 });

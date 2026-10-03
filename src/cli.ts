@@ -3,7 +3,7 @@ import { PRODUCT_VERSION } from "./utils/product-version.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { install } from "./admin/install.ts";
 import { assertSchemaCurrent, getPendingMigrations } from "./db/migrate.ts";
 import {
@@ -23,6 +23,7 @@ import {
 } from "./admin/claude-agents.ts";
 import { env } from "./utils/env.ts";
 import { db, closeDb, DB_PATH } from "./db/connection.ts";
+import { createVerifiedBackup } from "./services/backup.ts";
 import { adoptManagedSkill, bindManagedRoot, openManagedSession, materializeSession, removeSessionProjection, runCsvTask } from "./skills/adapter.ts";
 import { authorityOperations, effectiveAuthority, apiError, handleAuthorityRequest } from "./api/authority.ts";
 import { authenticate } from "./auth/middleware.ts";
@@ -38,7 +39,7 @@ Commands:
   owner bootstrap --name <new-human-name> --workspace-name <name> | --workspace-id <existing-id>
                                                 Local database OS owner only; creates a separate human, never promotes an agent
   capabilities                                  Show current scoped P1 schemas and effective configuration
-  skill capture|revise|compile|review|accept|seal|assign|update|lifecycle|outcome|rate|loop|get|search|runbook --input <json-file>
+  skill capture|revise|compile|review|accept|seal|assign|update|lifecycle|feedback|outcome|rate|loop|get|search|runbook|import-review|import-resolve --input <json-file>
   runtime configure|open|get|claim|authorize|observe --input <json-file>
   runtime bind --runtime-id ID --root ABSOLUTE_DIRECTORY
   runtime start --runtime-id ID --native-session REF --session-id ID
@@ -54,10 +55,10 @@ Commands:
   status                                        Health check
   logs [--follow]                               Tail server log
   version                                       Print version and DB schema version
-  backup [--to <path>]                          Manual SQLite backup
+  backup [--to <path>]                          Verified 0600 SQLite backup into a private (0700) directory
   admin create-workspace <name> [--slug <slug>]
   admin list-workspaces
-  admin create-agent <name> --workspace <slug> [--type standard|claude-privileged|steward|ingest-daemon]
+  admin create-agent <name> --workspace <slug> [--type standard|steward|ingest-daemon]
   admin list-agents
   admin rotate-key <name> --workspace <slug>
   admin delete-agent <name> --workspace <slug>
@@ -246,27 +247,31 @@ async function main() {
         });
         return;
       case "uninstall": {
-        const plistPath = path.join(
-          os.homedir(),
-          "Library/LaunchAgents/com.qoopia.mcp.plist",
-        );
-        try {
-          execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
-        } catch {}
-        if (fs.existsSync(plistPath)) fs.unlinkSync(plistPath);
-        console.log("Service stopped and plist removed.");
+        const label = "com.qoopia.mcp";
+        const plistPath = path.join(os.homedir(), `Library/LaunchAgents/${label}.plist`);
+        const installed = fs.existsSync(plistPath);
+        if (installed) spawnSync("launchctl", ["unload", plistPath], { stdio: "ignore" });
+        // Legacy `launchctl unload` exits 0 even when it fails: ask launchd whether the job is gone.
+        if (spawnSync("launchctl", ["list", label], { stdio: "ignore" }).status === 0) {
+          console.error(installed
+            ? `${label} is still loaded; ${plistPath} is kept so a retry can unload it. Check: launchctl list ${label}`
+            : `${label} is still loaded but ${plistPath} is missing. Check: launchctl list ${label}`);
+          process.exitCode = 1;
+          return;
+        }
+        if (installed) {
+          fs.unlinkSync(plistPath);
+          console.log("Service stopped and plist removed.");
+        } else console.log("No LaunchAgent installed.");
         console.log(`Data at ${env.DATA_DIR} preserved (rm -rf ~/.qoopia to delete).`);
         return;
       }
       case "backup": {
-        const to = arg("to", path.join(env.BACKUP_DIR, `qoopia-manual-${Date.now()}.db`));
-        // Validate path to avoid dynamic SQL injection — only allow safe characters
-        if (!/^[a-zA-Z0-9/_.\-~]+$/.test(to!)) {
-          console.error(`Backup path contains unsafe characters: ${to}`);
-          process.exit(1);
-        }
-        db.prepare("VACUUM INTO ?").run(to as string);
-        console.log(`Backup written to ${to}`);
+        // Verified snapshot: 0700 parent (shared directories refused), 0600
+        // file, integrity check, never overwrites. Same path as every other backup.
+        const to = arg("to", path.join(env.BACKUP_DIR, `qoopia-manual-${Date.now()}.db`))!;
+        const report = createVerifiedBackup({ source: DB_PATH, output: path.resolve(to) });
+        console.log(`Backup written to ${report.output} (${report.size_bytes} bytes, sha256 ${report.sha256}, mode 0600)`);
         return;
       }
       case "admin": {

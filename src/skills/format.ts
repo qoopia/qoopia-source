@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { KeyObject } from "node:crypto";
-import { canonical, digest } from "./commands.ts";
+import { canonical, digest } from "./canonical.ts";
 import { checkPath, readTar, gunzipLimited, LIMITS } from "./legacy/archive.ts";
 import { foldKey } from "./legacy/unicode.ts";
 import { parseJsonStrict, utf8Decode, type JcsValue } from "./legacy/jcs.ts";
@@ -9,8 +9,12 @@ import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets, redactSensitive } from "../utils/secret-guard.ts";
 
 export const COMPILER = "qoopia-structured/1";
-export const RENDERER = "qoopia-markdown/1";
-export const NATIVE_RENDERER = "qoopia-native-markdown/1";
+// /2 keeps author text inside its own item (mdItem). Candidates frozen under /1
+// keep their reviewed bytes: they still parse, seal and activate.
+export const RENDERER = "qoopia-markdown/2";
+export const NATIVE_RENDERER = "qoopia-native-markdown/2";
+const FROZEN_NATIVE_RENDERER = "qoopia-native-markdown/1";
+export const isNativeRenderer = (renderer: string) => renderer === NATIVE_RENDERER || renderer === FROZEN_NATIVE_RENDERER;
 const text = z.string().max(100_000);
 const strings = z.array(text).max(100);
 const json: z.ZodType<JcsValue> = z.lazy(() => z.union([
@@ -29,7 +33,8 @@ const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const descriptorSchema = z.object({
   format: z.literal("qoopia-skill-candidate/1"), version_label: z.string().min(1).max(100),
   license: z.string().min(1).max(200), compatibility: strings, requested_capabilities: strings,
-  secret_placeholders: strings, compiler: z.literal(COMPILER), renderer: z.enum([RENDERER, NATIVE_RENDERER]),
+  secret_placeholders: strings, compiler: z.literal(COMPILER),
+  renderer: z.enum([RENDERER, NATIVE_RENDERER, "qoopia-markdown/1", FROZEN_NATIVE_RENDERER]),
   members: z.record(z.object({ size: z.number().int().nonnegative(), sha256: sha }).strict()),
 }).strict();
 export type Descriptor = z.infer<typeof descriptorSchema>;
@@ -48,11 +53,27 @@ export function missingRequirements(c: SkillContent): string[] {
 }
 export function contentDigest(content: SkillContent): string { return digest(canonical({ compiler_version: COMPILER, content })); }
 
+/** Author text that must stay on its own line: a heading, a code span. */
+export const mdLine = (value: string) => value.replace(/[\r\n]+/g, " ");
+
+/**
+ * Author text as one item of a rendered runbook (marker "" for a paragraph).
+ * A leading Markdown block marker is escaped on every line and continuation
+ * lines are indented under the marker, so the text cannot leave its item: no
+ * heading, list, checked box, rule, quote, fence or HTML block of its own.
+ */
+export function mdItem(marker: string, value: string, indent = marker.length): string {
+  return marker + value.split(/\r\n|\r|\n/).map((line, i) => (i && line ? " ".repeat(indent) : "") +
+    line.replace(/^(\s*)(?:([#>+*=_`~|<-])|(\d+)([.)]))/, (_, space, mark, digits, dot) =>
+      space + (mark ? `\\${mark}` : `${digits}\\${dot}`))).join("\n");
+}
+
 export function renderRunbook(c: SkillContent): string {
-  return [`# ${c.title}`, c.purpose, "## Trigger", ...c.trigger, "## Inputs", canonical(c.inputs_schema),
-    "## Outputs", canonical(c.outputs_schema), "## Procedure", ...c.procedure.map((step, i) => `${i + 1}. ${step}`),
-    "## Verification", ...c.verification, "## Failure modes", ...c.failure_modes, "## Rollback", c.rollback,
-    "## Compatibility", ...c.compatibility, "## Requested capabilities", ...c.requested_capabilities,
+  const items = (list: string[]) => list.map((value) => mdItem("- ", value));
+  return [`# ${mdLine(c.title)}`, mdItem("", c.purpose), "## Trigger", ...items(c.trigger), "## Inputs", canonical(c.inputs_schema),
+    "## Outputs", canonical(c.outputs_schema), "## Procedure", ...c.procedure.map((step, i) => mdItem(`${i + 1}. `, step)),
+    "## Verification", ...items(c.verification), "## Failure modes", ...items(c.failure_modes), "## Rollback", mdItem("", c.rollback),
+    "## Compatibility", ...items(c.compatibility), "## Requested capabilities", ...items(c.requested_capabilities),
     "## Secret references", ...c.secret_refs.map((name) => `\${${name}}`), ""].join("\n\n");
 }
 
@@ -106,9 +127,12 @@ export function compileContent(content: SkillContent, label: string, license: st
 export function signaturePayload(descriptor: Descriptor): JcsValue {
   return { profile: "qoopia-skill-signature/1", descriptor } as unknown as JcsValue;
 }
+/** The one package envelope: sealing in authority.ts and the frozen T-11 fixture share these bytes. */
+export function encodePackage(descriptor: Descriptor, members: Record<string, string>, signature: string): Buffer {
+  return Buffer.from(canonical({ format: "qoopia-skill-package/1", signature_profile: "qoopia-skill-signature/1", descriptor, members, signature }));
+}
 export function sealPackage(descriptor: Descriptor, members: Record<string, string>, key: KeyObject, kid: string): Buffer {
-  const { jws } = signManifest(signaturePayload(descriptor), key, kid);
-  return Buffer.from(canonical({ format: "qoopia-skill-package/1", signature_profile: "qoopia-skill-signature/1", descriptor, members, signature: jws }));
+  return encodePackage(descriptor, members, signManifest(signaturePayload(descriptor), key, kid).jws);
 }
 export function parsePackage(bytes: Buffer, expectedDigest: string, publicKey: string, expectedKid: string) {
   if (bytes.length > 96 * 1024 * 1024) throw new QoopiaError("SIZE_LIMIT", "Serialized package exceeds 96 MiB");

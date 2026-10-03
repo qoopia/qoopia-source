@@ -1,25 +1,44 @@
-import {Tokenizer} from '@huggingface/tokenizers';
-import type * as Ort from 'onnxruntime-web';
-let ort:typeof Ort;
-import {pathToFileURL} from 'node:url';
-import {setImmediate} from 'node:timers/promises';
-import {assetPath} from '../utils/assets.ts';
-
-export const BUILTIN_DIM=384;
-let loaded:Promise<{tokenizer:Tokenizer;session:Ort.InferenceSession}>|undefined;
-function runtime() {
-  return loaded??= (async()=>{
-    ort=await import(pathToFileURL(assetPath('models/ort.wasm.bundle.min.mjs')).href);
-    const root=assetPath('models/multilingual-e5-small');
-    ort.env.wasm.numThreads=1;
-    ort.env.wasm.wasmPaths={mjs:pathToFileURL(assetPath('models/ort-wasm-simd-threaded.mjs')).href,
-      wasm:pathToFileURL(assetPath('models/ort-wasm-simd-threaded.wasm')).href};
-    const tokenizer=new Tokenizer(await Bun.file(root+'/tokenizer.json').json(),await Bun.file(root+'/tokenizer_config.json').json());
-    const session=await ort.InferenceSession.create(new Uint8Array(await Bun.file(root+'/model.onnx').arrayBuffer()),{executionProviders:['wasm']});
-    return {tokenizer,session};
-  })().catch(error=>{loaded=undefined;throw error;});
+const BUILTIN_DIM=384;
+/** One inference worker. Loading the tokenizer and ONNX/WASM inference block their thread
+ * for up to seconds, so they must not share the event loop that serves HTTP (F-081, F-307).
+ * A run that exceeds timeoutMs rejects and the worker is replaced; an idle worker does not
+ * keep the process alive. */
+export function inferenceWorker(url:URL|string,timeoutMs:number) {
+  let worker:Worker|undefined,seq=0;
+  const waiting=new Map<number,{resolve:(result:{vector:Float32Array;end:number})=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+  function stop(reason='Built-in embedding worker stopped') {
+    worker?.unref();worker?.terminate();worker=undefined;
+    for(const w of waiting.values()){clearTimeout(w.timer);w.reject(new Error(reason));}
+    waiting.clear();
+  }
+  function spawn() {
+    // The standalone launcher replaces process.env (configure() in src/delivery/entry.ts); a
+    // worker would otherwise see the original environment and miss QOOPIA_BUNDLE_ASSETS.
+    const spawned=new Worker(url,{env:{...process.env} as Record<string,string>});
+    spawned.onmessage=({data}:MessageEvent<{id:number;vector?:Float32Array;end?:number;error?:string}>)=>{
+      const w=waiting.get(data.id);if(!w)return;
+      waiting.delete(data.id);clearTimeout(w.timer);if(!waiting.size)spawned.unref();
+      if(data.vector)w.resolve({vector:data.vector,end:data.end!});else w.reject(new Error(data.error));
+    };
+    spawned.onerror=event=>{if(worker===spawned)stop('Built-in embedding worker failed: '+event.message);};
+    return spawned;
+  }
+  /** Embeds `prefix` plus the head of `text` that fits the model; `end` is how much of `text` it covers. */
+  function run(prefix:string,text:string) {
+    const id=++seq,current=worker??=spawn();
+    return new Promise<{vector:Float32Array;end:number}>((resolve,reject)=>{
+      waiting.set(id,{resolve,reject,timer:setTimeout(()=>{if(worker===current)stop('Built-in embedding timed out');},timeoutMs)});
+      current.ref();current.postMessage({id,prefix,text});
+    });
+  }
+  return {run,stop};
 }
-export interface EmbeddedChunk {start:number;end:number;vector:Float32Array}
+// The standalone binary embeds the worker as an extra compile entrypoint
+// (scripts/build-bundle.ts) under its virtual root, the entrypoints' common src/.
+const inference=inferenceWorker(import.meta.url.startsWith('file:///$bunfs/')?'./services/builtin-embeddings-worker.ts'
+  :new URL('./builtin-embeddings-worker.ts',import.meta.url),60_000);
+export function stopBuiltinEmbeddings(){inference.stop();}
+interface EmbeddedChunk {start:number;end:number;vector:Float32Array}
 function normalize(v:Float32Array) {
   const norm=Math.sqrt(v.reduce((n,x)=>n+x*x,0));
   if (!norm||!Number.isFinite(norm)) throw new Error('Invalid built-in embedding');
@@ -29,35 +48,23 @@ function normalize(v:Float32Array) {
  * One CPU execution at a time avoids parallel ONNX heaps on modest machines. */
 let pending=Promise.resolve(),queued=0;
 export async function embedBuiltin(text:string,query=false):Promise<EmbeddedChunk[]> {
-    const {tokenizer,session}=await runtime(),chunks:EmbeddedChunk[]=[];
+    const chunks:EmbeddedChunk[]=[];
     const heading=query?'':text.split('\n',1)[0]!.slice(0,120);
     for (let start=0;start<text.length;) {
-      let end=Math.min(text.length,start+(query?8192:1800)),ids:number[];
       const prefix=query?'query: ':'passage: '+(start>0?heading+'\n':'');
-      while (true) {
-        ids=tokenizer.encode(prefix+text.slice(start,end)).ids;
-        if(ids.length<=512)break;
-        end=start+Math.max(1,Math.floor((end-start)*0.75));
-      }
       // Share the worker per passage, so interactive queries can run between
       // archival chunks instead of waiting behind an entire long document.
       if(queued>=32)throw new Error('Embedding queue full; durable indexing will retry');
       queued++;const previous=pending;let unlock!:()=>void;pending=new Promise<void>(resolve=>{unlock=resolve;});
       await previous;
-      const feeds:Record<string,Ort.Tensor>={};
-      let outputs:Record<string,Ort.Tensor>={};
+      let end:number;
       try {
-        for(const name of session.inputNames) feeds[name]=new ort.Tensor('int64',
-          BigInt64Array.from(name==='input_ids'?ids:ids.map(()=>name==='attention_mask'?1:0),BigInt),[1,ids.length]);
-        outputs=await session.run(feeds);const out=outputs.last_hidden_state;
-        if(!out||out.dims[2]!==BUILTIN_DIM)throw new Error('Built-in model output shape changed');
-        const values=out.data as Float32Array,v=new Float32Array(BUILTIN_DIM);
-        for(let token=0;token<ids.length;token++)for(let d=0;d<BUILTIN_DIM;d++)v[d]!+=values[token*BUILTIN_DIM+d]!/ids.length;
-        chunks.push({start,end,vector:normalize(v)});
-      } finally {try{for(const tensor of [...Object.values(outputs),...Object.values(feeds)])tensor.dispose();}finally{queued--;unlock();}}
-      // WASM inference resolves in microtasks. Yield between passages so a
-      // long archival note cannot starve HTTP, native hooks or shutdown signals.
-      await setImmediate();
+        // The worker shrinks the window to the model's 512 tokens.
+        const result=await inference.run(prefix,text.slice(start,start+(query?8192:1800)));
+        if(result.vector.length!==BUILTIN_DIM)throw new Error('Built-in model output shape changed');
+        end=start+result.end;
+        chunks.push({start,end,vector:normalize(result.vector)});
+      } finally {queued--;unlock();}
       if(query||end===text.length)break;
       start=Math.max(start+1,end-120);
     }

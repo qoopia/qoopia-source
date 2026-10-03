@@ -3,9 +3,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isHttps } from "../dashboard-api.ts";
 import { env } from "../utils/env.ts";
+import { readRequestBody } from "../utils/http-json.ts";
+import { edgeClientKey } from "../delivery/mcp-edge.ts";
+import { MAX_BODY_BYTES } from "../utils/http-json.ts";
 
 // --- CORS allowlist ---
-export const ALLOWED_ORIGINS = new Set([
+const ALLOWED_ORIGINS = new Set([
   "https://claude.ai",
   "https://www.claude.ai",
   "https://console.anthropic.com",
@@ -26,8 +29,11 @@ export function getAllowedOrigin(req: IncomingMessage): string {
 // Trust proxy-hop headers ONLY when TRUST_PROXY=true AND the connection arrives
 // from one of TRUSTED_PROXIES (default: loopback). Иначе — socket address, чтобы
 // предотвратить header spoofing от сетевого атакующего.
-export const TRUSTED_PROXIES_SET = new Set(env.TRUSTED_PROXIES);
+const TRUSTED_PROXIES_SET = new Set(env.TRUSTED_PROXIES);
 export function getClientIp(req: IncomingMessage): string {
+  // Remote MCP traffic arrives over loopback from the in-process edge: key it per client, apart from local clients.
+  const edge = edgeClientKey(req);
+  if (edge) return edge;
   const remote = req.socket?.remoteAddress || "unknown";
   if (env.TRUST_PROXY && TRUSTED_PROXIES_SET.has(remote)) {
     return (
@@ -40,37 +46,11 @@ export function getClientIp(req: IncomingMessage): string {
   return remote;
 }
 
-export const MAX_BODY_BYTES = 1_048_576; // 1 MB
-
-export async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    total += (chunk as Buffer).length;
-    if (total > MAX_BODY_BYTES) {
-      req.destroy();
-      throw new Error("payload_too_large");
-    }
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
 export const MAX_UPLOAD_BYTES = 104_857_600; // 100 MB per request (dashboard file upload)
 
-export async function readBodyLimited(req: IncomingMessage, max: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    total += (chunk as Buffer).length;
-    if (total > max) {
-      req.destroy();
-      throw new Error("payload_too_large");
-    }
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
-}
+/** Over-limit or too-slow bodies reject with RequestBodyError (413/408); startHttpServer replies. */
+export const readBodyLimited = (req: IncomingMessage, max: number): Promise<Buffer> => readRequestBody(req, max);
+export const readBody = (req: IncomingMessage): Promise<Buffer> => readRequestBody(req, MAX_BODY_BYTES);
 
 export function json(res: ServerResponse, status: number, body: unknown, req?: IncomingMessage) {
   const payload = JSON.stringify(body);
@@ -88,6 +68,21 @@ export function json(res: ServerResponse, status: number, body: unknown, req?: I
   }
   res.writeHead(status, headers);
   res.end(payload);
+}
+
+/** Bun's node:http writes the body of a HEAD response onto the wire, which desyncs the next
+ * response on a keep-alive connection (a proxy then reads the stray bytes as its reply). Headers,
+ * including Content-Length, stay what GET would send; the body is dropped here. */
+export function dropHeadBody(res: ServerResponse) {
+  const end = res.end.bind(res);
+  res.write = (() => true) as typeof res.write;
+  res.end = ((...args: unknown[]) => end(args.find((a) => typeof a === "function") as (() => void) | undefined)) as typeof res.end;
+}
+
+/** 405 with the Allow header RFC 9110 requires; the body keeps the shape each route already used. */
+export function methodNotAllowed(res: ServerResponse, allow: string, req?: IncomingMessage, body: unknown = { error: "method_not_allowed", allow }) {
+  res.setHeader("allow", allow);
+  json(res, 405, body, req);
 }
 
 export function text(res: ServerResponse, status: number, body: string, req?: IncomingMessage) {
@@ -152,9 +147,9 @@ export function nodeReqToFetchRequest(req: IncomingMessage, body?: Buffer): Requ
  *     proxied by a TLS-terminating tunnel and break local debugging.
  */
 export function securityHeaders(req: IncomingMessage, allowNavOrigin?: string): Record<string, string> {
-  // OAuth consent fix: the approve form's submission redirects (302 chain:
-  // /approve → /oauth/authorize/finalize → client callback) to the registered
-  // client redirect_uri, which is cross-origin (e.g. https://claude.ai).
+  // OAuth consent fix: the approve form's submission redirects (302:
+  // /approve → client callback with the code) to the registered client
+  // redirect_uri, which is cross-origin (e.g. https://claude.ai).
   // Chrome/Safari enforce form-action across the whole redirect
   // chain, so with a bare 'self' the post-approve cross-origin redirect is
   // SILENTLY BLOCKED — the Approve button appears to do nothing, the client
@@ -181,6 +176,9 @@ export function securityHeaders(req: IncomingMessage, allowNavOrigin?: string): 
     "content-security-policy": csp,
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
+    // Legacy twin of frame-ancestors, and no page uses these features (the clipboard stays allowed).
+    "x-frame-options": "DENY",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
   };
   if (isHttps(req)) {
     headers["strict-transport-security"] =

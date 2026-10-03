@@ -24,8 +24,25 @@ test("guard rejects forbidden re-exports and new two-file cycles", () => {
     fs.mkdirSync(path.join(root, "utils")); fs.mkdirSync(path.join(root, "services"));
     fs.writeFileSync(path.join(root, "utils/a.ts"), 'export { x } from "../services/b";');
     fs.writeFileSync(path.join(root, "services/b.ts"), 'import a, { type T } from "../utils/a";');
-    const result = checkBoundaries(root);
+    const result = checkBoundaries(root, new Set(), []);
     expect(result.problems.some(p => p.startsWith("layer:"))).toBe(true);
     expect(result.problems.some(p => p.startsWith("new or enlarged"))).toBe(true);
   } finally { fs.rmSync(root, {recursive:true, force:true}); }
+});
+test("guard reports exceptions that no longer match the graph", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qoopia-edges-"));
+  try {
+    fs.mkdirSync(path.join(root, "utils")); fs.mkdirSync(path.join(root, "services"));
+    fs.writeFileSync(path.join(root, "utils/a.ts"), 'export { x } from "../services/b";');
+    fs.writeFileSync(path.join(root, "services/b.ts"), 'import a from "../utils/a";');
+    const known = new Set(["utils/a.ts -> services/b.ts", "utils/gone.ts -> services/b.ts"]);
+    const cycles = [["services/b.ts", "utils/a.ts"], ["services/b.ts", "services/c.ts", "utils/a.ts"]];
+    expect(checkBoundaries(root, known, cycles).problems).toEqual([
+      "stale exception: utils/gone.ts -> services/b.ts",
+      "stale cycle exception: services/b.ts, services/c.ts, utils/a.ts",
+    ]);
+  } finally { fs.rmSync(root, {recursive:true, force:true}); }
+});
+test("repository graph matches the exception lists exactly", () => {
+  expect(checkBoundaries().problems).toEqual([]);
 });

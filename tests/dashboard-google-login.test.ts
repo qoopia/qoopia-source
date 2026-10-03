@@ -1,6 +1,5 @@
 import { test, expect } from 'bun:test';
 import {dashboardSource} from './helpers/dashboard-source.ts';
-import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 const html=dashboardSource;
 const source=html.slice(html.indexOf('  let loginPoll=0;'),html.indexOf("  $('#emailLoginForm').onsubmit"));

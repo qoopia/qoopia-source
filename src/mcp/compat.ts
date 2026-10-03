@@ -1,25 +1,23 @@
 /**
- * V2 backward-compatibility layer.
+ * V2 backward-compatibility layer — rollback switch only.
  *
- * Existing clients (Aidan via OpenClaw, Claude.ai connector, Alan/Aizek
- * via Claude Code) call Qoopia with V2 tool names and V2 argument shapes.
- * V3 renamed/restructured tools (note_create, note_get, etc.). This module
- * registers the 8 V2 tool names as adapters that translate V2 args into
- * V3 service calls without changing data semantics.
+ * Off by default: src/mcp/tools.ts registers these aliases only when
+ * QOOPIA_ENABLE_V2_COMPAT=true (and never on the memory profile). They are
+ * not advertised in toolCatalog()/qoopia_capabilities; agents use the V3
+ * names. The aliases translate V2 tool names and argument shapes into V3
+ * service calls without changing data semantics.
  *
- * Tools registered here:
- *   note    — memory note (was V2 's note' with auto-magic; we drop the magic)
- *   recall  — same as V3 recall, but accepts V2 'entities' string
- *   brief   — same as V3 brief, but accepts V2 'agent_name' alias
- *   list    — generic list with `entity` discriminator → V3 listNotes / listActivity
- *   get     — generic get with `entity` discriminator → V3 getNote
+ * Tools registered here (6):
  *   create  — generic create with `entity` discriminator → V3 createNote / logActivity
  *   update  — generic update with `entity` discriminator → V3 updateNote
  *   delete  — generic delete with `entity` discriminator → V3 deleteNote
+ *   list    — generic list with `entity` discriminator → V3 listNotes / listActivity
+ *   get     — generic get with `entity` discriminator → V3 getNote
+ *   note    — memory note (was V2 'note' with auto-magic; we drop the magic)
  *
- * Backward compatibility is important for: Aidan (active prod agent), the
- * claude.ai QOOPIA OAuth connector (with migrated tokens), and any other
- * client that hasn't been updated to V3-style tool names.
+ * recall and brief keep their V2 names in V3 and are not re-registered here.
+ * Each alias is gated by the same risk class, agent profile and OAuth scope as
+ * its V3 handler. tests/compat-aliases.test.ts exercises every alias.
  */
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -39,17 +37,16 @@ import {
 } from "../services/notes.ts";
 import { logActivity, listActivity } from "../services/activity.ts";
 import {
+  boundedMetadata,
+  boundedTags,
   isToolAllowedForProfile,
   normalizeAgentProfile,
   type AgentToolProfile,
   type RiskClass,
-} from "./tools.ts";
+} from "./profiles.ts";
 import { assertInstanceWriteAllowed } from "../utils/instance-role.ts";
 import { currentToolAuth } from "../auth/policy.ts";
-import { isAdmin } from "../auth/principal.ts";
-
-// QRERUN-003 / ADR-014: same admin set as src/mcp/tools.ts. Kept local to
-// avoid a circular import; both modules trust the same enum.
+import { isAdmin, seesWholeWorkspace } from "../auth/principal.ts";
 
 // V2 plural entity → V3 singular type
 const ENTITY_TO_TYPE: Record<string, string> = {
@@ -252,9 +249,9 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
       // QSA-C / Codex QSA-002 (2026-04-28): activity is the audit log.
       // Allowing any full-profile agent to forge entries (arbitrary action,
       // entity_type, entity_id, summary, details) destroys integrity. The
-      // V2 compat 'create activity' is therefore restricted to admin types
-      // (steward / claude-privileged); standard agents must use the
-      // workspace tools that emit activity through the service layer.
+      // V2 compat 'create activity' is therefore restricted to the steward
+      // and the owner (ADR-020); every other agent must use the workspace
+      // tools that emit activity through the service layer.
       if (!isAdmin(auth)) {
         throw new QoopiaError(
           "FORBIDDEN",
@@ -263,7 +260,7 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
       }
       // QSA-F / Codex review #2 (2026-04-28): the 'create' alias is gated
       // as write-low at registerCompatTools, so a no-destructive admin
-      // (steward/claude-privileged on profile='no-destructive') still has
+      // (steward on profile='no-destructive') still has
       // the alias registered. activity-forging is admin-class risk; only
       // 'full' profile may exercise it. Defence-in-depth alongside the
       // isAdmin check above.
@@ -303,7 +300,7 @@ function v2Update(args: Record<string, unknown>, auth: AuthContext) {
   if (!id) throw new QoopiaError("INVALID_INPUT", "id required");
 
   // Entity type check: verify the note's type matches what caller expects
-  const existingForCheck = getNote(auth.workspace_id, id, auth.agent_id, isAdmin(auth));
+  const existingForCheck = getNote(auth.workspace_id, id, auth.agent_id, seesWholeWorkspace(auth));
   const expectedType = ENTITY_TO_TYPE[entity] || entity;
   if (existingForCheck.type !== expectedType) {
     throw new QoopiaError(
@@ -323,7 +320,7 @@ function v2Update(args: Record<string, unknown>, auth: AuthContext) {
       // If title or description supplied, recompose text. To do this we need
       // existing description if title alone given (and vice versa). Read note.
       if (args.title !== undefined || args.description !== undefined) {
-        const existing = getNote(auth.workspace_id, id, auth.agent_id, isAdmin(auth));
+        const existing = getNote(auth.workspace_id, id, auth.agent_id, seesWholeWorkspace(auth));
         const oldText = existing.text || "";
         const split = oldText.split("\n\n");
         const oldTitle = split[0] || "";
@@ -399,7 +396,7 @@ function v2Update(args: Record<string, unknown>, auth: AuthContext) {
   return updateNote({
     workspace_id: auth.workspace_id,
     agent_id: auth.agent_id,
-    is_admin: isAdmin(auth),
+    is_admin: seesWholeWorkspace(auth),
     id,
     text: textOverride,
     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
@@ -415,7 +412,7 @@ function v2List(args: Record<string, unknown>, auth: AuthContext) {
     return listActivity({
       workspace_id: auth.workspace_id,
       caller_agent_id: auth.agent_id,
-      is_admin: isAdmin(auth),
+      is_admin: seesWholeWorkspace(auth),
       entity_type: args.entity_type as string | undefined,
       project_id: args.project_id as string | undefined,
       limit,
@@ -431,7 +428,7 @@ function v2List(args: Record<string, unknown>, auth: AuthContext) {
   return listNotes({
     workspace_id: auth.workspace_id,
     caller_agent_id: auth.agent_id,
-    is_admin: isAdmin(auth),
+    is_admin: seesWholeWorkspace(auth),
     type,
     project_id: args.project_id as string | undefined,
     status: args.status as string | undefined,
@@ -443,7 +440,7 @@ function v2List(args: Record<string, unknown>, auth: AuthContext) {
 function v2Get(args: Record<string, unknown>, auth: AuthContext) {
   const id = String(args.id || "");
   if (!id) throw new QoopiaError("INVALID_INPUT", "id required");
-  const note = getNote(auth.workspace_id, id, auth.agent_id, isAdmin(auth));
+  const note = getNote(auth.workspace_id, id, auth.agent_id, seesWholeWorkspace(auth));
   // M11 fix: verify the fetched note type matches the requested entity discriminator
   const entity = String(args.entity || "");
   if (entity) {
@@ -465,7 +462,7 @@ function v2Delete(args: Record<string, unknown>, auth: AuthContext) {
   // Entity type check: verify the note's type matches what caller expects
   const entity = String(args.entity || "");
   if (entity) {
-    const note = getNote(auth.workspace_id, id, auth.agent_id, isAdmin(auth));
+    const note = getNote(auth.workspace_id, id, auth.agent_id, seesWholeWorkspace(auth));
     const expectedType = ENTITY_TO_TYPE[entity] || entity;
     if (note.type !== expectedType) {
       throw new QoopiaError(
@@ -475,7 +472,7 @@ function v2Delete(args: Record<string, unknown>, auth: AuthContext) {
     }
   }
 
-  return deleteNote(auth.workspace_id, auth.agent_id, id, isAdmin(auth));
+  return deleteNote(auth.workspace_id, auth.agent_id, id, seesWholeWorkspace(auth));
 }
 
 function v2Note(args: Record<string, unknown>, auth: AuthContext) {
@@ -542,7 +539,7 @@ export function registerCompatTools(
   // Generic CRUD with `entity` discriminator
   if (allow("write-low")) server.tool(
     "create",
-    "[V2 compat] Create entity by type. entity ∈ tasks|deals|contacts|finances|activity. Use note_create for V3-native API.",
+    "[V2 compat] Create entity by type. entity ∈ tasks|deals|contacts|finances|projects|activity. Use note_create for V3-native API.",
     {
       entity: z.enum(["tasks", "deals", "contacts", "finances", "projects", "activity"]),
       title: z.string().optional(),
@@ -573,11 +570,11 @@ export function registerCompatTools(
       entity_id: z.string().optional(),
       action: z.string().optional(),
       summary: z.string().optional(),
-      details: z.record(z.unknown()).optional(),
-      metadata: z.record(z.unknown()).optional(),
+      details: boundedMetadata().optional(),
+      metadata: boundedMetadata().optional(),
       timeline: z.array(z.unknown()).optional(),
       notes: z.string().optional(),
-      tags: z.array(z.string()).optional(),
+      tags: boundedTags().optional(),
     },
     wrap(v2Create, authProvider, "write-low"),
   );
@@ -603,7 +600,7 @@ export function registerCompatTools(
       asking_price: z.number().optional(),
       target_price: z.number().optional(),
       monthly_rent: z.number().optional(),
-      metadata: z.record(z.unknown()).optional(),
+      metadata: boundedMetadata().optional(),
       timeline: z.array(z.unknown()).optional(),
       role: z.string().optional(),
       company: z.string().optional(),
@@ -619,7 +616,7 @@ export function registerCompatTools(
       recurring: z.string().optional(),
       color: z.string().optional(),
       notes: z.string().optional(),
-      tags: z.array(z.string()).optional(),
+      tags: boundedTags().optional(),
     },
     wrap(v2Update, authProvider, "write-destructive"),
   );

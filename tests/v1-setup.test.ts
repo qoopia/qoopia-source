@@ -44,6 +44,27 @@ test('setup resumes from durable installation, owner, runtime and connection sta
  }finally{f.cleanup();}
 });
 
+test('after the owner, setup follows OAuth client connections; the native runtime path needs --runtime',()=>{
+ const f=fixture();try{
+  const db=new Database(path.join(f.root,'generations',f.generation,'data','qoopia.db'));
+  try{
+   db.run("INSERT INTO workspace_owners VALUES ('owner-1','workspace-1')");
+   const none=inspectSetup(f.root);
+   expect(none.stage).toBe('CONNECTION_REQUIRED');expect(none.next_action).toContain('qoopia connections plan');expect(none.next_action).not.toContain('connect --runtime');
+   db.run('CREATE TABLE agents(id TEXT, workspace_id TEXT, active INTEGER)');
+   db.run('CREATE TABLE client_connections(id TEXT, workspace_id TEXT, owner_id TEXT, agent_id TEXT, state TEXT)');
+   db.run("INSERT INTO agents VALUES ('agent-1','workspace-1',1)");
+   db.run("INSERT INTO client_connections VALUES ('c-1','workspace-1','owner-1','agent-1','revoked')");
+   expect(inspectSetup(f.root).stage).toBe('CONNECTION_REQUIRED');
+   db.run("UPDATE client_connections SET state='awaiting_client'");
+   expect(inspectSetup(f.root)).toMatchObject({stage:'CLIENT_CALL_REQUIRED'});expect(inspectSetup(f.root).next_action).toContain('qoopia connections status --root ');
+   db.run("UPDATE client_connections SET state='verified'");
+   expect(inspectSetup(f.root)).toMatchObject({stage:'CLIENT_CONNECTED',next_action:null});
+   expect(inspectSetup(f.root,'codex').stage).toBe('RUNTIME_PROVISION_REQUIRED');
+  }finally{db.close();}
+ }finally{f.cleanup();}
+});
+
 test('setup reports install first and does not create state',()=>{
  expect(entry.indexOf("if(cmd==='setup')")).toBeGreaterThan(entry.indexOf('const dispatchInstalled='));
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-setup-empty-'));try{
@@ -62,4 +83,16 @@ test('setup refuses linked runtime state',()=>{
   fs.symlinkSync(target,path.join(f.root,'native-runtimes','codex.json'));
   expect(inspectSetup(f.root,'codex').stage).toBe('RUNTIME_PROVISION_REQUIRED');
  }finally{f.cleanup();}
+});
+
+test('start without an owner names the owner-login step instead of a browser it does not open [F-297]',async()=>{
+ const {startedMessage}=await import('../src/delivery/entry.ts');
+ const message=startedMessage(false,3881,'/tmp/Qoopia root');
+ expect(message).toContain('qoopia owner-login --owner-name YOUR_NAME --root "/tmp/Qoopia root"');
+ expect(message).toContain('http://127.0.0.1:3881/local-login');
+ expect(startedMessage(false,3881)).not.toContain('--root');
+ // start reads the owner table after the server is up and prints this message.
+ expect(entry.slice(entry.indexOf("if(cmd==='start'||cmd==='open'){"))).toContain("startedMessage(!!db.query('SELECT 1 FROM workspace_owners LIMIT 1').get()");
+ const control=fs.readFileSync(new URL('../src/delivery/owner-control.ts',import.meta.url),'utf8');
+ expect(control).toContain('owner-login --owner-name YOUR_NAME');
 });

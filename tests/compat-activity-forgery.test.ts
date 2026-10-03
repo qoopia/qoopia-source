@@ -7,8 +7,9 @@
  * entity_type, entity_id, summary, details). That destroys the integrity of
  * the activity log as an audit trail.
  *
- * Fix: standard agents now get FORBIDDEN; only steward / claude-privileged
- * may emit activity through this path.
+ * Fix: standard agents now get FORBIDDEN; only the steward and the owner may
+ * emit activity through this path (ADR-020: a legacy claude-privileged row is
+ * an ordinary agent).
  */
 import { beforeAll, describe, expect, test } from "bun:test";
 import type { AuthContext } from "../src/auth/middleware.ts";
@@ -18,6 +19,7 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { v2Create } from "../src/mcp/compat.ts";
 import { QoopiaError } from "../src/utils/errors.ts";
+import { legacyPrivilegedAgent } from "./helpers/legacy-agent.ts";
 
 let WORKSPACE_ID = "";
 let STD_AGENT_ID = "";
@@ -98,22 +100,19 @@ describe("QSA-C: V2 compat 'create activity' admin gate", () => {
     expect(row?.summary).toBe("steward audit row");
   });
 
-  test("claude-privileged — allowed", () => {
-    const cp = createAgent({
-      name: "compat-claude-priv",
-      workspaceSlug: "compat-forgery",
-      type: "claude-privileged",
-    });
-    const result = v2Create(
-      {
-        entity: "activity",
-        action: "manual_audit",
-        entity_type: "note",
-        summary: "claude-priv audit row",
-      },
-      mkAuth(cp.id, "claude-privileged"),
-    ) as { created: boolean; id: string };
-    expect(result.created).toBe(true);
+  test("legacy claude-privileged — FORBIDDEN (ADR-020)", () => {
+    const cp = legacyPrivilegedAgent("compat-claude-priv", "compat-forgery");
+    expect(() =>
+      v2Create(
+        {
+          entity: "activity",
+          action: "manual_audit",
+          entity_type: "note",
+          summary: "claude-priv audit row",
+        },
+        mkAuth(cp.id, "claude-privileged"),
+      ),
+    ).toThrow(QoopiaError);
   });
 
   test("QSA-F: admin-capable agent on no-destructive profile cannot forge activity", () => {

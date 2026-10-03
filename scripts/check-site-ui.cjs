@@ -10,7 +10,7 @@ assert.equal(cfg.fixture,'qoopia-website-preview/1');assert.equal(new URL(cfg.ur
    // The fixture supplies release metadata locally and never sends analytics.
    await page.route('https://auth.qoopia.ai/**',r=>r.fulfill({status:204,body:''}));
    for(const route of ['/','/docs','/releases','/understand','/understand-ru','/mobile','/404.html','/profile']){
-    await page.goto(cfg.url+route);await page.waitForLoadState('networkidle');await page.evaluate(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(img=>{img.loading='eager';return img.decode().catch(()=>{});}));});
+    await page.goto(cfg.url+route);await page.waitForLoadState('networkidle');await page.evaluate(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(img=>{img.loading='eager';return img.decode().catch(()=>{/* A broken image fails the broken-image assertion below. */});}));});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,name+' overflow '+route);
     assert.equal(await page.locator('h1').count(),1,name+' single h1 '+route);
     assert.equal(await page.locator('img').evaluateAll(es=>es.some(e=>!e.complete||!e.naturalWidth)),false,name+' broken image '+route);

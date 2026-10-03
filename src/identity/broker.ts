@@ -4,7 +4,7 @@ import {readFileSync,openSync,closeSync,fstatSync,constants} from 'node:fs';
 import {assetPath} from '../utils/assets.ts';
 import {brandAsset,brandHead,brandLockup} from '../brand.ts';
 import { Database } from 'bun:sqlite';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import {bridgeRelay} from '../bridges/relay.ts';
 import {MAX_RPC} from '../bridges/protocol.ts';
 import {deviceRegistry, type DeviceRegistryOptions} from './device-registry.ts';
@@ -21,14 +21,23 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const random = () => randomBytes(32).toString('base64url');
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const lifetime = 10 * 60_000;
+export const HSTS = 'max-age=31536000; includeSubDomains';
 export function loginEmail(value: unknown): string {
+  // oxlint-disable-next-line no-control-regex -- control characters are never valid in an email address
   if (typeof value !== 'string' || value.length > 254 || /[\x00-\x1f\x7f]/.test(value) || !/^[^\s<>"@]+@[^\s<>"@]+\.[^\s<>"@]+$/.test(value)) throw new Error('Enter a valid email address');
   return value.toLowerCase();
 }
 export type LoginIdentity = {email: string; googleSub?: string};
-type Flow = {language:LoginLanguage;id:string;challenge:string;expires:number;email:string|null;google_sub:string|null;state:string|null;pkce:string|null;mail_token:string|null;confirmed:number;device_peer:string|null};
-type Config = {owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
+type Flow = {language:LoginLanguage;id:string;challenge:string;expires:number;email:string|null;google_sub:string|null;state:string|null;pkce:string|null;mail_token:string|null;confirmed:number;device_peer:string|null;confirm_code:string|null;confirm_failures:number};
+type Config = {releaseSha?:string|null;owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
 
+/** Same stamp as the server image (scripts/release-stamp.ts); /health reports it for release monitoring. */
+export function releaseStampSha(file?:string):string|null {
+  if(!file)return null;
+  const stamp=JSON.parse(readFileSync(file,'utf8')) as {commit_sha?:unknown;dirty?:unknown};
+  if(typeof stamp.commit_sha!=='string'||!/^[0-9a-f]{40}$/.test(stamp.commit_sha)||stamp.dirty!==false)throw new Error('Release stamp invalid');
+  return stamp.commit_sha;
+}
 /** Separate sign-in service: it never receives workspace content or model credentials. */
 export function loginBroker(db: Database, config: Config, request: typeof fetch = fetch) {
   const origin = new URL(config.origin).origin;
@@ -40,6 +49,8 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     CREATE TABLE IF NOT EXISTS login_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);`);
   if(!(db.query('PRAGMA table_info(login_requests)').all() as {name:string}[]).some(c=>c.name==='device_peer'))db.exec('ALTER TABLE login_requests ADD COLUMN device_peer TEXT');
   if(!(db.query('PRAGMA table_info(login_requests)').all() as {name:string}[]).some(c=>c.name==='language'))db.exec("ALTER TABLE login_requests ADD COLUMN language TEXT NOT NULL DEFAULT 'en'");
+  if(!(db.query('PRAGMA table_info(login_requests)').all() as {name:string}[]).some(c=>c.name==='confirm_code'))
+    db.exec('ALTER TABLE login_requests ADD COLUMN confirm_code TEXT; ALTER TABLE login_requests ADD COLUMN confirm_failures INTEGER NOT NULL DEFAULT 0');
   const identify=accounts(db),news=newsletter(db);
   const handoff=accountHandoff(db);
   const ownerBridge=internalOwnerBridge(db,config.owner??{},config.ownerBridgeSecret);
@@ -70,7 +81,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     if (!allowance('email:'+identity.email,3,3_600_000) || !allowance('sending',80,86_400_000)) throw new Error('Too many sign-in emails. Please try again later');
     const token = random();
     db.query('UPDATE login_requests SET email=?,google_sub=?,mail_token=?,state=NULL,pkce=NULL WHERE id=?').run(identity.email,identity.googleSub??null,hash(token),flow.id);
-    const link = origin+'/confirm?lang='+loginLanguage(flow.language)+'#'+token;
+    const link = origin+'/confirm?lang='+loginLanguage(flow.language)+(flow.confirm_code?'&code=1':'')+'#'+token;
     const mailStarted=performance.now();
     try{await providerJson('https://api.resend.com/emails',{method:'POST',headers:{authorization:'Bearer '+config.resendKey,'content-type':'application/json','idempotency-key':'qoopia-login-'+flow.id},body:JSON.stringify({
       from:config.from,to:[identity.email],...confirmationMail(link,loginLanguage(flow.language)),
@@ -100,13 +111,13 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         return devices?await devices.handler(new Request(origin+url.pathname+url.search,req)):json(503,{code:'DEVICE_SERVICE_UNAVAILABLE'});
       }
       if(req.method==='GET'||req.method==='HEAD'){const asset=brandAsset(url.pathname);if(asset)return new Response(req.method==='HEAD'?null:new Uint8Array(asset.body),{headers:{...headers,'content-type':asset.type,'cache-control':'no-cache'}});}
-      if (req.method === 'GET' && url.pathname === '/health') return json(200,{version:PRODUCT_VERSION,ready:Boolean(config.resendKey&&config.googleClientId&&config.googleClientSecret)});
+      if (req.method === 'GET' && url.pathname === '/health') return json(200,{version:PRODUCT_VERSION,release_sha:config.releaseSha??null,ready:Boolean(config.resendKey&&config.googleClientId&&config.googleClientSecret)});
       if (req.method === 'GET' && url.pathname === '/') return new Response(null,{status:302,headers:{...headers,location:'/profile'+url.search}});
       if(url.pathname==='/news/unsubscribe')return unsubscribePage(req,news,page);
       if(url.pathname==='/owner'||url.pathname.startsWith('/owner/')||url.pathname==='/profile'||url.pathname.startsWith('/profile/'))return profile.handler(req,clientIp);
       if (req.method === 'GET' && url.pathname === '/privacy') return page('Sign-in & bridge privacy','<p>Qoopia uses your email address and, when you choose Google, your Google account identifier to confirm sign-in. It does not request access to your inbox, files, contacts, or calendar.</p><p>Pending sign-in requests are removed after ten minutes. Temporary abuse-prevention counters expire within one day. Resend delivers confirmation emails; Google handles Google account selection. Those providers process information under their own policies.</p><p>Your notes, tasks, conversations, and model credentials remain in your Qoopia installation. Signing in does not upload or synchronise that workspace.</p><h2>Service statistics</h2><p>Qoopia keeps aggregate operational counts and timestamped sign-in events (step, language, success or error, and duration) in a separate analytics store. Analytics events do not include email addresses, passwords, tokens, confirmation links or memory content. Website analytics is optional, uses no persistent visitor identifier, and respects the choice in website privacy settings.</p><h2>Website profile</h2><p>After you confirm your email, your profile stores your account identity and an optional dashboard address you choose to save. Profile sessions last seven days; pending website sign-ins expire after ten minutes. You can remove the saved address or sign out in your profile. A saved address is a navigation shortcut, not permission to access a workspace. Your notes and model credentials remain in your installation.</p><h2>Optional Qoopia news</h2><p>News, release announcements and guides are sent only if you opt in. The checkbox is off by default. You can change your choice in your profile or unsubscribe using the link in any newsletter, without signing in. Sign-in messages are separate and continue when you unsubscribe from news.</p><p>The private account store records your subscription email, language, choice, time, source and consent-text version. It also records new account creation dates and successful sign-in times and counts. Historical registration dates are not reconstructed. Only the designated service owner can view account-level records. Consent history is kept while needed to honour your choice and demonstrate consent; deletion requests can be directed to the sender contact in our messages. News delivery records contain the campaign, outcome and provider message identifier; no email-open tracking is added.</p><h2>Optional external connections</h2><p>When you enable external access, this service links your confirmed account to independent installation identifiers, workspace identifiers, device public keys, labels and routing addresses. It stores provisioning and revocation state, and hashes of short-lived enrollment grants. Revoked device identifiers remain as tombstones so a revoked key cannot silently regain access. It does not receive your memory database or private device keys.</p><p>Cloudflare Tunnel carries authorized MCP requests and results. Cloudflare terminates HTTPS and can process transit content, IP addresses, timing and traffic volume. This path is not end-to-end encrypted. The local installation enforces each client permission; the account service does not execute memory tools. Disabling external access stops the connection without deleting local memory.</p><h2>Optional bridges</h2><p>When you create or join a bridge, the Qoopia pilot relay stores the group name, display names, installation public keys, membership decisions and invitation hashes. These are independent of your sign-in email. Membership records remain while the group exists and are removed within thirty days after its creator closes it. Expired invitation records are removed after one additional day.</p><p>Catalogues and selected files are signed by their sender and encrypted for their intended recipient. The relay has no private decryption keys. It temporarily buffers encrypted packets in memory for up to two minutes; the sender retains its own delivery queue. The relay observes network addresses, participant routing, timing and traffic volume. Membership freshness and delivery availability rely on the relay. Leaving or removal ends new access but cannot erase copies already received.</p><p>The pilot uses existing Qoopia hosting, with limits of 32 installations per bridge, 100 published entries per catalogue and 1 MiB per material. No payment is requested by this flow. Local memory remains available when the relay is offline.</p>');
       if (req.method === 'GET' && url.pathname === '/confirm') {
-        const language=loginLanguage(url.searchParams.get('lang')),view=confirmationView(language);
+        const language=loginLanguage(url.searchParams.get('lang')),view=confirmationView(language,url.searchParams.get('code')==='1');
         return page(view.title,view.content,view.script,200,language);
       }
       if (req.method === 'GET' && url.pathname === '/google') {
@@ -152,16 +163,26 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
           return json(201,{id,expires_in:600,account_url:origin+'/profile?app=ios&request='+id});
         }
         const email=body.method==='email'?loginEmail(body.email):undefined,id=random(),language=loginLanguage(body.language);
-        db.query('INSERT INTO login_requests(id,challenge,expires,device_peer,language) VALUES (?,?,?,?,?)').run(id,body.challenge,now+lifetime,body.device_peer??null,language);
+        // F-125: a bound request is confirmed only with the code shown to the screen that started it,
+        // so the mailbox owner's click cannot sign in whoever typed their address.
+        const code=body.bind===true?String(randomInt(1_000_000)).padStart(6,'0'):null,confirm_code=code&&hash(id+':'+code);
+        db.query('INSERT INTO login_requests(id,challenge,expires,device_peer,language,confirm_code) VALUES (?,?,?,?,?,?)').run(id,body.challenge,now+lifetime,body.device_peer??null,language,confirm_code);
         record({kind:'auth_request',method:body.method,language});
         try {
-          if(email)await sendConfirmation({id,language} as Flow,{email});
+          if(email)await sendConfirmation({id,language,confirm_code} as Flow,{email});
         }catch(error){db.query('DELETE FROM login_requests WHERE id=?').run(id);throw error;}
-        return json(201,{id,expires_in:600,...(email?{email}:{google_url:origin+'/google?request='+id})});
+        return json(201,{id,expires_in:600,...(code?{confirm_code:code}:{}),...(email?{email}:{google_url:origin+'/google?request='+id})});
       }
       if (url.pathname === '/confirm') {
         if (req.headers.get('origin')!==origin || typeof body.token!=='string' || !/^[A-Za-z0-9_-]{43}$/.test(body.token)) return json(400,{error:'Invalid confirmation link'});
-        const result=db.query('UPDATE login_requests SET confirmed=1,mail_token=NULL WHERE mail_token=? AND confirmed=0 AND expires>?').run(hash(body.token),now);
+        const flow=db.query('SELECT id,confirm_code,confirm_failures FROM login_requests WHERE mail_token=? AND confirmed=0 AND expires>?').get(hash(body.token),now) as Pick<Flow,'id'|'confirm_code'|'confirm_failures'>|null;
+        if(flow?.confirm_code&&!(typeof body.code==='string'&&/^\d{6}$/.test(body.code)&&hash(flow.id+':'+body.code)===flow.confirm_code)){
+          // Five wrong codes end the request; whoever started it starts again.
+          if(flow.confirm_failures>=4)db.query('DELETE FROM login_requests WHERE id=?').run(flow.id);
+          else db.query('UPDATE login_requests SET confirm_failures=confirm_failures+1 WHERE id=?').run(flow.id);
+          return json(400,{error:'This code does not match the Qoopia page where the sign-in started.',code_required:true});
+        }
+        const result=db.query('UPDATE login_requests SET confirmed=1,mail_token=NULL WHERE id=? AND confirmed=0').run(flow?.id??'');
         if(result.changes)record({kind:'email_confirmed',outcome:'ok'});
         return result.changes?json(200,{ok:true}):json(400,{error:'This link expired or was already used. Request a new sign-in from Qoopia.'});
       }
@@ -187,6 +208,8 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   const profile=profilePortal(db,origin,page,(route,body,ip)=>handler(new Request(origin+route,{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify(body)}),ip),record,config.owner);
   const observedHandler=async(req:Request,ip:string)=>{
     const start=performance.now(),response=await handler(req,ip),path=new URL(req.url).pathname;
+    // The origin is HTTPS-only (checked above); every page, sign-in included, refuses a downgrade.
+    response.headers.set('strict-transport-security',HSTS);
     const routes:Record<string,'profile'|'confirm'|'google'|'requests'|'redeem'|'devices'>={'/profile':'profile','/profile/start':'profile','/profile/logout':'profile','/profile/dashboard':'profile','/confirm':'confirm','/google':'google','/google/callback':'google','/requests':'requests','/redeem':'redeem','/devices':'devices'};
     if(routes[path])record({kind:'auth_http',page:routes[path],outcome:response.status>=500?'error':response.status>=400?'rejected':response.status===202?'pending':'ok',duration_ms:Math.min(300000,Math.round(performance.now()-start))});
     return response;
@@ -199,6 +222,7 @@ if (import.meta.main) {
   const config:Config={origin:process.env.QOOPIA_LOGIN_ORIGIN??'https://auth.qoopia.ai',resendKey:process.env.RESEND_API_KEY??'',from:process.env.QOOPIA_LOGIN_FROM??'Qoopia <login@mail.qoopia.ai>',googleClientId:process.env.GOOGLE_CLIENT_ID??'',googleClientSecret:process.env.GOOGLE_CLIENT_SECRET??''};
   config.owner={accountId:process.env.QOOPIA_OWNER_ACCOUNT_ID,analyticsFile:process.env.QOOPIA_OWNER_ANALYTICS_FILE,releaseTag:process.env.QOOPIA_PUBLIC_RELEASE_TAG,postalAddress:process.env.QOOPIA_NEWS_POSTAL_ADDRESS};
   config.ownerBridgeSecret=process.env.QOOPIA_OWNER_BRIDGE_SECRET;
+  config.releaseSha=releaseStampSha(process.env.QOOPIA_RELEASE_STAMP_PATH);
   if(process.env.QOOPIA_CF_TOKEN_FILE){
     const fd=openSync(process.env.QOOPIA_CF_TOKEN_FILE,constants.O_RDONLY|constants.O_NOFOLLOW);
     try{

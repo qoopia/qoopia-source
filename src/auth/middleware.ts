@@ -10,7 +10,7 @@ export interface AuthContext {
   agent_id: string;
   agent_name: string;
   workspace_id: string;
-  type: "standard" | "claude-privileged" | string;
+  type: string;
   source: "api-key" | "oauth";
   // QSA-F / ADR-016: per-agent MCP tool risk profile, propagated from
   // agents.tool_profile. Raw string here; src/mcp/tools.ts normalizes it
@@ -29,7 +29,7 @@ export interface AuthContext {
   /** The discovery restriction this connection actually got, set by the transport that computed
    * it: a profile name, or null for the unrestricted legacy surface. Absent means "derive it",
    * which is what REST and the CLI do. The agent contract reports what this connection really
-   * sees, so the `?profile=full` escape hatch cannot make the catalogue disagree with reality. */
+   * sees, so the catalogue the contract describes is the one the connection actually gets. */
   bootstrap_profile?: string | null;
 }
 
@@ -56,9 +56,11 @@ export function authenticate(request: Request): AuthContext | null {
   const pathname=new URL(request.url).pathname;
   const mcp=pathname==='/mcp'||pathname==='/mcp/'||pathname.startsWith('/mcp/c/');
   const connection=oauthRow?.resource?resourceConnection(oauthRow.resource):undefined;
-  const targetMatches=connection?pathname==='/mcp/c/'+connection:
+  // F-131: off the MCP transport (REST, dashboard, continuity) only legacy and root-/mcp tokens pass;
+  // a connection-bound token is good for its own /mcp/c/<id> endpoint and nothing else.
+  const targetMatches=!mcp?!oauthRow?.resource||oauthRow.resource===oauthResource():connection?pathname==='/mcp/c/'+connection:
     oauthRow?.resource?oauthRow.resource===new URL(pathname.replace(/\/$/,''),oauthResource()).href:pathname==='/mcp'||pathname==='/mcp/';
-  if (oauthRow && oauthRow.token_type === "access" && (!mcp || targetMatches)) {
+  if (oauthRow && oauthRow.token_type === "access" && targetMatches) {
     const a = db
       .prepare(`SELECT * FROM agents WHERE id = ? AND active = 1`)
       .get(oauthRow.agent_id) as AgentRecord | undefined;
@@ -69,7 +71,7 @@ export function authenticate(request: Request): AuthContext | null {
       if (!isReadOnlyInstance()) {
         try {
           db.prepare(`UPDATE agents SET last_seen = ? WHERE id = ?`).run(nowIso(), a.id);
-        } catch {}
+        } catch { /* last_seen is telemetry: a busy or locked DB must not fail authentication. */ }
       }
       const context=agentToContext(
         a,

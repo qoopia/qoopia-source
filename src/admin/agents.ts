@@ -3,8 +3,21 @@ import { db } from "../db/connection.ts";
 import { generateApiKey, sha256Hex } from "../auth/api-keys.ts";
 import { revokeAllAgentTokens } from "../auth/oauth.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
+import { seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
+import { canManagePolicy } from "../services/memory-policy.ts";
+import { logActivity } from "../services/activity.ts";
 
-export type AgentType = "standard" | "claude-privileged" | "steward" | "owner" | "ingest-daemon";
+export type AgentType = "standard" | "steward" | "owner" | "ingest-daemon";
+
+/**
+ * ADR-020: there is no privileged agent type. An existing 'claude-privileged' row stays as it is
+ * and acts as an ordinary agent; new agents get their reach from the shared-context toggle.
+ */
+function refuseLegacyType(type: string | undefined): void {
+  if (type === "claude-privileged")
+    throw new QoopiaError("INVALID_INPUT",
+      "Type 'claude-privileged' is retired (ADR-020). Create a standard agent: its shared context is on by default and the owner switches it on the agent card or through the steward. Management stays with the steward and the owner.");
+}
 
 export const AGENT_NAME_RE = /^[a-zA-Z0-9_\-\s]{1,64}$/;
 
@@ -13,6 +26,7 @@ export function createAgent(opts: {
   workspaceSlug: string;
   type?: AgentType;
 }): { id: string; name: string; api_key: string; workspace_id: string } {
+  refuseLegacyType(opts.type);
   if (!AGENT_NAME_RE.test(opts.name)) {
     throw new QoopiaError(
       "INVALID_INPUT",
@@ -25,8 +39,10 @@ export function createAgent(opts: {
     .get(opts.workspaceSlug) as { id: string } | undefined;
   if (!ws) throw new QoopiaError("NOT_FOUND", `workspace ${opts.workspaceSlug} not found`);
 
+  // Case-insensitive: AgentComm addresses agents by name, and a case-only
+  // variant would make that address ambiguous.
   const existing = db
-    .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
+    .prepare(`SELECT id FROM agents WHERE lower(name) = lower(?) AND workspace_id = ? AND active = 1`)
     .get(opts.name, ws.id);
   if (existing)
     throw new QoopiaError(
@@ -91,6 +107,7 @@ export function setAgentType(
   workspaceSlug: string,
   type: AgentType,
 ): { name: string; type: string } {
+  refuseLegacyType(type);
   const ws = db
     .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
     .get(workspaceSlug) as { id: string } | undefined;
@@ -103,6 +120,43 @@ export function setAgentType(
   if (info.changes === 0)
     throw new QoopiaError("NOT_FOUND", `active agent '${name}' not found in workspace ${workspaceSlug}`);
   return { name, type };
+}
+
+/**
+ * ADR-020: switch one agent's shared-context toggle. On (absent from agents.metadata, the
+ * onboarding default) it reads its siblings' notes and transcripts; off, only its own. The
+ * workspace owner or the workspace's steward may switch it, and every change is audited.
+ */
+export function setSharedContext(input: { workspace_id: string; agent_id: string; enabled: boolean; actor_id: string }) {
+  if (typeof input.enabled !== "boolean") throw new QoopiaError("INVALID_INPUT", "enabled must be true or false");
+  return db.transaction(() => {
+    const actor = db.query("SELECT type FROM agents WHERE id = ? AND workspace_id = ? AND active = 1")
+      .get(input.actor_id, input.workspace_id) as { type: string } | null;
+    if (!actor || (actor.type !== "steward" && !canManagePolicy(input.workspace_id, input.actor_id)))
+      throw new QoopiaError("FORBIDDEN", "Only the workspace owner or its steward can change an agent's shared context");
+    const target = db.query("SELECT id, name, type FROM agents WHERE id = ? AND workspace_id = ? AND active = 1")
+      .get(input.agent_id, input.workspace_id) as { id: string; name: string; type: string } | null;
+    if (!target) throw new QoopiaError("NOT_FOUND", "Agent unavailable");
+    if (seesWholeWorkspace(target))
+      throw new QoopiaError("INVALID_INPUT", "The steward and the owner always read the whole workspace");
+    const changed = sharesContext(target.id) !== input.enabled;
+    if (changed) {
+      db.query(input.enabled
+        ? "UPDATE agents SET metadata = json_remove(metadata, '$.shared_context') WHERE id = ?"
+        : "UPDATE agents SET metadata = json_set(metadata, '$.shared_context', json('false')) WHERE id = ?").run(target.id);
+      logActivity({
+        workspace_id: input.workspace_id,
+        agent_id: input.actor_id,
+        action: "agent_shared_context_changed",
+        entity_type: "agent",
+        entity_id: target.id,
+        project_id: null,
+        summary: `Shared context of '${target.name}' turned ${input.enabled ? "on" : "off"}`,
+        details: { agent_name: target.name, shared_context: input.enabled },
+      });
+    }
+    return { agent_id: target.id, name: target.name, shared_context: input.enabled, changed };
+  }).immediate();
 }
 
 export function deleteAgent(name: string, workspaceSlug: string) {

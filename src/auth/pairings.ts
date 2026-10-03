@@ -37,7 +37,7 @@ export function issuePairing(auth: AuthContext, input: unknown, database: Databa
       if ((a.profile === "runtime-reporter") !== !!a.target_agent_id) {
         throw new QoopiaError("INVALID_INPUT", "Only a reporter pairing requires a target agent");
       }
-      if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND name=?").get(p.workspace_id, a.name)) {
+      if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(p.workspace_id, a.name)) {
         throw new QoopiaError("CONFLICT", "Principal name already exists");
       }
       const pairingId = randomUUID();
@@ -68,7 +68,7 @@ export function redeemPairing(code: string, database: Database = db) {
       type: owner.type, source: "api-key", policy_epoch: pair.policy_epoch, session_version: owner.session_version };
     authorize(database, ownerAuth, "owner");
     if (pair.target_agent_id) requireAgent(database, pair.workspace_id, pair.target_agent_id);
-    if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND name=?").get(pair.workspace_id, pair.name)) {
+    if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(pair.workspace_id, pair.name)) {
       throw new QoopiaError("CONFLICT", "Name was claimed after the pairing was issued");
     }
     const agentId = randomUUID(), apiKey = `q_${randomBytes(32).toString("base64url")}`, now = Date.now();
@@ -131,7 +131,7 @@ export function bootstrapOwner(database: Database, name: string, workspaceName?:
       throw new QoopiaError("CONFLICT", "Existing instance requires an explicit --workspace-id local owner decision");
     }
     const workspace = workspaceId ?? randomUUID(), agent = randomUUID(), now = Date.now(), apiKey = `q_${randomBytes(32).toString("base64url")}`;
-    if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND name=?").get(workspace, name)) throw new QoopiaError("CONFLICT", "Principal name already exists; use a new human owner name");
+    if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(workspace, name)) throw new QoopiaError("CONFLICT", "Principal name already exists; use a new human owner name");
     if (!workspaceId) database.query("INSERT INTO workspaces(id,name,slug) VALUES (?,?,?)").run(workspace, workspaceName!, `local-${workspace}`);
     database.query(`INSERT INTO agents(id,workspace_id,name,type,api_key_hash,principal_kind,authority_profile,tool_profile)
       VALUES (?,?,?,'owner',?,'human','owner','full')`).run(agent, workspace, name, digest(apiKey));

@@ -28,13 +28,14 @@ import {
   type RecallFeedbackType,
 } from "../services/recall-feedback.ts";
 import type { ToolDef } from "./tools.ts";
+import { boundedMetadata } from "./profiles.ts";
 import { env } from "../utils/env.ts";
 import {
   createExportPlan,
   materializeExportBundle,
   validateImportPlan,
 } from "../services/export.ts";
-import { ADMIN_TYPES } from "../auth/principal.ts";
+import { seesWholeWorkspace } from "../auth/principal.ts";
 
 const CURSOR_KEY = randomBytes(32);
 const REVIEWER_TYPES = new Set(["owner", "steward"]);
@@ -250,7 +251,7 @@ const relationTools: ToolDef[] = [
       source_note_id: z.string().min(1),
       target_note_id: z.string().min(1),
       expected_target_updated_at_ms: z.number().int().min(1),
-      metadata: z.record(z.unknown()).optional(),
+      metadata: boundedMetadata().optional(),
       idempotency_key: z.string().min(8).max(200),
     },
     handler: (args, auth) => {
@@ -264,8 +265,9 @@ const relationTools: ToolDef[] = [
         `SELECT id, source_note_id, target_note_id, metadata
            FROM note_relations
           WHERE workspace_id = ? AND relation_type = 'supersedes'
+            AND created_by_agent_id = ?
             AND json_extract(metadata, '$.mcp_idempotency_key') = ?`,
-      ).get(auth.workspace_id, String(args.idempotency_key)) as
+      ).get(auth.workspace_id, auth.agent_id, String(args.idempotency_key)) as
         | { id: string; source_note_id: string; target_note_id: string; metadata: string }
         | undefined;
       if (replay) {
@@ -287,7 +289,7 @@ const relationTools: ToolDef[] = [
           target_archived: true,
         };
       }
-      const target = getNote(auth.workspace_id, String(args.target_note_id), auth.agent_id, ADMIN_TYPES.has(auth.type));
+      const target = getNote(auth.workspace_id, String(args.target_note_id), auth.agent_id, seesWholeWorkspace(auth));
       if (target.updated_at_ms !== args.expected_target_updated_at_ms) {
         throw new QoopiaError("CONFLICT", "target note changed since it was read");
       }
@@ -299,7 +301,7 @@ const relationTools: ToolDef[] = [
         const temporal = supersedeExistingNote({
           workspace_id: auth.workspace_id,
           agent_id: auth.agent_id,
-          is_admin: ADMIN_TYPES.has(auth.type),
+          is_admin: seesWholeWorkspace(auth),
           successor_id: String(args.source_note_id),
           predecessor_id: String(args.target_note_id),
           expected_updated_at_ms: Number(args.expected_target_updated_at_ms),
@@ -406,18 +408,19 @@ const extractionTools: ToolDef[] = [
       const limit = (args.limit as number | undefined) ?? 25;
       const scope = { session_id: args.session_id ?? null, status: args.status ?? null };
       const offset = decodeCursor(args.cursor, auth, "extraction_run_list", scope);
+      // One extra row tells whether another page exists.
       const result = listExtractionRuns({
         auth,
         session_id: args.session_id as string | undefined,
         status: args.status as string | undefined,
-        limit: 200,
+        limit: limit + 1,
+        offset,
       });
-      const runs = result.items.slice(offset, offset + limit).map((row) => runOut(row));
-      const nextOffset = offset + runs.length;
+      const runs = result.items.slice(0, limit).map((row) => runOut(row));
       return {
         runs,
-        next_cursor: nextOffset < result.items.length
-          ? encodeCursor(auth, "extraction_run_list", scope, nextOffset)
+        next_cursor: result.items.length > limit
+          ? encodeCursor(auth, "extraction_run_list", scope, offset + runs.length)
           : null,
       };
     },
@@ -456,9 +459,10 @@ const extractionTools: ToolDef[] = [
       const keyReplay = db.prepare(
         `SELECT entity_id, details FROM activity
           WHERE workspace_id = ? AND action = 'extraction_reviewed'
+            AND agent_id = ?
             AND json_extract(details, '$.mcp_idempotency_key') = ?
           ORDER BY id DESC LIMIT 1`,
-      ).get(auth.workspace_id, String(args.idempotency_key)) as
+      ).get(auth.workspace_id, auth.agent_id, String(args.idempotency_key)) as
         | { entity_id: string; details: string }
         | undefined;
       if (keyReplay) {
@@ -513,7 +517,8 @@ const recallTools: ToolDef[] = [
         offset,
       });
       const items = includeItems ? result.items : [];
-      const nextOffset = offset + (includeItems ? items.length : 0);
+      // F-103: advance by rows scanned, not by rows still visible, or hidden rows repeat or loop.
+      const nextOffset = result.next_cursor === null ? offset : Number(result.next_cursor);
       return {
         trace: result.trace,
         items,

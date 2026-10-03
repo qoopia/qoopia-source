@@ -70,7 +70,7 @@ export function vectorCosineThreshold(): number {
  *
  * type='memory' is INTENTIONALLY excluded — memory is the primary
  * recall target, and short anchor notes ("Aidan port 18789",
- * "Tailscale IP 100.81.108.26") must remain reachable via vector
+ * "Tailscale IP <host-ip>") must remain reachable via vector
  * similarity. Memory hygiene is a separate task.
  *
  * Read at CALL TIME (not module load) — same pattern as rrfK() and
@@ -162,7 +162,7 @@ export function rerankPassageWindow(): boolean {
  */
 function passageTerms(query: string): string[] {
   const out: string[] = [];
-  for (const t of query.toLowerCase().split(/[^\p{L}\p{N}_\-]+/u)) {
+  for (const t of query.toLowerCase().split(/[^\p{L}\p{N}_-]+/u)) {
     if (t.length >= 3) out.push(t);
   }
   return out;

@@ -6,7 +6,7 @@ import {z} from 'zod';
 import {db} from '../db/connection.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {authorize} from '../auth/policy.ts';
-import {privateDirectory,durableWrite,readJsonBytes,hash,preflightSpace} from '../utils/fs.ts';
+import {privateDirectory,durableWrite,readJsonBytes,hash,preflightSpace,hasNulOrNewline} from '../utils/fs.ts';
 import {nativePackagePreview,nativeRuntimeEnvironment,unpackNativePackage,verifyInstalledNativeAsync,vendorDownload} from '../delivery/native-provision.ts';
 import {prepareNativeKeychain,nativeOwnerHome} from '../delivery/native-keychain.ts';
 import {RUNTIMES} from '../delivery/runtime-versions.ts';
@@ -23,7 +23,7 @@ const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('select'),runtime:z.enum(['claude_code','codex'])}).strict(),
   z.object({action:z.literal('login')}).strict(),
   z.object({action:z.literal('cancel-login')}).strict(),
-  z.object({action:z.literal('login-code'),code:z.string().trim().min(1).max(8192).refine(s=>!/[\r\n\0]/.test(s))}).strict(),
+  z.object({action:z.literal('login-code'),code:z.string().trim().min(1).max(8192).refine(s=>!hasNulOrNewline(s))}).strict(),
   z.object({action:z.literal('check')}).strict(),
   z.object({action:z.literal('connect-agent'),runtime:z.enum(['claude_code','codex'])}).strict(),
 ]);
@@ -92,16 +92,23 @@ export async function memorySetupAction(ownerId:string,raw:unknown) {
   if(busy.has(workspace))throw new QoopiaError('CONFLICT','A memory setup action is running');
   busy.add(workspace);
   try {
-    if(input.action==='select'){await provision(input.runtime);selectMemoryProfile(workspace,input.runtime);return memorySetupState(ownerId);}
+    if(input.action==='select'){await provision(input.runtime);selectMemoryProfile(workspace,input.runtime);
+      // Sessions parked without a usable profile resume at once.
+      db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error') WHERE workspace_id=?").run(workspace);
+      return memorySetupState(ownerId);}
     if(input.action==='connect-agent') {
       const name=input.runtime==='codex'?'Qoopia Codex memory':'Qoopia Claude memory';
       const folder=privateDirectory(path.join(memoryRoot(),'config','memory-clients',hash(workspace))),file=path.join(folder,input.runtime+'.json');
-      let connection: {format:'qoopia-memory-connection/1';url:string;agent_id:string;key:string;runtime:'codex'|'claude_code'};
+      let connection: {format:'qoopia-memory-connection/1';url:string;agent_id:string;key:string;runtime:'codex'|'claude_code'}|undefined;
       if(fs.existsSync(file)) {
-        connection=JSON.parse(readJsonBytes(file).toString());
-        if(!db.query('SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND api_key_hash=?')
-          .get(connection.agent_id,workspace,sha256Hex(connection.key)))throw new QoopiaError('CONFLICT','This connection was revoked; create a new named agent connection');
-      } else {
+        const stored=JSON.parse(readJsonBytes(file).toString()) as NonNullable<typeof connection>;
+        const agent=db.query('SELECT active,api_key_hash FROM agents WHERE id=? AND workspace_id=?').get(stored.agent_id,workspace) as {active:number;api_key_hash:string}|null;
+        if(agent?.active&&agent.api_key_hash===sha256Hex(stored.key))connection=stored;
+        // A rotated key may now be held elsewhere: never replace that live agent from here.
+        else if(agent?.active)throw new QoopiaError('CONFLICT','The key of this memory agent was rotated; deactivate that agent, then connect again');
+        // Revoked: the old agent stays inactive; this explicit owner action issues a new one and overwrites the file below.
+      }
+      if(!connection) {
         const ws=db.query('SELECT slug FROM workspaces WHERE id=?').get(workspace) as {slug:string};
         const created=createAgent({name,workspaceSlug:ws.slug,type:'standard'});
         db.query("UPDATE agents SET tool_profile='no-destructive',legacy_skill_access=0 WHERE id=?").run(created.id);

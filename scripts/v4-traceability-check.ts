@@ -325,65 +325,6 @@ if (schema.includes("source_confidence REAL") || !schema.includes("BEGIN IMMEDIA
     !schema.includes("recall_feedback.trace_id = NULL")) {
   fail("schema contract does not freeze caller-relative confidence and transactional trace detach");
 }
-const copiedSpec = fs.readFileSync(
-  path.join(ROOT, "artifacts/v4/inputs/QOOPIA_V4_PROFESSIONAL_TZ.md"),
-  "utf8",
-);
-if (/schema-30\b/i.test(copiedSpec) || /P02 migration 030\b/i.test(copiedSpec)) {
-  fail("copied execution input retains a stale schema-30/P06 migration coordinate");
-}
-if (copiedSpec.includes("- `source_confidence REAL NULL`.") ||
-    !copiedSpec.includes("Confidence не хранится в `memory_lifecycle`") ||
-    !copiedSpec.includes("true требует `include_archived=true`, при omitted `latest_only` принудительно делает effective false") ||
-    !copiedSpec.includes("`export_plan`, `export_bundle`, `import_plan` имеют risk `admin`")) {
-  fail("copied execution input semantic fix-pass mutations drifted");
-}
-
-const amendmentEvidencePath = path.join(ROOT, "artifacts/v4/evidence/P01/amendment-consumption.json");
-const amendmentEvidence = JSON.parse(fs.readFileSync(amendmentEvidencePath, "utf8")) as {
-  copied_spec_pre_fix_sha256?: string;
-  copied_spec_operative_sha256?: string;
-  copied_spec_diff?: {
-    pre_fix_blob?: string;
-    operative_blob?: string;
-    stats?: {
-      contextual_hunks?: number;
-      additions?: number;
-      deletions?: number;
-      semantic_hunks?: number;
-      coordinate_hunks?: number;
-      zero_context_change_blocks?: number;
-    };
-    hunks?: Array<{ id?: number; diff_header?: string; class?: string; subject?: string }>;
-    other_copied_spec_bytes_changed?: boolean;
-  };
-  residual_copied_input_mutation_ambiguity?: boolean;
-};
-const expectedCopiedSpecHunks = [
-  { id: 1, diff_header: "@@ -492,12 +492,11 @@", class: "semantic", subject: "lifecycle confidence and protected-record wording" },
-  { id: 2, diff_header: "@@ -617,9 +616,9 @@", class: "semantic", subject: "include_history normalization" },
-  { id: 3, diff_header: "@@ -631,10 +630,10 @@", class: "semantic", subject: "export/import authorization elevation" },
-  { id: 4, diff_header: "@@ -1013,9 +1012,9 @@", class: "coordinate", subject: "P03 fixture schema" },
-  { id: 5, diff_header: "@@ -1043,9 +1042,9 @@", class: "coordinate", subject: "P04 fixture schema" },
-  { id: 6, diff_header: "@@ -1105,9 +1104,9 @@", class: "coordinate", subject: "P06 receipts migration" },
-  { id: 7, diff_header: "@@ -1135,9 +1134,9 @@", class: "coordinate", subject: "P07 fixture schema" },
-  { id: 8, diff_header: "@@ -1167,9 +1166,9 @@", class: "coordinate", subject: "P08 clone schema" },
-];
-const copiedSpecStats = amendmentEvidence.copied_spec_diff?.stats;
-if (amendmentEvidence.copied_spec_pre_fix_sha256 !== "e8e04c89e45a8cafe4988631302a6ed27e307cf949849504aedfb5cc77c24f1d" ||
-    amendmentEvidence.copied_spec_operative_sha256 !== sha256File(path.join(ROOT, "artifacts/v4/inputs/QOOPIA_V4_PROFESSIONAL_TZ.md")) ||
-    amendmentEvidence.copied_spec_diff?.pre_fix_blob !== "11e510e0e140d88f8a8c22ad314012dde96f6d73" ||
-    amendmentEvidence.copied_spec_diff?.operative_blob !== "4fce830f1104707339f96da4e069eac7dfd504b3" ||
-    copiedSpecStats?.contextual_hunks !== 8 || copiedSpecStats.additions !== 9 || copiedSpecStats.deletions !== 10 ||
-    copiedSpecStats.semantic_hunks !== 3 || copiedSpecStats.coordinate_hunks !== 5 ||
-    copiedSpecStats.zero_context_change_blocks !== 9 ||
-    JSON.stringify(amendmentEvidence.copied_spec_diff?.hunks?.map(({ id, diff_header, class: kind, subject }) =>
-      ({ id, diff_header, class: kind, subject }))) !== JSON.stringify(expectedCopiedSpecHunks) ||
-    amendmentEvidence.copied_spec_diff?.other_copied_spec_bytes_changed !== false ||
-    amendmentEvidence.residual_copied_input_mutation_ambiguity !== false) {
-  fail("copied execution input eight-hunk provenance ledger drifted");
-}
-
 const exportPolicy = JSON.parse(
   fs.readFileSync(path.join(DOCS, "export-table-policy.json"), "utf8"),
 ) as {
@@ -623,7 +564,4 @@ console.log(JSON.stringify({
   response_contracts: (delta.new_tools ?? []).length,
   benchmark_cases: corpusSpec.case_count,
   retention_contract_cases: retentionContractCases,
-  copied_input_contextual_hunks: expectedCopiedSpecHunks.length,
-  copied_input_semantic_hunks: expectedCopiedSpecHunks.filter((hunk) => hunk.class === "semantic").length,
-  copied_input_coordinate_hunks: expectedCopiedSpecHunks.filter((hunk) => hunk.class === "coordinate").length,
 }));

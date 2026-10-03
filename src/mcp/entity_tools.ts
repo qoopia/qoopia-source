@@ -10,8 +10,7 @@
  *  - entity_page_render (read; markdown rendering with linked sections)
  *
  * Workspace boundary is pinned from auth — callers cannot cross
- * workspaces. Cross-workspace surfacing is reserved for the privileged
- * recall path which already gates on `auth.type === 'claude-privileged'`.
+ * workspaces, and since ADR-020 no recall path crosses them either.
  *
  * Risk classification (QSA-F / ADR-016): the two writers are
  * `write-low` (idempotent and recoverable via re-upsert / explicit
@@ -21,6 +20,7 @@
 import { z } from "zod";
 import type { AuthContext } from "../auth/middleware.ts";
 import type { RiskClass } from "./tools.ts";
+import { boundedMetadata } from "./profiles.ts";
 import {
   upsertEntity,
   getEntity,
@@ -31,7 +31,7 @@ import {
   ENTITY_STATUSES,
 } from "../services/entities.ts";
 
-export interface EntityToolDef {
+interface EntityToolDef {
   name: string;
   description: string;
   risk: RiskClass;
@@ -65,7 +65,7 @@ export const entityTools: EntityToolDef[] = [
       title: z.string().min(1).max(300),
       summary: z.string().max(100_000).optional(),
       status: entityStatusEnum.optional().describe("Default 'active'."),
-      metadata: z.record(z.unknown()).optional(),
+      metadata: boundedMetadata().optional(),
     },
     handler: (args, auth) => {
       return upsertEntity({
