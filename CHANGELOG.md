@@ -1,5 +1,35 @@
 # Changelog
 
+## 5.0.16 — 2026-10-03
+
+- Sign-in: Google sign-in lands in Qoopia at once, with no confirmation email and no code. A sign-in
+  request is bound to the network it started from instead of a six-digit code: the Google return or the
+  email link completes it only from that network, so a link started by someone else still signs nobody in.
+  The email link page confirms by itself on the starting network; a new account gets one welcome email
+  without links. Website and iPhone profile sessions last a year and renew on every visit (they ended after
+  7 days). Deploy the account service before the servers; clients up to 5.0.15 keep their code.
+- Dashboard: the owner is the first agent row (whole workspace, no switches), the steward second, then agents
+  by runtime (Claude, Claude Code, ChatGPT, Codex, Grok, Muse, Hermes). Rows are compact with inline
+  autosave and shared-context switches; the agent page opens on sessions, notes and search. Overview shows
+  tiles for active agents, connections, bridges and files with a live activity feed, newest first, where a
+  repeated event is one line with a count. Connections is one list of connected apps with two plain states
+  and Disconnect; abandoned drafts are hidden after 24 hours. AgentComm threads show the newest message
+  first. Files has folders, a path bar, New folder and Upload.
+- Files: new MCP tool `file_put` lets any agent create or append a text or base64 file in its workspace
+  (by default in a folder named after the agent); an agent replaces only files it uploaded.
+- Memory: the maintenance worker summarises only conversations active in the last two hours; a finished
+  conversation stays stored and searchable and is no longer caught up. The continuity checkpoint has its own
+  model budget and yields to interactive calls; a timeout on a one-message batch backs the session off
+  (F-341). The note-write clock is per workspace, and "as of now" sees a burst of writes (F-339). Recall
+  starts FTS joins from the index (F-340: Linux recall 79 → 0.2 ms at 5000 notes).
+- `qoopia version` reports trust from the verified bundle manifest (F-338).
+- Fixes: protected-resource metadata advertises the exact OAuth resource; identity and provider responses are
+  read with a size bound; `setup` names the client config under `CODEX_HOME` / `CLAUDE_CONFIG_DIR`; profile
+  and local sign-in refuse duplicate cookies; the connection verification challenge is compared in constant
+  time.
+- Internal: one MCP tool-call path, one OAuth grant pipeline and shared helpers (`src/` −283 lines). Database
+  schema stays 48; agent kit revision stays 9.
+
 ## 5.0.15 — 2026-10-02
 
 - Access (OWNER DECISION, ADR-020): every agent has one shared-context toggle. On (the default for every

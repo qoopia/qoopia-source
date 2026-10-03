@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1 # Upgrade tests use the verified public source-only fixture.
           persist-credentials: false
@@ -94,12 +94,13 @@ jobs:
         run: |
           mkdir -p artifacts/v4/evidence/P09-ci
           bun test benchmarks/v4
-          bun run benchmarks/v4/run.ts --baseline v3 --candidate v4-flags-off --scales 1 --runs 3 --seed 400 --json artifacts/v4/evidence/P09-ci/off.json
-          bun run benchmarks/v4/run.ts --baseline v3 --candidate v4-flags-on --scales 1 --runs 3 --seed 400 --holdout --json artifacts/v4/evidence/P09-ci/on.json
+          # 5,000 realistic 0.5-3 KB background notes: corpus-size costs show up in recall latency.
+          bun run benchmarks/v4/run.ts --baseline v3 --candidate v4-flags-off --scales 1 --runs 3 --seed 400 --background-notes 5000 --json artifacts/v4/evidence/P09-ci/off.json
+          bun run benchmarks/v4/run.ts --baseline v3 --candidate v4-flags-on --scales 1 --runs 3 --seed 400 --holdout --background-notes 5000 --json artifacts/v4/evidence/P09-ci/on.json
           bun run benchmarks/v4/gate.ts --budgets docs/v4/performance-budgets.json --reports artifacts/v4/evidence/P09-ci
 
       - name: Upload V4 qualification evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: qoopia-v4-qualification
           path: artifacts/v4/evidence/P09-ci/*.json
@@ -114,7 +115,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -142,7 +143,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
