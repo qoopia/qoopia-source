@@ -21,7 +21,7 @@ import {bindNativeOwnerHome} from './native-keychain.ts';
 import {bindNativeClientDirectories} from './native-client-paths.ts';
 import { localSessionSecret } from './local-login.ts';
 import { readServerWorkspace, selectServerWorkspace, serverWorkspaceUrl } from './remote.ts';
-import { browserEnvironment as captureBrowserEnvironment, openBrowser } from './browser-open.ts';
+import { browserEnvironment as captureBrowserEnvironment, openBrowser, presentWorkspace } from './browser-open.ts';
 declare const QOOPIA_PINNED_KEY:string;
 declare const QOOPIA_BUILD_SHA:string;
 const argv=process.argv.slice(2), cmd=argv[0]??'help';
@@ -53,6 +53,21 @@ export async function reservePort(port:number) {
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',()=>resolve());});
   const chosen=(server.address() as net.AddressInfo).port;
   return {port:chosen,close:()=>new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()))};
+}
+/** Before binding: this installation already serving and another program on its port need different next actions. */
+export async function claimInstallationPort(port:number,instance:string) {
+  const health=await fetch(`http://127.0.0.1:${port}/health`,{redirect:'error',signal:AbortSignal.timeout(2_000)})
+    .then(response=>response.json()).catch(()=>undefined) as {instance_id?:unknown}|null|undefined;
+  if(health?.instance_id===instance)throw new Error(`Qoopia is already running at http://127.0.0.1:${port}/dashboard`);
+  const reservation=await reservePort(port).catch((error:NodeJS.ErrnoException)=>{
+    throw error.code==='EADDRINUSE'?new Error(`Port ${port} is used by another program. Stop that program, then start Qoopia again.`):error;
+  });
+  await reservation.close();
+}
+/** start opens no browser: without an owner it must name the one command that creates the owner. */
+export function startedMessage(owner:boolean,port:number,root?:string){
+  return owner?'Qoopia is running. Complete account setup in your browser.'
+    :`Qoopia is running and has no owner yet. In another terminal run: qoopia owner-login --owner-name YOUR_NAME${root?' --root '+JSON.stringify(root):''}, then open http://127.0.0.1:${port}/local-login and enter the code.`;
 }
 async function main(){
  const browserEnvironment=captureBrowserEnvironment();
@@ -103,20 +118,30 @@ async function main(){
    if(server&&new URL(server).origin!==new URL(input.url).origin)throw new Error('Connection belongs to another workspace; select that server explicitly before connecting');
    emit(installMemoryClient(input,root,process.execPath,undefined,arg('config-directory')));return;
  }
+ if(cmd==='memory-unlink'){
+   const {removeMemoryClient}=await import('./memory-client.ts'),runtime=need('runtime');
+   if(runtime!=='codex'&&runtime!=='claude_code')throw new Error('--runtime must be codex or claude_code');
+   emit(removeMemoryClient(platformPaths(arg('root')).root,runtime,flag('commit')));return;
+ }
 
- if(cmd==='agent-guide'){const section=arg('section')??'protocol';if(!['protocol','connections','operations','soul'].includes(section))throw new Error('Unknown guide section');emit(agentProtocol(section as 'protocol'|'connections'|'operations'|'soul'));return;}
+ if(cmd==='agent-guide'){const section=arg('section')??'protocol';if(!['protocol','connections','operations','soul'].includes(section))throw new Error('Unknown guide section');const language=arg('language')??'ru';if(language!=='ru'&&language!=='en')throw new Error('--language must be ru or en');emit(agentProtocol(section as 'protocol'|'connections'|'operations'|'soul',language));return;}
  if(cmd==='help')console.log('Quick start: qoopia open — opens your selected workspace. To use an existing server: qoopia use-server --url https://YOUR-SERVER --commit. This preserves local data; stop an existing local service with service uninstall --commit.');
- if(cmd==='agent-guide'){const section=arg('section')??'protocol';if(!['protocol','connections','operations','soul'].includes(section))throw new Error('Unknown guide section');emit(agentProtocol(section as 'protocol'|'connections'|'operations'|'soul'));return;}
- if(cmd==='help'){console.log('Qoopia '+PRODUCT_VERSION+' standalone candidate\nCommands: agent-guide [--section protocol|connections|operations|soul], connections plan|apply|status|resume|verify|disconnect --input ABSOLUTE_JSON, instructions refresh [--commit], setup, install, start, service install|uninstall, steward [--agent-id ID --commit --approve PLAN_DIGEST] [--owner-id ID], owner-login, memory-link --file CONNECTION [--config-directory ABSOLUTE_DIRECTORY], client-link --file CONNECTION [--commit --approve PLAN_DIGEST], client-auth --file BINDING [--commit --open], client-auth-status --file BINDING, client-stdio --file BINDING, connect, skill, runtime, doctor, diagnostic, support-preview, backup, restore, recover-ops, authorize-ops-replay, update, rollback, uninstall, migrate-source, maintenance, parser-smoke.\nsetup [--runtime codex|claude_code] is read-only and resumes from the installation pointer, owner bindings, selected runtime, and connect receipts. It emits one exact next action and never logs in, opens a browser, starts a service/model, or reads credentials.\nDefaults use macOS Application Support/Logs or Linux XDG paths; --root ABSOLUTE_DIRECTORY isolates all data. Use owner-login --owner-name NAME once, then owner-login to sign in through UID-authenticated IPC.\nupdate --bundle ABSOLUTE_BUNDLE previews qoopia-update-plan/1; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST. Writes after preview are caught up from the final locked snapshot.\nconnect --runtime claude_code|codex --name NAME --config ABSOLUTE_FILE [--owner-id ID]: stopped-installation scope/file/sample-memory preview; apply with --commit --approve EXACT_PREVIEW_DIGEST. Config parent must already be private (0700); existing file private (0600). Native qualification is NOT RUN.\ndiagnostic --input ABSOLUTE_JSON previews unless --commit is present; commit validates a connect-published config and exact loopback listener/build/instance before one identifiable write/read/recall fixture. doctor remains read-only.\nskill capture|compile|accept|assign|get|loop --input ABSOLUTE_JSON; runtime bind|start|sync|inspect|run|audit|cleanup|task --input ABSOLUTE_JSON. runtime provision --runtime claude_code|codex previews an installation-local package; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST and performs no login or model invocation. These are stopped-installation local owner operations; --commit explicitly applies. runtime run and runtime task serve the shipped loopback HTTP handler for one task and require an exact connect receipt plus explicit subscription-store or Claude subscription options. inspect performs no native/auth process.\nMutations require --commit. Test bundles require --allow-test-fixture. Install leaves autostart disabled; enable it only with service install --commit.');return;}
+ if(cmd==='help'){console.log('Qoopia '+PRODUCT_VERSION+' standalone candidate\nCommands: agent-guide [--section protocol|connections|operations|soul] [--language ru|en], connections plan|apply|status|resume|verify|disconnect --input ABSOLUTE_JSON, instructions refresh [--language ru|en] [--commit], instructions remove --runtime codex|claude_code [--config-directory ABSOLUTE_DIRECTORY] [--commit], setup, install, start, service install|uninstall, steward [--agent-id ID --commit --approve PLAN_DIGEST] [--owner-id ID], owner-login, memory-link --file CONNECTION [--config-directory ABSOLUTE_DIRECTORY], memory-unlink --runtime codex|claude_code [--commit], client-link --file CONNECTION [--commit --approve PLAN_DIGEST], client-auth --file BINDING [--commit --open], client-auth-status --file BINDING, client-stdio --file BINDING, connect, skill, runtime, doctor, diagnostic, support-preview, backup, restore, recover-ops, authorize-ops-replay, update, rollback, uninstall, migrate-source, maintenance, parser-smoke.\nsetup is read-only and resumes from the installation pointer, owner bindings and OAuth client connections (connections plan|apply|status); --runtime codex|claude_code selects the legacy native path (runtime provision, connect). It emits one exact next action and never logs in, opens a browser, starts a service/model, or reads credentials.\nDefaults use macOS Application Support/Logs or Linux XDG paths; --root ABSOLUTE_DIRECTORY isolates all data. Use owner-login --owner-name NAME once, then owner-login to sign in through UID-authenticated IPC.\nupdate --bundle ABSOLUTE_BUNDLE previews qoopia-update-plan/1 with installed and target versions; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST. Writes after preview are caught up from the final locked snapshot. A committed update keeps the selected and previous (rollback) generations and bundles and the two newest pre-update backups, removes older ones and reports freed_bytes. An older bundle is refused (UPDATE_DOWNGRADE_REFUSED); use rollback, or preview with --allow-downgrade to get a plan marked downgrade:true for explicit approval.\nconnect --runtime claude_code|codex --name NAME --config ABSOLUTE_FILE [--owner-id ID] (legacy; writes a scoped API key into the client config, prefer connections): stopped-installation scope/file/sample-memory preview; apply with --commit --approve EXACT_PREVIEW_DIGEST. Config parent must already be private (0700); existing file private (0600). Native qualification is NOT RUN.\ndiagnostic --input ABSOLUTE_JSON previews unless --commit is present; commit validates a connect-published config and exact loopback listener/build/instance before one identifiable write/read/recall fixture. doctor remains read-only.\nskill capture|compile|accept|assign|get|loop --input ABSOLUTE_JSON; runtime bind|start|sync|inspect|run|audit|cleanup|task --input ABSOLUTE_JSON. runtime provision --runtime claude_code|codex previews an installation-local package; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST and performs no login or model invocation. These are stopped-installation local owner operations; --commit explicitly applies. runtime run and runtime task serve the shipped loopback HTTP handler for one task and require an exact connect receipt plus explicit subscription-store or Claude subscription options. inspect performs no native/auth process.\nMutations require --commit. Test bundles require --allow-test-fixture. Install leaves autostart disabled; enable it only with service install --commit.');return;}
  if(cmd==='version'){emit({version:PRODUCT_VERSION,build_sha:QOOPIA_BUILD_SHA,platform:`${process.platform}-${process.arch}`,publisher_trust:'test fixture builds do not establish publisher trust'});return;}
  const layout=platformPaths(arg('root'));
  const root=layout.root,self=path.dirname(process.execPath),allow=flag('allow-test-fixture');
 
  if(cmd==='instructions'){
    const action=argv[1]??'refresh';
+   if(action==='remove'){
+     const {removeAgentInstructions}=await import('../agent-kit/install.ts'),{selectedNativeDirectory}=await import('./native-client-paths.ts'),runtime=need('runtime');
+     if(runtime!=='codex'&&runtime!=='claude_code')throw new Error('--runtime must be codex or claude_code');
+     emit(removeAgentInstructions(arg('config-directory')??selectedNativeDirectory(runtime)??path.join(os.homedir(),runtime==='codex'?'.codex':'.claude'),runtime,flag('commit')));return;
+   }
    if(action!=='refresh')throw new Error('Unknown instructions action');
    const {refreshAgentInstructions}=await import('../agent-kit/install.ts');
-   const result=refreshAgentInstructions(root,flag('commit'));
+   const language=arg('language');if(language!==undefined&&language!=='ru'&&language!=='en')throw new Error('--language must be ru or en');
+   const result=refreshAgentInstructions(root,flag('commit'),language);
    emit(result);if(result.profiles.some(profile=>profile.state==='refused'))process.exitCode=1;return;
  }
 
@@ -180,6 +205,11 @@ async function main(){
    const {assertDatabaseIntegrity}=await import('../db/sqlite.ts');
    try{assertDatabaseIntegrity(db);const pending=getPendingMigrations();if(pending.length){backupDbBeforeMigrate(pending);runMigrations();}assertDatabaseIntegrity(db);}finally{closeDb();}return;
  }
+ // Build-time memory observation (scripts/measure-bootstrap.ts): one built-in embedding, no database.
+ if(cmd==='_embed-probe'){
+   configure(root,self);const {embedBuiltin,stopBuiltinEmbeddings}=await import('../services/builtin-embeddings.ts');
+   try{await embedBuiltin('memory probe',true);}finally{stopBuiltinEmbeddings();}return;
+ }
  const migrate=(bundle:string,generationRoot:string)=>{
    const child=spawnSync(path.join(bundle,'qoopia'),['_migrate','--root',generationRoot],{encoding:'utf8',env:{PATH:process.env.PATH,TMPDIR:process.env.TMPDIR},timeout:120000});
    if(child.status!==0)throw new Error('Copy migration failed; previous generation preserved (child exit '+child.status+')');
@@ -189,6 +219,8 @@ async function main(){
  const executeService=(command:string,args:string[])=>{const result=spawnSync(command,args,{encoding:'utf8',env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,...linuxUserManagerEnvironment(process.platform,process.env)}});if(result.error||result.status!==0)throw new Error('User service command failed; native config and ownership ledger were preserved');};
  const autostart=(installation:string)=>new UserAutostart({root,installation,platform:process.platform as 'darwin'|'linux',configFile:nativeConfig,execute:executeService,allowTestFixture:allow});
  const dispatchInstalled=async (requiresOpsV3=false,nativeSource:NodeJS.ProcessEnv={},localNative=false)=>{
+   // Same stage and command as setup; the redacted ENOENT named neither.
+   if(!fs.existsSync(path.join(root,'current.json')))throw new Error('Qoopia is not installed (INSTALL_REQUIRED). Run: qoopia install --commit'+(arg('root')?' with the same --root':''));
    const current=readCurrent(root),bundle=path.join(root,'bundles',current.bundle);
    const verified=verifyBundle(bundle,QOOPIA_PINNED_KEY,allow);
    if(requiresOpsV3)requireOpsJournalV3(verified);
@@ -245,7 +277,7 @@ async function main(){
  }
  if(cmd==='update'){
    const bundle=safePath(need('bundle'));
-   if(!flag('commit'))emit(delivery.previewUpdate(bundle));
+   if(!flag('commit'))emit(delivery.previewUpdate(bundle,flag('allow-downgrade')));
    else emit(delivery.update(bundle,readJson<unknown>(safePath(need('plan'))),need('approve')));
    return;
  }
@@ -369,16 +401,16 @@ async function main(){
  }
  const {current,bundle}=await dispatchInstalled();
  const showWorkspace=(code:string,browserPath=process.env.PATH)=>{
-   const url=`http://127.0.0.1:${current.port}/dashboard`;
-   if(flag('desktop')){emit({event:'workspace',url:url+'#setup='+code});return;}
-   console.log('\nWelcome to Qoopia. Complete sign-in in your browser.\n'+url+'\n');
-   // The single-use OS capability is cleared from browser history before any request.
-   if(!openBrowser(url+'#setup='+code,{...browserEnvironment,PATH:browserPath}))throw new Error('Could not open your browser. Run Open Qoopia again from your desktop.');
+   if(flag('desktop')){emit({event:'workspace',url:`http://127.0.0.1:${current.port}/dashboard#setup=${code}`});return;}
+   presentWorkspace(current.port,code,{...browserEnvironment,PATH:browserPath});
  };
+ // No IPC usually means no server, so open starts one; if starting then hits a running
+ // server or a busy installation, the IPC error is the real cause and is reported with it.
+ let ownerIpcError:unknown;
  if(cmd==='open'){
    const {requestOwnerLogin}=await import('./owner-control.ts');
    const library=path.join(bundle,'assets/native',`owner-peer.${process.platform==='darwin'?'dylib':'so'}`);
-   const response=await requestOwnerLogin(root,{operation:'login',ownerId:arg('owner-id')},library).catch(()=>undefined);
+   const response=await requestOwnerLogin(root,{operation:'login',ownerId:arg('owner-id')},library).catch((error:unknown)=>{ownerIpcError=error;return undefined;});
    if(response){
      const ready='code' in response?response:await requestOwnerLogin(root,{operation:'bootstrap',name:arg('owner-name')??os.userInfo().username},library);
      if('error' in ready)throw new Error(ready.error);
@@ -399,8 +431,13 @@ async function main(){
  }
  if(cmd==='start'||cmd==='open'){
    if(cmd==='start'&&(arg('owner-name')||arg('owner-id')))throw new Error('Use open for interactive owner setup, or owner-login with a running server');
-   const reservation=await reservePort(current.port);await reservation.close();
-   const release=lockInstallation(root);process.on('exit',release);
+   let release:()=>void;
+   try{await claimInstallationPort(current.port,current.instance);release=lockInstallation(root);}
+   catch(error){
+     if(ownerIpcError===undefined)throw error;
+     throw new Error((error instanceof Error?error.message:String(error))+'; owner IPC failed: '+(ownerIpcError instanceof Error?ownerIpcError.message:String(ownerIpcError)));
+   }
+   process.on('exit',release);
    const nativeSource={PATH:process.env.PATH},ownerName=arg('owner-name')??os.userInfo().username;
    configure(path.dirname(path.dirname(dataFile(root,current))),bundle,current.port,layout,current.instance);
    const {db}=await import('../db/connection.ts');
@@ -420,7 +457,7 @@ async function main(){
      showWorkspace(response.code,nativeSource.PATH);
    }
    console.log('Qoopia: '+url);
-   console.log('Qoopia is running. Complete account setup in your browser.');return;
+   console.log(startedMessage(!!db.query('SELECT 1 FROM workspace_owners LIMIT 1').get(),current.port,arg('root')));return;
  }
  const release=lockInstallation(root);
  try{

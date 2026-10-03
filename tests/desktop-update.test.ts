@@ -21,7 +21,7 @@ function fixture() {
       privateDirectory(path.dirname(path.join(dir,file)));durableWrite(path.join(dir,file),name);
     }
     durableWrite(path.join(dir,OPS_READER_MEMBER),JSON.stringify(OPS_READER_CAPABILITY));
-    if(name!=='first')durableWrite(path.join(dir,DESKTOP_RELEASE),JSON.stringify(desktopRelease(trust,name==='next'?200:100)));
+    if(name!=='first')durableWrite(path.join(dir,DESKTOP_RELEASE),JSON.stringify(desktopRelease(trust,name.startsWith('next')?200:100)));
     const raw=JSON.stringify({format:'qoopia-bundle/1',version:'5.0.0-p3.0',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:schema,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
     durableWrite(path.join(dir,'manifest.json'),raw);durableWrite(path.join(dir,'manifest.sig'),sign(null,Buffer.from(raw),privateKey));return dir;
   };
@@ -48,6 +48,25 @@ test('desktop upgrade adopts legacy installation preserving memory, instance and
     expect(prepareDesktopUpdate(f.delivery,f.next,f.trust,true)).toEqual({state:'current',binary:result.binary});
     expect(()=>prepareDesktopUpdate(f.delivery,f.bundle('older'),f.trust,true)).toThrow('older');
     expect(readCurrent(f.root)).toEqual(selected);
+  }finally{f.cleanup();}
+});
+test('a rolled-back desktop update is not reapplied by the same app; the old runtime stays selected',()=>{
+  const f=fixture();try{
+    const before=readCurrent(f.root),pointer=fs.readFileSync(path.join(f.root,'current.json'),'utf8');
+    expect(prepareDesktopUpdate(f.delivery,f.next,f.trust,true).state).toBe('updated');
+    f.delivery.rollback();
+    // Older runtimes parse the pointer strictly: rollback must leave it in their format.
+    expect(fs.readFileSync(path.join(f.root,'current.json'),'utf8')).toBe(pointer);
+    expect(prepareDesktopUpdate(f.delivery,f.next,f.trust,true)).toEqual({state:'rolled_back',binary:path.join(f.root,'bundles',before.bundle,'qoopia')});
+    expect(readCurrent(f.root).bundle).toBe(before.bundle);
+    // A different build still updates.
+    expect(prepareDesktopUpdate(f.delivery,f.bundle('newest'),f.trust,true).state).toBe('updated');
+  }finally{f.cleanup();}
+});
+test('an app carrying the same release build as the installed one is not called older',()=>{
+  const f=fixture();try{
+    prepareDesktopUpdate(f.delivery,f.next,f.trust,true);
+    expect(()=>prepareDesktopUpdate(f.delivery,f.bundle('next-resigned'),f.trust,true)).toThrow('another build of the installed Qoopia release');
   }finally{f.cleanup();}
 });
 test('desktop upgrade still refuses a new bundle without its required dashboard script',()=>{

@@ -28,6 +28,18 @@ test('a late embedding cannot overwrite an edit; stale and deleted rows do not c
     expect(loadWorkspaceEmbeddings(workspace)).toHaveLength(0);expect(embeddingCoverage(workspace).embedded).toBe(0);
   } finally {server.stop(true);if(saved===undefined)delete process.env.QOOPIA_EMBED_ENDPOINT;else process.env.QOOPIA_EMBED_ENDPOINT=saved;}
 });
+test('concurrent embeddings of the same note text share one inference run',async()=>{
+  let calls=0;
+  const server=Bun.serve({port:0,fetch:async()=>{calls++;await Bun.sleep(50);return Response.json({embeddings:[Array(EMBED_DIM).fill(0.1)]});}});
+  const saved=process.env.QOOPIA_EMBED_ENDPOINT;process.env.QOOPIA_EMBED_ENDPOINT=`http://127.0.0.1:${server.port}/api/embed`;
+  try {
+    // The write path's fire-and-forget upsert and the maintenance tick race like this.
+    const note=createNote({workspace_id:workspace,agent_id:agent,text:'Одна заметка, один прогон модели.'});
+    const runs=await Promise.all([1,2].map(()=>upsertNoteEmbedding(note.id,workspace,'Одна заметка, один прогон модели.')));
+    expect(calls).toBe(1);
+    expect(runs.filter(r=>r.embedded)).toHaveLength(2);
+  } finally {server.stop(true);if(saved===undefined)delete process.env.QOOPIA_EMBED_ENDPOINT;else process.env.QOOPIA_EMBED_ENDPOINT=saved;}
+});
 test('FTS-only recall invokes an explicitly requested judge and rejects malformed rankings',async()=>{
   const one=createNote({workspace_id:workspace,agent_id:agent,text:'rerankdebtmark первый документ'});
   const two=createNote({workspace_id:workspace,agent_id:agent,text:'rerankdebtmark второй документ'});
@@ -36,7 +48,7 @@ test('FTS-only recall invokes an explicitly requested judge and rejects malforme
   const saved=process.env.QOOPIA_RERANK_LLM_ENDPOINT;process.env.QOOPIA_RERANK_LLM_ENDPOINT=`http://127.0.0.1:${server.port}/rerank`;
   try {
     const p={workspace_id:workspace,caller_agent_id:agent,is_admin:false,query:'rerankdebtmark',mode:'fts5' as const,deep_llm:true};
-    const result=await recall(p);expect(calls).toBe(1);expect(result.results[0]!.id).toBe(two.id);expect(result.judging.applied).toBe(true);
-    malformed=true;const fallback=await recall(p);expect(fallback.results.map(r=>r.id).sort()).toEqual([one.id,two.id].sort());expect(fallback.judging.applied).toBe(false);
+    const result=await recall(p);expect(calls).toBe(1);expect(result.results[0]!.id).toBe(two.id);expect(result.judging!.applied).toBe(true);
+    malformed=true;const fallback=await recall(p);expect(fallback.results.map(r=>r.id).sort()).toEqual([one.id,two.id].sort());expect(fallback.judging!.applied).toBe(false);
   } finally {server.stop(true);if(saved===undefined)delete process.env.QOOPIA_RERANK_LLM_ENDPOINT;else process.env.QOOPIA_RERANK_LLM_ENDPOINT=saved;}
 });

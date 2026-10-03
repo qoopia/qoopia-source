@@ -34,6 +34,16 @@ afterAll(async()=>{
   server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));
 });
 
+test('a public registration never creates a case-variant of an existing agent name',()=>{
+  const local=createAgent({name:'gpt',workspaceSlug:'browser-onboarding'});
+  try {
+    expect(browserAgent('GPT')).toBeNull();
+    expect(db.query("SELECT count(*) AS n FROM agents WHERE workspace_id=? AND name='GPT'").get(owner.workspace_id)).toEqual({n:0});
+  } finally {
+    db.query("UPDATE agents SET name='gpt-renamed-fixture' WHERE id=?").run(local.id);
+  }
+});
+
 test('fresh browser connectors require consent and human approval yields agent-scoped tokens',async()=>{
   for(const [name,callback] of [['GPT','https://chatgpt.com/aip/g-actions/oauth/callback'],['Claude','https://claude.ai/api/mcp/auth_callback']]) {
     authLimiter.resetForTests();dashboardLimiter.resetForTests();
@@ -51,8 +61,9 @@ test('fresh browser connectors require consent and human approval yields agent-s
     const consent=await fetch(base+consentPath.pathname+consentPath.search,{headers:{cookie}});expect(consent.status).toBe(200);
     const nonce=(await consent.text()).match(/name="nonce" value="([^"]+)"/)![1]!;
     const approval=await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',redirect:'manual',headers:{cookie,origin:base,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket,nonce})});expect(approval.status).toBe(302);
-    const finalized=await fetch(base+'/oauth/authorize/finalize?ticket='+ticket,{redirect:'manual'});expect(finalized.status).toBe(302);
-    const code=new URL(finalized.headers.get('location')!).searchParams.get('code')!;
+    const callbackUrl=new URL(approval.headers.get('location')!);expect(callbackUrl.origin+callbackUrl.pathname).toBe(callback!);
+    const code=callbackUrl.searchParams.get('code')!;
+    const late=await fetch(base+'/oauth/authorize/finalize?ticket='+ticket,{redirect:'manual'});expect(late.status).toBe(400);
     const token=await fetch(base+'/oauth/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:client.client_id,code,code_verifier:verifier,redirect_uri:callback!,grant_type:'authorization_code'})});expect(token.status).toBe(200);
     const result=await token.json() as {access_token:string};const identity=authenticate(new Request(base+'/mcp',{headers:{authorization:'Bearer '+result.access_token}}))!;
     expect(identity.agent_id).toBe(agent.id);expect(identity.agent_id).not.toBe(owner.agent_id);expect(identity.type).toBe('standard');expect(identity.workspace_id).toBe(owner.workspace_id);

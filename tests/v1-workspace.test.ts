@@ -53,30 +53,30 @@ echo '{"type":"result","subtype":"success","is_error":false}'
     expect((await send(input,base,'')).status).toBe(403);
     expect((await send({...input,command:'anything'})).status).toBe(400);
     const first=await send(input),firstBody=await first.json();expect(firstBody).toMatchObject({state:'ready'});
-    expect(first.status).toBe(200);expect((await (await send(input)).json()).state).toBe('ready');
+    expect(first.status).toBe(200);expect(await (await send(input)).json()).toMatchObject({state:'ready'});
     expect(db.query("SELECT count(*) n FROM agents WHERE workspace_id=? AND name='Qoopia Claude'").get(ws)).toEqual({n:1});
-    expect((await (await send({action:'login',runtime:'claude_code'})).json()).state).toBe('login_started');
+    expect(await (await send({action:'login',runtime:'claude_code'})).json()).toMatchObject({state:'login_started'});
     await new Promise(resolve=>setTimeout(resolve,150));
-    expect((await (await fetch(endpoint,{headers:{cookie}})).json()).login.url).toBe('https://claude.com/cai/oauth/authorize?client_id=fixture');
+    expect(await (await fetch(endpoint,{headers:{cookie}})).json()).toMatchObject({login:{url:'https://claude.com/cai/oauth/authorize?client_id=fixture'}});
     expect((await send({action:'login-code',runtime:'claude_code',code:'fixture-once'},'https://foreign.invalid')).status).toBe(403);
-    expect((await (await send({action:'login-code',runtime:'claude_code',code:'fixture-once'})).json()).state).toBe('code_submitted');
+    expect(await (await send({action:'login-code',runtime:'claude_code',code:'fixture-once'})).json()).toMatchObject({state:'code_submitted'});
     await new Promise(resolve=>setTimeout(resolve,150));
-    expect((await (await fetch(endpoint,{headers:{cookie}})).json()).login).toEqual({runtime:'claude_code',state:'completed'});
+    expect((await (await fetch(endpoint,{headers:{cookie}})).json() as {login:unknown}).login).toEqual({runtime:'claude_code',state:'completed'});
     const task={action:'task',runtime:'claude_code',session:'Useful conversation',task:'Keep this context for later.',model:'claude-opus-5',effort:'high'};
-    const answer=await (await send(task)).json();expect(answer).toMatchObject({status:'completed',output:'Fixture answer preserved.'});
+    const answer=await (await send(task)).json() as {session_id:string;artifact_warning:string;artifacts:{id:string;filename:string}[]};expect(answer).toMatchObject({status:'completed',output:'Fixture answer preserved.'});
     expect(answer.artifacts).toHaveLength(1);expect(answer.artifacts[0].filename).toBe('handoff.md');
     expect(answer.artifact_warning).toContain('regular files');
     const download=await fetch(base+'/api/dashboard/files/'+answer.artifacts[0].id+'/download',{headers:{cookie}});
     expect(download.status).toBe(200);expect(await download.text()).toBe('Durable fixture file.\n');
     expect(db.query('SELECT content FROM files WHERE id=?').get(answer.artifacts[0].id)).toEqual({content:Buffer.from('Durable fixture file.\n')});
-    const continued=await (await send({...task,task:'Continue the same conversation.'})).json();
+    const continued=await (await send({...task,task:'Continue the same conversation.'})).json() as {session_id:string};
     expect(continued.session_id).toBe(answer.session_id);
-    const history=await (await fetch(base+'/api/dashboard/sessions/'+answer.session_id+'/messages',{headers:{cookie}})).json();
+    const history=await (await fetch(base+'/api/dashboard/sessions/'+answer.session_id+'/messages',{headers:{cookie}})).json() as {messages:{role:string}[]};
     expect(history.messages.map((m:{role:string})=>m.role)).toEqual(['user','assistant','user','assistant']);
     const pointer=JSON.parse(fs.readFileSync(path.join(root,'current.json'),'utf8'));
     fs.writeFileSync(path.join(root,'current.json'),JSON.stringify({...pointer,generation:'generation-'+randomUUID(),bundle:'b'.repeat(64),bundle_digest:'b'.repeat(64)}));
     expect((await send(task)).status).toBe(400); // A task cannot silently approve an update.
-    expect((await (await send(input)).json()).state).toBe('ready'); // Explicit reconnect retains the agent.
+    expect(await (await send(input)).json()).toMatchObject({state:'ready'}); // Explicit reconnect retains the agent.
     expect(db.query("SELECT count(*) n FROM agents WHERE workspace_id=? AND name='Qoopia Claude'").get(ws)).toEqual({n:1});
     db.query("UPDATE agents SET policy_epoch=policy_epoch+1 WHERE workspace_id=? AND name='Qoopia Claude'").run(ws);
     expect((await send(input)).status).toBe(400); // Reconnect never restores revoked access.

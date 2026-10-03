@@ -280,7 +280,7 @@ async function main(): Promise<number> {
   );
   const hasAgentType = agentCols.has("type");
   const hasAgentActive = agentCols.has("active");
-  const ADMIN_TYPES = ["steward", "claude-privileged", "admin"];
+  const ADMIN_TYPES = ["steward", "admin"];
 
   const agentRows = all(
     `SELECT id${hasAgentType ? ", type" : ""}${hasAgentActive ? ", active" : ""}

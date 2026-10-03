@@ -9,19 +9,20 @@ import { consumeLocalLogin, parseLocalLoginBody } from "./delivery/local-login.t
 import { localIdentityLogin, ownerIdentity } from "./identity/local.ts";
 import { remoteConnectionConsent } from './identity/connection-consent.ts';
 import { assetPath } from "./utils/assets.ts";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { readFileSync, statfsSync } from "node:fs";
 let identityHandler: ReturnType<typeof localIdentityLogin> | undefined;
 let connectionConsentHandler:{root:string;handler:ReturnType<typeof remoteConnectionConsent>}|undefined;
 import {
   handleDashboardApi,
   checkDashboardAuth,
+  dashboardMutationAllowed,
   originAllowed as dashboardOriginAllowed,
 } from "./dashboard-api.ts";
 import { authenticate, type AuthContext } from "./auth/middleware.ts";
 import { getAllowlist } from "./admin/claude-agents.ts";
 import { saveMessage } from "./services/sessions.ts";
-import { fileUpload, fileDelete } from "./services/files.ts";
+import { fileUpload, fileDelete, validateFileUpload } from "./services/files.ts";
 import {
   wellKnownAuthorizationServer,
   wellKnownProtectedResource,
@@ -31,9 +32,10 @@ import { QoopiaError } from "./utils/errors.ts";
 import { myAgentState, submitMyAgentAction, readAgentArtifact, recoverMyAgentRuns, stopMyAgents } from './services/my-agent.ts';
 import { telegramState, telegramAction, startTelegramChannels, stopTelegramChannels } from './services/my-agent-telegram.ts';
 import { db } from "./db/connection.ts";
-import { getPendingMigrations } from "./db/migrate.ts";
+import { getPendingMigrations, latestShippedMigration } from "./db/migrate.ts";
 import { env } from "./utils/env.ts";
-import { logger } from "./utils/logger.ts";
+import { cookieSigningSecretIssue } from "./utils/runtime-config.ts";
+import { backgroundFailure, logger } from "./utils/logger.ts";
 import {
   globalLimiter,
   mcpLimiter,
@@ -46,9 +48,11 @@ import { audit } from "./utils/audit.ts";
 import { isReadOnlyInstance } from "./utils/instance-role.ts";
 import { getVerifiedReleaseBaseline } from "./utils/release-baseline.ts";
 import { PRODUCT_VERSION } from "./utils/product-version.ts";
-import { handleAuthorityRequest } from "./api/authority.ts";
-import { MAX_BODY_BYTES, MAX_UPLOAD_BYTES, getAllowedOrigin, getClientIp, json, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
-import { serveDashboard } from "./http/dashboard-static.ts";
+import { apiError, handleAuthorityRequest } from "./api/authority.ts";
+import { attachmentDisposition, CONTINUITY_MAX_BODY_BYTES, REQUEST_TIMEOUTS, RequestBodyError, repeatsSingletonHeader, unreadBody } from "./utils/http-json.ts";
+import { MAX_UPLOAD_BYTES, dropHeadBody, getAllowedOrigin, getClientIp, json, methodNotAllowed, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
+import { dashboardVersion, serveDashboard } from "./http/dashboard-static.ts";
+import { DASHBOARD_COOKIE, parseCookies } from "./dashboard-session.ts";
 import { handleServiceOwner, serviceOwnerEmail } from './http/service-owner.ts';
 import { handleMcp } from "./http/mcp-route.ts";
 import {
@@ -68,22 +72,25 @@ import {
 } from "./http/oauth-routes.ts";
 export { getCurrentAuth } from "./http/mcp-route.ts";
 import {
+  createWriteProbe,
   evaluateReadiness,
   getV4FeatureFlags,
   readSchemaVersion,
 } from "./utils/health-metadata.ts";
 import { storageDegradation } from "./utils/storage-degradation.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./db/sqlite.ts";
+import { embeddingHealth } from "./services/embedding-store.ts";
+
+// Writable instances only: a legacy-readonly export never writes, so neither probe applies there.
+const writeReadiness = isReadOnlyInstance() ? {} : {
+  probeWrite: createWriteProbe(db, SQLITE_BUSY_TIMEOUT_MS),
+  freeBytes: () => { const volume = statfsSync(env.DATA_DIR); return volume.bavail * volume.bsize; },
+  minFreeBytes: env.MIN_FREE_BYTES,
+};
 
 /**
- * Single Node http server hosts:
- *  - /mcp                                (Streamable HTTP MCP, stateless mode)
- *  - /health                             (health check)
- *  - /ready                              (readiness check)
- *  - /.well-known/oauth-authorization-server
- *  - /.well-known/oauth-protected-resource
- *  - /oauth/authorize                    (PKCE code flow)
- *  - /oauth/token
- *  - /oauth/revoke
+ * Single Node http server for MCP (/mcp, /mcp/c/<id>), OAuth, health,
+ * dashboard, ingest and file routes; handleRequest below is the route table.
  *
  * We use node:http (via Bun's Node compat) because the MCP SDK's
  * StreamableHTTPServerTransport is built around IncomingMessage/ServerResponse.
@@ -95,16 +102,26 @@ interface NodeReqWithBody extends IncomingMessage {
 }
 
 // ---------- Dashboard file upload / delete (owner-only) ----------
-async function handleFileUpload(req: IncomingMessage, res: ServerResponse) {
+// Owner/steward session or static key only. An OAuth token carries an MCP scope
+// (possibly read-only) that these routes cannot honour, so it is refused like on
+// every other dashboard mutation.
+function fileMutationAuth(req: IncomingMessage, res: ServerResponse) {
   const auth = checkDashboardAuth(req);
-  if (!auth) return json(res, 401, { error: "unauthorized" }, req);
-  if (!(auth.type === "owner" || auth.type === "steward"))
-    return json(res, 403, { error: "forbidden", detail: "owner only" }, req);
-  if (!dashboardOriginAllowed(req)) return json(res, 403, { error: "forbidden_origin" }, req);
+  if (!auth) return void json(res, 401, { error: "unauthorized" }, req);
+  if (!(auth.type === "owner" || auth.type === "steward") || auth.source === "oauth")
+    return void json(res, 403, { error: "forbidden", detail: "owner only" }, req);
+  if (!dashboardMutationAllowed(req, auth)) return void json(res, 403, { error: "forbidden_origin" }, req);
+  return auth;
+}
+
+async function handleFileUpload(req: IncomingMessage, res: ServerResponse) {
+  const auth = fileMutationAuth(req, res);
+  if (!auth) return;
   let body: Buffer;
   try {
     body = await readBodyLimited(req, MAX_UPLOAD_BYTES);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof RequestBodyError) || error.status !== 413) throw error; // a stalled body is 408, an abort is logged
     return json(res, 413, { error: "payload_too_large", detail: "max 100MB per request" }, req);
   }
   let folder = "inbox";
@@ -122,30 +139,29 @@ async function handleFileUpload(req: IncomingMessage, res: ServerResponse) {
     return json(res, 400, { error: "bad_multipart" }, req);
   }
   if (!entries.length) return json(res, 400, { error: "no_file", detail: "expected a 'file' field" }, req);
-  const uploaded = [];
-  for (const file of entries) {
-    const buf = Buffer.from(await file.arrayBuffer());
-    uploaded.push(
-      await fileUpload({
-        workspace_id: auth.workspace_id,
-        owner_agent_id: auth.agent_id,
-        uploaded_by_agent_id: auth.agent_id,
-        folder,
-        filename: file.name || "file",
-        mime: file.type || "application/octet-stream",
-        bytes: buf,
-      }),
-    );
+  try {
+    // All or nothing: every entry is checked before the first one is written.
+    const batch = [];
+    for (const file of entries) {
+      const bytes = Buffer.from(await file.arrayBuffer());
+      validateFileUpload({ folder, filename: file.name || "file", bytes });
+      batch.push({ filename: file.name || "file", mime: file.type || "application/octet-stream", bytes });
+    }
+    const uploaded = [];
+    for (const file of batch) {
+      uploaded.push(await fileUpload({ workspace_id: auth.workspace_id, owner_agent_id: auth.agent_id, uploaded_by_agent_id: auth.agent_id, folder, ...file }));
+    }
+    return json(res, 200, { uploaded }, req);
+  } catch (e) {
+    const er = e as { code?: string; message?: string; details?: Record<string, unknown> };
+    if (er.code === "INVALID_INPUT") return json(res, 400, { error: "invalid_input", detail: er.message, ...er.details }, req);
+    throw e;
   }
-  return json(res, 200, { uploaded }, req);
 }
 
 async function handleFileDelete(req: IncomingMessage, res: ServerResponse, id: string) {
-  const auth = checkDashboardAuth(req);
-  if (!auth) return json(res, 401, { error: "unauthorized" }, req);
-  if (!(auth.type === "owner" || auth.type === "steward"))
-    return json(res, 403, { error: "forbidden" }, req);
-  if (!dashboardOriginAllowed(req)) return json(res, 403, { error: "forbidden_origin" }, req);
+  const auth = fileMutationAuth(req, res);
+  if (!auth) return;
   try {
     return json(res, 200, fileDelete({ workspace_id: auth.workspace_id, id, agent_id: auth.agent_id }), req);
   } catch (e) {
@@ -156,38 +172,98 @@ async function handleFileDelete(req: IncomingMessage, res: ServerResponse, id: s
 }
 
 /**
- * QRERUN-001: refuse to start the HTTP server if /oauth/authorize is reachable
- * but env.ADMIN_SECRET is empty. Without this gate the consent POST handler
- * has no owner-proof to verify, and the previous loopback-fallback was unsafe
- * behind tunnels (cloudflared etc. always present as 127.0.0.1).
+ * Fail closed on every server start, dev included: QOOPIA_ADMIN_SECRET is
+ * required, and the effective dashboard cookie-signing secret
+ * (QOOPIA_SESSION_SECRET, else a key derived from QOOPIA_ADMIN_SECRET) must
+ * be at least 32 bytes. ADR-017 removed the ADMIN_SECRET consent path; the
+ * consent POST now authenticates the owner through the qoopia_dash cookie.
  *
- * Throws so launchd surfaces the failure in stderr and the install runbook
- * can prompt the operator to set QOOPIA_ADMIN_SECRET.
+ * Throws so launchd surfaces the failure in stderr.
  */
 export function assertOAuthReady(): void {
-  if (env.ADMIN_SECRET) return;
-  const msg =
-    "QOOPIA_ADMIN_SECRET is not set. /oauth/authorize cannot start without it " +
-    "(QRERUN-001 fail-closed). Generate one and add it to your launchd plist " +
-    "or shell env: `openssl rand -base64 32`.";
-  logger.error(msg);
-  throw new Error(msg);
+  const issue = env.ADMIN_SECRET
+    ? cookieSigningSecretIssue()
+    : "QOOPIA_ADMIN_SECRET is not set; it keys dashboard session cookies when QOOPIA_SESSION_SECRET is unset. " +
+      "Generate one and add it to your launchd plist or shell env: `openssl rand -base64 32`";
+  if (!issue) return;
+  logger.error(issue);
+  throw new Error(issue);
 }
+
+const stopBackgroundWork=new WeakMap<Server,()=>Promise<void>>();
+/** Stop agents and Telegram before draining connections: an open streaming response
+ * (MCP SSE) keeps 'close' from firing, so it cannot be the only place that stops them.
+ * Resolves when both are done or after the deadline, whichever comes first. */
+export async function shutdownHttpServer(server:Server,deadlineMs=5000):Promise<void>{
+  const closed=new Promise<void>(resolve=>server.close(()=>resolve()));
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const deadline=new Promise<void>(resolve=>{timer=setTimeout(resolve,deadlineMs);});
+  try{await Promise.race([Promise.all([closed,stopBackgroundWork.get(server)?.()]),deadline]);}finally{clearTimeout(timer);}
+}
+
+/** The request pathname (never the query string) the router, logs and audit all use. An
+ * origin-form target is joined to the base as text: resolved against it, `//host/x` would turn
+ * `host` into an authority and route as `/x`. Absolute-form (RFC 9112 §3.2.2) still parses. */
+function requestPath(req: IncomingMessage): string {
+  const raw = req.url || "/";
+  try { return new URL(raw.startsWith("/") ? `http://local${raw}` : raw, "http://local").pathname; }
+  catch { return raw.split("?", 1)[0] || "/"; }
+}
+
+/**
+ * One audit line per 401 that rejected a presented credential (Bearer header
+ * or dashboard cookie), on every route. Anonymous 401s are the normal MCP
+ * OAuth discovery step and stay unlogged; /oauth/* audits its own denials.
+ * Path only: never the query string, headers or token.
+ */
+function auditRejectedCredential(req: IncomingMessage, res: ServerResponse): void {
+  if (res.statusCode !== 401) return;
+  if (!req.headers.authorization && !parseCookies(req.headers.cookie)[DASHBOARD_COOKIE]) return;
+  const pathname = requestPath(req);
+  if (pathname.startsWith("/oauth/")) return;
+  audit({ event: "auth_failure", result: "deny", ip: getClientIp(req), scope: pathname.slice(0, 256) });
+}
+
+/** Bun ignores keepAliveTimeout, so an idle keep-alive socket is closed here; the timer
+ * starts only when a response has finished, so long or streaming requests are never cut. */
+const keepAliveTimers = new WeakMap<object, ReturnType<typeof setTimeout>>();
 
 export function startHttpServer() {
   assertOAuthReady();
   startConsentTicketGc();
   const httpServer = createServer(async (req, res) => {
+    const socket = req.socket;
+    clearTimeout(keepAliveTimers.get(socket));
+    if (req.method === "HEAD") dropHeadBody(res);
+    // Framing is ambiguous after a repeated Content-Length/Transfer-Encoding, so nothing more is read from this socket.
+    const repeated = repeatsSingletonHeader(req);
+    res.once("finish", () => {
+      auditRejectedCredential(req, res);
+      if (repeated || unreadBody(req)) return void req.destroy();
+      keepAliveTimers.set(socket, setTimeout(() => socket.destroy(), REQUEST_TIMEOUTS.keepAliveIdleMs).unref());
+    });
+    if (repeated) {
+      res.setHeader("connection", "close");
+      return json(res, 400, { error: "duplicate_header" }, req);
+    }
     try {
       await handleRequest(req as NodeReqWithBody, res);
     } catch (err) {
-      const msg = (err as Error).message || "";
+      const where = { method: req.method, path: requestPath(req).slice(0, 256) };
+      // A client that disconnected mid-request is not a server fault, and its socket is gone.
+      if ((err as NodeJS.ErrnoException).code === "ECONNRESET" || (err as Error).message === "aborted")
+        return void logger.info("Client closed the request", where);
       if (!res.headersSent) {
-        if (msg === "payload_too_large") {
-          json(res, 413, { error: "payload_too_large", max_bytes: MAX_BODY_BYTES });
+        if (err instanceof RequestBodyError) {
+          res.setHeader("connection", "close");
+          json(res, err.status, err.status === 413 ? { error: err.message, max_bytes: err.maxBytes } : { error: err.message }, req);
         } else {
-          logger.error("Request handler failed", { error: String(err) });
-          json(res, 500, { error: "internal_error" });
+          // Client-input errors (unknown connection, malformed id or %-encoding) keep their 4xx;
+          // only a 5xx is logged, and its body stays generic.
+          const mapped = apiError(err);
+          if (mapped.status >= 500) logger.error("Request handler failed", { ...where, error: String(err) });
+          json(res, mapped.status, mapped.status >= 500 ? { error: "internal_error" }
+            : { error: mapped.error.code.toLowerCase(), error_description: mapped.error.message }, req);
         }
       }
     }
@@ -196,15 +272,19 @@ export function startHttpServer() {
   let bridgeTimer:ReturnType<typeof setInterval>|undefined;
   if(!isReadOnlyInstance())httpServer.once('listening',()=>{
     recoverMyAgentRuns();startTelegramChannels();
-    const run=()=>import('./bridges/api.ts').then(({bridges})=>bridges.tick()).catch(()=>{});
+    const bridgeFailed=backgroundFailure('Bridge sync');
+    const run=()=>import('./bridges/api.ts').then(({bridges})=>bridges.tick()).catch(bridgeFailed);
     bridgeTimer=setInterval(run,5000);bridgeTimer.unref();
   });
 
-  httpServer.on("close", () => {
+  // Idempotent: shutdownHttpServer and the 'close' event may both run it.
+  const stopWork=()=>{
     stopConsentTicketGc();
     if(bridgeTimer)clearInterval(bridgeTimer);
-    stopTelegramChannels();void stopMyAgents().catch(()=>logger.error('Agent process termination was not confirmed during shutdown'));
-  });
+    stopTelegramChannels();return stopMyAgents().catch(()=>logger.error('Agent process termination was not confirmed during shutdown'));
+  };
+  stopBackgroundWork.set(httpServer,stopWork);
+  httpServer.on("close", () => {void stopWork();});
 
   httpServer.listen(env.PORT, env.HOST, () => {
     const addr = httpServer.address();
@@ -247,21 +327,36 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   // Route by pathname, not the full URL. Browser OAuth consent bounces through
   // /dashboard?next=...; matching against req.url made that valid dashboard
   // URL fall through to {error:"not_found"}.
-  let url = rawUrl;
-  try {
-    url = new URL(rawUrl, "http://local").pathname;
-  } catch {
-    url = rawUrl.split("?", 1)[0] || "/";
-  }
+  const url = requestPath(req);
   const method = (req.method || "GET").toUpperCase();
+  // HEAD is answered like GET (the runtime drops the body) only on routes that are plain reads;
+  // OAuth's state-changing GETs stay GET-only.
+  const read = method === "GET" || method === "HEAD";
   const clientIp = getClientIp(req);
-  if(method === 'GET' || method === 'HEAD'){
+  if(read){
     const shell=webAppAsset(url);
-    if(shell){res.writeHead(200,{'content-type':shell.type,'cache-control':'no-cache','x-content-type-options':'nosniff','service-worker-allowed':'/'});return res.end(method==='HEAD'?undefined:shell.body);}
+    if(shell){res.writeHead(200,{'content-type':shell.type,'cache-control':'no-cache','service-worker-allowed':'/',...securityHeaders(req)});return res.end(method==='HEAD'?undefined:shell.body);}
     const asset=brandAsset(url);
-    if(asset){res.writeHead(200,{'content-type':asset.type,'cache-control':'no-cache',...securityHeaders(req)});return res.end(method==='HEAD'?undefined:asset.body);}
+    if(asset){
+      // dashboard.html names its assets ?v=<content revision>: that exact URL never changes, so it is
+      // cached for a year. Unversioned and stale-revision URLs revalidate.
+      const current=!!dashboardVersion&&new URLSearchParams(rawUrl.split('?')[1]??'').get('v')===dashboardVersion;
+      res.writeHead(200,{'content-type':asset.type,'cache-control':current?'public, max-age=31536000, immutable':'no-cache',...securityHeaders(req)});
+      return res.end(method==='HEAD'?undefined:asset.body);
+    }
   }
 
+
+  // --- Global safety-net rate limit (1000 req/min per IP) ---
+  // Per-route limiters (mcp/ingest/dashboard/auth) срабатывают в своих хэндлерах.
+  if (!globalLimiter.allow(clientIp)) {
+    res.writeHead(429, {
+      "content-type": "application/json",
+      "retry-after": String(globalLimiter.retryAfterSec(clientIp)),
+    });
+    res.end(JSON.stringify({ error: "too_many_requests", scope: "global" }));
+    return;
+  }
 
   // CORS preflight
   if (method === "OPTIONS") {
@@ -280,21 +375,14 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     return;
   }
 
-  // --- Global safety-net rate limit (1000 req/min per IP) ---
-  // Per-route limiters (mcp/ingest/dashboard/auth) срабатывают в своих хэндлерах.
-  if (!globalLimiter.allow(clientIp)) {
-    res.writeHead(429, {
-      "content-type": "application/json",
-      "retry-after": String(globalLimiter.retryAfterSec(clientIp)),
-    });
-    res.end(JSON.stringify({ error: "too_many_requests", scope: "global" }));
-    return;
-  }
-
   if (process.env.QOOPIA_STANDALONE === 'true') {
     const host = `127.0.0.1:${env.PORT}`;
     if (req.headers.host !== host) return json(res,403,{error:'Host refused'},req);
   }
+  // One per-IP limit for every dashboard route, counted once, early-dispatched routes included.
+  if (url.startsWith("/api/dashboard") && rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
+  // Every dashboard API answer is session-bound; a route that sets its own cache-control still wins.
+  if (url.startsWith("/api/dashboard")) res.setHeader("cache-control", "no-store");
   if (method === 'GET' && url.startsWith('/api/dashboard/')) renewLocalOwnerSession(req,res);
   if(url==='/api/dashboard/profile'){
     const auth=checkDashboardAuth(req);
@@ -310,6 +398,8 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   if(url==='/api/dashboard/identity'||url.startsWith('/api/dashboard/identity/')){
       if(!ownerIdentityEnabled())return json(res,404,{error:'Owner email login is not configured'},req);
       const route=url.slice('/api/dashboard/identity'.length);
+      // Each start spends the broker's sign-in allowance; polling (every 2.5 s) is not limited here.
+      if(route==='/start'&&rateLimit429(authLimiter,'auth',clientIp,res))return;
       if(isReadOnlyInstance()||!ownerIdentityRequestAllowed(req,method!=='GET'||route!==''))return json(res,403,{error:'Owner login origin refused'},req);
       if(method!=='GET'||route!==''){
         if(method!=='POST'||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error:'Same-origin action required'},req);
@@ -332,16 +422,16 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     if(isReadOnlyInstance())return json(res,403,{error_description:'Canonical workspace required'},req);
     try {
       if(url.endsWith('/file')){
-        if(method!=='GET')return json(res,405,{error_description:'Read only'},req);
+        if(method!=='GET')return methodNotAllowed(res,'GET',req,{error_description:'Read only'});
         const artifact=readAgentArtifact(auth.agent_id,new URL(rawUrl,'http://local').searchParams.get('path')??'');
-        res.writeHead(200,{'content-type':'application/octet-stream','content-length':String(artifact.bytes.length),'content-disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(artifact.name),'x-content-type-options':'nosniff','content-security-policy':"sandbox; default-src 'none'"});return res.end(artifact.bytes);
+        res.writeHead(200,{'content-type':'application/octet-stream','content-length':String(artifact.bytes.length),'content-disposition':attachmentDisposition(artifact.name),'x-content-type-options':'nosniff','content-security-policy':"sandbox; default-src 'none'"});return res.end(artifact.bytes);
       }
       if(method==='GET'){const query=new URL(rawUrl,'http://local').searchParams;return json(res,200,{...myAgentState(auth.agent_id,query.get('conversation')??undefined,{runBefore:query.get('runBefore')??undefined,conversationOffset:Number(query.get('conversationOffset')??0),includeFiles:query.get('files')!=='0',runLimit:query.has('runs')?Number(query.get('runs')):undefined}),telegram_setup:telegramState(auth.agent_id)},req);}
       if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
       const body=JSON.parse((await readBodyLimited(req,32*1024)).toString());
       const result=typeof body?.action==='string'&&body.action.startsWith('telegram-')?await telegramAction(auth.agent_id,body):await submitMyAgentAction(auth.agent_id,body);
       return json(res,'accepted' in result&&result.accepted?202:200,result,req);
-    }catch(error){return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,{error_description:error instanceof QoopiaError?error.message:'Agent action failed. Check your connection and try again.'},req);}
+    }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,{error_description:error instanceof QoopiaError?error.message:'Agent action failed. Check your connection and try again.'},req);}
   }
   if(url==='/api/dashboard/bridges') {
     res.setHeader('cache-control','no-store');
@@ -354,7 +444,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
       const body=JSON.parse((await readBodyLimited(req,2*1024*1024)).toString());
       return json(res,200,await bridgeAction(auth.agent_id,body),req);
-    } catch(error){return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,
+    } catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,
       {error_description:error instanceof QoopiaError?error.message:'Bridge action failed. Keep your invitation or draft and try again.'},req);}
   }
   if(url==='/api/dashboard/memory'||url==='/api/dashboard/connections'||url==='/api/dashboard/connection-setup') {
@@ -372,14 +462,15 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         const result=typeof input?.action==='string'&&input.action.startsWith('network-')?await submitManagedNetworkAction(auth.agent_id,input):await connectionAction(auth.agent_id,input);
         return json(res,'accepted' in result&&result.accepted?202:200,result,req);
       }
-      if(url==='/api/dashboard/connections')return json(res,method==='GET'?200:405,method==='GET'?browserConnectionState(auth.agent_id):{error_description:'Read only'},req);
+      if(url==='/api/dashboard/connections')return method==='GET'?json(res,200,browserConnectionState(auth.agent_id),req):methodNotAllowed(res,'GET',req,{error_description:'Read only'});
       if(method==='GET')return json(res,200,memorySetupState(auth.agent_id),req);
       if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
       const body=JSON.parse((await readBodyLimited(req,12*1024)).toString());
       const result=await submitMemorySetupAction(auth.agent_id,body);
       return json(res,'accepted' in result&&result.accepted?202:200,result,req);
-    } catch(error){return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,
-      {state:'error',code:error instanceof QoopiaError?error.code:'INVALID_INPUT',error_description:error instanceof QoopiaError?error.message:'Setup failed; check the selected action'},req);}
+    } catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,
+      {state:'error',code:error instanceof QoopiaError?error.code:'INVALID_INPUT',error_description:error instanceof QoopiaError?error.message:'Setup failed; check the selected action',
+        ...(error instanceof QoopiaError&&typeof error.details?.next_action==='string'?{next_action:error.details.next_action}:{})},req);}
   }
 
   if (process.env.QOOPIA_STANDALONE === 'true') {
@@ -392,7 +483,8 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       let code: string;try {code=parseLocalLoginBody(await readBodyLimited(req,1024),req.headers['content-type']);}catch{return json(res,400,{error:'Invalid login request'},req);}
       const ownerId=consumeLocalLogin(code);
       if(!ownerId)return json(res,401,{error:'Login code expired or invalid'},req);
-      localOwnerLoginHandler(req,res,ownerId);return;
+      const form=req.headers['content-type']?.split(';',1)[0]?.trim().toLowerCase()==='application/x-www-form-urlencoded';
+      localOwnerLoginHandler(req,res,ownerId,form?'/dashboard':undefined);return;
     }
     if(url==='/api/dashboard/workspace') {
       const auth=checkDashboardAuth(req);
@@ -404,36 +496,42 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         if(method!=='POST'||req.headers.origin!==`http://${host}`||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
         const body=JSON.parse((await readBodyLimited(req,96*1024)).toString());
         return json(res,200,await workspaceAction(auth.agent_id,body),req);
-      }catch(error){return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,workspaceError(error),req);}
+      }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,workspaceError(error),req);}
     }
   }
 
   if (url.startsWith("/api/dashboard/authority/")) {
     const dash = checkDashboardAuth(req);
     if (!dash) return json(res,401,{error:{code:"UNAUTHENTICATED",message:"Sign in to the dashboard"}},req);
-    if (method !== "GET" && (!dashboardOriginAllowed(req) || req.headers["x-qoopia-csrf"] !== "1")) {
+    if (!read && (!dashboardOriginAllowed(req) || req.headers["x-qoopia-csrf"] !== "1")) {
       return json(res,403,{error:{code:"FORBIDDEN",message:"Same-origin dashboard mutation required"}},req);
     }
-    const body = method === "GET" ? undefined : await readBodyLimited(req,4*1024*1024);
+    const body = read ? undefined : await readBodyLimited(req,4*1024*1024);
     const headers = new Headers();
     for (const [name,value] of Object.entries(req.headers)) if(typeof value === "string") headers.set(name,value);
     const auth: AuthContext = {workspace_id:dash.workspace_id,agent_id:dash.agent_id,agent_name:"dashboard session",type:dash.type,
       source:dash.source === "cookie" ? "api-key" : dash.source,granted_scope:dash.granted_scope};
-    const response = await handleAuthorityRequest(new Request(`http://local${rawUrl.replace("/api/dashboard/authority/","/api/v1/")}`,{method,headers,body}),undefined,auth);
-    res.writeHead(response.status,{...Object.fromEntries(response.headers),"cache-control":"no-store"});res.end(await response.text());return;
+    const response = await handleAuthorityRequest(new Request(`http://local${rawUrl.replace("/api/dashboard/authority/","/api/v1/")}`,{method:read?"GET":method,headers,body}),undefined,auth);
+    res.writeHead(response.status,{...Object.fromEntries(response.headers),"cache-control":"no-store","x-content-type-options":"nosniff"});res.end(await response.text());return;
   }
   if (url.startsWith("/api/v1/")) {
-    const body = method === "GET" ? undefined : await readBodyLimited(req, 4 * 1024 * 1024);
     const headers = new Headers();
     for (const [name, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(name, value);
-    const response = await handleAuthorityRequest(new Request(`http://local${rawUrl}`, { method, headers, body }));
-    res.writeHead(response.status, Object.fromEntries(response.headers));
+    // Authenticate from headers first: an anonymous caller gets its 401 without us buffering 4 MB.
+    // Pairing redemption is the one anonymous write; its handler refuses more than 1 KiB.
+    const auth = authenticate(new Request(`http://local${rawUrl}`, { headers }));
+    const redeem = url === "/api/v1/agent-pairings/redeem";
+    const body = read || (!auth && !redeem) ? undefined : await readBodyLimited(req, redeem ? 4096 : 4 * 1024 * 1024);
+    const response = await handleAuthorityRequest(new Request(`http://local${rawUrl}`, { method: read ? "GET" : method, headers, body }), undefined, auth);
+    // Authenticated reads and the pairing redemption (a new API key) must not be cached or sniffed.
+    res.writeHead(response.status, { ...Object.fromEntries(response.headers), "cache-control": "no-store", "x-content-type-options": "nosniff" });
     res.end(await response.text());
     return;
   }
 
   // --- Health ---
   if (url === "/health") {
+    if (!read) return methodNotAllowed(res, "GET, HEAD", req);
     const release = getVerifiedReleaseBaseline();
     const schemaVersion = readSchemaVersion(db);
     const featureFlags = getV4FeatureFlags();
@@ -452,14 +550,16 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       instance_id: env.INSTANCE_ID,
       writes_enabled: !isReadOnlyInstance() && !storage.degraded,
       checks: { storage: storage.degraded ? "degraded" : "ok" },
+      embeddings: embeddingHealth(),
       ...(storage.degraded ? { degradation: storage } : {}),
       uptime: Math.round(process.uptime()),
     }, req);
   }
 
-  if (url === "/ready" && method === "GET") {
+  if (url === "/ready") {
+    if (!read) return methodNotAllowed(res, "GET, HEAD", req);
     const release = getVerifiedReleaseBaseline();
-    const readiness = evaluateReadiness(db, getPendingMigrations);
+    const readiness = evaluateReadiness(db, getPendingMigrations, { latestShippedMigration, ...writeReadiness });
     return json(res, readiness.ready ? 200 : 503, {
       status: readiness.ready ? "ready" : "not_ready",
       version: PRODUCT_VERSION,
@@ -472,13 +572,14 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       feature_flags: getV4FeatureFlags(),
       server_role: env.SERVER_ROLE,
       instance_id: env.INSTANCE_ID,
-      writes_enabled: !isReadOnlyInstance() && !storageDegradation().degraded,
+      writes_enabled: !isReadOnlyInstance() && !storageDegradation().degraded && (readiness.checks.db_write ?? "ok") === "ok",
       checks: readiness.checks,
       ...(storageDegradation().degraded ? { degradation: storageDegradation() } : {}),
     }, req);
   }
 
   if (url === "/") {
+    if (!read) return methodNotAllowed(res, "GET, HEAD", req);
     return text(
       res,
       200,
@@ -490,11 +591,12 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   // A legacy instance remains available as a read-only export. MCP reads use
   // POST and are guarded by per-tool risk checks; all other HTTP mutations are
   // rejected before they can reach OAuth, ingest, dashboard, or file handlers.
-  const isMcp =
-    url === "/mcp" ||
-    url === "/mcp/" ||
-    url.startsWith("/mcp?") ||
-    url.startsWith("/mcp/?");
+  // url is the pathname (no query). /mcp/ is accepted because some UI clients
+  // add a trailing slash; /mcp/c/<id> is a connection-scoped MCP URL.
+  const isMcp = url === "/mcp" || url === "/mcp/" || /^\/mcp\/c\/[a-f0-9-]{36}$/.test(url);
+  // Exact paths, shared by the read-only guard below and the routes, so the two cannot drift apart.
+  const isAuthorize = url === "/oauth/authorize" || url === "/oauth/authorize/";
+  const isFinalize = url === "/oauth/authorize/finalize" || url === "/oauth/authorize/finalize/";
   if (
     isReadOnlyInstance() &&
     !isMcp &&
@@ -519,12 +621,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   if (
     isReadOnlyInstance() &&
     method === "GET" &&
-    (url === "/oauth/authorize" ||
-      url.startsWith("/oauth/authorize?") ||
-      url === "/oauth/authorize/finalize" ||
-      url.startsWith("/oauth/authorize/finalize?") ||
-      url === "/api/dashboard/oauth-consent" ||
-      url.startsWith("/api/dashboard/oauth-consent?"))
+    (isAuthorize || url === "/api/dashboard/oauth-consent")
   ) {
     return json(
       res,
@@ -540,10 +637,11 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   }
 
   // --- Dashboard ---
-  if(['/connections-guide-en.html','/connections-guide-ru.html'].includes(url)&&method==='GET'){
+  if(['/connections-guide-en.html','/connections-guide-ru.html'].includes(url)&&read){
     return sendHtml(res,200,readFileSync(assetPath('src/public'+url),'utf8'),req);
   }
   if (url === "/dashboard") {
+    if (!read) return methodNotAllowed(res, "GET, HEAD", req);
     return serveDashboard(req, res);
   }
 
@@ -552,18 +650,20 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     // Some OAuth clients derive RFC 8414 metadata from the protected resource
     // path and request /.well-known/oauth-authorization-server/mcp. The issuer
     // is still the host root, so serve the same metadata instead of 404.
+    if (!read) return methodNotAllowed(res, "GET, HEAD", req);
     const connection=/^\/\.well-known\/oauth-authorization-server\/oauth\/c\/([a-f0-9-]{36})$/.exec(url)?.[1];
     if(connection)publicConnection(connection);
     return json(res, 200, wellKnownAuthorizationServer(connection), req);
   }
-  if (url.startsWith("/.well-known/oauth-protected-resource")) {
+  if (url === "/.well-known/oauth-protected-resource" || url.startsWith("/.well-known/oauth-protected-resource/")) {
+    if (!read) return methodNotAllowed(res, "GET, HEAD", req);
     const connection=/^\/\.well-known\/oauth-protected-resource\/mcp\/c\/([a-f0-9-]{36})$/.exec(url)?.[1];
     if(connection)publicConnection(connection);
     return json(res, 200, wellKnownProtectedResource(connection), req);
   }
 
   // --- OAuth endpoints (stricter: 20 req/min per IP) ---
-  if(/^\/oauth\/consent(?:\/(?:start|check|approve|deny))?$/.test(new URL(url,'http://local').pathname)){
+  if(/^\/oauth\/consent(?:\/(?:start|check|approve|deny))?$/.test(url)){
     if(rateLimit429(authLimiter,'auth',clientIp,res))return;
     if(isReadOnlyInstance())return json(res,403,{error:'Read-only installation'},req);
     const root=connectionIdentityRoot();if(!root)return json(res,503,{error:'Owner account setup required'},req);
@@ -577,22 +677,21 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   // and 302s to the dashboard-scoped consent UI. The /oauth/* surface
   // never reads the dashboard cookie (ADR-015 §"the cookie is never
   // attached outside dashboard routes" preserved).
-  if (url.startsWith("/oauth/authorize/finalize") && method === "GET") {
+  // Retired (F-076): approve redirects straight to the client; stale links get 400.
+  if (isFinalize && method === "GET") {
     if (rateLimit429(authLimiter, "auth", clientIp, res)) return;
-    return handleAuthorizeFinalize(req, res, clientIp);
+    return handleAuthorizeFinalize(req, res);
   }
-  if (url.startsWith("/oauth/authorize") && method === "GET") {
+  if (isAuthorize && method === "GET") {
     if (rateLimit429(authLimiter, "auth", clientIp, res)) return;
     return handleAuthorizeRedirect(req, res, clientIp);
   }
-  if ((url === "/oauth/authorize" || url === "/oauth/authorize/") && method === "POST") {
+  if (isAuthorize || isFinalize) {
     // ADR-017: POST /oauth/authorize is gone. Approval lives on the
     // dashboard surface. Explicitly 405 so a stale Claude.ai client or a
     // crawler hitting the old path gets a deterministic error rather than
-    // a 404.
-    res.writeHead(405, { "content-type": "application/json", allow: "GET" });
-    res.end(JSON.stringify({ error: "method_not_allowed" }));
-    return;
+    // a 404. HEAD is refused too: these GETs change OAuth state.
+    return methodNotAllowed(res, "GET", req, { error: "method_not_allowed" });
   }
   if ((url === "/oauth/token" || url === "/oauth/token/") && method === "POST") {
     if (rateLimit429(authLimiter, "auth", clientIp, res)) return;
@@ -610,11 +709,24 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         return json(res, 401, {
           error: "unauthorized",
           error_description:
-            "Bearer api_key required (steward or claude-privileged scope).",
+            "Bearer api_key required (steward or workspace owner).",
         });
       }
       const selectedConnection=new URL(req.url!,env.PUBLIC_URL).searchParams.get("connection");
-      const publicDcr = selectedConnection ? {auth:connectionRegistrationAuth(selectedConnection),detail:"owner-provisioned connection registration"} : resolveTrustedUnauthenticatedDcrAuth(body);
+      let publicDcr: ReturnType<typeof resolveTrustedUnauthenticatedDcrAuth>;
+      try {
+        let redirectUris: unknown;
+        try { redirectUris = JSON.parse(body.toString("utf8")).redirect_uris; } catch { /* handleRegister answers bad JSON */ }
+        publicDcr = selectedConnection ? {auth:connectionRegistrationAuth(selectedConnection,redirectUris),detail:"owner-provisioned connection registration"} : resolveTrustedUnauthenticatedDcrAuth(body);
+      } catch (err) {
+        if (!(err instanceof QoopiaError)) throw err;
+        // F-130: an unknown connection, a foreign callback or a full connection is the caller's error.
+        audit({ event: "oauth_register", result: "deny", ip: clientIp, scope: "/oauth/register", detail: `connection registration refused: ${err.code}` });
+        return json(res, err.code === "RATE_LIMITED" ? 429 : 400, {
+          error: err.code === "RATE_LIMITED" ? "too_many_requests" : err.code === "INVALID_INPUT" ? "invalid_redirect_uri" : "invalid_request",
+          error_description: err.message,
+        });
+      }
       if (publicDcr) {
         audit({
           event: "oauth_register",
@@ -630,7 +742,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       return json(res, 401, {
         error: "unauthorized",
         error_description:
-          "Bearer api_key required (steward or claude-privileged scope).",
+          "Bearer api_key required (steward or workspace owner).",
       });
     }
     try {
@@ -661,17 +773,18 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     });
     return handleRegister(body, res, auth);
   }
-  if (url === "/oauth/register" || url === "/oauth/register/") {
-    return json(res, 405, { error: "method_not_allowed", allow: "POST" }, req);
-  }
-  if ((url === "/oauth/token" || url === "/oauth/token/") && method !== "POST") {
-    return json(res, 405, { error: "method_not_allowed", allow: "POST" }, req);
+  if (url === "/oauth/register" || url === "/oauth/register/" || url === "/oauth/token" || url === "/oauth/token/") {
+    return methodNotAllowed(res, "POST", req);
   }
   if ((url === "/oauth/revoke" || url === "/oauth/revoke/") && method === "POST") {
     if (rateLimit429(authLimiter, "auth", clientIp, res)) return;
     const body = await readBody(req);
-    return handleRevoke(body, res, clientIp);
+    return handleRevoke(req, body, res, clientIp);
   }
+  if (url === "/oauth/revoke" || url === "/oauth/revoke/" || url === "/memory/continuity" || url === "/ingest/session") {
+    if (method !== "POST") return methodNotAllowed(res, "POST", req);
+  }
+  if (url === "/ingest/allowlist" && method !== "GET") return methodNotAllowed(res, "GET", req);
 
   if(url==='/memory/continuity'&&method==='POST') {
     res.setHeader('cache-control','no-store');
@@ -681,10 +794,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     try {
       const {currentToolAuth}=await import('./auth/policy.ts');
       const {continuityEvent}=await import('./services/continuity.ts');
-      const body=JSON.parse((await readBodyLimited(req,512*1024)).toString());
+      const body=JSON.parse((await readBodyLimited(req,CONTINUITY_MAX_BODY_BYTES)).toString());
       currentToolAuth(db,auth,'write-low');
       return json(res,200,continuityEvent(auth.workspace_id,auth.agent_id,body),req);
-    }catch(error){return json(res,error instanceof QoopiaError&&error.code==='NOT_FOUND'?404:400,{error:'Continuity request refused'},req);}
+    }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='NOT_FOUND'?404:400,{error:'Continuity request refused'},req);}
   }
 
   // --- Ingest endpoints (ingest-daemon only, 500 req/min per IP) ---
@@ -702,13 +815,12 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
 
   if (url === "/ingest/session" && method === "POST") {
     if (rateLimit429(ingestLimiter, "ingest", clientIp, res)) return;
-    const rawBody = await readBody(req);
-    const fetchReq = nodeReqToFetchRequest(req, rawBody);
-    const auth = authenticate(fetchReq);
+    const auth = authenticate(nodeReqToFetchRequest(req));
     if (!auth || auth.type !== "ingest-daemon") {
       audit({ event: "ingest_forbidden", result: "deny", ip: clientIp, scope: "/ingest/session", detail: auth ? `wrong type: ${auth.type}` : "no auth" });
       return json(res, 403, { error: "forbidden", error_description: "ingest-daemon credentials required" }, req);
     }
+    const rawBody = await readBody(req);
     let payload: {
       attributed_agent_id?: string;
       session_id?: string;
@@ -764,12 +876,13 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         role: role as "user" | "assistant",
         content,
         ingest_uuid: uuid,
-        metadata: { ingest_cwd: payload.cwd ?? "", ingest_ts: payload.timestamp ?? "", ...(payload.metadata ?? {}) },
+        metadata: { ingest_cwd: payload.cwd ?? "", ingest_ts: payload.timestamp ?? "", ...payload.metadata },
       });
       return json(res, 200, result, req);
     } catch (err) {
       const e = err as { code?: string; message?: string };
-      if (e.code === "FORBIDDEN") return json(res, 409, { error: "session_conflict", detail: e.message }, req);
+      // The id is held by another agent or workspace (F-091: refused as NOT_FOUND, never named).
+      if (e.code === "NOT_FOUND") return json(res, 409, { error: "session_conflict", detail: e.message }, req);
       if (e.code === "INVALID_INPUT") return json(res, 400, { error: "invalid_input", detail: e.message }, req);
       // Acknowledged, not stored: the tailer advances its cursor on 2xx, so material from a
       // manual period is dropped here instead of piling up and being backfilled on auto.
@@ -783,49 +896,38 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   // the qoopia_dash cookie's Path scope. They are intercepted BEFORE
   // handleDashboardApi() because that dispatcher would 404 unknown paths
   // and is not aware of the OAuth-bridge ones.
-  if (url.startsWith("/api/dashboard/oauth-consent") && method === "GET") {
-    if (rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
+  if (url === "/api/dashboard/oauth-consent" && method === "GET") {
     return handleDashboardOAuthConsentGet(req, res);
   }
   if (url === "/api/dashboard/oauth-consent/approve" && method === "POST") {
-    if (rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
     const body = await readBody(req);
     return handleDashboardOAuthConsentApprove(req, body, res, clientIp);
   }
   if (url === "/api/dashboard/oauth-consent/deny" && method === "POST") {
-    if (rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
     const body = await readBody(req);
     return handleDashboardOAuthConsentDeny(req, body, res, clientIp);
   }
   if (url === "/api/dashboard/oauth/clients" && method === "POST") {
-    if (rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
     const body = await readBody(req);
     return handleDashboardRegisterClient(req, body, res, clientIp);
   }
 
   // --- Dashboard file upload (POST) + delete (DELETE) — owner-only, before GET gate ---
   if (url === "/api/dashboard/files" && method === "POST") {
-    if (rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
     return handleFileUpload(req, res);
   }
   {
     const fm = url.match(/^\/api\/dashboard\/files\/([^/]+)$/);
     if (fm && method === "DELETE") {
-      if (rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
       return handleFileDelete(req, res, decodeURIComponent(fm[1]!));
     }
   }
 
-  // --- Dashboard API (read-only, 200 req/min per IP) ---
-  if (url.startsWith("/api/dashboard")) {
-    if (rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
-    if (handleDashboardApi(req, res)) return;
-  }
+  // --- Dashboard API (rate-limited with every dashboard route above) ---
+  if (url.startsWith("/api/dashboard") && handleDashboardApi(req, res)) return;
 
   // --- MCP endpoint (300 req/min per IP) ---
-  // Accept both /mcp and /mcp/ because some UI clients/browser flows
-  // normalize connector URLs by adding a trailing slash.
-  if (/^\/mcp\/c\/[a-f0-9-]{36}$/.test(url) || url === "/mcp" || url === "/mcp/" || url.startsWith("/mcp?") || url.startsWith("/mcp/?")) {
+  if (isMcp) {
     if (rateLimit429(mcpLimiter, "mcp", clientIp, res)) return;
     return handleMcp(req, res);
   }

@@ -1,6 +1,6 @@
 {
   "name": "qoopia",
-  "version": "5.0.14",
+  "version": "5.0.15",
   "description": "Memory and truth layer for AI agents",
   "type": "module",
   "bin": {
@@ -11,10 +11,8 @@
     "dev": "bun --watch run src/index.ts",
     "bundle:build": "bun run scripts/build-bundle.ts",
     "release:build": "bun run scripts/build-release.ts",
-    "install-service": "bun run src/admin/install.ts",
+    "install-service": "bun run src/cli.ts install",
     "migrate": "bun run scripts/migrate.ts",
-    "migrate-from-v2": "bun run scripts/migrate-from-v2.ts",
-    "verify-migration": "bun run scripts/verify-migration.ts",
     "db:integrity": "bun run scripts/check-db-integrity.ts",
     "sec:vendored-pdfjs": "bun run scripts/check-vendored-pdfjs.ts",
     "ops:validate-runtime": "bun run scripts/validate-runtime-config.ts",
@@ -25,8 +23,8 @@
     "ops:check-boundaries": "bun run scripts/check-module-boundaries.ts",
     "ops:validate-agent-paths": "bun run scripts/validate-agent-instructions.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint -D no-unsafe-optional-chaining src scripts tests sdk",
-    "lint:v41": "oxlint --deny-warnings src/utils/temporal.ts src/services/temporal-migration.ts src/services/note-temporal.ts src/services/note-idempotency.ts src/services/recall/temporal-filter.ts src/db/migration-033-exec.ts src/db/migration-033-gate.ts src/db/migration-033-plan.ts scripts/migrate-033-preflight.ts scripts/v41-concurrency-probe.ts tests/temporal-classifier.test.ts tests/temporal-epoch-ms.test.ts tests/temporal-migration-033.test.ts tests/temporal-mcp-boundary.test.ts tests/temporal-migration-atomicity.test.ts tests/temporal-parity-surface.test.ts tests/temporal-read.test.ts tests/temporal-write.test.ts tests/helpers/temporal-fixtures.ts",
+    "lint": "oxlint --deny-warnings -D no-unsafe-optional-chaining -D no-empty --ignore-pattern 'src/skills/legacy/**' src scripts tests sdk",
+    "lint:v41": "oxlint --deny-warnings src/utils/temporal.ts src/db/temporal-migration.ts src/services/note-temporal.ts src/services/note-idempotency.ts src/services/recall/temporal-filter.ts src/db/migration-033-exec.ts src/db/migration-033-gate.ts src/db/migration-033-plan.ts scripts/migrate-033-preflight.ts scripts/v41-concurrency-probe.ts tests/temporal-classifier.test.ts tests/temporal-epoch-ms.test.ts tests/temporal-migration-033.test.ts tests/temporal-mcp-boundary.test.ts tests/temporal-migration-atomicity.test.ts tests/temporal-parity-surface.test.ts tests/temporal-read.test.ts tests/temporal-write.test.ts tests/helpers/temporal-fixtures.ts",
     "test": "bun test",
     "test:storage-full": "QOOPIA_T27_SQLITE_FULL=true bun test --timeout 30000 tests/p3-t27-sqlite-full.test.ts"
   },
@@ -43,6 +41,7 @@
   },
   "devDependencies": {
     "@types/bun": "1.3.12",
+    "jszip": "3.10.1",
     "oxlint": "^1.76.0",
     "typescript": "5.9.3",
     "onnxruntime-web": "1.29.0"
@@ -52,9 +51,9 @@
   },
   "overrides": {
     "dingbat-to-unicode": "file:./scripts/vendor/transpect-fontmap-to-unicode",
-    "@xmldom/xmldom": "0.8.15",
-    "qs": "^6.15.4",
-    "hono": "^4.12.18",
+    "@xmldom/xmldom": "^0.8.15",
+    "qs": "^6.16.0",
+    "hono": "^4.13.7",
     "@hono/node-server": "^1.19.15",
     "ip-address": "^10.7.2",
     "fast-uri": "^3.1.8",

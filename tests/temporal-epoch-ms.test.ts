@@ -13,7 +13,6 @@ import { Database } from "bun:sqlite";
 import {
   isoFromEpochMs,
   maxEpochMs,
-  minEpochMs,
   toEpochMs,
 } from "../src/utils/temporal.ts";
 import { QoopiaError } from "../src/utils/errors.ts";
@@ -63,12 +62,11 @@ describe("R3 epoch-ms parity between TypeScript and SQL", () => {
     }
   });
 
-  test("max/min operate numerically, never on ISO strings", () => {
+  test("max operates numerically, never on ISO strings", () => {
     // Строковое сравнение дало бы обратный порядок для смешанных форм.
     const noMs = toEpochMs("2026-03-01T12:00:00Z", "a");
     const fractional = toEpochMs("2026-03-01T12:00:00.001Z", "b");
     expect(maxEpochMs(noMs, fractional)).toBe(fractional);
-    expect(minEpochMs(noMs, fractional)).toBe(noMs);
     // Демонстрация, ПОЧЕМУ строковое сравнение запрещено (R4): лексикографически
     // форма без миллисекунд «больше» той же точки с `.001`.
     const noMsIso: string = "2026-03-01T12:00:00Z";
@@ -131,12 +129,29 @@ describe("R4 legacy backfill boundary — no-ms valid_from before fractional rel
       expect(row.invalidated_at).toBe(relationAt);
     }
   });
+
+  test("a relation stamped in the target's own second never inverts or empties its interval", () => {
+    // Pre-033 code wrote notes.created_at with ms but note_relations.created_at without.
+    const { scratch } = buildPlanFixture({
+      noteCreatedAt: "2026-09-01T10:00:00.700Z",
+      relationCreatedAt: "2026-09-01T10:00:00Z",
+    });
+    applyMigration033(scratch.db);
+    const row = scratch.db
+      .query(
+        `SELECT created_at_ms, valid_from_ms, valid_until_ms, invalidated_at_ms
+           FROM notes WHERE id = 'bnd-a'`,
+      )
+      .get() as Record<string, number>;
+    expect(row.invalidated_at_ms).toBeGreaterThan(row.created_at_ms!);
+    expect(row.valid_until_ms).toBeGreaterThan(row.valid_from_ms!);
+  });
 });
 
 /** Пути, где время обязано быть целым epoch-ms (R3/R4). */
 const TEMPORAL_PATHS = [
   "src/utils/temporal.ts",
-  "src/services/temporal-migration.ts",
+  "src/db/temporal-migration.ts",
   "src/services/note-temporal.ts",
   "src/services/recall/temporal-filter.ts",
   "src/db/migration-033-gate.ts",

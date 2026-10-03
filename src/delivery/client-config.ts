@@ -1,16 +1,17 @@
-import {installAgentInstructions,planAgentInstructions} from '../agent-kit/install.ts';
+import {clientInstructionProfile,installAgentInstructions,instructionRefusal,planAgentInstructions} from '../agent-kit/install.ts';
+import type {AgentKitLanguage} from '../agent-kit/index.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import {safePath,privateDirectory,readJsonBytes,durableWrite,hash} from '../utils/fs.ts';
+import {safePath,privateDirectory,readJsonBytes,durableWrite,hash,hasNulOrNewline} from '../utils/fs.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
 import {nativeOwnerHome} from './native-keychain.ts';
 import {selectedNativeDirectory} from './native-client-paths.ts';
 import {prepareDesktopLauncher} from './desktop-launcher.ts';
 
-export const clientBindingSchema=z.object({format:z.literal('qoopia-client-connection/1'),connection_id:z.string().uuid(),
+const clientBindingSchema=z.object({format:z.literal('qoopia-client-connection/1'),connection_id:z.string().uuid(),
   workspace_id:z.string().min(1).max(128),surface:z.enum(['codex','claude_code','claude_desktop']),access_mode:z.enum(['read','read_write']),mcp_url:z.string().url()}).strict()
   .superRefine((value,ctx)=>{try{
     const url=new URL(value.mcp_url);resourceOrigin(url.origin);
@@ -36,13 +37,13 @@ function directoryCheck(file:string) {
 const same=isDeepStrictEqual;
 
 /** Add one scoped OAuth entry or the private Desktop adapter; preserve unrelated settings. */
-export function configureNativeClient(root:string,raw:unknown,action:'plan'|'apply'|'status'|'remove',home?:string,directory?:string) {
+export function configureNativeClient(root:string,raw:unknown,action:'plan'|'apply'|'status'|'remove',home?:string,directory?:string,language?:AgentKitLanguage) {
   const binding=clientBindingSchema.parse(raw),codex=binding.surface==='codex',desktop=binding.surface==='claude_desktop';
   if(desktop&&process.platform!=='darwin')throw new Error('The local Claude Desktop adapter requires macOS; this Linux installation supports Claude Web and Claude Code');
   const folder=safePath(path.join(root,'client-configs',binding.connection_id)),receiptFile=path.join(folder,'receipt.json');
   const receipt=fs.existsSync(receiptFile)?receiptSchema.parse(JSON.parse(readJsonBytes(receiptFile).toString())):null;
   const custom=directory??(home===undefined&&!desktop?selectedNativeDirectory(binding.surface as 'codex'|'claude_code'):undefined);
-  if(custom!==undefined&&(!path.isAbsolute(custom)||/[\0\r\n]/.test(custom)))throw new Error('Native client directory must be an absolute path');
+  if(custom!==undefined&&(!path.isAbsolute(custom)||hasNulOrNewline(custom)))throw new Error('Native client directory must be an absolute path');
   // Resume the exact previously selected file when a background service has no shell overrides.
   const file=safePath(custom?path.join(safePath(custom),codex?'config.toml':desktop?'claude_desktop_config.json':'.claude.json'):
     receipt?.file??path.join(home??nativeOwnerHome(),codex?'.codex/config.toml':desktop?'Library/Application Support/Claude/claude_desktop_config.json':'.claude.json'));
@@ -50,15 +51,18 @@ export function configureNativeClient(root:string,raw:unknown,action:'plan'|'app
   const name='qoopia_'+binding.connection_id.replaceAll('-','');
   const adapter=desktop?prepareDesktopLauncher(root,binding,process.execPath,false,process.argv.includes('--allow-test-fixture')):undefined;
   const entry=adapter?.entry??(codex?{url:binding.mcp_url}:{type:'http',url:binding.mcp_url});
-  const profile=codex?path.dirname(file):file===safePath(path.join(home??nativeOwnerHome(),'.claude.json'))?path.join(home??nativeOwnerHome(),'.claude'):path.dirname(file);
-  const instructions=!desktop&&action!=='remove'?planAgentInstructions(profile,codex?'codex':'claude_code'):null;
+  const profile=clientInstructionProfile(codex?'codex':'claude_code',file,home??nativeOwnerHome());
+  // Local instructions are a convenience: the client reads the protocol through qoopia_protocol,
+  // so a refused profile (symlinked dotfiles, group-writable, oversized, edited) never blocks the entry.
+  let instructions:ReturnType<typeof planAgentInstructions>|null=null,refused:ReturnType<typeof instructionRefusal>|undefined;
+  if(!desktop&&action!=='remove')try{instructions=planAgentInstructions(profile,codex?'codex':'claude_code','client',undefined,true,language);}catch(error){refused=instructionRefusal(error);}
   const state=current(file,codex),existing=state.servers[name];
   if(receipt&&(receipt.file!==file||receipt.name!==name||!same(receipt.binding,binding)||receipt.entry_hash!==hash(JSON.stringify(entry))))
     throw new Error('Native connection receipt belongs to another selection');
   const matches=existing&&same(existing,entry),owned=!!(receipt&&receipt.state!=='removed');
   const result=(code:string,extra:Record<string,unknown>={})=>({format:'qoopia-connections/1',state:'requires_user_action',code,
     client:binding.surface,connection_id:binding.connection_id,mcp_url:binding.mcp_url,configuration_file:file,configuration_name:name,
-    protocol:instructions?{protocol_file:instructions.protocol_file,instruction_file:instructions.instruction_file,revision:instructions.manifest.revision,changes:instructions.changes.length,loaded:'NOT_VERIFIED'}:{delivery:'mcp',tool:'qoopia_protocol',loaded:'NOT_VERIFIED'},
+    protocol:refused??(instructions?{protocol_file:instructions.protocol_file,instruction_file:instructions.instruction_file,revision:instructions.manifest.revision,changes:instructions.changes.length,loaded:'NOT_VERIFIED'}:{delivery:'mcp',tool:'qoopia_protocol',loaded:'NOT_VERIFIED'}),
     credentials_in_configuration:false,verified:false,plan_digest:hash(JSON.stringify({binding,configuration_file:file,entry,...(instructions?{instruction_digest:instructions.digest}:{}),...(adapter?{launcher_digest:adapter.launcher_digest}:{})})),
     ...(adapter?{binding_file:adapter.binding_file,authentication_argv:[process.execPath,'client-auth','--root',root,'--file',adapter.binding_file,'--commit','--open',...(process.argv.includes('--allow-test-fixture')?['--allow-test-fixture']:[])]}:{}),
     next_action:desktop?'Approve this connection using Qoopia client-auth, then restart Claude Desktop and ask the agent to read qoopia_protocol.':codex?'Sign in to this MCP connection in Codex, then ask the agent to read qoopia_protocol.':'Open Claude Code, run /mcp, authenticate this Qoopia connection, then ask the agent to read qoopia_protocol.',...extra});
@@ -68,7 +72,7 @@ export function configureNativeClient(root:string,raw:unknown,action:'plan'|'app
   if(existing&&!matches)throw new Error('This MCP entry changed outside Qoopia; it was preserved');
   if(action==='remove'&&receipt?.state==='removed'&&!existing)return result('CLIENT_CONFIG_REMOVED',{next_action:'The local entry is removed. Revoke its memory access in Qoopia if it is still active.'});
   if(action==='remove'&&!owned)throw new Error('Qoopia has no ownership receipt for this native entry');
-  if(action==='apply'&&instructions)installAgentInstructions(profile,codex?'codex':'claude_code');
+  if(action==='apply'&&instructions)try{installAgentInstructions(profile,codex?'codex':'claude_code','client',undefined,true,language);}catch(error){refused=instructionRefusal(error);}
   privateDirectory(folder);
   if(action==='apply'&&matches){
     if(desktop)prepareDesktopLauncher(root,binding,process.execPath,true,process.argv.includes('--allow-test-fixture'));

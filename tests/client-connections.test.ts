@@ -1,5 +1,5 @@
 import {beforeAll,afterAll,expect,test} from 'bun:test';
-import {createHash,randomBytes} from 'node:crypto';
+import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import type {AddressInfo} from 'node:net';
 import {db} from '../src/db/connection.ts';
 import {runMigrations} from '../src/db/migrate.ts';
@@ -52,9 +52,8 @@ async function authorize(connection:any,who=owner,deny=false) {
     expect(response.searchParams.get('error')).toBe('access_denied');expect(response.searchParams.get('iss')).toBe(issuer.href);
     expect(response.searchParams.has('code')).toBe(false);return {} as any;
   }
-  expect((await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',redirect:'manual',headers:{cookie,origin:base,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket,nonce})})).status).toBe(302);
-  const finalized=await fetch(base+'/oauth/authorize/finalize?ticket='+ticket,{redirect:'manual'});expect(finalized.status).toBe(302);
-  const callbackUrl=new URL(finalized.headers.get('location')!);expect(callbackUrl.searchParams.get('iss')).toBe(issuer.href);
+  const approved=await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',redirect:'manual',headers:{cookie,origin:base,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket,nonce})});expect(approved.status).toBe(302);
+  const callbackUrl=new URL(approved.headers.get('location')!);expect(callbackUrl.origin+callbackUrl.pathname).toBe(callback);expect(callbackUrl.searchParams.get('iss')).toBe(issuer.href);
   const code=callbackUrl.searchParams.get('code')!;
   const form={client_id:client.client_id,code,code_verifier:verifier,redirect_uri:callback,grant_type:'authorization_code'};
   const wrong=await fetch(discovery.token_endpoint,{method:'POST',body:new URLSearchParams({...form,resource:base+'/mcp'})});expect(wrong.status).toBe(400);
@@ -221,4 +220,46 @@ test('steward prepares a scoped review link; owner labels Muse without changing 
     db.query("UPDATE agents SET type='standard' WHERE id=?").run(steward.id);
     expect(()=>prepare.handler(selection,auth)).toThrow('steward');
   }finally{env.PUBLIC_URL=base;}
+});
+
+test('a connection-bound token is refused outside its own MCP endpoint (F-131)',async()=>{
+  const connection=apply(),token=await authorize(connection),headers={authorization:'Bearer '+token.access_token};
+  expect((await fetch(base+'/api/dashboard/files',{headers})).status).toBe(401);
+  for(const url of [base+'/api/v1/capabilities',base+'/memory/continuity','http://local/'])expect(authenticate(new Request(url,{headers}))).toBeNull();
+  expect((await call(connection,token.access_token,'qoopia_protocol',{})).status).toBe(200);
+});
+
+test('owner-connection registration keeps the surface callback and answers refusals as client errors (F-130)',async()=>{
+  const register=(id:string,redirect_uris:unknown)=>{authLimiter.resetForTests();
+    return fetch(base+'/oauth/register?connection='+id,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_name:'ChatGPT',redirect_uris})});};
+  env.PUBLIC_URL='https://fixture.example';
+  let chatgpt:any,muse:any;
+  try{
+    chatgpt=(connectionAction(owner.agent_id,{action:'apply',surface:'chatgpt_web',access_mode:'read',request_key:randomUUID()}) as any).connection;
+    muse=(connectionAction(owner.agent_id,{action:'apply',surface:'muse_app',access_mode:'read',request_key:randomUUID()}) as any).connection;
+  }finally{env.PUBLIC_URL=base;}
+  const evil=await register(chatgpt.id,['https://evil.example/cb']);
+  expect(evil.status).toBe(400);expect((await evil.json() as any).error).toBe('invalid_redirect_uri');
+  expect((await register(chatgpt.id,['https://chatgpt.com/connector_platform_oauth_redirect'])).status).toBe(201);
+  const codex=apply();
+  expect((await register(codex.id,['https://evil.example/cb'])).status).toBe(400);
+  for(const uri of ['https://muse.example/cb#x','https://user:pw@muse.example/cb'])expect((await register(muse.id,[uri])).status).toBe(400);
+  for(const id of ['not-a-uuid',randomUUID()])expect((await register(id,['https://chatgpt.com/cb'])).status).toBe(400);
+  const agent=db.query('SELECT agent_id FROM client_connections WHERE id=?').get(muse.id) as {agent_id:string};
+  while((db.query('SELECT count(*) n FROM oauth_clients WHERE agent_id=?').get(agent.agent_id) as {n:number}).n<20)
+    expect((await register(muse.id,['https://muse.example/cb'])).status).toBe(201);
+  expect((await register(muse.id,['https://muse.example/cb'])).status).toBe(429);
+});
+
+test('plan for a cloud client without external access says so and names network-plan; apply refuses with that next_action [F-299]',async()=>{
+  const selection={surface:'chatgpt_web',access_mode:'read',request_key:'cloud-without-external-access'};
+  const plan=connectionAction(owner.agent_id,{action:'plan',...selection}) as any;
+  expect(plan.code).toBe('EXTERNAL_ACCESS_REQUIRED');expect(plan.next_action).toContain('network-plan');
+  expect((connectionAction(owner.agent_id,{action:'plan',surface:'codex',access_mode:'read',request_key:'local-plan'}) as any).code).toBe('APPLY_REQUIRED');
+  dashboardLimiter.resetForTests();
+  const login=await fetch(base+'/api/dashboard/login',{method:'POST',headers:{authorization:'Bearer '+owner.api_key,origin:base}});
+  const cookie=login.headers.get('set-cookie')!.split(';')[0]!;
+  const applied=await fetch(base+'/api/dashboard/connection-setup',{method:'POST',headers:{cookie,origin:base,'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action:'apply',...selection})});
+  expect(applied.status).toBe(400);
+  expect(await applied.json()).toMatchObject({state:'error',code:'NOT_READY',next_action:plan.next_action});
 });

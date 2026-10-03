@@ -3,12 +3,14 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 
 // Closed vocabulary: never accept request bodies, URLs, identity or error text.
-export const eventSchema=z.object({
+const eventSchema=z.object({
  id:z.string().uuid(),
  kind:z.enum(['site_view','download_click','site_performance','auth_request','mail_accepted','mail_failed','email_confirmed','login_redeemed','profile_login','profile_logout','profile_saved','auth_http']),
- page:z.enum(['home','docs','releases','404','profile','confirm','google','requests','redeem','devices','other']).optional(),
+ page:z.enum(['home','docs','releases','mobile','404','profile','confirm','google','requests','redeem','devices','other']).optional(),
  language:z.enum(['en','ru','other']).optional(),
  platform:z.enum(['mac','linux','other']).optional(),
+ // Public release version offered by the website download button (not a client identifier).
+ version:z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[0-9A-Za-z.-]{1,40})?$/).optional(),
  method:z.enum(['email','google','other']).optional(),
  outcome:z.enum(['ok','pending','rejected','error']).optional(),
  viewport:z.enum(['small','medium','large']).optional(),
@@ -75,7 +77,8 @@ export async function browserEvent(req:Request,write:(raw:unknown)=>boolean):Pro
  try {
   const event=eventSchema.parse(JSON.parse(Buffer.concat(chunks).toString()));
   if(!['site_view','download_click','site_performance'].includes(event.kind))return new Response(null,{status:400,headers});
-  if(event.page&&!['home','docs','releases','404'].includes(event.page))return new Response(null,{status:400,headers});
+  if(event.page&&!['home','docs','releases','mobile','404'].includes(event.page))return new Response(null,{status:400,headers});
+  if(event.version&&event.kind!=='download_click')return new Response(null,{status:400,headers});
   write(event);return new Response(null,{status:204,headers});
  }catch{return new Response(null,{status:400,headers});}
 }

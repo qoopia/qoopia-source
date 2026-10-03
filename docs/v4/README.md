@@ -9,7 +9,7 @@ Baseline: `integration/v4@b6c169b9c72a2f983933610072b4909ef61261c3`
 Accepted database baseline: schema 26
 Frozen V4 target: schema 32
 
-This directory is the implementation contract for P02 through P09. It consumes the accepted migration amendment through [ADR-V4-0001](../decisions/ADR-V4-0001-migration-coordinate-rebase.md): V4 migrations are `027` through `032`, all later fixtures are schema 32, and historical migrations `001` through `026` remain immutable.
+This directory is the implementation contract for P02 through P09. It consumes the accepted migration amendment through ADR-V4-0001 (`ADR-V4-0001-migration-coordinate-rebase.md`, private record): V4 migrations are `027` through `032`, all later fixtures are schema 32, and historical migrations `001` through `026` remain immutable.
 
 ## Freeze contents
 

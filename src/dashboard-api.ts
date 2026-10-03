@@ -1,73 +1,35 @@
 import { opsSummary } from "./delivery/ops-state.ts";
 import { inspectScheduledBackups } from "./delivery/doctor-checks.ts";
 /**
- * Dashboard V4 — read-only HTTP API for the agent monitor dashboard.
+ * Dashboard HTTP API: the read models the dashboard renders, plus the owner
+ * writes it makes (login/logout, memory policy and save requests, V4 review).
+ * The route table is handleDashboardApi below.
  *
- * Authorization model (QSEC-001, Codex review 2026-04-25):
- *   - `steward` and `claude-privileged` agents see the whole workspace
- *     (this is the dashboard/admin view).
- *   - `standard` agents can ONLY see their own agent record, sessions,
- *     messages, notes, and search. Cross-agent access returns 403.
- *   - `ingest-daemon` and any other type get 403 from dashboard endpoints.
- *
- * Before this change, any valid agent Bearer token could read every other
- * agent's transcripts and memory in the same workspace. The new auth context
- * carries `isAdmin` and `agent_id` so each handler can enforce scope.
- *
- * Routes (read GETs unless noted):
- *   POST /api/dashboard/login   — exchange Bearer for session cookie
- *   POST /api/dashboard/logout  — clear session cookie
- *   GET  /api/dashboard/agents
- *   GET  /api/dashboard/agents/:agent_id/sessions
- *   GET  /api/dashboard/sessions/:session_id/messages
- *   GET  /api/dashboard/agents/:agent_id/notes?type=...&limit=...
- *   GET  /api/dashboard/agents/:agent_id/search?q=...
- *
- * QDASH-COOKIE (Codex review 2026-04-26 follow-up):
- *   The browser dashboard no longer keeps the Bearer in JS storage. POST
- *   /login validates the Bearer and sets `qoopia_dash` as an HttpOnly +
- *   SameSite=Strict cookie scoped to /api/dashboard. Subsequent GETs are
- *   authenticated by the cookie automatically; if the Authorization header
- *   is also supplied (curl, scripts) it still wins. POST /logout clears
- *   the cookie.
- *
- *   The cookie value is a server-signed `{agent_id, sv, exp}` payload —
- *   `base64url(JSON) "." base64url(HMAC-SHA256)` — NOT the raw Bearer.
- *   `sv` is the agent's `session_version` snapshot at login.
- *   Cookie minting is restricted to static `api_key` Bearers (see
- *   loginHandler / QDASHCOOKIE-001 fix). OAuth access tokens are NOT
- *   accepted at /api/dashboard/login: an OAuth token's lifetime and
- *   revocation are managed in `oauth_tokens`, and minting a one-year dashboard
- *   cookie from a 1h OAuth token would silently extend its blast radius.
- *
- *   Cookie revocation surface (post-#34):
- *     • agent deactivation (per-request `active=1` DB check + sv bump),
- *     • api_key rotation (`rotateAgentKey()` increments
- *       `agents.session_version`; outstanding cookies fail the sv check),
- *     • rotation of `QOOPIA_SESSION_SECRET` (or process restart on the
- *       ephemeral fallback key) — invalidates every outstanding cookie,
- *     • cookie expiry (one-year Max-Age + payload `exp`).
- *
- *   Tag comparison uses `crypto.timingSafeEqual` over fixed-length raw
- *   HMAC buffers (32 bytes); tags that don't decode to exactly 32 bytes
- *   are rejected before the compare runs (QDASHCOOKIE-003).
+ * Who the caller is (cookie format, HMAC, origin allowlist, the authorization
+ * model) lives in dashboard-session.ts. In short: the steward and the owner
+ * see the workspace, other agents follow their shared-context toggle (ADR-020),
+ * and any other type, ingest-daemon included, gets 401.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { db } from "./db/connection.ts";
 import { authenticate, type AuthContext } from "./auth/middleware.ts";
 import { sha256Hex } from "./auth/api-keys.ts";
 import { env } from "./utils/env.ts";
+import { getV4FeatureFlags } from "./utils/health-metadata.ts";
 import { fileListFolders, fileListByFolder, fileGetForDownload } from "./services/files.ts";
 import { recall } from "./services/recall.ts";
+import { analyzeFtsQuery, buildFtsMatch } from "./services/fts-query.ts";
+import { logger } from "./utils/logger.ts";
 import { getSupersedeChain } from "./services/note-relations.ts";
 import { confirmMemory, getMemoryLifecycle, setMemoryPin } from "./services/memory-lifecycle.ts";
 import { listExtractionRuns, getExtractionRun, reviewExtractionCandidate } from "./services/extraction.ts";
 import { recordRecallFeedback } from "./services/recall-feedback.ts";
 import { assertNoSecrets } from "./utils/secret-guard.ts";
 import { assignmentReadiness, compatibility, type Assignment } from "./skills/loop.ts";
-import { ADMIN_TYPES } from "./auth/principal.ts";
-import { json } from "./utils/http-json.ts";
-import { agentMemoryStatus, setMemoryPolicy, type MemoryMode } from "./services/memory-policy.ts";
+import { ADMIN_TYPES, levelOf, seesWholeWorkspace, sharesContext, visibleRowSql } from "./auth/principal.ts";
+import { attachmentDisposition, json, readRequestBody, RequestBodyError } from "./utils/http-json.ts";
+import { agentMemoryStatus, canManagePolicy, setMemoryPolicy, type MemoryMode } from "./services/memory-policy.ts";
+import { setSharedContext } from "./admin/agents.ts";
 import { decideSaveRequest, listSaveRequests } from "./services/memory-save-requests.ts";
 import { agentContractFor } from "./api/agent-contract.ts";
 import { authorityOperations } from "./api/authority.ts";
@@ -86,6 +48,7 @@ import {
 } from "./dashboard-session.ts";
 export {
   checkDashboardAuth,
+  dashboardMutationAllowed,
   dashboardOriginDiagnostics,
   isHttps,
   localOwnerLoginHandler,
@@ -110,7 +73,7 @@ function loginHandler(req: IncomingMessage, res: ServerResponse) {
     json(res, 401, {
       error: "unauthorized",
       error_description:
-        "Login requires Authorization: Bearer <agent_api_key> with steward/standard/claude-privileged scope.",
+        "Login requires Authorization: Bearer <agent_api_key> of an owner, steward or agent.",
     });
     return;
   }
@@ -248,10 +211,11 @@ function loginHandler(req: IncomingMessage, res: ServerResponse) {
  *     true and is the whole point of revocation.
  */
 function logoutHandler(req: IncomingMessage, res: ServerResponse) {
-  if (!originAllowed(req)) {
+  // Logout reads only the cookie, so it always needs the header a no-cors request cannot send.
+  if (!originAllowed(req) || req.headers["x-qoopia-csrf"] !== "1") {
     json(res, 403, {
       error: "forbidden",
-      error_description: "Origin not allowed for /api/dashboard/logout.",
+      error_description: "Same-origin dashboard request required for /api/dashboard/logout.",
     });
     return;
   }
@@ -273,20 +237,20 @@ function logoutHandler(req: IncomingMessage, res: ServerResponse) {
 }
 
 /**
- * Enforce per-agent scope for standard agents. Returns true if the request
- * should be denied (403 already written).
+ * ADR-020: another agent's dashboard data needs the steward/owner role or the
+ * caller's shared-context toggle. Returns true if the request should be denied
+ * (403 already written). Private notes are filtered per query (visibleRowSql).
  */
 function denyIfNotOwn(
   res: ServerResponse,
   auth: DashboardAuth,
   requestedAgentId: string,
 ): boolean {
-  if (auth.isAdmin) return false;
-  if (requestedAgentId === auth.agent_id) return false;
+  if (requestedAgentId === auth.agent_id || levelOf(auth) > 0) return false;
   json(res, 403, {
     error: "forbidden",
     error_description:
-      "Standard agents can only read their own dashboard data; ask a steward for cross-agent visibility.",
+      "This agent reads only its own dashboard data; the owner can turn its shared context on.",
   });
   return true;
 }
@@ -296,8 +260,9 @@ export type { AuthContext };
 
 // ---- /api/dashboard/agents ----
 function listAgents(res: ServerResponse, auth: DashboardAuth) {
-  // Standard agents only see themselves; admins see the workspace.
-  const sql = auth.isAdmin
+  // ADR-020: without shared context an agent sees only itself.
+  const all = levelOf(auth) > 0;
+  const sql = all
     ? `SELECT id, workspace_id, name, type, active, last_seen, created_at
        FROM agents
        WHERE active = 1 AND workspace_id = ?
@@ -306,7 +271,7 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
        FROM agents
        WHERE active = 1 AND workspace_id = ? AND id = ?
        ORDER BY name ASC`;
-  const args: string[] = auth.isAdmin
+  const args: string[] = all
     ? [auth.workspace_id]
     : [auth.workspace_id, auth.agent_id];
   const rows = db.prepare(sql).all(...args) as Array<{
@@ -322,9 +287,11 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
   const countSessions = db.prepare(
     `SELECT COUNT(*) as c FROM sessions WHERE agent_id = ?`,
   );
+  // Only the notes the viewer may read: a sibling's private note is not counted (ADR-020).
   const countNotes = db.prepare(
-    `SELECT COUNT(*) as c FROM notes WHERE agent_id = ? AND deleted_at IS NULL`,
+    `SELECT COUNT(*) as c FROM notes WHERE agent_id = ? AND deleted_at IS NULL AND ${visibleRowSql()}`,
   );
+  const level = levelOf(auth);
   const countMessages = db.prepare(
     `SELECT COUNT(*) as c FROM session_messages WHERE agent_id = ?`,
   );
@@ -334,10 +301,12 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
      ORDER BY last_active DESC LIMIT 1`,
   );
 
+  const owner = canManagePolicy(auth.workspace_id, auth.agent_id);
   const items = rows.map((a) => {
     const memory = agentMemoryStatus(auth.workspace_id, a.id);
+    const sharedContext = seesWholeWorkspace(a) ? null : sharesContext(a.id);
     const s = countSessions.get(a.id) as { c: number };
-    const n = countNotes.get(a.id) as { c: number };
+    const n = countNotes.get(a.id, auth.agent_id, level) as { c: number };
     const m = countMessages.get(a.id) as { c: number };
     const last = lastSession.get(a.id) as
       | { id: string; last_active: string }
@@ -355,6 +324,9 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
       last_session_id: last?.id ?? null,
       last_session_active: last?.last_active ?? null,
       memory,
+      // ADR-020: null for the steward and the owner, who always read the whole workspace.
+      shared_context: sharedContext,
+      can_switch_shared_context: owner && sharedContext !== null,
     };
   });
 
@@ -473,26 +445,40 @@ function listNotesByAgent(
   agentId: string,
   type: string | null,
   limit = 200,
+  before: string | null = null,
 ) {
   if (denyIfNotOwn(res, auth, agentId)) return;
   const workspaceId = auth.workspace_id;
-  const where: string[] = [`agent_id = ?`, `workspace_id = ?`, `deleted_at IS NULL`];
-  const params: any[] = [agentId, workspaceId];
+  const visible = [auth.agent_id, levelOf(auth)];
+  const where: string[] = [`agent_id = ?`, `workspace_id = ?`, `deleted_at IS NULL`, visibleRowSql()];
+  const params: any[] = [agentId, workspaceId, ...visible];
   if (type) {
     where.push(`type = ?`);
     params.push(type);
   }
-  const rows = db
+  // F-312: older pages follow `next_before`, so every note the badge counts is reachable.
+  let cursor: ReturnType<typeof beforeCursor>;
+  try {
+    cursor = beforeCursor("notes", before);
+  } catch {
+    return json(res, 400, BAD_CURSOR);
+  }
+  if (cursor) {
+    where.push(cursor.sql);
+    params.push(...cursor.params);
+  }
+  const lim = Math.min(Math.max(limit, 1), 1000);
+  const page = db
     .prepare(
       `SELECT id, workspace_id, agent_id, type, text, metadata, tags,
               project_id, task_bound_id, session_id, source,
               created_at, updated_at
        FROM notes
        WHERE ${where.join(" AND ")}
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT ?`,
     )
-    .all(...params, Math.min(Math.max(limit, 1), 1000)) as Array<{
+    .all(...params, lim + 1) as Array<{
     id: string;
     workspace_id: string;
     agent_id: string;
@@ -507,15 +493,17 @@ function listNotesByAgent(
     created_at: string;
     updated_at: string;
   }>;
+  const rows = page.slice(0, lim);
+  const last = page.length > lim ? rows[rows.length - 1] : undefined;
 
   // Breakdown by type (all types, not filtered by `type`)
   const typeBreakdown = db
     .prepare(
       `SELECT type, COUNT(*) as c
-       FROM notes WHERE agent_id = ? AND workspace_id = ? AND deleted_at IS NULL
+       FROM notes WHERE agent_id = ? AND workspace_id = ? AND deleted_at IS NULL AND ${visibleRowSql()}
        GROUP BY type ORDER BY c DESC`,
     )
-    .all(agentId, workspaceId) as Array<{ type: string; c: number }>;
+    .all(agentId, workspaceId, ...visible) as Array<{ type: string; c: number }>;
 
   return json(res, 200, {
     items: rows.map((r) => ({
@@ -524,6 +512,7 @@ function listNotesByAgent(
       tags: safeJson(r.tags) ?? [],
     })),
     total: rows.length,
+    next_before: last ? `${last.created_at}|${last.id}` : null,
     type_breakdown: typeBreakdown,
     agent_id: agentId,
     filter_type: type,
@@ -540,15 +529,9 @@ function searchMessages(
 ) {
   if (denyIfNotOwn(res, auth, agentId)) return;
   const workspaceId = auth.workspace_id;
-  // Sanitize FTS query: strip characters SQLite FTS5 treats as operators
-  // and just quote the bare tokens. This matches the simple-search UX users expect.
-  const cleaned = query
-    .replace(/[-\"\'`():*^~]/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length > 0)
-    .map((t) => `"${t}"`)
-    .join(" AND ");
+  // Shared FTS5 builder (F-101): operators and unindexable tokens are dropped
+  // instead of being required by the AND-join. All words must match, no prefix.
+  const cleaned = buildFtsMatch(query, "AND", false);
   if (!cleaned) {
     return json(res, 200, { items: [], total: 0, query });
   }
@@ -585,10 +568,94 @@ function searchMessages(
       query,
     });
   } catch (e) {
-    return json(res, 400, {
-      error: "invalid_query",
-      error_description: (e as Error).message,
+    // The builder cannot produce FTS5 syntax errors, so this is a server fault; never echo SQLite text.
+    logger.error("dashboard message search failed", { error: (e as Error).message });
+    return json(res, 500, { error: "search_failed" });
+  }
+}
+
+/** Up to 300 characters around the first query term, whitespace collapsed: the hit is visible without sending the row. */
+function searchExcerpt(text: string, terms: string[]): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const lower = flat.toLowerCase();
+  const hits = terms.map((t) => lower.indexOf(t)).filter((i) => i >= 0);
+  const start = hits.length ? Math.max(0, Math.min(...hits) - 80) : 0;
+  return (start ? "…" : "") + flat.slice(start, start + 300) + (start + 300 < flat.length ? "…" : "");
+}
+
+// ---- /api/dashboard/search?q=... — the dashboard's one Search request (F-304) ----
+// Messages and notes of every agent the caller may open (the /agents list scope), newest first.
+// Each source pages with its own keyset cursor, so a merged page never skips or repeats a row.
+function dashboardSearch(
+  res: ServerResponse,
+  auth: DashboardAuth,
+  query: string,
+  limit: number,
+  messagesBefore: string | null,
+  notesBefore: string | null,
+) {
+  // Every word must match; prefixes, because Search runs while the owner types.
+  const match = buildFtsMatch(query, "AND", true);
+  if (!match) return json(res, 200, { items: [], next: null, query });
+  const lim = clampLimit(limit, 50, 100);
+  let mc: ReturnType<typeof beforeCursor>, nc: ReturnType<typeof beforeCursor>;
+  try {
+    mc = beforeCursor("m", messagesBefore);
+    nc = beforeCursor("n", notesBefore);
+  } catch {
+    return json(res, 400, BAD_CURSOR);
+  }
+  const level = levelOf(auth);
+  const own = level > 0 ? "" : " AND ag.id = ?";
+  const ownParams = level > 0 ? [] : [auth.agent_id];
+  try {
+    const messages = db
+      .prepare(
+        `SELECT 'message' AS kind, m.id, m.agent_id, ag.name AS agent_name, m.session_id, m.role,
+                m.content AS text, m.created_at
+         FROM session_messages m
+         JOIN agents ag ON ag.id = m.agent_id AND ag.workspace_id = m.workspace_id AND ag.active = 1
+         WHERE m.rowid IN (SELECT rowid FROM session_messages_fts WHERE session_messages_fts MATCH ?)
+           AND m.workspace_id = ?${own}${mc ? ` AND ${mc.sql}` : ""}
+         ORDER BY m.created_at DESC, m.id DESC
+         LIMIT ?`,
+      )
+      .all(match, auth.workspace_id, ...ownParams, ...(mc?.params ?? []), lim + 1) as Array<Record<string, any>>;
+    // ponytail: every match is sorted by time (~3 µs a row: 60 ms for 21k matching notes) and a note's
+    // first 8,000 characters feed its excerpt (a later match shows the note's start). Rank or pre-limit
+    // the FTS rowids if workspaces reach 10^5 matches per word.
+    const notes = db
+      .prepare(
+        `SELECT 'note' AS kind, n.id, n.agent_id, ag.name AS agent_name, n.type,
+                substr(n.text, 1, 8000) AS text, n.created_at
+         FROM notes_fts f
+         JOIN notes n ON n.rowid = f.rowid
+         JOIN agents ag ON ag.id = n.agent_id AND ag.workspace_id = n.workspace_id AND ag.active = 1
+         WHERE notes_fts MATCH ? AND n.workspace_id = ? AND n.deleted_at IS NULL
+           AND ${visibleRowSql("n")}${own}${nc ? ` AND ${nc.sql}` : ""}
+         ORDER BY n.created_at DESC, n.id DESC
+         LIMIT ?`,
+      )
+      .all(match, auth.workspace_id, auth.agent_id, level, ...ownParams, ...(nc?.params ?? []), lim + 1) as Array<Record<string, any>>;
+    // A stable merge keeps each source in its SQL order, so the page holds a prefix of both.
+    const page = [...messages, ...notes]
+      .sort((x, y) => (x.created_at < y.created_at ? 1 : x.created_at > y.created_at ? -1 : 0))
+      .slice(0, lim);
+    const cursor = (kind: string, previous: string | null) => {
+      const last = page.findLast((r) => r.kind === kind);
+      return last ? `${last.created_at}|${last.id}` : previous;
+    };
+    const terms = analyzeFtsQuery(query).terms;
+    return json(res, 200, {
+      items: page.map(({ text, ...row }) => ({ ...row, excerpt: searchExcerpt(text, terms) })),
+      next: messages.length + notes.length > lim
+        ? { messages_before: cursor("message", messagesBefore), notes_before: cursor("note", notesBefore) }
+        : null,
+      query,
     });
+  } catch (e) {
+    logger.error("dashboard search failed", { error: (e as Error).message });
+    return json(res, 500, { error: "search_failed" });
   }
 }
 
@@ -603,13 +670,23 @@ function safeJson(s: string): unknown {
 // ============================================================
 // Command Center endpoints (CC-001) — additive, read-only, GET-only.
 //
-// All scoped to auth.workspace_id. Admins (steward/claude-privileged) see
-// the whole workspace; standard agents see only their own slice for
-// per-agent tables (agents/sessions/messages/notes/activity) and their own
-// comm traffic. Workspace knowledge (entity_pages/skills) is shared, so it
-// is visible to standard agents too. Every sub-query is wrapped so a single
+// All scoped to auth.workspace_id. The steward and the owner see the whole
+// workspace; other agents see their siblings' per-agent tables
+// (agents/sessions/messages/notes/activity) and comm traffic only while their
+// shared-context toggle is on (ADR-020), otherwise their own slice. Workspace knowledge (entity_pages/skills) is shared, except
+// private pages (VISIBLE_PAGE). Every sub-query is wrapped so a single
 // failure degrades to null/[] instead of 500-ing the whole response.
 // ============================================================
+
+/**
+ * Private entity pages (Skillonomia and native-draft imports) are visible only to
+ * their authority owner and the workspace owner, as on /api/v1; stewards are not
+ * exempt. Unqualified so it fits aliased and unaliased entity_pages queries alike.
+ * Bind visiblePageParams(auth).
+ */
+const VISIBLE_PAGE =
+  "(authority_private=0 OR authority_owner_id=? OR EXISTS(SELECT 1 FROM workspace_owners WHERE workspace_id=? AND actor_id=?))";
+const visiblePageParams = (auth: DashboardAuth) => [auth.agent_id, auth.workspace_id, auth.agent_id];
 
 /** Tiny try/catch wrapper: run fn, return its value, or the fallback on throw. */
 function ccTry<T>(fn: () => T, fallback: T): T {
@@ -653,7 +730,9 @@ export function dashboardJourney(auth: DashboardAuth, database = db) {
 }
 function ccOverview(res: ServerResponse, auth: DashboardAuth) {
   const ws = auth.workspace_id;
-  const admin = auth.isAdmin;
+  // ADR-020: counts cover the agents whose context the caller reads, AgentComm included.
+  const level = levelOf(auth);
+  const admin = level > 0;
   const aid = auth.agent_id;
   const now = Date.now();
   const since24 = new Date(now - 86400000).toISOString();
@@ -690,27 +769,29 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
     last_24h: ccCount("session_messages", `workspace_id = ?${af} AND created_at >= ?`, [ws, ...ap, since24]),
   }), null as any);
 
+  // Notes the caller may read: a sibling's private note is not counted.
   const notes = ccTry(() => ({
-    total: ccCount("notes", `workspace_id = ?${af} AND deleted_at IS NULL`, [ws, ...ap]),
+    total: ccCount("notes", `workspace_id = ? AND deleted_at IS NULL AND ${visibleRowSql()}`, [ws, aid, level]),
     by_type: db
       .prepare(
-        `SELECT type, COUNT(*) AS c FROM notes WHERE workspace_id = ?${af} AND deleted_at IS NULL GROUP BY type ORDER BY c DESC LIMIT 8`,
+        `SELECT type, COUNT(*) AS c FROM notes WHERE workspace_id = ? AND deleted_at IS NULL AND ${visibleRowSql()} GROUP BY type ORDER BY c DESC LIMIT 8`,
       )
-      .all(ws, ...ap),
+      .all(ws, aid, level),
   }), null as any);
 
+  const visible = visiblePageParams(auth);
   const entities = ccTry(() => ({
-    total: ccCount("entity_pages", "workspace_id = ?", [ws]),
+    total: ccCount("entity_pages", `workspace_id = ? AND ${VISIBLE_PAGE}`, [ws, ...visible]),
     by_type: db
-      .prepare(`SELECT type, COUNT(*) AS c FROM entity_pages WHERE workspace_id = ? GROUP BY type ORDER BY c DESC`)
-      .all(ws),
+      .prepare(`SELECT type, COUNT(*) AS c FROM entity_pages WHERE workspace_id = ? AND ${VISIBLE_PAGE} GROUP BY type ORDER BY c DESC`)
+      .all(ws, ...visible),
   }), null as any);
 
   const skills = ccTry(() => {
-    const total = ccCount("entity_pages", "workspace_id = ? AND type = 'skill'", [ws]);
+    const total = ccCount("entity_pages", `workspace_id = ? AND type = 'skill' AND ${VISIBLE_PAGE}`, [ws, ...visible]);
     const rows = db
-      .prepare(`SELECT metadata, status FROM entity_pages WHERE workspace_id = ? AND type = 'skill'`)
-      .all(ws) as Array<{ metadata: string; status: string }>;
+      .prepare(`SELECT metadata, status FROM entity_pages WHERE workspace_id = ? AND type = 'skill' AND ${VISIBLE_PAGE}`)
+      .all(ws, ...visible) as Array<{ metadata: string; status: string }>;
     let tested = 0;
     for (const r of rows) {
       try {
@@ -751,8 +832,8 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
   const activity = ccTry(() => ({
     last_24h: ccCount(
       "activity",
-      `workspace_id = ?${admin ? "" : " AND agent_id = ?"} AND created_at >= ?`,
-      [ws, ...(admin ? [] : [aid]), since24],
+      `workspace_id = ? AND ${visibleRowSql()} AND created_at >= ?`,
+      [ws, aid, level, since24],
     ),
   }), null as any);
 
@@ -766,7 +847,7 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
     } catch {
       /* ignore */
     }
-    const backup = admin ? ccTry(() => {
+    const backup = auth.isAdmin ? ccTry(() => {
       const instance = db.query("SELECT instance_id FROM authority_instance WHERE id='local'").get() as {instance_id:string} | null;
       return instance ? inspectScheduledBackups(env.BACKUP_DIR, instance.instance_id) : { status: 'unknown' };
     }, {status:'unknown'}) : {status:'owner_only'};
@@ -775,8 +856,8 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
       recall_mode: process.env.QOOPIA_RECALL_MODE || "hybrid",
       uptime_seconds: Math.floor(process.uptime()),
       last_backup: null, // Legacy filename/mtime is not verification evidence.
-      verified_backup: admin ? backup : { status: 'owner_only' },
-      operations: admin ? opsSummary(env.OPS_STATE_DIR) : { status: 'owner_only' },
+      verified_backup: auth.isAdmin ? backup : { status: 'owner_only' },
+      operations: auth.isAdmin ? opsSummary(env.OPS_STATE_DIR) : { status: 'owner_only' },
       embed_endpoint: process.env.QOOPIA_EMBED_ENDPOINT || null,
       now: new Date().toISOString(),
     };
@@ -797,6 +878,24 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
   });
 }
 
+/**
+ * Keyset cursor `created_at|id` for pages ordered by (created_at DESC, id DESC):
+ * created_at alone is per-second, so a page edge inside a busy second would skip
+ * its siblings forever. A bare timestamp from an older dashboard tab still works
+ * as a plain bound; a malformed composite cursor throws (the caller answers 400).
+ */
+function beforeCursor(alias: string, before: string | null): { sql: string; params: string[] } | null {
+  const raw = before?.trim();
+  if (!raw) return null;
+  const parts = raw.split("|");
+  if (parts.length === 1) return { sql: `${alias}.created_at < ?`, params: [raw] };
+  const [at, id] = parts;
+  if (parts.length !== 2 || !at || !id) throw new Error("bad cursor");
+  return { sql: `(${alias}.created_at < ? OR (${alias}.created_at = ? AND ${alias}.id < ?))`, params: [at, at, id] };
+}
+
+const BAD_CURSOR = { error: "bad_request", error_description: "`before` is not a cursor this endpoint returned." };
+
 // ---- /api/dashboard/activity — live activity feed ----
 function ccActivity(
   res: ServerResponse,
@@ -806,15 +905,18 @@ function ccActivity(
 ) {
   const ws = auth.workspace_id;
   const lim = Math.min(Math.max(limit || 100, 1), 500);
-  const where: string[] = ["a.workspace_id = ?"];
-  const params: any[] = [ws];
-  if (!auth.isAdmin) {
-    where.push("a.agent_id = ?");
-    params.push(auth.agent_id);
+  // ADR-020: siblings' rows with shared context, never the rows of their private notes.
+  const where: string[] = ["a.workspace_id = ?", visibleRowSql("a")];
+  const params: any[] = [ws, auth.agent_id, levelOf(auth)];
+  let cursor: ReturnType<typeof beforeCursor>;
+  try {
+    cursor = beforeCursor("a", before);
+  } catch {
+    return json(res, 400, BAD_CURSOR);
   }
-  if (before) {
-    where.push("a.created_at < ?");
-    params.push(before);
+  if (cursor) {
+    where.push(cursor.sql);
+    params.push(...cursor.params);
   }
   try {
     const rows = db
@@ -831,10 +933,11 @@ function ccActivity(
     return json(res, 200, {
       items: rows,
       total: rows.length,
-      next_before: rows.length ? rows[rows.length - 1].created_at : null,
+      next_before: rows.length ? `${rows[rows.length - 1].created_at}|${rows[rows.length - 1].id}` : null,
     });
   } catch (e) {
-    return json(res, 200, { items: [], total: 0, next_before: null, error: (e as Error).message });
+    logger.error("dashboard list failed", { error: (e as Error).message });
+    return json(res, 200, { items: [], total: 0, next_before: null, error: "query_failed" });
   }
 }
 
@@ -845,9 +948,9 @@ function ccActivity(
 //   • /api/dashboard/agentcomm/threads — one row per agent PAIR,
 //   • /api/dashboard/agentcomm/thread  — the full transcript of one pair.
 //
-// Scope follows the same rule as the neighbouring dashboard endpoints:
-// admins (steward/claude-privileged) see the whole workspace, standard
-// agents see only conversations they are a party to.
+// Scope (ADR-020): the steward, the owner and an agent whose shared-context
+// toggle is on read every conversation of the workspace; an agent with the
+// toggle off only those it is a party to. Sending stays with participants.
 //
 // Message bodies are returned VERBATIM — no truncation, no ellipsis. The
 // owner requirement is to read messages in full; volume is bounded by
@@ -864,10 +967,29 @@ function clampLimit(raw: number, fallback: number, max: number): number {
   return Math.min(Math.max(n || fallback, 1), max);
 }
 
+/** One direction of a pair, newest first: an index probe on (workspace_id, recipient_agent_id). */
+const acDirectionSql = (cols: string, extra: string) =>
+  `SELECT ${cols} FROM agent_comm_messages m
+   WHERE m.workspace_id = ? AND m.sender_agent_id = ? AND m.recipient_agent_id = ?${extra}
+   ORDER BY m.created_at DESC, m.id DESC LIMIT ?`;
+
+/**
+ * F-272: newest messages of an agent pair as a UNION of the two directions.
+ * An OR of both directions plans as a scan of the whole workspace plus a sort.
+ * UNION (not ALL) keeps a self-addressed pair (a = b) free of duplicates.
+ */
+export const acPairSql = (cols: string, extra = "") =>
+  `SELECT * FROM (${acDirectionSql(cols, extra)})
+   UNION SELECT * FROM (${acDirectionSql(cols, extra)})
+   ORDER BY created_at DESC, id DESC LIMIT ?`;
+
+export const acPairParams = (ws: string, a: string, b: string, extra: string[], limit: number) =>
+  [ws, a, b, ...extra, limit, ws, b, a, ...extra, limit, limit];
+
 // ---- /api/dashboard/agentcomm/threads — one row per agent pair ----
 function acThreads(res: ServerResponse, auth: DashboardAuth, limit: number) {
   const ws = auth.workspace_id;
-  const admin = auth.isAdmin;
+  const admin = levelOf(auth) > 0;
   const aid = auth.agent_id;
   const lim = clampLimit(limit, 100, 300);
 
@@ -903,22 +1025,14 @@ function acThreads(res: ServerResponse, auth: DashboardAuth, limit: number) {
   );
 
   const nameOf = db.prepare(`SELECT name FROM agents WHERE id = ?`);
-  const lastOf = db.prepare(
-    `SELECT m.id, m.sender_agent_id, m.recipient_agent_id, m.kind, m.body, m.created_at
-     FROM agent_comm_messages m
-     WHERE m.workspace_id = ?
-       AND ((m.sender_agent_id = ? AND m.recipient_agent_id = ?)
-         OR (m.sender_agent_id = ? AND m.recipient_agent_id = ?))
-     ORDER BY m.created_at DESC, m.id DESC
-     LIMIT 1`,
-  );
+  const lastOf = db.prepare(acPairSql("m.id, m.sender_agent_id, m.recipient_agent_id, m.kind, m.body, m.created_at"));
 
   const items = rows.map((r) => {
     const an = ccTry(() => (nameOf.get(r.agent_a_id) as { name: string } | undefined)?.name, undefined);
     const bn = ccTry(() => (nameOf.get(r.agent_b_id) as { name: string } | undefined)?.name, undefined);
     const last = ccTry(
       () =>
-        lastOf.get(ws, r.agent_a_id, r.agent_b_id, r.agent_b_id, r.agent_a_id) as
+        lastOf.get(...acPairParams(ws, r.agent_a_id, r.agent_b_id, [], 1)) as
           | {
               id: string;
               sender_agent_id: string;
@@ -973,18 +1087,23 @@ function acThread(
       error_description: "Both `a` and `b` agent ids are required.",
     });
   }
-  // Standard agents may only read threads they are a party to.
-  if (!auth.isAdmin && auth.agent_id !== agentA && auth.agent_id !== agentB) {
+  // Without shared context an agent reads only threads it is a party to.
+  if (auth.agent_id !== agentA && auth.agent_id !== agentB && levelOf(auth) === 0) {
     return json(res, 403, {
       error: "forbidden",
       error_description:
-        "Standard agents can only read their own dashboard data; ask a steward for cross-agent visibility.",
+        "This agent reads only its own conversations; the owner can turn its shared context on.",
     });
   }
 
   const ws = auth.workspace_id;
   const lim = clampLimit(limit, 200, 500);
-  const cursor = before && before.trim() ? before.trim() : null;
+  let cursor: ReturnType<typeof beforeCursor>;
+  try {
+    cursor = beforeCursor("m", before);
+  } catch {
+    return json(res, 400, BAD_CURSOR);
+  }
 
   // Newest-first window so `before` walks backwards through history; the
   // rows are flipped to chronological order for the transcript view.
@@ -997,18 +1116,13 @@ function acThread(
                   m.kind, m.body, m.metadata, m.parent_message_id,
                   m.created_at, m.delivered_at,
                   cs.topic AS topic
-           FROM agent_comm_messages m
+           FROM (${acPairSql("m.*", cursor ? ` AND ${cursor.sql}` : "")}) m
            LEFT JOIN agents s ON s.id = m.sender_agent_id
            LEFT JOIN agents r ON r.id = m.recipient_agent_id
            LEFT JOIN agent_comm_sessions cs ON cs.id = m.session_id
-           WHERE m.workspace_id = ?
-             AND ((m.sender_agent_id = ? AND m.recipient_agent_id = ?)
-               OR (m.sender_agent_id = ? AND m.recipient_agent_id = ?))
-             ${cursor ? "AND m.created_at < ?" : ""}
-           ORDER BY m.created_at DESC, m.id DESC
-           LIMIT ?`,
+           ORDER BY m.created_at DESC, m.id DESC`,
         )
-        .all(ws, agentA, agentB, agentB, agentA, ...(cursor ? [cursor] : []), lim) as Array<
+        .all(...acPairParams(ws, agentA, agentB, cursor?.params ?? [], lim)) as Array<
         Record<string, any>
       >,
     [] as Array<Record<string, any>>,
@@ -1033,37 +1147,32 @@ function acThread(
       delivered_at: m.delivered_at ?? null,
     }));
 
-  const nameOf = db.prepare(`SELECT name FROM agents WHERE id = ?`);
-  const total = ccTry(
-    () =>
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS c FROM agent_comm_messages
-             WHERE workspace_id = ?
-               AND ((sender_agent_id = ? AND recipient_agent_id = ?)
-                 OR (sender_agent_id = ? AND recipient_agent_id = ?))`,
-          )
-          .get(ws, agentA, agentB, agentB, agentA) as { c: number }
-      ).c,
-    0,
+  const countDir = db.prepare(
+    `SELECT COUNT(*) AS c FROM agent_comm_messages
+     WHERE workspace_id = ? AND sender_agent_id = ? AND recipient_agent_id = ?`,
   );
+  const dir = (from: string, to: string) => (countDir.get(ws, from, to) as { c: number }).c;
+  const total = ccTry(() => dir(agentA, agentB) + (agentA === agentB ? 0 : dir(agentB, agentA)), 0);
+  // F-192: the ids come from the query string, so a name is resolved only for an agent of
+  // this workspace, or for a federated pair whose thread is stored here.
+  const nameOf = (id: string) =>
+    ccTry(
+      () =>
+        (db.prepare(`SELECT name FROM agents WHERE id = ? AND (workspace_id = ? OR ? > 0)`).get(id, ws, total) as
+          | { name: string }
+          | undefined)?.name ?? null,
+      null,
+    );
 
   return json(res, 200, {
     pair_key: pairKey(agentA, agentB),
-    agent_a: {
-      id: agentA,
-      name: ccTry(() => (nameOf.get(agentA) as { name: string } | undefined)?.name ?? null, null),
-    },
-    agent_b: {
-      id: agentB,
-      name: ccTry(() => (nameOf.get(agentB) as { name: string } | undefined)?.name ?? null, null),
-    },
+    agent_a: { id: agentA, name: nameOf(agentA) },
+    agent_b: { id: agentB, name: nameOf(agentB) },
     total,
     messages,
     // Cursor for the previous (older) page; null when the head is reached.
     has_more: rows.length === lim,
-    next_before: rows.length === lim ? messages[0]!.created_at : null,
+    next_before: rows.length === lim ? `${messages[0]!.created_at}|${messages[0]!.id}` : null,
   });
 }
 
@@ -1077,8 +1186,8 @@ function ccEntities(
 ) {
   const ws = auth.workspace_id;
   const lim = Math.min(Math.max(limit || 100, 1), 500);
-  const where: string[] = ["e.workspace_id = ?", "e.status != 'archived'"];
-  const params: any[] = [ws];
+  const where: string[] = ["e.workspace_id = ?", "e.status != 'archived'", VISIBLE_PAGE];
+  const params: any[] = [ws, ...visiblePageParams(auth)];
   if (type) {
     where.push("e.type = ?");
     params.push(type);
@@ -1108,9 +1217,9 @@ function ccEntities(
     () =>
       db
         .prepare(
-          `SELECT type, COUNT(*) AS c FROM entity_pages WHERE workspace_id = ? AND status != 'archived' GROUP BY type ORDER BY c DESC`,
+          `SELECT type, COUNT(*) AS c FROM entity_pages WHERE workspace_id = ? AND status != 'archived' AND ${VISIBLE_PAGE} GROUP BY type ORDER BY c DESC`,
         )
-        .all(ws),
+        .all(ws, ...visiblePageParams(auth)),
     [] as any[],
   );
   return json(res, 200, { items, total: items.length, type_breakdown });
@@ -1125,17 +1234,18 @@ function ccSkills(res: ServerResponse, auth: DashboardAuth, limit: number) {
       .prepare(
         `SELECT id, slug, title, summary, status, metadata, created_at, updated_at
          FROM entity_pages
-         WHERE workspace_id = ? AND type = 'skill' AND (authority_private=0 OR authority_owner_id=? OR EXISTS(SELECT 1 FROM workspace_owners WHERE workspace_id=? AND actor_id=?))
+         WHERE workspace_id = ? AND type = 'skill' AND ${VISIBLE_PAGE}
          ORDER BY updated_at DESC
          LIMIT ?`,
       )
-      .all(ws, auth.agent_id, ws, auth.agent_id, lim) as any[];
+      .all(ws, ...visiblePageParams(auth), lim) as any[];
     return json(res, 200, {
       items: rows.map((r) => ({ ...r, metadata: safeJson(r.metadata) })),
       total: rows.length,
     });
   } catch (e) {
-    return json(res, 200, { items: [], total: 0, error: (e as Error).message });
+    logger.error("dashboard list failed", { error: (e as Error).message });
+    return json(res, 200, { items: [], total: 0, error: "query_failed" });
   }
 }
 
@@ -1149,12 +1259,14 @@ function downloadFileHandler(res: ServerResponse, auth: DashboardAuth, id: strin
     json(res, 404, { error: "not_found" });
     return;
   }
-  const safe = f.filename.replace(/[\r\n"\\]/g, "_");
+  // The stored type is whatever the uploader claimed (text/html included); on the dashboard origin the
+  // bytes are served inert, as /api/dashboard/my-agent/file does.
   res.writeHead(200, {
-    "content-type": f.mime || "application/octet-stream",
+    "content-type": "application/octet-stream",
     "content-length": String(f.size),
-    "content-disposition": `attachment; filename="${safe}"`,
+    "content-disposition": attachmentDisposition(f.filename),
     "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox; default-src 'none'",
     "cache-control": "no-store",
   });
   res.end(f.content);
@@ -1176,7 +1288,8 @@ function v4Auth(auth: DashboardAuth): AuthContext {
 }
 
 function requireV4Admin(res: ServerResponse, auth: DashboardAuth): boolean {
-  if (auth.isAdmin) return true;
+  // F-169: owner/steward only, as the P07 route matrix and trace contract say.
+  if (auth.type === "owner" || auth.type === "steward") return true;
   json(res, 403, { error: "forbidden", error_description: "V4 review dashboard requires owner/steward capability" });
   return false;
 }
@@ -1189,17 +1302,11 @@ function requireV4Feature(name: string): void {
 }
 
 async function readDashboardJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += value.length;
-    if (size > 64 * 1024) throw new Error("request_too_large");
-    chunks.push(value);
-  }
-  if (size === 0) return {};
-  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_json_object");
+  const raw = await readRequestBody(req, 64 * 1024);
+  if (raw.length === 0) return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw.toString("utf8")); } catch { throw new QoopiaError("INVALID_INPUT", "invalid_json"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new QoopiaError("INVALID_INPUT", "invalid_json_object");
   return parsed as Record<string, unknown>;
 }
 
@@ -1238,14 +1345,7 @@ function dashboardV4State(res: ServerResponse, auth: DashboardAuth) {
   ).all(auth.workspace_id);
   const schema = db.prepare("SELECT MAX(version) AS version FROM schema_versions").get() as { version: number };
   json(res, 200, {
-    feature_flags: {
-      relations: process.env.QOOPIA_V4_RELATIONS === "true",
-      recall_explain: process.env.QOOPIA_V4_RECALL_EXPLAIN === "true",
-      lifecycle: process.env.QOOPIA_V4_LIFECYCLE === "true",
-      extraction: process.env.QOOPIA_V4_EXTRACTION === "true",
-      feedback: process.env.QOOPIA_V4_FEEDBACK === "true",
-      dashboard: process.env.QOOPIA_V4_DASHBOARD === "true",
-    },
+    feature_flags: getV4FeatureFlags(),
     traces,
     relations,
     conflicts: (relations as any[]).filter((row) => row.relation_type === "conflicts_with"),
@@ -1277,6 +1377,7 @@ async function memoryOwnerPost(req: IncomingMessage, res: ServerResponse, auth: 
   try {
     return json(res, 200, act(await readDashboardJson(req)));
   } catch (error) {
+    if (error instanceof RequestBodyError) return json(res, error.status, { error: error.message });
     const code = error instanceof QoopiaError ? error.code : "INTERNAL";
     const status = { FORBIDDEN: 403, NOT_FOUND: 404, STALE_REVISION: 409, CONFLICT: 409, EXPIRED: 410, INVALID_INPUT: 400 }[code as string] ?? 500;
     return json(res, status, { error: code.toLowerCase(), error_description: status === 500 ? "Could not complete the memory change" : (error as Error).message });
@@ -1293,6 +1394,14 @@ const memoryPolicyPost = (req: IncomingMessage, res: ServerResponse, auth: Dashb
       expected_revision: typeof body.expected_revision === "number" ? body.expected_revision : undefined,
     });
     return { agent_id: policy.agent_id, name: policy.name, mode: policy.mode, revision: policy.revision };
+  });
+
+/** ADR-020: the owner's shared-context toggle next to an agent. The steward switches it over MCP. */
+const sharedContextPost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, agentId: string) =>
+  memoryOwnerPost(req, res, auth, (body) => {
+    if (!canManagePolicy(auth.workspace_id, auth.agent_id))
+      throw new QoopiaError("FORBIDDEN", "Only the workspace owner can change shared context in the dashboard");
+    return setSharedContext({ workspace_id: auth.workspace_id, agent_id: agentId, enabled: body.enabled as boolean, actor_id: auth.agent_id });
   });
 
 const memorySavePost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, requestId: string) =>
@@ -1320,7 +1429,7 @@ async function dashboardV4Post(req: IncomingMessage, res: ServerResponse, auth: 
       const result = await recall({
         workspace_id: auth.workspace_id,
         caller_agent_id: auth.agent_id,
-        is_admin: auth.isAdmin,
+        is_admin: seesWholeWorkspace(auth),
         query,
         limit: Math.min(Math.max(Number(body.limit ?? 10), 1), 50),
         scope: (body.scope ?? "notes") as any,
@@ -1375,6 +1484,7 @@ async function dashboardV4Post(req: IncomingMessage, res: ServerResponse, auth: 
     }
     json(res, 404, { error: "not_found", path });
   } catch (error) {
+    if (error instanceof RequestBodyError) return json(res, error.status, { error: error.message });
     const code = typeof error === "object" && error && "code" in error ? String((error as any).code) : "INVALID_INPUT";
     const status = code === "FORBIDDEN" ? 403 : code === "NOT_FOUND" ? 404 : code === "CONFLICT" ? 409 : 400;
     json(res, status, { error: code.toLowerCase(), error_description: error instanceof Error ? error.message : "request failed" });
@@ -1387,8 +1497,15 @@ export function handleDashboardApi(
 ): boolean {
   const url = req.url || "/";
   if (!url.startsWith("/api/dashboard")) return false;
-  const method = (req.method || "GET").toUpperCase();
+  // Every GET here is a read, so HEAD routes like GET; the runtime drops the body.
+  const requested = (req.method || "GET").toUpperCase();
+  const method = requested === "HEAD" ? "GET" : requested;
   const u = new URL(url, "http://local");
+  // A non-numeric query value falls back to the route default instead of binding NaN into SQL.
+  const intParam = (name: string, fallback: number) => {
+    const n = Number.parseInt(u.searchParams.get(name) ?? "", 10);
+    return Number.isFinite(n) ? n : fallback;
+  };
   const path = u.pathname;
 
   if (path.startsWith("/api/dashboard/v4/") && process.env.QOOPIA_V4_DASHBOARD !== "true") {
@@ -1401,6 +1518,7 @@ export function handleDashboardApi(
   // and unauthenticated by design). Origin checks live inside each handler.
   if (path === "/api/dashboard/login") {
     if (method !== "POST") {
+      res.setHeader("allow", "POST");
       json(res, 405, { error: "method_not_allowed" });
       return true;
     }
@@ -1409,6 +1527,7 @@ export function handleDashboardApi(
   }
   if (path === "/api/dashboard/logout") {
     if (method !== "POST") {
+      res.setHeader("allow", "POST");
       json(res, 405, { error: "method_not_allowed" });
       return true;
     }
@@ -1437,7 +1556,8 @@ export function handleDashboardApi(
       return true;
     }
     const id = decodeURIComponent(contractRoute[1]!);
-    if (!auth.isAdmin && id !== auth.agent_id) {
+    if (id !== auth.agent_id && levelOf(auth) === 0) {
+
       json(res, 403, { error: "forbidden" });
       return true;
     }
@@ -1457,7 +1577,19 @@ export function handleDashboardApi(
     return true;
   }
 
-  const saveRoute = path.match(/^\/api\/dashboard\/memory-saves(?:\/([^/]+))?$/);
+  const sharedRoute = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/shared-context$/);
+  if (method === "POST" && sharedRoute) {
+    const auth = checkDashboardAuth(req);
+    if (!auth) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    void sharedContextPost(req, res, auth, decodeURIComponent(sharedRoute[1]!));
+    return true;
+  }
+
+  const saveRoute = path.match(
+/^\/api\/dashboard\/memory-saves(?:\/([^/]+))?$/);
   if (saveRoute && (saveRoute[1] ? method === "POST" : method === "GET")) {
     const auth = checkDashboardAuth(req);
     if (!auth) {
@@ -1474,6 +1606,7 @@ export function handleDashboardApi(
   }
 
   if (method !== "GET") {
+    res.setHeader("allow", "GET, HEAD");
     json(res, 405, { error: "method_not_allowed" });
     return true;
   }
@@ -1482,7 +1615,7 @@ export function handleDashboardApi(
     json(res, 401, {
       error: "unauthorized",
       error_description:
-        "Valid agent Bearer token required (steward/standard/claude-privileged)",
+        "Valid agent Bearer token required (owner, steward or agent)",
     });
     return true;
   }
@@ -1537,7 +1670,7 @@ export function handleDashboardApi(
   // /api/dashboard/agents/:agent_id/sessions
   let m = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/sessions$/);
   if (m) {
-    const limit = parseInt(u.searchParams.get("limit") || "100", 10);
+    const limit = intParam("limit", 100);
     listSessions(res, auth, decodeURIComponent(m[1]!), limit);
     return true;
   }
@@ -1546,15 +1679,15 @@ export function handleDashboardApi(
   m = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/notes$/);
   if (m) {
     const type = u.searchParams.get("type");
-    const limit = parseInt(u.searchParams.get("limit") || "200", 10);
-    listNotesByAgent(res, auth, decodeURIComponent(m[1]!), type, limit);
+    const limit = intParam("limit", 200);
+    listNotesByAgent(res, auth, decodeURIComponent(m[1]!), type, limit, u.searchParams.get("before"));
     return true;
   }
 
   // /api/dashboard/sessions/:session_id/messages
   m = path.match(/^\/api\/dashboard\/sessions\/([^/]+)\/messages$/);
   if (m) {
-    const limit = parseInt(u.searchParams.get("limit") || "500", 10);
+    const limit = intParam("limit", 500);
     sessionMessages(res, auth, decodeURIComponent(m[1]!), limit);
     return true;
   }
@@ -1563,8 +1696,14 @@ export function handleDashboardApi(
   m = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/search$/);
   if (m) {
     const q = u.searchParams.get("q") || "";
-    const limit = parseInt(u.searchParams.get("limit") || "50", 10);
+    const limit = intParam("limit", 50);
     searchMessages(res, auth, decodeURIComponent(m[1]!), q, limit);
+    return true;
+  }
+
+  if (path === "/api/dashboard/search") {
+    dashboardSearch(res, auth, u.searchParams.get("q") || "", intParam("limit", 50),
+      u.searchParams.get("messages_before"), u.searchParams.get("notes_before"));
     return true;
   }
 
@@ -1574,19 +1713,19 @@ export function handleDashboardApi(
     return true;
   }
   if (path === "/api/dashboard/activity") {
-    const limit = parseInt(u.searchParams.get("limit") || "100", 10);
+    const limit = intParam("limit", 100);
     const before = u.searchParams.get("before");
     ccActivity(res, auth, limit, before);
     return true;
   }
   // ---- AgentComm reader (AC-READ-001) ----
   if (path === "/api/dashboard/agentcomm/threads") {
-    const limit = parseInt(u.searchParams.get("limit") || "100", 10);
+    const limit = intParam("limit", 100);
     acThreads(res, auth, limit);
     return true;
   }
   if (path === "/api/dashboard/agentcomm/thread") {
-    const limit = parseInt(u.searchParams.get("limit") || "200", 10);
+    const limit = intParam("limit", 200);
     acThread(
       res,
       auth,
@@ -1600,12 +1739,12 @@ export function handleDashboardApi(
   if (path === "/api/dashboard/entities") {
     const type = u.searchParams.get("type");
     const q = u.searchParams.get("q");
-    const limit = parseInt(u.searchParams.get("limit") || "100", 10);
+    const limit = intParam("limit", 100);
     ccEntities(res, auth, type, q, limit);
     return true;
   }
   if (path === "/api/dashboard/skills") {
-    const limit = parseInt(u.searchParams.get("limit") || "100", 10);
+    const limit = intParam("limit", 100);
     ccSkills(res, auth, limit);
     return true;
   }

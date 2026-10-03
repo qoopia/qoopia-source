@@ -172,4 +172,25 @@ describe("redactSensitive path boundaries", () => {
       }
     }
   });
+
+  test("web URLs survive while local paths and URL credentials stay redacted [F-083]", () => {
+    for (const url of [
+      "See https://example.test/page", "Docs at https://qoopia.ai/docs.html", "http://localhost:3000/x",
+      "ftp://files.example.test/pub/a", "https://example.test/tmp/a/Users/example?var=/home/c#/private/d",
+      "https://example.test/x?state=ok&next=/var/y",
+    ]) expect(redactSensitive(url)).toEqual({ text: url, categories: [] });
+    for (const [raw, clean] of [
+      ["file:///C:/Users/example/leaf", "file:///[LOCAL_PATH]"], ["file:///Users/example/leaf", "file://[LOCAL_PATH]"],
+      ["https://a.test,/Users/example/leaf", "https://a.test,[LOCAL_PATH]"], ["https://a.test C:\\Users\\x", "https://a.test [LOCAL_PATH]"],
+    ]) expect(redactSensitive(raw!)).toEqual({ text: clean!, categories: ["absolute-path"] });
+    for (const raw of ["run\nC:\\Users\\x\\leaf", "https://a.test/x\n/Users/example/leaf", "https://a.test/x\tD:/x/leaf"]) {
+      const out = redactSensitive(JSON.stringify(raw));
+      expect(out.categories).toEqual(["absolute-path"]);
+      expect(out.text).not.toContain("leaf");
+    }
+    const query = redactSensitive("https://a.test/cb?state=ok&access_token=opaque-1234567890&X-Amz-Signature=abcdef0123456789&sig=Zm9vYmFyYmF6cXV4");
+    expect(query.text).toBe("https://a.test/cb?state=ok&access_token=[REDACTED:credential-url]&X-Amz-Signature=[REDACTED:credential-url]&sig=[REDACTED:credential-url]");
+    expect(query.categories).toEqual(["credential-url"]);
+    expect(redactSensitive("https://user:hunter2-password@a.test/x").text).toBe("[REDACTED:credential-url]");
+  });
 });

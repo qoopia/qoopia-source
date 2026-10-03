@@ -13,9 +13,11 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { db } from "../src/db/connection.ts";
 import { createNote, getNote, listNotes } from "../src/services/notes.ts";
+import { createNoteRelation } from "../src/services/note-relations.ts";
 import { applyVectorTemporalWindow, recall } from "../src/services/recall.ts";
 import { VECTOR_TEMPORAL_OVERFETCH } from "../src/services/recall/temporal-filter.ts";
 import { isoFromEpochMs } from "../src/utils/temporal.ts";
+import type { AuthContext } from "../src/auth/middleware.ts";
 
 let WORKSPACE_ID = "";
 let AGENT_ID = "";
@@ -88,9 +90,9 @@ beforeAll(() => {
   });
   const c = note(`${TERM} revision three`, {
     supersedes_id: b.id,
-    expected_superseded_updated_at_ms: db
+    expected_superseded_updated_at_ms: (db
       .prepare(`SELECT updated_at_ms FROM notes WHERE id = ?`)
-      .get(b.id)!.updated_at_ms as number,
+      .get(b.id) as { updated_at_ms: number }).updated_at_ms,
   });
   delete process.env.QOOPIA_V4_BITEMPORAL;
 
@@ -469,6 +471,107 @@ describe("Flag ON — the single documented divergence from legacy latest_only (
       query: term,
     } as never);
     expect(response.results.map((row) => row.id)).toContain(head.id);
+  });
+});
+
+describe("Flag OFF legacy supersede closes the target's belief", () => {
+  test("turning the flag on later does not make the superseded note current or valid again", async () => {
+    const term = "quillvane";
+    const a = note(`${term} legacy predecessor`);
+    const b = note(`${term} legacy successor`);
+    createNoteRelation({
+      auth: { workspace_id: WORKSPACE_ID, agent_id: AGENT_ID, agent_name: "temporal-reader", type: "standard", source: "api-key" },
+      source_note_id: b.id,
+      target_note_id: a.id,
+      relation_type: "supersedes",
+    });
+    const closed = temporalRow(a.id);
+    expect(closed.invalidated_at_ms).not.toBeNull();
+    expect(closed.invalidated_at_ms!).toBeGreaterThan(closed.created_at_ms!);
+    expect(closed.valid_until_ms!).toBeGreaterThan(closed.valid_from_ms!);
+    expect(
+      db.prepare(`SELECT invalidated_at_source, valid_until_inferred FROM note_temporal_provenance WHERE note_id = ?`).get(a.id),
+    ).toEqual({ invalidated_at_source: "legacy_relation", valid_until_inferred: 1 });
+
+    enableFlag();
+    const at = isoFromEpochMs(Math.max(Date.now(), closed.invalidated_at_ms!));
+    for (const mode of [{}, { valid_as_of: at }, { known_as_of: at }]) {
+      const found = await ids({ query: term, include_archived: true, ...mode });
+      expect(found).toContain(b.id);
+      expect(found).not.toContain(a.id);
+    }
+    // A closed note cannot be forked by a second successor, as on the flag-ON path.
+    let code = "";
+    try {
+      note(`${term} fork`, {
+        supersedes_id: a.id,
+        expected_superseded_updated_at_ms: getNote(WORKSPACE_ID, a.id, AGENT_ID, false).updated_at_ms,
+      });
+    } catch (error) {
+      code = (error as { code: string }).code;
+    }
+    expect(code).toBe("CONFLICT");
+  });
+});
+
+describe("as-of history includes legacy-archived predecessors", () => {
+  const legacyAuth = (): AuthContext => ({
+    workspace_id: WORKSPACE_ID,
+    agent_id: AGENT_ID,
+    agent_name: "temporal-reader",
+    type: "standard",
+    source: "api-key",
+  });
+  const archive = (id: string, metadata: Record<string, unknown>) =>
+    db.prepare(`UPDATE notes SET metadata = ? WHERE id = ?`).run(JSON.stringify(metadata), id);
+
+  test("valid_as_of and known_as_of in the past return the closed predecessor without include_archived", async () => {
+    const term = "pelucidra";
+    const a = note(`${term} price is 10`);
+    const b = note(`${term} price is 20`);
+    createNoteRelation({ auth: legacyAuth(), source_note_id: b.id, target_note_id: a.id, relation_type: "supersedes" });
+    expect(getNote(WORKSPACE_ID, a.id, AGENT_ID, false).metadata.status).toBe("archived");
+    const row = temporalRow(a.id);
+    enableFlag();
+    // Also with the production relation flags: latest_only must not collapse T to today's head.
+    for (const relations of [false, true]) {
+      if (relations) {
+        process.env.QOOPIA_V4_RELATIONS = "true";
+        process.env.QOOPIA_V4_LATEST_ONLY = "true";
+      }
+      expect(await ids({ query: term, valid_as_of: isoFromEpochMs(row.valid_from_ms!) })).toEqual([a.id]);
+      expect(await ids({ query: term, known_as_of: isoFromEpochMs(row.created_at_ms!) })).toEqual([a.id]);
+      expect(await ids({ query: term })).toEqual([b.id]);
+    }
+    // The V4 pipeline (explain) applies the same archived rule after fusion.
+    process.env.QOOPIA_V4_RECALL_EXPLAIN = "true";
+    expect(await ids({ query: term, valid_as_of: isoFromEpochMs(row.valid_from_ms!), explain: true })).toEqual([a.id]);
+    delete process.env.QOOPIA_V4_RECALL_EXPLAIN;
+    delete process.env.QOOPIA_V4_RELATIONS;
+    delete process.env.QOOPIA_V4_LATEST_ONLY;
+  });
+
+  test("an unclosed skipped target and a manually archived note stay hidden as of now", async () => {
+    const term = "draskel";
+    const skipped = note(`${term} skipped predecessor`);
+    const head = note(`${term} skipped head`);
+    const manual = note(`${term} archived by hand`);
+    db.prepare(
+      `INSERT INTO note_relations
+         (id, workspace_id, source_note_id, target_note_id, relation_type, created_by_agent_id, metadata, created_at)
+       VALUES (?, ?, ?, ?, 'supersedes', ?, '{}', ?)`,
+    ).run(`rel-asof-${skipped.id}`, WORKSPACE_ID, head.id, skipped.id, AGENT_ID, "2026-05-01T00:00:00.000Z");
+    db.prepare(
+      `INSERT INTO note_temporal_provenance (note_id, workspace_id, backfill_class, skipped_reason)
+       VALUES (?, ?, 'split_head', 'split_head_component')`,
+    ).run(skipped.id, WORKSPACE_ID);
+    archive(skipped.id, { status: "archived", superseded_by: head.id });
+    archive(manual.id, { status: "archived" });
+    enableFlag();
+    const at = isoFromEpochMs(Date.now() + 1000);
+    for (const mode of [{ valid_as_of: at }, { known_as_of: at }]) {
+      expect(await ids({ query: term, ...mode })).toEqual([head.id]);
+    }
   });
 });
 

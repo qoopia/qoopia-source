@@ -3,13 +3,15 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
+import { canReadRow, readLevel, visibleRowSql } from "../auth/principal.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, holdSaveForOwner, type MemoryOrigin } from "./memory-policy.ts";
 import { upsertNoteEmbedding } from "./embedding-store.ts";
-import { bitemporalEnabled, temporalFeatureDisabled } from "../utils/temporal.ts";
+import { bitemporalEnabled, temporalFeatureDisabled, timeBoundSql } from "../utils/temporal.ts";
 import {
   assertTemporalWriteAllowed,
   closePredecessor,
+  nextNoteWriteMs,
   resolveTemporalWrite,
   temporalProvenanceInferred,
   type TemporalWriteFields,
@@ -113,10 +115,9 @@ export interface NoteCreateInput {
   tags?: string[];
   source?: string;
   /**
-   * QRERUN-003 / ADR-014: 'workspace' (default) shares the note across all
-   * agents in this workspace via MCP recall/brief/note_get/note_list.
-   * 'private' restricts reads to the owning agent_id and admin agent
-   * types (steward, claude-privileged).
+   * ADR-014 / ADR-020: 'workspace' (default) shares the note with every
+   * shared-context agent of this workspace via MCP recall/brief/note_get/note_list.
+   * 'private' restricts reads to the owning agent_id, the steward and the owner.
    */
   visibility?: NoteVisibility;
   /**
@@ -214,14 +215,11 @@ function toNote(r: NoteRow, inferred: number | null = null): NoteView {
  * the note mutation. That keeps same-millisecond writes deterministically
  * ordered and prevents a wall-clock rollback from moving a row backwards.
  */
-function nextNoteWriteTimestamp(previousMs = 0): {
+export function nextNoteWriteTimestamp(previousMs = 0): {
   iso: string;
   ms: number;
 } {
-  const row = db
-    .prepare(`SELECT COALESCE(MAX(updated_at_ms), 0) AS max_ms FROM notes`)
-    .get() as { max_ms: number };
-  const ms = Math.max(Date.now(), previousMs + 1, row.max_ms + 1);
+  const ms = nextNoteWriteMs(previousMs);
   return { iso: new Date(ms).toISOString(), ms };
 }
 
@@ -293,6 +291,12 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
             valid_until: input.valid_until ?? null,
           }),
         };
+  // A committed key replays before anything else, including the manual hold: a replay writes nothing.
+  // The lookup inside the transaction below still settles concurrent first calls.
+  if (idempotency) {
+    const previous = lookupNoteIdempotency(idempotency.key_hash, idempotency.request_hash);
+    if (previous) return previous as unknown as NoteCreateResult;
+  }
 
   const type = input.type || "note";
   const visibility: NoteVisibility = input.visibility === "private" ? "private" : "workspace";
@@ -334,6 +338,8 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
   const id = ulid();
   // H6 fix: wrap insert + logActivity in a single transaction so partial failure
   // never leaves the note created without an audit entry or vice versa.
+  // F-267: note writes run .immediate(): a deferred transaction that has already
+  // read gets SQLITE_BUSY at once instead of waiting out busy_timeout.
   let replayed = false;
   const result: NoteCreateResult = db.transaction((): NoteCreateResult => {
     // Реестр читается ВНУТРИ транзакции: параллельный первый вызов с тем же
@@ -426,16 +432,15 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
       });
     }
 
-    // QTHIRD-001: never embed the text of a private note into the
-    // shared activity log. Workspace-visibility notes keep the 80-char
-    // preview so existing dashboards stay informative; private rows
-    // record only the type, and the row itself is stamped 'private'
-    // so listActivity / recall(scope='activity'|'all') filter it out
-    // for non-owner non-admin callers.
+    // QTHIRD-001: private rows record only the type, and the row itself is
+    // stamped 'private' so listActivity / recall(scope='activity'|'all')
+    // filter it out for non-owner non-admin callers. F-102: no note text at
+    // all — the activity log is append-only, so a copied preview outlived
+    // deletion and edits of the note.
     const summary =
       visibility === "private"
         ? `Created ${type} (private)`
-        : `Created ${type}: ${input.text.slice(0, 80)}`;
+        : `Created ${type} ${id}`;
     logActivity({
       workspace_id: input.workspace_id,
       agent_id: input.agent_id,
@@ -466,7 +471,7 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
       );
     }
     return created;
-  })();
+  }).immediate();
 
   // Идемпотентный повтор не создаёт ноту и не переэмбеддит её.
   if (replayed) return result;
@@ -479,10 +484,9 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
 }
 
 /**
- * QRERUN-003 / ADR-014: getNote enforces the visibility boundary.
- * - 'workspace' notes — visible to any caller in the same workspace.
- * - 'private' notes — only the owning agent_id can read; admin types
- *   (steward, claude-privileged) bypass via isAdmin=true.
+ * ADR-020: getNote enforces the visibility boundary (visibleRowSql): the
+ * caller's own notes; its siblings' 'workspace' notes when its shared-context
+ * toggle is on; everything when isAdmin (steward/owner, seesWholeWorkspace).
  */
 export function getNote(
   workspace_id: string,
@@ -497,10 +501,10 @@ export function getNote(
         WHERE id = ?
           AND workspace_id = ?
           AND deleted_at IS NULL
-          AND (visibility = 'workspace' OR agent_id = ? OR ? = 1)
+          AND ${visibleRowSql()}
         LIMIT 1`,
     )
-    .get(id, workspace_id, caller_agent_id, isAdmin ? 1 : 0) as NoteRow | undefined;
+    .get(id, workspace_id, caller_agent_id, readLevel(caller_agent_id, isAdmin)) as NoteRow | undefined;
   if (!r) throw new QoopiaError("NOT_FOUND", `note ${id} not found`);
   // Provenance читается только при включённом флаге (§3.5).
   return toNote(r, bitemporalEnabled() ? temporalProvenanceInferred(r.id) : null);
@@ -511,8 +515,8 @@ export interface NoteListParams {
   /** QRERUN-003 / ADR-014: agent_id of the caller — needed to surface
    *  their own private notes alongside workspace-visibility ones. */
   caller_agent_id: string;
-  /** QRERUN-003 / ADR-014: true for steward/claude-privileged — bypass
-   *  the private filter and see all notes for ops/audit. */
+  /** ADR-020: true for the steward and the owner (seesWholeWorkspace) — every
+   *  note of the workspace; otherwise the caller's shared-context toggle decides. */
   is_admin: boolean;
   type?: string;
   project_id?: string;
@@ -537,9 +541,9 @@ export function listNotes(p: NoteListParams) {
   const where: string[] = [`workspace_id = ?`];
   const params: any[] = [p.workspace_id];
   if (!p.include_deleted) where.push(`deleted_at IS NULL`);
-  // QRERUN-003 / ADR-014: hide private notes from non-owners (admins exempt).
-  where.push(`(visibility = 'workspace' OR agent_id = ? OR ? = 1)`);
-  params.push(p.caller_agent_id, p.is_admin ? 1 : 0);
+  // ADR-020: own notes, siblings' shared notes with the toggle on, all for steward/owner.
+  where.push(visibleRowSql());
+  params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
   if (p.type) {
     where.push(`type = ?`);
     params.push(p.type);
@@ -580,13 +584,12 @@ export function listNotes(p: NoteListParams) {
       params.push(tag);
     }
   }
-  if (p.since) {
-    where.push(`created_at >= ?`);
-    params.push(p.since);
-  }
-  if (p.until) {
-    where.push(`created_at <= ?`);
-    params.push(p.until);
+  // Stored timestamps mix second and ms precision, so compare moments, not text.
+  for (const side of ["since", "until"] as const) {
+    if (!p[side]) continue;
+    const bound = timeBoundSql("created_at", side, p[side]);
+    where.push(bound.sql);
+    params.push(...bound.params);
   }
 
   const orderSql =
@@ -595,7 +598,8 @@ export function listNotes(p: NoteListParams) {
       : p.order === "updated_desc"
         ? `CASE
              WHEN updated_at_ms > 0 THEN updated_at_ms
-             ELSE CAST((julianday(updated_at) - 2440587.5) * 86400000 AS INTEGER)
+             ELSE CAST(strftime('%s', updated_at) AS INTEGER) * 1000
+                  + COALESCE(CAST(substr(strftime('%f', updated_at), 4, 3) AS INTEGER), 0)
            END DESC, id DESC`
         : "created_at DESC";
   const limit = Math.min(Math.max(p.limit || 50, 1), 500);
@@ -631,10 +635,12 @@ export function listNotes(p: NoteListParams) {
   }
 
   const items = rows.map((r) => {
-    const full = toNote(r, inferredByNote.get(r.id) ?? null);
-    // List view: cap text_preview to 500 chars so responses stay light.
-    const text_preview = full.text.length > 500 ? full.text.slice(0, 500) : full.text;
-    return { ...full, text_preview, text_preview_only: full.text.length > 500 ? true : false };
+    const { text, ...full } = toNote(r, inferredByNote.get(r.id) ?? null);
+    // List view: a note over 500 chars carries only its 500-char preview, so responses stay
+    // light; note_get returns the full text.
+    return text.length > 500
+      ? { ...full, text_preview: text.slice(0, 500), text_preview_only: true as const }
+      : { ...full, text, text_preview: text, text_preview_only: false as const };
   });
 
   return {
@@ -650,9 +656,8 @@ export interface NoteUpdateInput {
   workspace_id: string;
   agent_id: string;
   /**
-   * QTHIRD-001: true for steward / claude-privileged. Required to
-   * mutate another agent's `private` note. Standard agents can only
-   * update notes they own or notes with workspace visibility.
+   * QTHIRD-001 / ADR-020: true for the steward and the owner. A caller can
+   * change only a note it can read (getNote's rule).
    */
   is_admin: boolean;
   id: string;
@@ -676,15 +681,11 @@ export function updateNote(input: NoteUpdateInput) {
   if (!existing)
     throw new QoopiaError("NOT_FOUND", `note ${input.id} not found`);
 
-  // QTHIRD-001: refuse non-owner non-admin mutation of a private note.
+  // QTHIRD-001 / ADR-020: a note the caller cannot read cannot be changed.
   // Throw NOT_FOUND (not FORBIDDEN) so the caller cannot probe for
-  // existence of private notes belonging to siblings.
+  // existence of notes it does not see.
   const existingVisibility = (existing.visibility || "workspace") as NoteVisibility;
-  if (
-    existingVisibility === "private" &&
-    existing.agent_id !== input.agent_id &&
-    !input.is_admin
-  ) {
+  if (!canReadRow(existing, input.agent_id, readLevel(input.agent_id, input.is_admin))) {
     throw new QoopiaError("NOT_FOUND", `note ${input.id} not found`);
   }
 
@@ -780,7 +781,19 @@ export function updateNote(input: NoteUpdateInput) {
   }
 
   const { origin, ...prepared } = input;
-  holdSaveForOwner(input.workspace_id, input.agent_id, "note_update", prepared, origin);
+  // An update the owner already confirmed is a no-op while the note still holds it; once the
+  // note moved on, the same edit is a new request. `values` are serialized like the columns.
+  const row = existing as unknown as Record<string, unknown>;
+  const applied = fields.every((field, i) => row[field.slice(0, field.indexOf(" "))] === values[i]);
+  if (holdSaveForOwner(input.workspace_id, input.agent_id, "note_update", prepared, origin, applied)) {
+    return {
+      updated: false,
+      id: input.id,
+      fields_updated: [],
+      updated_at: existing.updated_at,
+      updated_at_ms: existing.updated_at_ms,
+    };
+  }
 
   // H6 fix: wrap update + logActivity atomically
   const result = db.transaction(() => {
@@ -821,7 +834,7 @@ export function updateNote(input: NoteUpdateInput) {
       updated_at: timestamp.iso,
       updated_at_ms: timestamp.ms,
     };
-  })();
+  }).immediate();
 
   // Re-embed only when text actually changed — metadata / tags edits
   // don't move the vector. upsertNoteEmbedding hashes text and skips
@@ -834,9 +847,9 @@ export function updateNote(input: NoteUpdateInput) {
 }
 
 /**
- * QTHIRD-001: deleteNote enforces the visibility boundary.
- * Non-owner non-admin callers cannot delete a private note; the call
- * surfaces NOT_FOUND (not FORBIDDEN) to avoid leaking existence.
+ * QTHIRD-001 / ADR-020: deleteNote enforces the visibility boundary.
+ * A caller cannot delete a note it cannot read; the call surfaces
+ * NOT_FOUND (not FORBIDDEN) to avoid leaking existence.
  */
 export function deleteNote(
   workspace_id: string,
@@ -863,11 +876,7 @@ export function deleteNote(
   if (!existing) throw new QoopiaError("NOT_FOUND", `note ${id} not found`);
 
   const existingVisibility = (existing.visibility || "workspace") as NoteVisibility;
-  if (
-    existingVisibility === "private" &&
-    existing.agent_id !== agent_id &&
-    !isAdmin
-  ) {
+  if (!canReadRow(existing, agent_id, readLevel(agent_id, isAdmin))) {
     // Match the read-side error to avoid leaking existence.
     throw new QoopiaError("NOT_FOUND", `note ${id} not found`);
   }
@@ -912,7 +921,7 @@ export function deleteNote(
       updated_at: timestamp.iso,
       updated_at_ms: timestamp.ms,
     };
-  })();
+  }).immediate();
 
   return result;
 }

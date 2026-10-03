@@ -13,7 +13,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { db } from "../src/db/connection.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
-import { createAgent } from "../src/admin/agents.ts";
+import { createAgent, setSharedContext } from "../src/admin/agents.ts";
 import { createNote, listNotes, updateNote } from "../src/services/notes.ts";
 import { logActivity } from "../src/services/activity.ts";
 import { saveMessage } from "../src/services/sessions.ts";
@@ -133,7 +133,7 @@ describe("recall scope='sessions'", () => {
     );
   });
 
-  test("hides another agent's session messages from a non-admin", async () => {
+  test("shows another agent's session messages only while shared context is on (ADR-020)", async () => {
     saveMessage({
       workspace_id: WORKSPACE_ID,
       session_id: "qsl-session-B",
@@ -141,14 +141,21 @@ describe("recall scope='sessions'", () => {
       role: "user",
       content: "secret keyword okapi-only-for-B",
     });
-    const r = await recall({
+    const search = () => recall({
       workspace_id: WORKSPACE_ID,
       caller_agent_id: AGENT_A_ID,
       is_admin: false,
       query: "okapi",
       scope: "sessions",
     });
-    expect(r.results.length).toBe(0);
+    expect((await search()).results.length).toBe(1);
+    const steward = createAgent({ name: "qsl-steward", workspaceSlug: "qsearch-lifecycle", type: "steward" }).id;
+    setSharedContext({ workspace_id: WORKSPACE_ID, agent_id: AGENT_A_ID, enabled: false, actor_id: steward });
+    try {
+      expect((await search()).results.length).toBe(0);
+    } finally {
+      setSharedContext({ workspace_id: WORKSPACE_ID, agent_id: AGENT_A_ID, enabled: true, actor_id: steward });
+    }
   });
 
   test("admin sees other agents' session messages", async () => {
@@ -238,7 +245,7 @@ describe("archive lifecycle", () => {
     const archived = r.items.find(
       (n) =>
         (n.metadata as Record<string, unknown>).status === "archived" &&
-        n.text.includes("narwhal"),
+        !n.text_preview_only && n.text.includes("narwhal"),
     );
     expect(archived).toBeTruthy();
   });

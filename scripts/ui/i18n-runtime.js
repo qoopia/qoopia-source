@@ -2,6 +2,8 @@
 (() => {
   'use strict';
   const catalog = __CATALOG__;
+  const countForms = {member:[['member','members','members'],['участник','участника','участников']],session:[['session','sessions','sessions'],['сессия','сессии','сессий']],
+    message:[['message','messages','messages'],['сообщение','сообщения','сообщений']],note:[['note','notes','notes'],['заметка','заметки','заметок']]};
   const key = 'qoopia.language';
   const valid = value => value === 'en' || value === 'ru';
   const read = () => { try { return localStorage.getItem(key); } catch { return null; } };
@@ -18,7 +20,7 @@
     if (entry.kind === 'number') return new Intl.NumberFormat(language,{maximumFractionDigits:1}).format(entry.value);
     if (entry.kind === 'pair') return language==='ru'?entry.ru:entry.en;
     if (entry.kind === 'date') {const date=new Date(entry.value);return Number.isNaN(date.getTime())?'—':new Intl.DateTimeFormat(language,entry.options).format(date);}
-    if(entry.kind === 'count'){const forms=entry.unit==='member'?(language==='ru'?['участник','участника','участников']:['member','members','members']):[entry.unit,entry.unit,entry.unit];const rule=new Intl.PluralRules(language).select(entry.value);return new Intl.NumberFormat(language).format(entry.value)+' '+forms[rule==='one'?0:rule==='few'?1:2];}
+    if(entry.kind === 'count'){const forms=countForms[entry.unit]?.[language==='ru'?1:0]||[entry.unit,entry.unit,entry.unit];const rule=new Intl.PluralRules(language).select(entry.value);return new Intl.NumberFormat(language).format(entry.value)+' '+forms[rule==='one'?0:rule==='few'?1:2];}
     if (entry.kind === 'relative') return new Intl.RelativeTimeFormat(language, {numeric:'auto'}).format(entry.value,entry.unit);
     return translate(entry.source).replace(/\{(\w+)\}/g, (whole, name) => String(entry.params[name] ?? whole));
   });
@@ -72,7 +74,7 @@
     if(!valid(value))return;
     language=value;
     const address=new URL(location.href);if(address.searchParams.has("lang")){address.searchParams.set("lang",value);history.replaceState(null,"",address.pathname+address.search+address.hash);}
-    try{localStorage.setItem(key,value);}catch{}
+    try{localStorage.setItem(key,value);}catch{/* Storage unavailable (private mode or blocked); the choice lasts for this page. */}
     const shared=location.hostname==='qoopia.ai'||location.hostname.endsWith('.qoopia.ai');
     if(shared)document.cookie='qoopia_language='+value+'; Path=/; Domain=qoopia.ai; Max-Age=31536000; SameSite=Lax; Secure';
     syncControls();

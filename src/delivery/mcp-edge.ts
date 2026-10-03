@@ -1,8 +1,12 @@
 import http, {type IncomingMessage, type ServerResponse} from 'node:http';
 import {pipeline} from 'node:stream';
+import {readRequestBody, repeatsSingletonHeader, RequestBodyError, unreadBody} from '../utils/http-json.ts';
+import {isIP} from 'node:net';
+import {randomBytes, timingSafeEqual} from 'node:crypto';
+import {MAX_BODY_BYTES} from '../utils/http-json.ts';
 
 /** The tunnel targets this loopback listener, never the dashboard listener. */
-export interface McpEdgeOptions {
+interface McpEdgeOptions {
   publicOrigin: string;
   upstreamPort: number;
   port?: number;
@@ -27,7 +31,6 @@ const routes: Record<string, readonly string[]> = {
   '/.well-known/oauth-authorization-server': ['GET', 'OPTIONS'],
   '/.well-known/oauth-authorization-server/mcp': ['GET', 'OPTIONS'],
   '/oauth/authorize': ['GET'],
-  '/oauth/authorize/finalize': ['GET'],
   '/oauth/consent':['GET'],
   '/oauth/consent/start':['POST'],
   '/oauth/consent/check':['POST'],
@@ -40,10 +43,23 @@ const routes: Record<string, readonly string[]> = {
 // Explicit allowlists also remove proxy credentials, cookies and spoofed identity headers.
 const requestHeaders = ['authorization', 'accept', 'content-type', 'origin', 'mcp-protocol-version', 'mcp-session-id',
   'last-event-id', 'access-control-request-method', 'access-control-request-headers'];
+// The upstream's own security headers pass on every route: /brand/* and /oauth/authorize can be HTML/CSS/SVG.
 const responseHeaders = ['content-type', 'www-authenticate', 'mcp-session-id', 'mcp-protocol-version', 'retry-after',
   'allow', 'access-control-allow-origin', 'access-control-allow-methods', 'access-control-allow-headers',
-  'access-control-expose-headers', 'access-control-max-age', 'vary'];
+  'access-control-expose-headers', 'access-control-max-age', 'vary',
+  'content-security-policy', 'x-frame-options', 'x-content-type-options', 'referrer-policy', 'permissions-policy'];
 const consentCookie=/^__Secure-qoopia_consent_(?:[a-f0-9]{16}|login)=[A-Za-z0-9_-]{43}$/;
+// The edge runs inside the server process and reaches it over loopback. This per-process secret
+// marks edge traffic so rate limits key on the Cloudflare client address, never on a header a client chose.
+const EDGE_CLIENT_HEADER = 'x-qoopia-edge-client', edgeSecret = randomBytes(32).toString('base64url');
+
+/** `edge:<address>` for a request forwarded by this process's edge, otherwise undefined. */
+export function edgeClientKey(req: IncomingMessage): string | undefined {
+  const value = req.headers[EDGE_CLIENT_HEADER];
+  if (typeof value !== 'string') return undefined;
+  const [secret = '', address] = value.split(' '), given = Buffer.from(secret), expected = Buffer.from(edgeSecret);
+  return given.length === expected.length && timingSafeEqual(given, expected) ? 'edge:' + address : undefined;
+}
 
 export function mcpEdgeRoute(raw: string, method: string): 'allowed' | 'not_found' | 'method_not_allowed' {
   // Do not let URL normalization turn a forbidden path into an allowed one.
@@ -60,36 +76,41 @@ export function startMcpEdge(options: McpEdgeOptions) {
     throw new Error('External MCP requires a plain HTTPS origin');
   if (!Number.isInteger(options.upstreamPort) || options.upstreamPort < 1 || options.upstreamPort > 65535)
     throw new Error('Invalid loopback upstream port');
-  const timeoutMs = options.timeoutMs ?? 65_000, limit = options.maxBodyBytes ?? 2 * 1024 * 1024;
+  const timeoutMs = options.timeoutMs ?? 65_000, limit = options.maxBodyBytes ?? MAX_BODY_BYTES;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || !Number.isInteger(limit) || limit < 1) throw new Error('Invalid edge limits');
   const fail = (res: ServerResponse, status: number, code: string) => {
     if (res.destroyed || res.writableEnded) return;
     if (res.headersSent) { res.destroy(); return; }
-    res.writeHead(status, {'content-type': 'application/json', 'cache-control': 'no-store'});
+    res.writeHead(status, {'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff'});
     res.end(JSON.stringify({error: code, retry: 'client_decision', memory_preserved: true}));
   };
   const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // The public origin is HTTPS-only (checked above), so every reply, refusals included, pins it.
+    res.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains');
+    // A refused or stalled body is not drained, and nothing more is read after a repeated
+    // Content-Length/Transfer-Encoding: the socket closes once the reply is out.
+    const repeated = repeatsSingletonHeader(req);
+    res.once('finish', () => { if (repeated || unreadBody(req)) req.destroy(); });
+    if (repeated) return fail(res, 400, 'DUPLICATE_HEADER');
     if (options.available && !options.available()) return fail(res,503,'DEVICE_LEASE_UNAVAILABLE');
     if (req.headers.host !== origin.host) return fail(res, 403, 'HOST_REFUSED');
     const route = mcpEdgeRoute(req.url ?? '', req.method ?? 'GET');
     if (route !== 'allowed') return fail(res, route === 'not_found' ? 404 : 405, route.toUpperCase());
-    if (Number(req.headers['content-length'] ?? 0) > limit) return fail(res, 413, 'BODY_TOO_LARGE');
-    const chunks: Buffer[] = []; let size = 0;
-    try {
-      for await (const chunk of req) {
-        size += chunk.length;
-        if (size > limit) { fail(res, 413, 'BODY_TOO_LARGE'); return; }
-        chunks.push(Buffer.from(chunk));
-      }
-    } catch { return fail(res, 400, 'REQUEST_INTERRUPTED'); }
+    let body: Buffer;
+    try { body = await readRequestBody(req, limit, timeoutMs); }
+    catch (e) {
+      return e instanceof RequestBodyError ? fail(res, e.status, e.status === 413 ? 'BODY_TOO_LARGE' : 'REQUEST_TIMEOUT') : fail(res, 400, 'REQUEST_INTERRUPTED');
+    }
     const headers: http.OutgoingHttpHeaders = {host: `127.0.0.1:${options.upstreamPort}`, 'accept-encoding': 'identity'};
     for (const key of requestHeaders) if (req.headers[key] !== undefined) headers[key] = req.headers[key];
+    const client = req.headers['cf-connecting-ip'];
+    headers[EDGE_CLIENT_HEADER] = edgeSecret + ' ' + (typeof client === 'string' && isIP(client) ? client : 'unknown');
     const consentRoute=(req.url??'').split('?')[0]!.startsWith('/oauth/consent');
     if(consentRoute){
       const cookies=(req.headers.cookie??'').split(';').map(s=>s.trim()).filter(s=>consentCookie.test(s));
       if(cookies.length)headers.cookie=cookies.join('; ');
     }
-    if (size) headers['content-length'] = size;
+    if (body.length) headers['content-length'] = body.length;
     const upstream = http.request({hostname: '127.0.0.1', port: options.upstreamPort, path: req.url, method: req.method, headers}, response => {
       // A local dashboard URL must not become an accidentally published admin route.
       const location = response.headers.location;
@@ -107,8 +128,6 @@ export function startMcpEdge(options: McpEdgeOptions) {
         const cookies=(response.headers['set-cookie']??[]).filter(s=>
           /^__Secure-qoopia_consent_(?:[a-f0-9]{16}|login)=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=(?:Strict|Lax); Path=\/oauth\/consent; Max-Age=600$/.test(s));
         if(cookies.length)res.setHeader('set-cookie',cookies);
-        for(const name of ['content-security-policy','x-frame-options','x-content-type-options','referrer-policy'])
-          if(response.headers[name])res.setHeader(name,response.headers[name]!);
       }
       res.setHeader('cache-control', 'no-store');
       res.statusCode = response.statusCode ?? 502;
@@ -117,10 +136,8 @@ export function startMcpEdge(options: McpEdgeOptions) {
     const timer = setTimeout(() => { fail(res, 504, 'INSTALLATION_TIMEOUT'); upstream.destroy(); }, timeoutMs);
     upstream.on('error', () => { clearTimeout(timer); fail(res, 503, 'INSTALLATION_UNAVAILABLE'); });
     res.once('close', () => { clearTimeout(timer); upstream.destroy(); });
-    upstream.end(Buffer.concat(chunks));
+    upstream.end(body);
   });
-  server.requestTimeout = timeoutMs;
-  server.headersTimeout = Math.min(timeoutMs, 10_000);
   if(options.socketPath)server.listen(options.socketPath);else server.listen(options.port ?? 0, '127.0.0.1');
   return server;
 }

@@ -159,7 +159,8 @@ describe("QSA-G / Codex QSA-007: dashboard CSP + HSTS-on-https", () => {
   test("GET /dashboard sets x-content-type-options + referrer-policy", async () => {
     const r = await fetch(`${baseUrl}/dashboard`);
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+    // F-182: same-origin keeps the Origin on the page's own native form POST; other origins get no Referer.
+    expect(r.headers.get("referrer-policy")).toBe("same-origin");
   });
 
   test("GET /dashboard does NOT emit HSTS on plain http", async () => {
@@ -199,5 +200,81 @@ describe("QSA-G / Codex QSA-007: OAuth consent page CSP", () => {
       },
     );
     expect(r.headers.get("strict-transport-security")).toBeNull();
+  });
+});
+
+describe("F-186: every HTML response refuses framing and unused powerful features", () => {
+  test("GET /offline carries the hardened CSP like every other HTML page", async () => {
+    const r = await fetch(`${baseUrl}/offline`);
+    expect(r.headers.get("content-type") || "").toContain("text/html");
+    expectHardenedCsp(r.headers.get("content-security-policy"));
+    expect(r.headers.get("service-worker-allowed")).toBe("/");
+  });
+
+  test("dashboard, consent and /offline send X-Frame-Options DENY and a Permissions-Policy", async () => {
+    const consent = `${baseUrl}/api/dashboard/oauth-consent?ticket=${encodeURIComponent(TICKET_ID)}`;
+    for (const [url, init] of [[`${baseUrl}/dashboard`, {}], [`${baseUrl}/offline`, {}],
+      [consent, { headers: { authorization: `Bearer ${AGENT_KEY}` }, redirect: "manual" }]] as const) {
+      const r = await fetch(url, init as RequestInit);
+      expect(r.headers.get("x-frame-options"), url).toBe("DENY");
+      expect(r.headers.get("permissions-policy"), url).toBe("camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+    }
+  });
+});
+
+describe("F-188: session-bound and credential-bearing JSON is never cached", () => {
+  const expectNoStore = (r: Response, label: string) => {
+    expect(r.headers.get("cache-control"), label).toBe("no-store");
+    expect(r.headers.get("x-content-type-options"), label).toBe("nosniff");
+  };
+  test("/api/v1, the dashboard authority proxy and /api/dashboard/profile send no-store + nosniff", async () => {
+    const bearer = { authorization: `Bearer ${AGENT_KEY}` };
+    expectNoStore(await fetch(`${baseUrl}/api/v1/capabilities`, { headers: bearer }), "v1 capabilities");
+    for (const code of ["not-a-pairing-code", "x".repeat(43)]) {
+      expectNoStore(await fetch(`${baseUrl}/api/v1/agent-pairings/redeem`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }),
+      }), "pairing redeem");
+    }
+    expectNoStore(await fetch(`${baseUrl}/api/dashboard/authority/capabilities`, { headers: bearer }), "authority proxy");
+    expectNoStore(await fetch(`${baseUrl}/api/dashboard/profile`), "profile");
+  });
+});
+
+describe("F-318: OAuth consent pages speak the owner's language and have a main landmark", () => {
+  const consent = (headers: Record<string, string>, query = "") =>
+    fetch(`${baseUrl}/api/dashboard/oauth-consent?ticket=${encodeURIComponent(TICKET_ID)}${query}`, {
+      headers: { authorization: `Bearer ${AGENT_KEY}`, ...headers },
+      redirect: "manual",
+    });
+
+  test("Accept-Language: ru renders the Russian consent decision under the same CSP", async () => {
+    const r = await consent({ "accept-language": "ru-RU,ru;q=0.9,en;q=0.8" });
+    expect(r.status).toBe(200);
+    expectHardenedCsp(r.headers.get("content-security-policy"));
+    const html = await r.text();
+    expectNoInlineScript(html);
+    expect(html).toContain('<html lang="ru">');
+    expect(html).toContain("Разрешить доступ");
+    // The EN/RU switch links are 44px touch targets like the account buttons.
+    expect(html).toMatch(/\.languages a\{[^}]*min-height:44px/);
+    expect(html).toMatch(/<button type="submit" class="approve">Разрешить<\/button>/);
+    expect(html).toMatch(/<main class="card">[\s\S]*<form method="POST" action="\/api\/dashboard\/oauth-consent\/approve">[\s\S]*<\/main>/);
+  });
+
+  test("an explicit ?lang wins over the browser language; English stays the default", async () => {
+    const en = await (await consent({ "accept-language": "ru-RU" }, "&lang=en")).text();
+    expect(en).toContain('<html lang="en">');
+    expect(en).toContain(">Approve</button>");
+    const plain = await (await consent({})).text();
+    expect(plain).toContain('<html lang="en">');
+    expect(plain).toContain('<main class="card">');
+  });
+
+  test("the already-completed page is localized", async () => {
+    const page = (lang: string) => fetch(`${baseUrl}/oauth/authorize/finalize`, { headers: { "accept-language": lang } }).then(r => r.text());
+    const ru = await page("ru-RU");
+    expect(ru).toContain('<html lang="ru">');
+    expect(ru).toContain("<main>");
+    expect(await page("en-US")).toContain("Authorization already completed");
   });
 });

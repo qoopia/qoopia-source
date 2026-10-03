@@ -12,6 +12,7 @@ import {
   EMBED_PROVIDER,
   EMBED_DIM,
   EMBED_MODEL,
+  autoEmbedEnabled,
   deserializeEmbedding,
   embedText,
   serializeEmbedding,
@@ -19,6 +20,13 @@ import {
 } from "./embeddings.ts";
 import { logger } from "../utils/logger.ts";
 
+const inFlight = new Map<string, ReturnType<typeof embedNote>>();
+let lastNoteEmbedding: "ok" | "unavailable" | undefined;
+/** Passive state for /health from the last note indexing attempt; it never loads a model and
+ * carries no error text (that holds local paths). Recall falls back to FTS meanwhile. */
+export function embeddingHealth(): "ok" | "unavailable" | "not_loaded" | "disabled" {
+  return !autoEmbedEnabled() ? "disabled" : lastNoteEmbedding ?? "not_loaded";
+}
 /**
  * Compute and upsert the embedding for a note. Idempotent on
  * (note_id, text_hash, model) — skips the Ollama call when the text
@@ -26,8 +34,20 @@ import { logger } from "../utils/logger.ts";
  * swallowed so the calling write path (createNote/updateNote) doesn't
  * block on the embedder. The vector channel simply lacks this note
  * until backfill or the next update fixes it.
+ *
+ * The write path's fire-and-forget call and the maintenance tick race on every
+ * new note; concurrent calls for the same text share one inference run.
  */
-export async function upsertNoteEmbedding(
+export function upsertNoteEmbedding(note_id: string, workspace_id: string, text: string) {
+  const key = `${note_id}:${textHash(text)}`;
+  let run = inFlight.get(key);
+  if (!run) {
+    run = embedNote(note_id, workspace_id, text).finally(() => inFlight.delete(key));
+    inFlight.set(key, run);
+  }
+  return run;
+}
+async function embedNote(
   note_id: string,
   workspace_id: string,
   text: string,
@@ -72,9 +92,11 @@ export async function upsertNoteEmbedding(
       chunks.forEach((chunk,i)=>insert.run(note_id,i,chunk.start,chunk.end,serializeEmbedding(chunk.vector)));
     }
     })();
+    lastNoteEmbedding = "ok";
     return { embedded: true, skipped: null };
   } catch (e: any) {
     const msg = e?.message || String(e);
+    lastNoteEmbedding = "unavailable";
     logger.warn(
       `upsertNoteEmbedding(${note_id}) failed (note still saved): ${msg}`,
     );
@@ -96,25 +118,26 @@ export function loadWorkspaceEmbeddings(workspace_id: string): Array<{
   if (EMBED_PROVIDER==='builtin') return loadBuiltinChunks(workspace_id);
   const rows = db
     .prepare(
-      `SELECT e.note_id, e.embedding, e.text_hash, n.text FROM notes_embeddings e
+      `SELECT e.note_id, e.embedding, e.text_hash, ${VERSION} FROM notes_embeddings e
         JOIN notes n ON n.id=e.note_id AND n.workspace_id=e.workspace_id
         WHERE e.workspace_id = ? AND e.model = ? AND e.dim = ?`,
     )
-    .all(workspace_id, EMBED_MODEL, EMBED_DIM) as Array<{
+    .all(workspace_id, EMBED_MODEL, EMBED_DIM) as Array<NoteVersion & {
     note_id: string;
     text_hash: string;
-    text: string;
     embedding: Buffer;
   }>;
-  return rows.filter(r => r.text_hash === textHash(r.text) && r.embedding.byteLength === EMBED_DIM * 4).map((r) => ({
+  return rows.filter(r => r.embedding.byteLength === EMBED_DIM * 4 && fresh(r.note_id, r)).map((r) => ({
     note_id: r.note_id,
     vector: deserializeEmbedding(r.embedding),
   }));
 }
 
 /**
- * Load embeddings across ALL workspaces — used by the
- * cross_workspace+privileged recall path (steward audit).
+ * Load embeddings across ALL workspaces — offline measurement and tests only
+ * (scripts/measure-cosine-distribution.ts, archived at c44d6fc; see
+ * docs/operations/evidence-archive.md). Recall never calls it: request
+ * paths load per workspace (F-078).
  */
 export function loadAllEmbeddings(): Array<{
   note_id: string;
@@ -124,18 +147,17 @@ export function loadAllEmbeddings(): Array<{
   if (EMBED_PROVIDER==='builtin') return loadBuiltinChunks();
   const rows = db
     .prepare(
-      `SELECT e.note_id, e.workspace_id, e.embedding, e.text_hash, n.text FROM notes_embeddings e
+      `SELECT e.note_id, e.workspace_id, e.embedding, e.text_hash, ${VERSION} FROM notes_embeddings e
         JOIN notes n ON n.id=e.note_id AND n.workspace_id=e.workspace_id
         WHERE e.model = ? AND e.dim = ?`,
     )
-    .all(EMBED_MODEL, EMBED_DIM) as Array<{
+    .all(EMBED_MODEL, EMBED_DIM) as Array<NoteVersion & {
     note_id: string;
     workspace_id: string;
     text_hash: string;
-    text: string;
     embedding: Buffer;
   }>;
-  return rows.filter(r => r.text_hash === textHash(r.text) && r.embedding.byteLength === EMBED_DIM * 4).map((r) => ({
+  return rows.filter(r => r.embedding.byteLength === EMBED_DIM * 4 && fresh(r.note_id, r)).map((r) => ({
     note_id: r.note_id,
     workspace_id: r.workspace_id,
     vector: deserializeEmbedding(r.embedding),
@@ -221,30 +243,7 @@ export function loadWorkspaceEntityEmbeddings(
   }));
 }
 
-/** Cross-workspace entity embedding load — privileged recall only. */
-export function loadAllEntityEmbeddings(): Array<{
-  entity_id: string;
-  workspace_id: string;
-  vector: Float32Array;
-}> {
-  const rows = db
-    .prepare(
-      `SELECT entity_id, workspace_id, embedding FROM entity_embeddings
-        WHERE model = ? AND dim = ?`,
-    )
-    .all(EMBED_MODEL, EMBED_DIM) as Array<{
-    entity_id: string;
-    workspace_id: string;
-    embedding: Buffer;
-  }>;
-  return rows.map((r) => ({
-    entity_id: r.entity_id,
-    workspace_id: r.workspace_id,
-    vector: deserializeEmbedding(r.embedding),
-  }));
-}
-
-/** Stats for /healthz and the dashboard — how much of the corpus is embedded. */
+/** Coverage for the dashboard memory-setup status — how much of the corpus is embedded. */
 export function embeddingCoverage(workspace_id?: string): {
   total_notes: number;
   embedded: number;
@@ -257,9 +256,9 @@ export function embeddingCoverage(workspace_id?: string): {
   const total = workspace_id
     ? (db.prepare(totalSql).get(workspace_id) as { c: number }).c
     : (db.prepare(totalSql).get() as { c: number }).c;
-  const current=db.query(`SELECT n.id,n.text,e.text_hash,e.model,e.dim,EXISTS(SELECT 1 FROM note_embedding_chunks c WHERE c.note_id=n.id) AS chunks FROM notes n JOIN notes_embeddings e ON e.note_id=n.id
-    WHERE n.deleted_at IS NULL ${workspace_id?'AND n.workspace_id=?':''}`).all(...(workspace_id?[workspace_id]:[])) as Array<{id:string;text:string;text_hash:string;model:string;dim:number;chunks:number}>;
-  const embedded=current.filter(r=>r.model===EMBED_MODEL&&r.dim===EMBED_DIM&&r.text_hash===textHash(r.text)&&(EMBED_PROVIDER!=='builtin'||r.chunks)).length;
+  const current=db.query(`SELECT n.id,${VERSION},e.text_hash,e.model,e.dim,EXISTS(SELECT 1 FROM note_embedding_chunks c WHERE c.note_id=n.id) AS chunks FROM notes n JOIN notes_embeddings e ON e.note_id=n.id
+    WHERE n.deleted_at IS NULL ${workspace_id?'AND n.workspace_id=?':''}`).all(...(workspace_id?[workspace_id]:[])) as Array<NoteVersion&{id:string;text_hash:string;model:string;dim:number;chunks:number}>;
+  const embedded=current.filter(r=>r.model===EMBED_MODEL&&r.dim===EMBED_DIM&&(EMBED_PROVIDER!=='builtin'||r.chunks)&&fresh(r.id,r)).length;
   return {
     total_notes: total,
     embedded,
@@ -270,21 +269,39 @@ export function embeddingCoverage(workspace_id?: string): {
 
 /** The live notes are the durable work list; no second queue can lose pending edits. */
 export function pendingNoteEmbeddings(workspace?:string, limit=32) {
-  const rows=db.query(`SELECT n.id,n.workspace_id,n.text,e.text_hash,e.model,e.dim,EXISTS(SELECT 1 FROM note_embedding_chunks c WHERE c.note_id=n.id) AS chunks
+  const rows=db.query(`SELECT n.id,n.workspace_id,${VERSION},e.text_hash,e.model,e.dim,EXISTS(SELECT 1 FROM note_embedding_chunks c WHERE c.note_id=n.id) AS chunks
     FROM notes n LEFT JOIN notes_embeddings e ON e.note_id=n.id
     WHERE n.deleted_at IS NULL ${workspace?'AND n.workspace_id=?':''} ORDER BY n.updated_at DESC`)
-    .all(...(workspace?[workspace]:[])) as Array<{id:string;workspace_id:string;text:string;text_hash:string|null;model:string|null;dim:number|null;chunks:number}>;
-  return rows.filter(r=>r.model!==EMBED_MODEL||r.dim!==EMBED_DIM||r.text_hash!==textHash(r.text)||(EMBED_PROVIDER==='builtin'&&!r.chunks)).slice(0,limit);
+    .all(...(workspace?[workspace]:[])) as Array<NoteVersion&{id:string;workspace_id:string;text_hash:string|null;model:string|null;dim:number|null;chunks:number}>;
+  // Text is read only for the notes actually returned for embedding.
+  return rows.filter(r=>r.model!==EMBED_MODEL||r.dim!==EMBED_DIM||(EMBED_PROVIDER==='builtin'&&!r.chunks)||!fresh(r.id,r)).slice(0,limit)
+    .flatMap(r=>{const live=db.query('SELECT text FROM notes WHERE id=?').get(r.id) as {text:string}|null;return live?[{id:r.id,workspace_id:r.workspace_id,text:live.text}]:[];});
 }
 
 function loadBuiltinChunks(workspace?:string) {
-  const rows=db.query(`SELECT n.id AS note_id,n.workspace_id,n.text,e.text_hash,c.embedding
+  const rows=db.query(`SELECT n.id AS note_id,n.workspace_id,${VERSION},e.text_hash,c.embedding
     FROM notes n JOIN notes_embeddings e ON e.note_id=n.id JOIN note_embedding_chunks c ON c.note_id=n.id
     WHERE e.model=? AND e.dim=? ${workspace?'AND n.workspace_id=?':''}`)
-    .all(EMBED_MODEL,EMBED_DIM,...(workspace?[workspace]:[])) as Array<{note_id:string;workspace_id:string;text:string;text_hash:string;embedding:Buffer}>;
-  const hashes=new Map<string,string>();
-  return rows.filter(r=>{
-    if(!hashes.has(r.note_id))hashes.set(r.note_id,textHash(r.text));
-    return r.text_hash===hashes.get(r.note_id)&&r.embedding.byteLength===EMBED_DIM*4;
-  }).map(r=>({note_id:r.note_id,workspace_id:r.workspace_id,vector:deserializeEmbedding(r.embedding)}));
+    .all(EMBED_MODEL,EMBED_DIM,...(workspace?[workspace]:[])) as Array<NoteVersion&{note_id:string;workspace_id:string;text_hash:string;embedding:Buffer}>;
+  return rows.filter(r=>r.embedding.byteLength===EMBED_DIM*4&&fresh(r.note_id,r))
+    .map(r=>({note_id:r.note_id,workspace_id:r.workspace_id,vector:deserializeEmbedding(r.embedding)}));
+}
+
+/** A note version without copying its text into JS (octet_length reads the record header). */
+const VERSION='n.updated_at_ms AS version_ms,octet_length(n.text) AS version_bytes';
+type NoteVersion={version_ms:number;version_bytes:number;text_hash:string|null};
+// note_id -> [updated_at_ms, byte length, sha256(text)] of the version last hashed here.
+// Note writers bump updated_at_ms, so a note is hashed once per edit instead of the whole
+// corpus being re-read on every recall and 5 s maintenance tick (F-079/F-080).
+// ponytail: a raw SQL edit that keeps both updated_at_ms and the byte length is trusted
+// until restart; a write-time invalidation trigger (schema migration) removes that ceiling.
+const hashed=new Map<string,[number,number,string]>();
+function fresh(id:string,r:NoteVersion) {
+  let hit=hashed.get(id);
+  if(hit?.[0]!==r.version_ms||hit[1]!==r.version_bytes) {
+    const live=db.query('SELECT text,updated_at_ms,octet_length(text) AS bytes FROM notes WHERE id=?').get(id) as {text:string;updated_at_ms:number;bytes:number}|null;
+    if(!live)return false;
+    hashed.set(id,hit=[live.updated_at_ms,live.bytes,textHash(live.text)]);
+  }
+  return r.text_hash===hit[2];
 }

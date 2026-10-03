@@ -1,49 +1,39 @@
+/* Qoopia Graphite Focus 2.0.1 tokens. Source of truth: the DESIGN.md frontmatter; keep names and values in step.
+   Website-only roles (website-*, product-example) live with the marketing site. */
 :root {
-  /* Colour — black palette, no chromatic accents */
-  --qoopia-black: #111110;
-  --qoopia-white: #f2efe9;
-  --qoopia-smoke: #c3bdb4;
-  --qoopia-muted: #8a847b;
-  --qoopia-line: #343330;
+  /* colors */
+  --qoopia-graphite: #111110;
+  --qoopia-ivory: #f2efe9;
   --qoopia-surface: #191918;
+  --qoopia-divider: #343330;
+  --qoopia-smoke: #c3bdb4;
+  --qoopia-control: #8a847b;
+  --qoopia-assistant: #242321;
 
-  /* Semantic */
-  --qoopia-bg: var(--qoopia-black);
-  --qoopia-fg: var(--qoopia-white);
-  --qoopia-fg-secondary: var(--qoopia-smoke);
-  --qoopia-fg-disabled: var(--qoopia-muted);
-  --qoopia-border: var(--qoopia-line);
-  --qoopia-inverse-bg: var(--qoopia-white);
-  --qoopia-inverse-fg: var(--qoopia-black);
-
-  /* Type */
-  --qoopia-font-display: 'Manrope', sans-serif;   /* wordmark is an unchanged SVG asset */
+  /* typography: bundled Manrope; dashboard roles, then account roles */
   --qoopia-font-ui: 'Manrope', system-ui, sans-serif;
-  --qoopia-size-display: 72px;
-  --qoopia-size-h1: 40px;
-  --qoopia-size-h2: 28px;
-  --qoopia-size-body: 17px;
-  --qoopia-size-small: 14px;
-  --qoopia-line-display: 1.15;
-  --qoopia-line-body: 1.5;
+  --qoopia-type-headline: 26px;
+  --qoopia-type-title: 18px;
+  --qoopia-type-body: 13px;
+  --qoopia-type-navigation: 13px;
+  --qoopia-type-label: 12px;
+  --qoopia-type-metadata: 11px;
+  --qoopia-type-account-headline: 32px;
+  --qoopia-type-account-body: 15px;
+  --qoopia-type-account-action: 14px;
 
-  /* Space — 8px module */
-  --qoopia-space-1: 8px;
-  --qoopia-space-2: 16px;
-  --qoopia-space-3: 24px;
-  --qoopia-space-4: 40px;
-  --qoopia-space-5: 64px;
-  --qoopia-space-6: 96px;
+  /* rounded */
+  --qoopia-radius-detail: 4px;
+  --qoopia-radius-navigation: 6px;
+  --qoopia-radius-field: 7px;
+  --qoopia-radius-panel: 12px;
+  --qoopia-radius-floating: 16px;
 
-  /* Radius & stroke */
-  --qoopia-radius-sm: 6px;
-  --qoopia-radius-md: 12px;
-  --qoopia-radius-lg: 20px;
-  --qoopia-radius-icon: 22.5%;   /* app icon: 27/120 */
-  --qoopia-stroke-gesture: 3px;  /* signature gesture in UI: 2–3px, round caps */
-
-  /* Motion — the gesture draws left to right */
-  --qoopia-duration-gesture: 450ms;
-  --qoopia-duration-ui: 180ms;
-  --qoopia-ease-gesture: cubic-bezier(.2, .75, .25, 1);
+  /* spacing */
+  --qoopia-space-tight: 4px;
+  --qoopia-space-compact: 8px;
+  --qoopia-space-control: 12px;
+  --qoopia-space-panel: 16px;
+  --qoopia-space-section: 24px;
+  --qoopia-space-columns: 36px;
 }

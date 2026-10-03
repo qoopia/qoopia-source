@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, sign, randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { ownerFixture } from './helpers/p1-fixtures.ts';
 import { Delivery, readCurrent, dataFile, lockInstallation } from '../src/delivery/operations.ts';
@@ -11,6 +11,7 @@ import { verifyBundle, OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../src/d
 import { backupUnified, verifyBackup, snapshotInfo } from '../src/delivery/snapshot.ts';
 import { issueLocalLogin, consumeLocalLogin } from '../src/delivery/local-login.ts';
 import { UserAutostart, disabledAutostart } from '../src/delivery/autostart.ts';
+import { fakeFetch } from './helpers/fake-fetch.ts';
 function fixture(withAutostart=false) {
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-p3-'))),install=path.join(root,'Installed Ж space');
  const {privateKey,publicKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
@@ -26,7 +27,7 @@ function fixture(withAutostart=false) {
  const calls:{command:string;args:string[]}[]=[],nativeConfig=path.join(root,'Native Config','qoopia.plist');
  const autostart=(installation:string)=>withAutostart?new UserAutostart({root:install,installation,platform:'darwin',configFile:nativeConfig,execute:(command,args)=>{calls.push({command,args});}}):disabledAutostart;
  const delivery=new Delivery(install,trust,true,migrate,undefined,autostart);
- return {root,install,trust,bundle,delivery,autostart,nativeConfig,calls,fail:()=>{fail=true;},cleanup:()=>fs.rmSync(root,{recursive:true,force:true})};
+ return {root,install,trust,bundle,delivery,autostart,nativeConfig,calls,migrate,fail:(on=true)=>{fail=on;},cleanup:()=>fs.rmSync(root,{recursive:true,force:true})};
 }
 test('P3 pinned bundle rejects tamper, foreign key, unsupported target, links and unlabelled test signing',()=>{
  const f=fixture();try{const b=f.bundle('first');expect(()=>verifyBundle(f.bundle('missing-peer',false),f.trust,true)).toThrow('Required bundle member');expect(()=>verifyBundle(b,f.trust)).toThrow('test signing');expect(()=>verifyBundle(b,generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'pem'}).toString(),true)).toThrow('trust root');expect(()=>verifyBundle(b,f.trust,true,'win32-x64')).toThrow('Unsupported');fs.appendFileSync(path.join(b,'qoopia'),'tamper');expect(()=>verifyBundle(b,f.trust,true)).toThrow('changed');const link=path.join(f.root,'alias');fs.symlinkSync(b,link);expect(()=>safePath(link)).toThrow('Links');}finally{f.cleanup();}
@@ -60,6 +61,51 @@ test('P3 doctor is read-only and support excludes private bodies; uninstall pres
  const f=fixture();try{const b=f.bundle('first'),c=f.delivery.install(b,3737);durableWrite(path.join(f.install,'user-skill.md'),'manual bytes');const before=inventory(f.install);const report=f.delivery.doctor();const preview=f.delivery.supportPreview();expect(preview.preview).toBe(true);expect(preview.automatic_send).toBe(false);expect(JSON.stringify(preview)).not.toContain(f.install);expect(report.ok).toBe(true);expect(inventory(f.install)).toEqual(before);expect(JSON.stringify(report)).not.toContain(f.install);
  f.delivery.update(f.bundle('next'));const installedBundles=fs.readdirSync(path.join(f.install,'bundles'));expect(installedBundles.length).toBe(2);
  const db=dataFile(f.install,c),bytes=fs.readFileSync(db);expect(f.delivery.uninstall().bundles_removed).toBe(2);expect(fs.readdirSync(path.join(f.install,'bundles'))).toEqual([]);expect(fs.readFileSync(db)).toEqual(bytes);expect(fs.readFileSync(path.join(f.install,'user-skill.md'),'utf8')).toBe('manual bytes');
+ }finally{f.cleanup();}
+});
+test('F-293 a failed or killed first install leaves a root that installs again; foreign content is still refused',()=>{
+ const f=fixture();try{
+  const b=f.bundle('first'),names=(dir:string)=>fs.existsSync(path.join(f.install,dir))?fs.readdirSync(path.join(f.install,dir)):[];
+  f.fail();expect(()=>f.delivery.install(b,3737)).toThrow('injected');f.fail(false);
+  expect(()=>new Delivery(f.install,f.trust,true,f.migrate,point=>{if(point==='staged')throw new Error('injected before pointer');}).install(b,3737)).toThrow('injected');
+  expect([...names('bundles'),...names('generations')]).toEqual([]);
+  // A killed install leaves its stage directories; they hold no memory.
+  privateDirectory(path.join(f.install,'bundles','stage-'+randomUUID(),'assets'));
+  privateDirectory(path.join(f.install,'generations','stage-'+randomUUID(),'data'));
+  const c=f.delivery.install(b,3737);
+  expect(names('bundles')).toEqual([c.bundle]);expect(names('generations')).toEqual([c.generation]);expect(f.delivery.doctor().ok).toBe(true);
+  const other=privateDirectory(path.join(f.root,'Other root'));durableWrite(path.join(other,'notes.md'),'user bytes');
+  expect(()=>new Delivery(other,f.trust,true,f.migrate).install(b,3737)).toThrow('Fresh installation requires an empty root');
+  expect(fs.readdirSync(other)).toEqual(['notes.md']);
+ }finally{f.cleanup();}
+});
+test('F-293 install after uninstall re-adopts the preserved data under the same instance',()=>{
+ const f=fixture();try{
+  const c=f.delivery.install(f.bundle('first'),3737);
+  const d=new Database(dataFile(f.install,c));d.query("UPDATE workspaces SET name='kept across reinstall'").run();d.close();
+  f.delivery.uninstall();
+  const again=f.delivery.install(f.bundle('next'),4242);
+  expect(again).toMatchObject({instance:c.instance,port:3737});expect(readCurrent(f.install)).toEqual(again);
+  expect(fs.existsSync(path.join(f.install,'uninstalled.json'))).toBe(false);
+  const r=new Database(dataFile(f.install,again),{readonly:true});
+  try{expect((r.query('SELECT name FROM workspaces LIMIT 1').get() as {name:string}).name).toBe('kept across reinstall');}finally{r.close();}
+  expect(f.delivery.doctor().ok).toBe(true);
+ }finally{f.cleanup();}
+});
+test('F-298 releasing the installation lock twice (error path, then exit hook) is harmless',()=>{
+ const f=fixture();try{const release=lockInstallation(f.install);release();expect(()=>release()).not.toThrow();lockInstallation(f.install)();}finally{f.cleanup();}
+});
+test('F-295 updates keep the selected and rollback generations and bundles and the two newest pre-update backups',()=>{
+ const f=fixture();try{
+  f.delivery.install(f.bundle('first'),3737);
+  const names=(dir:string)=>fs.readdirSync(path.join(f.install,dir)).filter(name=>dir!=='backups'||name.startsWith('pre-update-')).sort();
+  const results=['v2','v3','v4','v5'].map(name=>f.delivery.update(f.bundle(name)));
+  const current=readCurrent(f.install);
+  expect(names('bundles')).toEqual([current.bundle,current.previous!.bundle].sort());
+  expect(names('generations')).toEqual([current.generation,current.previous!.generation].sort());
+  expect(names('backups')).toHaveLength(2);
+  expect(results[0]!.freed_bytes).toBe(0);expect(results[1]!.freed_bytes).toBeGreaterThan(0);
+  expect(f.delivery.rollback().generation).toBe(current.previous!.generation);expect(f.delivery.doctor().ok).toBe(true);
  }finally{f.cleanup();}
 });
 test('T26 Delivery uninstall removes only ledger-owned autostart config through the injected executor',()=>{
@@ -114,6 +160,22 @@ test('doctor reports verified/stale/wrong-instance/corrupt scheduled backup, pen
  }finally{f.cleanup();}
 });
 
+test('doctor names the stored-state cause: not installed, test build without flag, private-path permissions',()=>{
+ const f=fixture();try{
+  const stored=(delivery:Delivery)=>{const report=delivery.doctor();expect(JSON.stringify(report)).not.toContain(f.root);return report.checks.stored_state!;};
+  const empty=new Delivery(path.join(f.root,'never-installed'),f.trust,true,()=>{});
+  expect(stored(empty)).toMatchObject({status:'fail',reason:'POINTER_INSPECTION_FAILED',cause:'NOT_INSTALLED'});
+  expect(stored(empty).action).toContain('qoopia install --commit');
+  expect(fs.existsSync(empty.root)).toBe(false);
+  const installed=f.delivery.install(f.bundle('doctor-causes'),3737);
+  expect(stored(new Delivery(f.install,f.trust,false,()=>{}))).toMatchObject({reason:'BUILD_INSPECTION_FAILED',cause:'TEST_FIXTURE_REQUIRES_FLAG'});
+  expect(stored(new Delivery(f.install,f.trust,false,()=>{})).action).toContain('--allow-test-fixture');
+  const data=path.dirname(dataFile(f.install,installed));fs.chmodSync(data,0o755);
+  try{expect(stored(f.delivery)).toMatchObject({reason:'DATA_PATH_INSPECTION_FAILED',cause:'DATA_PERMISSIONS'});}finally{fs.chmodSync(data,0o700);}
+  expect(f.delivery.doctor().ok).toBe(true);
+ }finally{f.cleanup();}
+});
+
 
 test('doctor never creates SQLite sidecars in a WAL-mode scheduled backup',()=>{
  const f=fixture();try{
@@ -137,13 +199,13 @@ test('portable operations round-trip preserves pending IDs, confirmations and re
   const destination={id:'fixture',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:new Uint8Array(32).fill(17)};
   const seen:string[]=[];
   const accept=(body:string)=>{const event=JSON.parse(body);seen.push(event.id);return JSON.stringify({accepted:true,event_id:event.id,payload_sha256:hash(body)});};
-  let fetchImpl:typeof fetch=async(_url,init)=>new Response(accept(String(init!.body)),{status:200});
+  let fetchImpl=fakeFetch(async(_url,init)=>new Response(accept(String(init!.body)),{status:200}));
   if(process.env.P3_RECOVERY_LOCAL_RECEIVER==='1'){
    const http=await import('node:http');
    server=http.createServer((req,res)=>{let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{res.writeHead(200,{'content-type':'application/json'});res.end(accept(body));});});
    await new Promise<void>((resolve,reject)=>{server!.once('error',reject);server!.listen(0,'127.0.0.1',resolve);});
    const port=(server.address() as {port:number}).port;
-   fetchImpl=async(_url,init)=>fetch(`http://127.0.0.1:${port}/alerts`,init);
+   fetchImpl=fakeFetch(async(_url,init)=>fetch(`http://127.0.0.1:${port}/alerts`,init));
   }
   const transport={fetchImpl,resolver:async()=>[{address:'93.184.216.34'}]};
   recordMaintenance(ops,current.instance,'BACKUP_FAILED',1000);
@@ -151,7 +213,7 @@ test('portable operations round-trip preserves pending IDs, confirmations and re
   recordMaintenance(ops,current.instance,null,1002);
   recordMaintenance(ops,current.instance,'BACKUP_FAILED',1003);
   // A failed attempt is durable and remains pending even after resolve.
-  await deliverOpsAlerts(ops,[destination],{...transport,fetchImpl:async()=>new Response('{}',{status:503})},1004);
+  await deliverOpsAlerts(ops,[destination],{...transport,fetchImpl:fakeFetch(async()=>new Response('{}',{status:503}))},1004);
   recordMaintenance(ops,current.instance,null,1005);
   const before=readOps(ops),backup=path.join(f.root,'portable');
   durableWrite(path.join(f.install,'ops-channels.json'),'synthetic-private-channel-canary');
@@ -160,7 +222,7 @@ test('portable operations round-trip preserves pending IDs, confirmations and re
   expect(fs.readFileSync(opsFile(backup),'utf8')).not.toContain('synthetic-private-channel-canary');
   const target=new Delivery(path.join(f.root,'Recovered Ж user'),f.trust,true,()=>{});
   const restored=target.restoreNew(backup,bundle,4141);let recovered=operationsDirectory(target.root,restored.current);
-  const held={...before,delivery_hold:'RECOVERY_REPLAY_REQUIRES_OWNER'};
+  const held={...before,delivery_hold:'RECOVERY_REPLAY_REQUIRES_OWNER' as const};
   expect(readOps(recovered)).toEqual(held);expect(fs.statSync(opsFile(recovered)).mode&0o777).toBe(0o600);
   expect(fs.statSync(recovered).mode&0o777).toBe(0o700);expect(fs.existsSync(path.join(target.root,'ops-channels.json'))).toBe(false);
   await deliverOpsAlerts(recovered,[],transport,100000);expect(readOps(recovered)).toEqual(held);
@@ -189,7 +251,7 @@ test('older restore cannot replay newer confirmation; staged failure preserves o
   const bundle=f.bundle('merge'),c=f.delivery.install(bundle,3737),ops=operationsDirectory(f.install,c);
   recordMaintenance(ops,c.instance,'BACKUP_FAILED',1000);const backup=path.join(f.root,'older');f.delivery.backup(backup);
   const destination={id:'fixture',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:new Uint8Array(32).fill(18)};
-  await deliverOpsAlerts(ops,[destination],{resolver:async()=>[{address:'93.184.216.34'}],fetchImpl:async(_url,init)=>new Response(JSON.stringify({accepted:true,event_id:JSON.parse(String(init!.body)).id,payload_sha256:hash(String(init!.body))}))},1001);
+  await deliverOpsAlerts(ops,[destination],{resolver:async()=>[{address:'93.184.216.34'}],fetchImpl:fakeFetch(async(_url,init)=>new Response(JSON.stringify({accepted:true,event_id:JSON.parse(String(init!.body)).id,payload_sha256:hash(String(init!.body))})))},1001);
   recordMaintenance(ops,c.instance,null,1002);recordMaintenance(ops,c.instance,'DATABASE_FAILED',1003);
   const original=[path.join(f.install,'current.json'),dataFile(f.install,c),opsFile(ops)].map(p=>({p,bytes:fs.readFileSync(p)}));
   const failed=new Delivery(f.install,f.trust,true,()=>{},boundary=>{if(boundary==='staged')throw new Error('injected staged restore failure');});

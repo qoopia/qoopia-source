@@ -8,7 +8,7 @@ import { QoopiaError } from '../utils/errors.ts';
 import { assertNoSecrets } from '../utils/secret-guard.ts';
 import { canonical, command, digest, type CommandContext } from './commands.ts';
 import { versionOf, requireSkillRead, requireExactConsent, reviewSkill, registerPublisherKey, sealSkill } from './authority.ts';
-import { NATIVE_RENDERER, assertPortableMembers, signaturePayload, type Descriptor } from './format.ts';
+import { isNativeRenderer, assertPortableMembers, signaturePayload, type Descriptor } from './format.ts';
 import { signManifest } from './legacy/signing.ts';
 
 export const identifier = z.string().min(1).max(200);
@@ -26,7 +26,7 @@ export function compatibility(kind: string, version: string, platform: string) {
   if (RUNTIMES[kind as RuntimeKind].version !== version) return { status: 'unknown', reason: 'This exact runtime version needs qualification before projection' };
   return { status: 'supported', qualification: 'native useful-task qualification is a separate gate', capabilities: runtimeCapabilities };
 }
-export interface Registration { id: string; workspace_id: string; actor_id: string; target_agent_id: string; reporter_id: string | null;
+interface Registration { id: string; workspace_id: string; actor_id: string; target_agent_id: string; reporter_id: string | null;
   runtime_kind: RuntimeKind; runtime_version: string; platform: string; revision: number; capabilities_json: string; managed_root: string | null; }
 export interface Assignment { id: string; workspace_id: string; actor_id: string; runtime_id: string; target_agent_id: string; target_scope: string;
   slot: string; version_id: string; package_digest: string; desired_state: string; revision: number; epoch: number; approval_id: string;
@@ -45,18 +45,18 @@ export function reporter(database: Database, auth: AuthContext, runtimeId: strin
   if (r.reporter_id !== p.id) throw new QoopiaError('FORBIDDEN', 'Only the enrolled reporter for this runtime may report or launch');
   return r;
 }
-export function assignmentOf(database: Database, workspace: string, id: string): Assignment {
+function assignmentOf(database: Database, workspace: string, id: string): Assignment {
   const a = database.query('SELECT * FROM skill_assignments WHERE id=? AND workspace_id=?').get(id, workspace) as Assignment | null;
   if (!a) throw new QoopiaError('NOT_FOUND', 'Assignment not found'); return a;
 }
-export function notRevoked(database: Database, workspace: string, versionId: string) {
+function notRevoked(database: Database, workspace: string, versionId: string) {
   if (database.query("SELECT 1 FROM skill_lifecycle_events WHERE workspace_id=? AND version_id=? AND kind='revoke'").get(workspace, versionId)) throw new QoopiaError('REVOKED', 'Version is revoked');
 }
 export function projection(database: Database, workspace: string, versionId: string) {
   const v = versionOf(database, workspace, versionId);
   if (v.status !== 'sealed') throw new QoopiaError('APPROVAL_REQUIRED', 'Compile and accept an exact native version before activation');
   const descriptor = JSON.parse(v.descriptor_json) as Descriptor;
-  if (descriptor.renderer !== NATIVE_RENDERER) throw new QoopiaError('UNSUPPORTED', 'Compile a native candidate and review its final bytes first');
+  if (!isNativeRenderer(descriptor.renderer)) throw new QoopiaError('UNSUPPORTED', 'Compile a native candidate and review its final bytes first');
   const members = new Map<string, Buffer>(Object.entries(JSON.parse(v.members_json) as Record<string,string>).map(([n,b]) => [n,Buffer.from(b,'base64')]));
   if (digest(canonical(descriptor)) !== v.candidate_digest || !v.package_bytes || digest(v.package_bytes) !== v.package_digest) throw new QoopiaError('CHECKSUM_MISMATCH', 'Frozen package integrity failed');
   if (canonical(Object.keys(descriptor.members).sort()) !== canonical([...members.keys()].sort())) throw new QoopiaError('CHECKSUM_MISMATCH', 'Member map changed');

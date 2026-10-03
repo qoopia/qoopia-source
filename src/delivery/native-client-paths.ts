@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {safePath} from '../utils/fs.ts';
+import {safePath,hasNulOrNewline} from '../utils/fs.ts';
 
 type Surface='codex'|'claude_code';
 let captured:Partial<Record<Surface,string>>|undefined;
@@ -7,7 +7,7 @@ const variable=(surface:Surface)=>surface==='codex'?'CODEX_HOME':'CLAUDE_CONFIG_
 export function nativeClientDirectory(surface:Surface,source:NodeJS.ProcessEnv=process.env) {
   const value=source[variable(surface)];
   if(value===undefined)return undefined;
-  if(!value||!path.isAbsolute(value)||/[\0\r\n]/.test(value))throw new Error('Native client directory must be an absolute path');
+  if(!value||!path.isAbsolute(value)||hasNulOrNewline(value))throw new Error('Native client directory must be an absolute path');
   return safePath(value);
 }
 /** Capture only nonsecret path preferences before the service isolates its environment. */

@@ -53,7 +53,9 @@ try {
         const separate = type === "steward" && profile !== "full";
         const ws = separate ? createWorkspace({ name: `Steward ${profile}`, slug: `steward-${profile}` }) : workspace;
         const admin = separate ? createAgent({ name: "Legacy manager", workspaceSlug: ws.slug, type: "owner" }) : manager;
-        const actor = { ...createAgent({ name: `${type} ${profile}`, workspaceSlug: ws.slug, type: separate ? "standard" : type }), type, profile, allowed: profile !== "read-only" };
+        // ADR-020: claude-privileged can no longer be created; seed the legacy row as a schema35 install has it.
+        const actor = { ...createAgent({ name: `${type} ${profile}`, workspaceSlug: ws.slug, type: separate || type === "claude-privileged" ? "standard" : type }), type, profile, allowed: profile !== "read-only" };
+        if (type === "claude-privileged") db.query("UPDATE agents SET type = 'claude-privileged' WHERE id = ?").run(actor.id);
         await adminTools.find((t: { name: string }) => t.name === "agent_set_profile").handler({ name: actor.name, tool_profile: profile }, authFor(admin));
         if (separate) setAgentType(actor.name, ws.slug, "steward");
         // A read-only steward's workspace still contains a previously created shared skill.

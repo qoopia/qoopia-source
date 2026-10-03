@@ -24,6 +24,7 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { bootstrapOwner } from "../src/auth/pairings.ts";
 import { startHttpServer } from "../src/http.ts";
+import { saveMessage } from "../src/services/sessions.ts";
 
 let server: Server;
 let baseUrl = "";
@@ -33,6 +34,7 @@ let STANDARD_KEY = "";
 let OWNER_KEY = "";
 let TARGET_AGENT_ID = "";
 let FOREIGN_AGENT_ID = "";
+let FOREIGN_WORKSPACE_ID = "";
 
 beforeAll(async () => {
   runMigrations();
@@ -55,6 +57,7 @@ beforeAll(async () => {
   STANDARD_KEY = standard.api_key;
   TARGET_AGENT_ID = standard.id;
 
+  FOREIGN_WORKSPACE_ID = foreign.id;
   FOREIGN_AGENT_ID = createAgent({
     name: "wave0-foreign-agent",
     workspaceSlug: foreign.slug,
@@ -113,7 +116,7 @@ describe("GET /ingest/allowlist", () => {
   test("rejects unauthenticated callers with 403", async () => {
     const r = await fetch(`${baseUrl}/ingest/allowlist`);
     expect(r.status).toBe(403);
-    expect((await r.json()).error).toBe("forbidden");
+    expect(await r.json()).toMatchObject({ error: "forbidden" });
   });
 
   test("rejects a valid non-ingest-daemon key with 403", async () => {
@@ -121,7 +124,7 @@ describe("GET /ingest/allowlist", () => {
       headers: { authorization: `Bearer ${STANDARD_KEY}` },
     });
     expect(r.status).toBe(403);
-    expect((await r.json()).error).toBe("forbidden");
+    expect(await r.json()).toMatchObject({ error: "forbidden" });
   });
 
   test("returns an array for an ingest-daemon key", async () => {
@@ -137,7 +140,9 @@ describe("GET /ingest/allowlist", () => {
       method: "POST",
       headers: { authorization: `Bearer ${INGEST_KEY}` },
     });
-    expect(r.status).toBe(404);
+    // F-151: a wrong method on a known route is 405 with Allow, not 404.
+    expect(r.status).toBe(405);
+    expect(r.headers.get("allow")).toBe("GET");
   });
 });
 
@@ -150,7 +155,7 @@ describe("POST /ingest/session", () => {
       body: ingestBody(),
     });
     expect(r.status).toBe(403);
-    expect((await r.json()).error).toBe("forbidden");
+    expect(await r.json()).toMatchObject({ error: "forbidden" });
   });
 
   test("rejects a non-ingest-daemon key with 403", async () => {
@@ -169,7 +174,7 @@ describe("POST /ingest/session", () => {
       body: "{not json",
     });
     expect(r.status).toBe(400);
-    expect((await r.json()).error).toBe("invalid_json");
+    expect(await r.json()).toMatchObject({ error: "invalid_json" });
   });
 
   test("rejects a missing required field with 400 missing_fields", async () => {
@@ -179,7 +184,7 @@ describe("POST /ingest/session", () => {
       body: ingestBody({ content: undefined }),
     });
     expect(r.status).toBe(400);
-    expect((await r.json()).error).toBe("missing_fields");
+    expect(await r.json()).toMatchObject({ error: "missing_fields" });
   });
 
   test("rejects an unsupported role with 400 invalid_role", async () => {
@@ -189,7 +194,7 @@ describe("POST /ingest/session", () => {
       body: ingestBody({ role: "system" }),
     });
     expect(r.status).toBe(400);
-    expect((await r.json()).error).toBe("invalid_role");
+    expect(await r.json()).toMatchObject({ error: "invalid_role" });
   });
 
   test("returns 404 for an unknown attributed agent", async () => {
@@ -199,7 +204,7 @@ describe("POST /ingest/session", () => {
       body: ingestBody({ attributed_agent_id: "01JZZZZZZZZZZZZZZZZZZZZZZZ" }),
     });
     expect(r.status).toBe(404);
-    expect((await r.json()).error).toBe("agent_not_found");
+    expect(await r.json()).toMatchObject({ error: "agent_not_found" });
   });
 
   // The guard this test protects is the reason the endpoint exists in this
@@ -212,7 +217,19 @@ describe("POST /ingest/session", () => {
       body: ingestBody({ attributed_agent_id: FOREIGN_AGENT_ID }),
     });
     expect(r.status).toBe(403);
-    expect((await r.json()).error).toBe("workspace_mismatch");
+    expect(await r.json()).toMatchObject({ error: "workspace_mismatch" });
+  });
+
+  // F-091: a session id held by another workspace is a conflict that does not say who holds it.
+  test("answers a session id held by another workspace with 409 and no owner detail", async () => {
+    saveMessage({ workspace_id: FOREIGN_WORKSPACE_ID, agent_id: FOREIGN_AGENT_ID, session_id: "wave0-held-elsewhere", role: "user", content: "foreign" });
+    const r = await fetch(`${baseUrl}/ingest/session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${INGEST_KEY}` },
+      body: ingestBody({ session_id: "wave0-held-elsewhere" }),
+    });
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ error: "session_conflict", detail: "Session unavailable" });
   });
 
   test("accepts a well-formed message for an agent in its own workspace", async () => {
@@ -234,7 +251,7 @@ describe("POST /memory/continuity", () => {
       body: "{}",
     });
     expect(r.status).toBe(401);
-    expect((await r.json()).error).toBe("unauthenticated");
+    expect(await r.json()).toMatchObject({ error: "unauthenticated" });
   });
 
   test("refuses a malformed body for an authenticated caller", async () => {
@@ -244,7 +261,7 @@ describe("POST /memory/continuity", () => {
       body: "{not json",
     });
     expect(r.status).toBe(400);
-    expect((await r.json()).error).toBe("Continuity request refused");
+    expect(await r.json()).toMatchObject({ error: "Continuity request refused" });
   });
 
   test("sends no-store so continuity replies are never cached", async () => {
@@ -262,7 +279,7 @@ describe("/api/dashboard/authority/*", () => {
   test("rejects callers without a dashboard session with 401", async () => {
     const r = await fetch(`${baseUrl}/api/dashboard/authority/notes`);
     expect(r.status).toBe(401);
-    expect((await r.json()).error.code).toBe("UNAUTHENTICATED");
+    expect(await r.json()).toMatchObject({ error: { code: "UNAUTHENTICATED" } });
   });
 
   test("proxies an authenticated GET to the authority API", async () => {
@@ -284,7 +301,7 @@ describe("/api/dashboard/authority/*", () => {
       body: "{}",
     });
     expect(r.status).toBe(403);
-    expect((await r.json()).error.code).toBe("FORBIDDEN");
+    expect(await r.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
   });
 });
 

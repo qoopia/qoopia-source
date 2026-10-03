@@ -11,10 +11,44 @@
 <link href="/brand/agent-chat.css?v=__QOOPIA_UI_REVISION__" rel="stylesheet"/>
 <script src="/brand/i18n.js?v=__QOOPIA_UI_REVISION__"></script><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#111110"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="qoopia"><link rel="apple-touch-icon" href="/brand/graphite/icon-180.png"></head>
 <body>
+<button aria-label="Scroll to top" class="to-top" data-i18n-aria-label="Scroll to top" data-i18n-title="Scroll to top" id="toTopBtn" title="Scroll to top"><svg fill="none" height="20" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" viewbox="0 0 24 24" width="20"><path d="M12 19V5"></path><path d="M5 12l7-7 7 7"></path></svg></button>
+<!-- App -->
+<div class="app" id="appView">
+<a class="q-skip" href="#main" data-i18n="Skip to content">Skip to content</a>
+<div class="layout">
+<aside class="sidebar">
+<div class="side-brand">
+<a class="brand-lockup" href="#overview" aria-label="qoopia"><img alt="" src="/brand/graphite/qoopia-mark-ivory.svg" width="26" height="28"/><img alt="qoopia" class="brand-wordmark" src="/brand/graphite/qoopia-wordmark-ivory.svg" width="96" height="26"/></a>
+<button aria-expanded="false" aria-controls="nav" aria-label="Menu" class="nav-toggle" data-i18n-aria-label="Menu" id="navToggle"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+</div>
+<div class="workspace-location"><strong id="workspaceName"><span data-i18n="Your workspace">Your workspace</span></strong><span id="workspaceHost"></span></div>
+<nav class="nav" id="nav"></nav>
+<div class="side-foot">
+<a data-native-app-settings href="qoopia-app://settings" hidden data-i18n="App settings">App settings</a>
+<a id="profileLink" href="#profile"><svg class="inline-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span data-i18n="Profile">Profile</span></a>
+<div id="ownerEmail" style="font-size:12px;overflow-wrap:anywhere;margin:8px 0" hidden></div>
+<div class="conn"><span class="conn-dot" id="connDot"></span><span id="connText"><span data-i18n="Live">Live</span></span></div>
+<div class="foot-row"><button class="btn" id="installApp" type="button" data-i18n="Install on phone">Install on phone</button>
+<button class="icon-btn" id="refreshBtn"><svg class="inline-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 14 6M18 18a8 8 0 0 1-14-6"/></svg><span data-i18n="Refresh">Refresh</span></button>
+<button class="icon-btn" id="logoutBtn"><span data-i18n="Logout">Logout</span></button>
+</div>
+</div>
+</aside>
+<div class="main">
+<header class="topbar">
+<nav aria-label="Breadcrumb" class="crumb" data-i18n-aria-label="Breadcrumb" id="crumb"></nav>
+<div class="tb-spacer"></div>
+<div class="tb-clock" id="clock"></div>
+<div aria-label="Language" class="q-language" data-i18n-aria-label="Language" role="group"><button aria-label="English" data-language="en" lang="en" title="English" type="button">EN</button><span aria-hidden="true">/</span><button aria-label="Русский" data-language="ru" lang="ru" title="Русский" type="button">RU</button></div></header>
+<div class="ui-update" hidden="" id="uiUpdate" role="status"><span data-i18n="A new Qoopia interface is ready.">A new Qoopia interface is ready.</span><button id="uiReload"><span data-i18n="Reload this page">Reload this page</span></button></div>
+<p id="uiFeedback" class="ui-feedback" role="status" aria-live="polite"></p><main class="content" id="main" tabindex="-1"></main>
+</div>
+</div>
+</div>
 <!-- Login -->
-<div class="login-wrap" id="loginView">
+<main class="login-wrap" id="loginView">
 <div class="login-card"><div aria-label="Language" class="q-language q-language-login" data-i18n-aria-label="Language" role="group"><button aria-label="English" data-language="en" lang="en" title="English" type="button">EN</button><span aria-hidden="true">/</span><button aria-label="Русский" data-language="ru" lang="ru" title="Русский" type="button">RU</button></div>
-<div class="q-brand login-brand"><img alt="qoopia" class="brand-wordmark" src="/brand/graphite/qoopia-wordmark-ivory.svg" width="128" height="34"/></div>
+<h1 class="q-brand login-brand"><img alt="qoopia" class="brand-wordmark" src="/brand/graphite/qoopia-wordmark-ivory.svg" width="128" height="34"/></h1>
 <div class="login-sub"><span data-i18n="Your workspace, waiting for you.">Your workspace, waiting for you.</span></div>
 <div hidden="" id="emailLogin">
 <button class="login-btn" id="accountLoginBtn" type="button" hidden data-i18n="Continue with your Qoopia account">Continue with your Qoopia account</button>
@@ -44,40 +78,7 @@
 </details>
 <div class="login-err" id="loginErr" role="alert"><span data-i18n="Access denied">Access denied</span></div>
 </div>
-</div>
-<button aria-label="Scroll to top" class="to-top" data-i18n-aria-label="Scroll to top" data-i18n-title="Наверх" id="toTopBtn" title="Наверх"><svg fill="none" height="20" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" viewbox="0 0 24 24" width="20"><path d="M12 19V5"></path><path d="M5 12l7-7 7 7"></path></svg></button>
-<!-- App -->
-<div class="app" id="appView">
-<div class="layout">
-<aside class="sidebar">
-<div class="side-brand">
-<a class="brand-lockup" href="#overview" aria-label="qoopia"><img alt="" src="/brand/graphite/qoopia-mark-ivory.svg" width="26" height="28"/><img alt="qoopia" class="brand-wordmark" src="/brand/graphite/qoopia-wordmark-ivory.svg" width="96" height="26"/></a>
-<button aria-expanded="false" aria-controls="nav" aria-label="Menu" class="nav-toggle" data-i18n-aria-label="Menu" id="navToggle"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-</div>
-<div class="workspace-location"><strong id="workspaceName"><span data-i18n="Your workspace">Your workspace</span></strong><span id="workspaceHost"></span></div>
-<nav class="nav" id="nav"></nav>
-<div class="side-foot">
-<a data-native-app-settings href="qoopia-app://settings" hidden data-i18n="App settings">App settings</a>
-<a id="profileLink" href="#profile"><svg class="inline-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span data-i18n="Profile">Profile</span></a>
-<div id="ownerEmail" style="font-size:12px;overflow-wrap:anywhere;margin:8px 0" hidden></div>
-<div class="conn"><span class="conn-dot" id="connDot"></span><span id="connText"><span data-i18n="Live">Live</span></span></div>
-<div class="foot-row"><button class="btn" id="installApp" type="button" data-i18n="Install on phone">Install on phone</button>
-<button class="icon-btn" id="refreshBtn"><svg class="inline-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 14 6M18 18a8 8 0 0 1-14-6"/></svg><span data-i18n="Refresh">Refresh</span></button>
-<button class="icon-btn" id="logoutBtn"><span data-i18n="Logout">Logout</span></button>
-</div>
-</div>
-</aside>
-<div class="main"><a class="q-skip" href="#main" data-i18n="Skip to content">Skip to content</a>
-<div class="topbar">
-<div class="crumb" id="crumb"></div>
-<div class="tb-spacer"></div>
-<div class="tb-clock" id="clock"></div>
-<div aria-label="Language" class="q-language" data-i18n-aria-label="Language" role="group"><button aria-label="English" data-language="en" lang="en" title="English" type="button">EN</button><span aria-hidden="true">/</span><button aria-label="Русский" data-language="ru" lang="ru" title="Русский" type="button">RU</button></div></div>
-<div class="ui-update" hidden="" id="uiUpdate" role="status"><span data-i18n="A new Qoopia interface is ready.">A new Qoopia interface is ready.</span><button id="uiReload"><span data-i18n="Reload this page">Reload this page</span></button></div>
-<p id="uiFeedback" class="ui-feedback" role="status" aria-live="polite"></p><main class="content" id="main" tabindex="-1"></main>
-</div>
-</div>
-</div>
+</main>
 <button id="chatLauncher" class="chat-launcher" hidden aria-expanded="false" aria-controls="chatPanel"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v13H9l-5 4zM8 9h8M8 13h5"/></svg><span data-i18n="Chat">Chat</span></button>
 <section id="chatPanel" class="chat-panel" hidden role="region" aria-labelledby="chatTitle">
 <div class="chat-heading"><img src="/brand/graphite/qoopia-mark-ivory.svg" width="22" height="24" alt=""/><h2 id="chatTitle" tabindex="-1" data-i18n="Your agent">Your agent</h2><button id="chatExpand" class="chat-icon" aria-pressed="false" aria-label="Expand chat" data-i18n-aria-label="Expand chat"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg></button><button id="chatClose" class="chat-icon" aria-label="Minimize chat" data-i18n-aria-label="Minimize chat"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 12h12"/></svg></button></div><div id="chatBody" class="chat-body"></div>

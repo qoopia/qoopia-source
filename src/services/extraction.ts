@@ -8,7 +8,7 @@ import { createNote, getNote, NOTE_TYPES, type NoteVisibility } from "./notes.ts
 import { createNoteProvenance, hashProvenanceFragment } from "./provenance.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict, recordExtractionOutcome } from "../utils/observability.ts";
-import { assertWriteScope, isAdmin } from "../auth/principal.ts";
+import { assertWriteScope, levelOf, seesWholeWorkspace, visibleRowSql } from "../auth/principal.ts";
 import { assertAutomaticMemoryAllowed } from "./memory-policy.ts";
 
 const MAX_CANDIDATES = 200;
@@ -22,7 +22,7 @@ const PROMPT_INJECTION_PATTERNS = [
   /do\s+not\s+(?:show|tell)\s+(?:this\s+)?to\s+(?:the\s+)?(?:user|reviewer)/i,
 ] as const;
 
-export interface ExtractionProposal {
+interface ExtractionProposal {
   text: string;
   type?: string;
   tags?: string[];
@@ -191,7 +191,7 @@ function sessionMessages(input: {
   ).get(input.auth.workspace_id, input.session_id) as
     | { id: string; agent_id: string | null }
     | undefined;
-  if (!session || (session.agent_id !== input.auth.agent_id && !isAdmin(input.auth))) {
+  if (!session || (session.agent_id !== input.auth.agent_id && !seesWholeWorkspace(input.auth))) {
     throw new QoopiaError("NOT_FOUND", "session not found");
   }
   const rows = db.prepare(
@@ -227,9 +227,9 @@ function visibleNotes(auth: AuthContext): Array<{ id: string; text: string }> {
   return db.prepare(
     `SELECT id, text FROM notes
       WHERE workspace_id = ? AND deleted_at IS NULL
-        AND (visibility = 'workspace' OR agent_id = ? OR ? = 1)
+        AND ${visibleRowSql()}
       ORDER BY id ASC`,
-  ).all(auth.workspace_id, auth.agent_id, isAdmin(auth) ? 1 : 0) as Array<{
+  ).all(auth.workspace_id, auth.agent_id, levelOf(auth)) as Array<{
     id: string;
     text: string;
   }>;
@@ -260,7 +260,7 @@ function dedupAndConflicts(
   if (!dedupNoteId && bestSemantic) dedupNoteId = bestSemantic.id;
   for (const id of canonicalStringList(requestedConflictIds, 100)) {
     // getNote masks both cross-workspace and inaccessible private rows.
-    getNote(auth.workspace_id, id, auth.agent_id, isAdmin(auth));
+    getNote(auth.workspace_id, id, auth.agent_id, seesWholeWorkspace(auth));
     conflicts.add(id);
   }
   if (dedupNoteId) conflicts.delete(dedupNoteId);
@@ -468,6 +468,7 @@ export function listExtractionRuns(input: {
   session_id?: string;
   status?: string;
   limit?: number;
+  offset?: number;
 }) {
   const where = ["workspace_id = ?"];
   const params: any[] = [input.auth.workspace_id];
@@ -484,10 +485,11 @@ export function listExtractionRuns(input: {
     params.push(input.status);
   }
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const offset = Math.max(input.offset ?? 0, 0);
   const rows = db.prepare(
     `SELECT * FROM extraction_runs WHERE ${where.join(" AND ")}
-      ORDER BY created_at DESC, id DESC LIMIT ?`,
-  ).all(...params, limit) as RunRow[];
+      ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+  ).all(...params, limit, offset) as RunRow[];
   return { items: rows.map(runOut), count: rows.length, limit };
 }
 
@@ -609,7 +611,7 @@ export function reviewExtractionCandidate(input: {
           input.auth.workspace_id,
           initial.accepted_note_id!,
           input.auth.agent_id,
-          isAdmin(input.auth),
+          seesWholeWorkspace(input.auth),
         );
         const expectedText = input.action === "edit" ? input.edited_text : initial.proposed_text;
         if (!expectedText || accepted.text !== expectedText) {
@@ -709,7 +711,7 @@ export function reviewExtractionCandidate(input: {
         text: finalText!,
         type: finalType,
         metadata: {
-          ...(input.metadata ?? {}),
+          ...input.metadata,
           extraction_run_id: current.run_id,
           extraction_candidate_id: current.id,
         },

@@ -5,9 +5,9 @@ import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
-import { assertWriteScope, isAdmin } from "../auth/principal.ts";
+import { assertWriteScope, canReadRow, levelOf, seesWholeWorkspace } from "../auth/principal.ts";
 
-export const PROVENANCE_SOURCE_KINDS = [
+const PROVENANCE_SOURCE_KINDS = [
   "session_message",
   "file",
   "activity",
@@ -16,7 +16,7 @@ export const PROVENANCE_SOURCE_KINDS = [
   "manual",
 ] as const;
 
-export type ProvenanceSourceKind = (typeof PROVENANCE_SOURCE_KINDS)[number];
+type ProvenanceSourceKind = (typeof PROVENANCE_SOURCE_KINDS)[number];
 
 interface ProvenanceRow {
   id: string;
@@ -35,7 +35,7 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 
 
 
-export function normalizeProvenanceFragment(fragment: string): string {
+function normalizeProvenanceFragment(fragment: string): string {
   return fragment.replace(/\r\n?/g, "\n").trim().replace(/[\t ]+/g, " ");
 }
 
@@ -57,7 +57,7 @@ function sourceVisible(
       const row = db.prepare(
         `SELECT agent_id FROM session_messages WHERE workspace_id = ? AND id = ?`,
       ).get(workspaceId, Number(sourceId)) as { agent_id: string | null } | undefined;
-      return !!row && (row.agent_id === auth.agent_id || isAdmin(auth));
+      return !!row && (row.agent_id === auth.agent_id || levelOf(auth) > 0);
     }
     case "file":
       return !!db.prepare(
@@ -70,11 +70,11 @@ function sourceVisible(
         | { agent_id: string | null; visibility: string }
         | undefined;
       return !!row &&
-        (row.visibility === "workspace" || row.agent_id === auth.agent_id || isAdmin(auth));
+        canReadRow(row, auth.agent_id, levelOf(auth));
     }
     case "note":
       try {
-        getNote(workspaceId, sourceId, auth.agent_id, isAdmin(auth));
+        getNote(workspaceId, sourceId, auth.agent_id, seesWholeWorkspace(auth));
         return true;
       } catch {
         return false;
@@ -89,7 +89,7 @@ function sourceVisible(
       return !!row &&
         (row.sender_agent_id === auth.agent_id ||
           row.recipient_agent_id === auth.agent_id ||
-          isAdmin(auth));
+          levelOf(auth) > 0);
     }
     case "manual":
       // Manual provenance has no independently readable source object. Its
@@ -140,7 +140,7 @@ export function createNoteProvenance(input: {
     input.auth.workspace_id,
     input.note_id,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   if (!sourceVisible(input.auth, input.source_kind, input.source_id)) {
     // NOT_FOUND avoids disclosing cross-workspace/private source existence.
@@ -152,7 +152,7 @@ export function createNoteProvenance(input: {
       input.auth.workspace_id,
       input.note_id,
       input.auth.agent_id,
-      isAdmin(input.auth),
+      seesWholeWorkspace(input.auth),
     );
     if (!sourceVisible(input.auth, input.source_kind, input.source_id)) {
       throw new QoopiaError("NOT_FOUND", "provenance source not found");
@@ -210,7 +210,7 @@ export function resolveNoteProvenance(input: { auth: AuthContext; note_id: strin
     input.auth.workspace_id,
     input.note_id,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   const rows = db.prepare(
     `SELECT * FROM note_provenance

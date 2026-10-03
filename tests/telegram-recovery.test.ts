@@ -13,7 +13,8 @@ import {createAgent} from '../src/admin/agents.ts';
 import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import {agentDirectory,myAgentAction,myAgentState,stopMyAgents} from '../src/services/my-agent.ts';
 import {telegramAction,telegramState,pollTelegramOwner,deliverTelegram,runTelegramQueue,stopTelegramChannels,simpleTelegramApproval} from '../src/services/my-agent-telegram.ts';
-import {channel,ensureChannel,recoverTelegram,queueTelegram,telegramChunks} from '../src/services/telegram-store.ts';
+import {channel,ensureChannel,recoverTelegram,queueTelegram,telegramChunks,TELEGRAM_LOGIN_REQUIRED} from '../src/services/telegram-store.ts';
+import {fakeFetch} from './helpers/fake-fetch.ts';
 beforeAll(()=>runMigrations());
 const originalFetch=globalThis.fetch,originalPath=process.env.PATH;
 afterEach(async()=>{stopTelegramChannels();globalThis.fetch=originalFetch;await stopMyAgents();process.env.PATH=originalPath;});
@@ -26,14 +27,14 @@ function fixture(bound=true){
 }
 const update=(id:number,text:string,person=123)=>({update_id:id,message:{from:{id:person,first_name:'Synthetic'},chat:{id:person,type:'private'},text}});
 function mockTelegram(updates:unknown[],send?:(body:any)=>Promise<Response>|Response){
-  const messages:any[]=[];globalThis.fetch=(async(url:any,init:any)=>{
+  const messages:any[]=[];globalThis.fetch=fakeFetch(async(url:any,init:any)=>{
     const method=String(url).split('/').at(-1),body=JSON.parse(init.body);
     if(method==='getUpdates')return Response.json({ok:true,result:updates});
     if(method==='getMe')return Response.json({ok:true,result:{id:12345,is_bot:true,username:'fixture_'+randomUUID().slice(0,8)+'_bot'}});
     if(method==='getWebhookInfo')return Response.json({ok:true,result:{url:''}});
     if(method==='sendMessage'){messages.push(body);if(send)return send(body);}
     return Response.json({ok:true,result:{message_id:messages.length}});
-  }) as typeof fetch;return messages;
+  });return messages;
 }
 async function until(check:()=>boolean){for(let i=0;i<200;i++){if(check())return;await Bun.sleep(10);}throw new Error('Fixture timeout');}
 function binary(folder:string,source:string){const bin=privateDirectory(path.join(folder,'bin'));durableWrite(path.join(bin,'codex'),'#!'+process.execPath+'\n'+source,0o700);process.env.PATH=bin+path.delimiter+originalPath;}
@@ -65,7 +66,7 @@ test('storage failure never advances the receipt offset; retry saves exactly onc
 
 test('an old in-flight poll cannot populate a disconnected bot or advance its replacement offset',async()=>{
   const {owner}=fixture();let finish!:(r:Response)=>void;
-  globalThis.fetch=(()=>new Promise<Response>(resolve=>finish=resolve)) as typeof fetch;
+  globalThis.fetch=fakeFetch(()=>new Promise<Response>(resolve=>finish=resolve));
   const polling=pollTelegramOwner(owner);await telegramAction(owner,{action:'telegram-disconnect'});
   mockTelegram([]);await telegramAction(owner,{action:'telegram-connect',token:'12345:'+ 'y'.repeat(24)});stopTelegramChannels();
   finish(Response.json({ok:true,result:[update(999,'Wrong generation')]}));await polling;
@@ -77,8 +78,29 @@ test('429 uses Telegram cooldown; ambiguous delivery is visible and never replay
   queueTelegram(owner,generation,'rate',{chat_id:'123',text:'Synthetic'});
   let mode='rate';const sent=mockTelegram([],()=>mode==='rate'?Response.json({ok:false,error_code:429,parameters:{retry_after:60}},{status:429}):mode==='ambiguous'?Promise.reject(Error('network ended after write')):Response.json({ok:true,result:{message_id:55}}));
   await deliverTelegram(owner);await deliverTelegram(owner);expect(sent.length).toBe(1);expect(telegramState(owner).uncertain_deliveries).toBe(0);
+  expect(telegramState(owner).error).toBe('Telegram rate limit. Retrying after its cooldown.');
   db.query('UPDATE qoopia_telegram_outbox SET retry_at=0 WHERE owner_id=?').run(owner);mode='ok';await deliverTelegram(owner);expect(sent.length).toBe(2);
+  // A delivery that succeeds again clears the stale banner.
+  expect(telegramState(owner).error).toBeNull();
   queueTelegram(owner,generation,'ambiguous',{chat_id:'123',text:'Do not repeat'});mode='ambiguous';await deliverTelegram(owner);expect(sent.length).toBe(3);recoverTelegram();mode='ok';await deliverTelegram(owner);expect(sent.length).toBe(3);expect(telegramState(owner).uncertain_deliveries).toBe(1);
+});
+
+test('a successful delivery keeps the subscription sign-in banner',async()=>{
+  const {owner}=fixture(),generation=channel(owner)!.generation;
+  db.query('UPDATE qoopia_telegram_channels SET error=? WHERE owner_id=?').run(TELEGRAM_LOGIN_REQUIRED,owner);
+  queueTelegram(owner,generation,'login-notice',{chat_id:'123',text:'Synthetic'});const sent=mockTelegram([]);
+  await deliverTelegram(owner);expect(sent.length).toBe(1);expect(telegramState(owner).error).toBe(TELEGRAM_LOGIN_REQUIRED);
+});
+
+test('unknown commands, non-text messages and messages with a credential get a reply and are never queued',async()=>{
+  const {owner}=fixture(),secret='sk-ant-api03-'+'A'.repeat(90);
+  const sent=mockTelegram([update(5,'/Users/example/report.txt summarize this file'),{update_id:6,message:{from:{id:123,first_name:'Synthetic'},chat:{id:123,type:'private'},photo:[{file_id:'synthetic'}],caption:'look'}},update(7,'please use key '+secret)]);
+  await pollTelegramOwner(owner);await deliverTelegram(owner);
+  expect(telegramState(owner).queued).toBe(0);expect(db.query('SELECT telegram_offset n FROM qoopia_agent_settings WHERE owner_id=?').get(owner)).toEqual({n:8});
+  expect(sent).toHaveLength(3);
+  expect(sent[0].text).toContain('Unknown command');expect(sent[0].text).toContain('/stop');
+  expect(sent[1].text).toContain('Only text messages');
+  expect(sent[2].text).toContain('credential');expect(JSON.stringify(sent)).not.toContain(secret.slice(0,20));
 });
 
 test('long replies survive chunk delivery without truncation or duplicate chunks',async()=>{
@@ -206,8 +228,17 @@ for(const form of ['empty','fields'])test('native MCP '+form+' confirmation is e
  await myAgentAction(owner,{action:'approve',id:approval.id,accept:form==='empty'});await until(()=>!myAgentState(owner).active_conversation);
  expect(JSON.parse(myAgentState(owner).runs[0]!.answer)).toEqual(form==='empty'?{action:'accept',content:{}}:{action:'decline'});
 });
+test('a provider crash mid-turn is reported in Telegram as a failure, not as a Stop',async()=>{
+ const {owner,folder}=fixture();
+ binary(folder,`import readline from 'node:readline';const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');for await(const line of readline.createInterface({input:process.stdin})){const m=JSON.parse(line);if(!m.id)continue;let result={};if(m.method==='account/read')result={account:{type:'chatgpt'}};if(m.method==='thread/start'||m.method==='thread/resume')result={thread:{id:'crash-thread'}};if(m.method==='turn/start')result={turn:{id:'crash-turn'}};send({id:m.id,result});if(m.method==='turn/start')setTimeout(()=>process.exit(3),50);}`);
+ const sent=mockTelegram([update(1,'Synthetic crashing task')]);await pollTelegramOwner(owner);await runTelegramQueue(owner);
+ await until(()=>!myAgentState(owner).running);
+ for(let i=0;i<3;i++)await deliverTelegram(owner);
+ expect(myAgentState(owner).runs[0]).toMatchObject({state:'failed',error:'The agent process stopped unexpectedly. Start a new turn to continue.'});
+ expect(sent.some(m=>m.text.includes('Task failed.'))).toBe(true);expect(sent.some(m=>m.text.includes('Task stopped.'))).toBe(false);
+});
 test('temporary Telegram transport loss backs off without losing or duplicating a receipt',async()=>{
- const {owner}=fixture();globalThis.fetch=(()=>Promise.reject(new Error('synthetic offline'))) as typeof fetch;
+ const {owner}=fixture();globalThis.fetch=fakeFetch(()=>Promise.reject(new Error('synthetic offline')));
  await pollTelegramOwner(owner);expect(channel(owner)!.failures).toBe(1);expect(channel(owner)!.retry_at).toBeGreaterThan(Date.now());expect(telegramState(owner).queued).toBe(0);
  mockTelegram([update(1,'Synthetic after network recovery')]);await pollTelegramOwner(owner);expect(telegramState(owner).queued).toBe(0);
  db.query('UPDATE qoopia_telegram_channels SET retry_at=0 WHERE owner_id=?').run(owner);await pollTelegramOwner(owner);await pollTelegramOwner(owner);
@@ -275,4 +306,35 @@ test('a prepared save is asked once in Telegram, only the bound owner decides it
   const before=sent.length;
   for(let i=0;i<3;i++)await deliverTelegram(owner);
   expect(sent.slice(before).some(message=>String(message.text).includes(asked))).toBe(false);
+});
+
+test('dashboard task approvals reach Telegram only when the owner chose the Telegram channel',async()=>{
+  const {owner,folder}=fixture();
+  binary(folder,`import readline from 'node:readline';const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');for await(const line of readline.createInterface({input:process.stdin})){const m=JSON.parse(line);if(!m.id||m.id===900)continue;let result={};if(m.method==='account/read')result={account:{type:'chatgpt'}};if(m.method==='thread/start'||m.method==='thread/resume')result={thread:{id:'t'}};if(m.method==='turn/start')result={turn:{id:'u'}};send({id:m.id,result});if(m.method==='turn/start')setTimeout(()=>send({id:900,method:'item/commandExecution/requestApproval',params:{threadId:'t',turnId:'u',command:'cat dashboard-only.txt'}}),10);}`);
+  const sent=mockTelegram([]);expect(myAgentState(owner).channel).toBe('dashboard');
+  const c=await myAgentAction(owner,{action:'new',title:'Dashboard only'});
+  await myAgentAction(owner,{action:'send',conversation:c.id,requestId:randomUUID(),text:'Synthetic dashboard task'});
+  await until(()=>myAgentState(owner).approvals.length===1);
+  await deliverTelegram(owner);await deliverTelegram(owner);
+  expect(sent.some(m=>String(m.text).includes('dashboard-only'))).toBe(false);
+  db.query("UPDATE qoopia_agent_settings SET channel='telegram' WHERE owner_id=?").run(owner);
+  await deliverTelegram(owner);
+  expect(sent.some(m=>String(m.text).includes('dashboard-only')&&m.reply_markup)).toBe(true);
+});
+
+test('a Telegram task that needed an approval still delivers its final answer to Telegram',async()=>{
+  const {owner,folder}=fixture();
+  binary(folder,`import readline from 'node:readline';const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');for await(const line of readline.createInterface({input:process.stdin})){const m=JSON.parse(line);if(m.id===900){send({method:'item/agentMessage/delta',params:{threadId:'t',turnId:'u',delta:'FINAL-ANSWER-AFTER-APPROVAL'}});send({method:'turn/completed',params:{threadId:'t',turn:{id:'u',status:'completed'}}});continue;}if(!m.id)continue;let result={};if(m.method==='account/read')result={account:{type:'chatgpt'}};if(m.method==='thread/start'||m.method==='thread/resume')result={thread:{id:'t'}};if(m.method==='turn/start')result={turn:{id:'u'}};send({id:m.id,result});if(m.method==='turn/start')setTimeout(()=>send({id:900,method:'item/commandExecution/requestApproval',params:{threadId:'t',turnId:'u',command:'echo synthetic'}}),10);}`);
+  const sent=mockTelegram([update(1,'Synthetic task needing approval')]);
+  await pollTelegramOwner(owner);await runTelegramQueue(owner);
+  await until(()=>myAgentState(owner).approvals.length===1);
+  await deliverTelegram(owner);await deliverTelegram(owner);
+  expect(sent.some(m=>String(m.text).includes('echo synthetic'))).toBe(true);
+  const approval=myAgentState(owner).approvals[0]!;
+  expect(db.query('SELECT state FROM qoopia_agent_telegram_delivery WHERE run_id=?').get(approval.run_id)).toEqual({state:'pending'});
+  await myAgentAction(owner,{action:'approve',id:approval.id,accept:true});
+  await until(()=>!myAgentState(owner).active_conversation);
+  for(let i=0;i<4;i++)await deliverTelegram(owner);
+  expect(sent.some(m=>m.text==='FINAL-ANSWER-AFTER-APPROVAL')).toBe(true);
+  expect(db.query('SELECT state FROM qoopia_agent_telegram_delivery WHERE run_id=?').get(approval.run_id)).toEqual({state:'sent'});
 });

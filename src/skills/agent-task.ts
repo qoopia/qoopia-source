@@ -12,7 +12,7 @@ import { canonical, command, digest } from './commands.ts';
 import { bindNativeConnection, connectionRefSchema } from './connection.ts';
 import { entriesOf, currentAssignmentPermission, registration, sessionOpen, RUNTIMES, type RuntimeKind } from './loop.ts';
 import { materializeSession, nativeLaunch, nativeOptions, nativeModelEvidence,
-  nativeExecution, preflightNativeSubscription, prepareNativeSession } from './adapter.ts';
+  nativeExecution, nativeFailureCode, preflightNativeSubscription, prepareNativeSession } from './adapter.ts';
 import { hashTree } from './native.ts';
 import { authorizeRun, observeRuntime, nativeOptionsSchema, nativeModelStatus } from './runtime.ts';
 
@@ -26,7 +26,7 @@ export type NativeTaskResult={exit_code:number|null;stdout:string;stderr:string}
 export type NativeTaskExecutor=(launch:Launch,kind:RuntimeKind)=>Promise<NativeTaskResult>;
 
 /** The only production executor. argv/env are produced by the existing pinned native launcher. */
-export const executeNativeTask:NativeTaskExecutor=async(launch,kind)=>{
+const executeNativeTask:NativeTaskExecutor=async(launch,kind)=>{
   if(launch.options.auth_mode==='subscription-store'&&!launch.options.configured_profile_functional)await preflightNativeSubscription(kind,launch);
   const child=spawn(launch.binary,launch.args,{cwd:launch.cwd,env:launch.env,stdio:['ignore','pipe','pipe']});
   let stdout='',stderr='',overflow=false;
@@ -46,7 +46,7 @@ export const executeNativeTask:NativeTaskExecutor=async(launch,kind)=>{
   }finally{clearTimeout(soft);clearTimeout(hard);}
 };
 
-export function nativeTaskAnswer(kind:RuntimeKind,stdout:string){
+function nativeTaskAnswer(kind:RuntimeKind,stdout:string){
   const answers:string[]=[];
   for(const line of stdout.split('\n')){
     let event:any;try{event=JSON.parse(line);}catch{continue;}
@@ -59,13 +59,9 @@ export function nativeTaskAnswer(kind:RuntimeKind,stdout:string){
   return answer;
 }
 export function nativeTaskFailure(stdout:string) {
-  for(const line of stdout.split('\n')) {
-    let event:any;try{event=JSON.parse(line);}catch{continue;}
-    if(event?.error==='authentication_failed'||event?.api_error_status===401)
-      return 'Your subscription login was rejected by the provider. Sign in again, then retry the task.';
-    if(event?.api_error_status===429||event?.error==='rate_limit')
-      return 'Your provider usage limit was reached. Wait for it to reset before retrying.';
-  }
+  const code=nativeFailureCode(stdout);
+  if(code==='UNAUTHENTICATED')return 'Your subscription login was rejected by the provider. Sign in again, then retry the task.';
+  if(code==='MODEL_QUOTA')return 'Your provider usage limit was reached. Wait for it to reset before retrying.';
   return 'The agent stopped without a usable answer. Review the task before retrying.';
 }
 

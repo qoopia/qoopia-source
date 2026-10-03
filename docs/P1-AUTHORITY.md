@@ -1,6 +1,6 @@
 # P1 authority: implementation and boundaries
 
-This document describes the implemented P1 boundary. Acceptance status and actual execution results are in `../P1-EVIDENCE.md`. P2/P3 operations are not enabled by the P1 capability catalog.
+This document describes the implemented P1 boundary. Historical P1 acceptance evidence moved out of the tree on 2026-10-02 (`git show c44d6fc:P1-EVIDENCE.md`, see the evidence archive (`evidence-archive.md`, private record)). P2/P3 operations are not enabled by the P1 capability catalog.
 
 ## Authority and callers
 
@@ -18,7 +18,7 @@ A content review does not grant high-risk adoption. `requireExactConsent` binds 
 
 ## Typed surfaces
 
-The authoritative schema/handler registry is `src/api/authority.ts`; generated per-profile JSON Schemas are in `artifacts/p1/catalog.json`. REST paths have the `/api/v1` prefix. The HTTP listener delegates to that registry. REST-handler tests use real Request/Response objects; they are not claims of a working socket listener in this environment.
+The authoritative schema/handler registry is `src/api/authority.ts`; `effectiveAuthority` computes each principal's per-profile JSON Schemas from it at runtime. REST paths have the `/api/v1` prefix. The HTTP listener delegates to that registry. REST-handler tests use real Request/Response objects; they are not claims of a working socket listener in this environment.
 
 | Operation | REST suffix | CLI |
 |---|---|---|

@@ -4,11 +4,12 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import type { AuthContext } from "../src/auth/middleware.ts";
 import { db } from "../src/db/connection.ts";
-import { createNote } from "../src/services/notes.ts";
+import { createNote, deleteNote } from "../src/services/notes.ts";
 import { createNoteRelation } from "../src/services/note-relations.ts";
 import { recall, recallBaseline } from "../src/services/recall.ts";
 import { getRecallTrace } from "../src/services/recall-traces.ts";
 import { recordRecallFeedback } from "../src/services/recall-feedback.ts";
+import { enabledV4Tools } from "../src/mcp/v4-tools.ts";
 
 let workspace = "";
 let standard: AuthContext;
@@ -253,7 +254,7 @@ describe("P04 explain, traces, lifecycle and feedback", () => {
     expect(refiltered.items.map((item) => item.result_id)).not.toContain(visibleId);
 
     db.prepare(`UPDATE recall_traces SET expires_at = ? WHERE workspace_id = ? AND id = ?`)
-      .run("2000-01-01T00:00:00.000Z", workspace, result.trace_id);
+      .run("2000-01-01T00:00:00.000Z", workspace, result.trace_id!);
     expect(() => getRecallTrace({ auth: standard, trace_id: result.trace_id! })).toThrow(/not found/);
   });
 
@@ -286,7 +287,7 @@ describe("P04 explain, traces, lifecycle and feedback", () => {
 
     const privileged = { ...standard, type: "claude-privileged" };
     expect(() => getRecallTrace({ auth: privileged, trace_id: recalled.trace_id! })).toThrow(/not found/);
-    expect(getRecallTrace({ auth: owner, trace_id: recalled.trace_id! }).trace.trace_id).toBe(recalled.trace_id);
+    expect(getRecallTrace({ auth: owner, trace_id: recalled.trace_id! }).trace.trace_id).toBe(recalled.trace_id!);
   });
 
   test("lifecycle affects only enabled calls and reinforcement changes only a later score", async () => {
@@ -360,5 +361,36 @@ describe("P04 explain, traces, lifecycle and feedback", () => {
     });
     expect((db.prepare(`SELECT owner_pinned FROM memory_lifecycle WHERE workspace_id = ? AND note_id = ?`)
       .get(workspace, id) as { owner_pinned: number }).owner_pinned).toBe(1);
+  });
+});
+
+describe("recall_trace_get pagination (F-103)", () => {
+  test("the cursor advances by scanned rows, so hidden rows neither repeat items nor loop", async () => {
+    for (let i = 0; i < 6; i++) note(standard, `p04pagemarker item ${i}`);
+    enable("QOOPIA_V4_RECALL_EXPLAIN");
+    const recalled = await recall({
+      workspace_id: workspace,
+      caller_agent_id: standard.agent_id,
+      is_admin: false,
+      query: "p04pagemarker",
+      mode: "fts5",
+      trace: true,
+      limit: 6,
+    });
+    for (const row of recalled.results.slice(0, 2)) deleteNote(workspace, standard.agent_id, row.id, false);
+    const tool = enabledV4Tools().find((t) => t.name === "recall_trace_get")!;
+    const seen: string[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const out = await tool.handler({ trace_id: recalled.trace_id, limit: 2, include_items: true, ...(cursor ? { cursor } : {}) }, standard) as
+        { items: Array<{ result_id: string }>; next_cursor: string | null };
+      seen.push(...out.items.map((item) => item.result_id));
+      if (!out.next_cursor) break;
+      expect(cursors.has(out.next_cursor)).toBe(false);
+      cursors.add(out.next_cursor);
+      cursor = out.next_cursor;
+    }
+    expect(seen).toEqual(recalled.results.slice(2).map((row) => row.id));
   });
 });

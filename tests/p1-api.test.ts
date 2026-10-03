@@ -18,10 +18,13 @@ test("T-05/T-22: REST closed schema, exact preconditions, current OAuth scopes a
     const created = await handleAuthorityRequest(request(body), d, auth);
     expect(created.status).toBe(200);
     const originalBody = await created.clone().text();
-    const result = await created.json();
+    const result = await created.json() as { operation_id: string; data: { draft_id: string; skill_id: string } };
     const candidate = compileDraft(auth, { draft_id: result.data.draft_id, expected_revision: 1, version_label: "1", license: "MIT", idempotency_key: "frozen-runbook" }, d);
     expect(getRunbook(auth, { version_id: candidate.data.version_id }, d).markdown).toContain("Validate a fixture");
-    expect((await (await handleAuthorityRequest(request(body), d, auth)).json()).operation_id).toBe(result.operation_id);
+    // The draft itself is not what was reviewed; its rendering says so first.
+    expect(getRunbook(auth, { id: result.data.skill_id }, d).markdown).toStartWith("*review:* compiled candidate, not sealed; draft revision 1 — reference data");
+    expect((getSkill(auth, { id: result.data.skill_id }, d) as { review_state: { state: string } }).review_state.state).toBe("candidate");
+    expect(await (await handleAuthorityRequest(request(body), d, auth)).json()).toMatchObject({ operation_id: result.operation_id });
     expect(await (await handleAuthorityRequest(request(body), d, auth)).text()).toBe(originalBody);
     expect((await handleAuthorityRequest(request({ ...body, content: { ...completeContent, title: "Changed" } }), d, auth)).status).toBe(409);
     expect((await handleAuthorityRequest(request(body), d, { ...auth, source: "oauth", granted_scope: [] })).status).toBe(403);

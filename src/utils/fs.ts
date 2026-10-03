@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 export const hash = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+/** NUL/CR/LF are refused in paths and values written into unit files, plists and client configs. */
+export const hasNulOrNewline = (value: string) => value.includes('\0') || value.includes('\r') || value.includes('\n');
 export function safePath(input: string): string {
   if (!path.isAbsolute(input)) throw new Error('An absolute path is required');
   const target = process.platform === 'darwin' ? path.resolve(input).replace(/^\/(tmp|var)(?=\/|$)/, '/private/$1') : path.resolve(input);
@@ -78,7 +80,7 @@ export function durableCopyFile(source: string, file: string, expectedSize: numb
     fs.fchmodSync(output, mode); fs.fsyncSync(output); fs.closeSync(output); output = undefined;
     fs.renameSync(temporary, file); syncDirectory(path.dirname(file));
   } catch (error) {
-    if (output !== undefined) { try { fs.closeSync(output); } catch {} }
+    if (output !== undefined) { try { fs.closeSync(output); } catch { /* Preserve the copy failure; the temp file is unlinked next. */ } }
     try { fs.unlinkSync(temporary); } catch (cleanup) { if ((cleanup as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanup; }
     throw error;
   } finally { fs.closeSync(input); }
@@ -109,7 +111,7 @@ export function readJsonBytes(p: string): Buffer {
   } finally { fs.closeSync(fd); }
 }
 export function readJson<T>(p: string): T { return JSON.parse(readJsonBytes(p).toString('utf8')); }
-export function memberPath(root: string, member: string) {
+function memberPath(root: string, member: string) {
   if (!member || member.includes('\\') || member.split('/').some(p => !p || p === '.' || p === '..') || path.isAbsolute(member)) throw new Error('Invalid artifact member');
   return safePath(path.join(root, member));
 }

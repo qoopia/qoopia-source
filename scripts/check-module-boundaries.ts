@@ -14,9 +14,10 @@
  *
  * KNOWN is the set of violations present when this check was introduced. They
  * are listed rather than ignored so each one has to be argued away
- * deliberately. The three migration edges are the interesting ones: an applied
+ * deliberately. The migration edges are the interesting ones: an applied
  * migration that calls today's domain code does not reproduce what it did when
- * it was written.
+ * it was written. Both lists must match the graph exactly: an entry that no
+ * longer occurs fails the check, so a fixed exception cannot be re-admitted.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -28,15 +29,12 @@ const FORBIDDEN: Record<string, string[]> = {
   db: ["services", "skills", "auth", "delivery", "mcp", "identity", "bridges", "admin", "api"],
 };
 const KNOWN = new Set([
-  "db/migration-033-gate.ts -> services/temporal-migration.ts",
-  "db/migration-033-plan.ts -> services/temporal-migration.ts",
   "db/migration-036-backfill.ts -> skills/format.ts",
-  "db/migration-036-backfill.ts -> skills/commands.ts",
+  "db/migration-036-backfill.ts -> skills/canonical.ts",
   "db/migration-041-backfill.ts -> auth/resource-origin.ts",
 ]);
 const KNOWN_CYCLES = [
-  ["services/note-relations.ts", "services/note-temporal.ts", "services/notes.ts"],
-  ["mcp/compat.ts", "mcp/tools.ts"],
+  // Closed only by lazy import() calls (http -> workspace, installed-runtime -> http).
   ["delivery/installed-runtime.ts", "delivery/workspace.ts", "http.ts"],
 ];
 
@@ -77,7 +75,7 @@ export function runtimeSpecifiers(source: string): string[] {
   return [...result];
 }
 
-export function checkBoundaries(root = ROOT) {
+export function checkBoundaries(root = ROOT, known: Set<string> = KNOWN, knownCycles: string[][] = KNOWN_CYCLES) {
 const files = walk(root);
 const edges = new Map<string, Set<string>>();
 for (const file of files) {
@@ -96,6 +94,7 @@ for (const file of files) {
 const rel = (f: string) => path.relative(root, f);
 const layer = (f: string) => rel(f).split("/")[0]!;
 const problems: string[] = [];
+const observed = new Set<string>();
 
 for (const [file, targets] of edges) {
   const from = layer(file);
@@ -103,9 +102,11 @@ for (const [file, targets] of edges) {
     const to = layer(target);
     if (from === to || !FORBIDDEN[from]?.includes(to)) continue;
     const edge = `${rel(file)} -> ${rel(target)}`;
-    if (!KNOWN.has(edge)) problems.push(`layer: ${edge}`);
+    observed.add(edge);
+    if (!known.has(edge)) problems.push(`layer: ${edge}`);
   }
 }
+for (const edge of known) if (!observed.has(edge)) problems.push(`stale exception: ${edge}`);
 
 // Tarjan, iterative: the graph is small but recursion depth is not worth risking.
 const index = new Map<string, number>(), low = new Map<string, number>();
@@ -139,9 +140,13 @@ for (const root of files) {
   }
 }
 for (const component of components) {
-  if (!KNOWN_CYCLES.some(known => component.every(file => known.includes(file)))) {
+  if (!knownCycles.some(cycle => component.every(file => cycle.includes(file)))) {
     problems.push(`new or enlarged runtime cycle: ${component.join(", ")}`);
   }
+}
+for (const cycle of knownCycles) {
+  const key = [...cycle].sort().join(", ");
+  if (!components.some(component => component.join(", ") === key)) problems.push(`stale cycle exception: ${key}`);
 }
 
 return { problems, components, files: files.length };

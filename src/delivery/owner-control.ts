@@ -60,7 +60,7 @@ export function startOwnerControl(root: string, handle: (input: unknown) => Owne
           try {
             if (end !== client.input.length - 1) throw new Error('One request per connection');
             response = handle(JSON.parse(client.input.toString('utf8')));
-          } catch { response = { error: 'Owner request refused; use explicit bootstrap once or select an existing active human owner' }; }
+          } catch { response = { error: 'Owner request refused. On a new installation run qoopia owner-login --owner-name YOUR_NAME once; otherwise sign in as an existing active human owner (--owner-id ID).' }; }
           client.input = Buffer.alloc(0);
           client.output = Buffer.from(JSON.stringify(response) + '\n');
         }

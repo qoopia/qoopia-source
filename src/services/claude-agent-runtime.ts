@@ -1,10 +1,10 @@
-import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
+import {type ChildProcessWithoutNullStreams} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {EventEmitter} from 'node:events';
 import {stripVTControlCharacters} from 'node:util';
 import {randomUUID} from 'node:crypto';
-import {terminateAgentProcess} from './agent-process.ts';
+import {spawnAgentProcess,terminateAgentProcess} from './agent-process.ts';
 
 export function claudeLoginUrl(raw:string){const u=new URL(raw);if(u.protocol!=='https:'||u.username||u.password||!((u.hostname==='claude.ai'&&u.pathname==='/oauth/authorize')||(u.hostname==='claude.com'&&u.pathname==='/cai/oauth/authorize')))throw new Error('Unexpected Claude sign-in URL');return u.href;}
 type Options={binary:string;cwd:string;env:NodeJS.ProcessEnv;mcpConfig:string};
@@ -20,7 +20,7 @@ export class ClaudeAgentRuntime extends EventEmitter {
   private permissions=new Map<string,{input:any;tool:string}>();
   constructor(private options:Options){super();}
   async start(){if(this.stopping)await this.stopping;this.stopping=undefined;this.stopped=false;}
-  private spawn(args:string[]){return spawn(this.options.binary,args,{cwd:this.options.cwd,env:this.options.env,stdio:'pipe'});}
+  private spawn(args:string[]){return spawnAgentProcess(this.options.binary,args,{cwd:this.options.cwd,env:this.options.env});}
   private kill(child:ChildProcessWithoutNullStreams){const result=terminateAgentProcess(child);void result.catch(()=>this.emit('stopFailed'));return result;}
   private finish(child:ChildProcessWithoutNullStreams):Promise<void>{
     if(child.exitCode!==null||child.signalCode!==null)return Promise.resolve();
@@ -56,7 +56,7 @@ export class ClaudeAgentRuntime extends EventEmitter {
       child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');child.stdout.on('data',receive);child.stderr.on('data',receive);child.stdin.on('error',()=>this.kill(child));
       child.once('error',()=>{clearTimeout(timer);clearTimeout(urlTimer);if(this.login===child)this.login=undefined;if(!resolved)reject(new Error('Claude sign-in could not start'));});
       child.once('close',async()=>{clearTimeout(timer);clearTimeout(urlTimer);if(this.login===child)this.login=undefined;
-        if(this.stopped)return;let success=false;try{success=!!(await this.account()).account;}catch{}
+        if(this.stopped)return;let success=false;try{success=!!(await this.account()).account;}catch{/* Probe failure reports login as unsuccessful (fail closed). */}
         if(!this.stopped)this.emit('notification',{method:'account/login/completed',params:{success}});
         if(!resolved)reject(new Error('Claude sign-in did not provide an authorization link. Try again.'));
       });
@@ -81,7 +81,7 @@ export class ClaudeAgentRuntime extends EventEmitter {
     const args=[...(params.model?['--model',params.model]:[]),'--print','--verbose','--input-format','stream-json','--output-format','stream-json','--include-partial-messages',
       '--permission-mode','default','--permission-prompt-tool','stdio','--setting-sources','user','--strict-mcp-config','--mcp-config',this.options.mcpConfig,
       '--append-system-prompt',thread.instructions,thread.resume?'--resume='+thread.id:'--session-id='+thread.id];
-    const child=this.spawn(args),active={child,thread,turn,ended:false};this.active=active;let buffer='',initialized=false,sawText=false;
+    const child=this.spawn(args),active={child,thread,turn,ended:false};this.active=active;let buffer='',initialized=false,sawText=false,activityAt=0;
     const timer=setTimeout(()=>this.complete(active,'failed'),45_000);
     child.stdout.setEncoding('utf8');child.stderr.on('data',()=>{});child.stdin.on('error',()=>this.complete(active,'failed'));
     child.stdout.on('data',(chunk:string)=>{
@@ -95,10 +95,12 @@ export class ClaudeAgentRuntime extends EventEmitter {
           this.emit('notification',{method:'turn/started',params:{threadId:thread.id,turn:{id:turn}}});continue;
         }
         if(m.session_id&&m.session_id!==thread.id){this.complete(active,'failed');return;}
+        // Subagent, thinking and tool lines are not forwarded but still prove progress (throttled).
+        if(Date.now()-activityAt>10_000){activityAt=Date.now();this.emit('notification',{method:'qoopia/activity',params:{threadId:thread.id,turnId:turn}});}
         if(m.type==='control_request'){
           if(m.request?.subtype==='hook_callback'&&m.request.callback_id==='qoopia-read-boundary'){
             const input=m.request.input?.tool_input??{},requested=input.file_path??input.path??this.options.cwd;
-            let inside=false;try{const absolute=path.resolve(this.options.cwd,requested),real=fs.existsSync(absolute)?fs.realpathSync(absolute):absolute,root=fs.realpathSync(this.options.cwd);inside=real===root||real.startsWith(root+path.sep);}catch{}
+            let inside=false;try{const absolute=path.resolve(this.options.cwd,requested),real=fs.existsSync(absolute)?fs.realpathSync(absolute):absolute,root=fs.realpathSync(this.options.cwd);inside=real===root||real.startsWith(root+path.sep);}catch{/* Unresolvable path is treated as outside: ask the user. */}
             child.stdin.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:m.request_id,response:inside?{}:{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'ask',permissionDecisionReason:'This read is outside your Qoopia agent folder.'}}}})+'\n');continue;
           }
           if(m.request?.subtype!=='can_use_tool'||typeof m.request_id!=='string'||!m.request?.input||typeof m.request.input!=='object'||this.permissions.has(m.request_id)){this.refuse(m.request_id);continue;}
@@ -125,7 +127,7 @@ export class ClaudeAgentRuntime extends EventEmitter {
       if(this.active===active)this.active=undefined;
       this.emit('notification',{method:'turn/completed',params:{threadId:active.thread.id,turnId:active.turn,turn:{id:active.turn,status,...(status==='failed'?{error:true}:{})}}});
     }).catch(error=>{active.completion=undefined;throw error;});
-    void active.completion.catch(()=>{});return active.completion;
+    void active.completion.catch(()=>{/* Callers get the rejection; kill() already emitted stopFailed. */});return active.completion;
   }
   respond(id:string|number,result:any){
     const p=this.permissions.get(String(id)),active=this.active;if(!p||!active)throw new Error('Claude approval expired');this.permissions.delete(String(id));
@@ -138,6 +140,6 @@ export class ClaudeAgentRuntime extends EventEmitter {
     if(this.stopping)return this.stopping;
     this.stopped=true;
     this.stopping=Promise.all([this.active?this.complete(this.active,'interrupted'):Promise.resolve(),this.login?this.kill(this.login):Promise.resolve(),...[...this.probes].map(child=>this.kill(child))]).then(()=>{this.login=undefined;this.emit('closed');}).catch(error=>{this.stopping=undefined;throw error;});
-    void this.stopping.catch(()=>{});return this.stopping;
+    void this.stopping.catch(()=>{/* Callers get the rejection; kill() already emitted stopFailed. */});return this.stopping;
   }
 }

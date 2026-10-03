@@ -16,7 +16,7 @@ import {
   classifySupersedeComponents,
   DEFAULT_MAX_COMPONENT_SIZE,
   type SupersedeComponent,
-} from "../services/temporal-migration.ts";
+} from "./temporal-migration.ts";
 import { isoFromEpochMs, maxEpochMs, toEpochMs } from "../utils/temporal.ts";
 
 export interface PreflightReportComponent {
@@ -184,14 +184,18 @@ export function buildStagingPlan(db: Database, report: PreflightReport): Staging
       }
     }
     for (const noteId of ids) {
-      const invalidatedAtMs = incoming.get(noteId);
+      const edgeMs = incoming.get(noteId);
       const validFromMs = createdAt.get(noteId);
-      if (invalidatedAtMs === undefined) {
+      if (edgeMs === undefined) {
         throw new Error(`preflight: no incoming supersedes edge for target ${noteId}`);
       }
       if (validFromMs === undefined) {
         throw new Error(`preflight: note ${noteId} missing in workspace ${workspaceId}`);
       }
+      // note_relations.created_at had no ms before 033 while notes.created_at did, so an
+      // edge in the target's own second can read earlier than the target. A relation never
+      // predates its target: clamp strictly after it, or the interval is inverted or empty.
+      const invalidatedAtMs = edgeMs > validFromMs ? edgeMs : validFromMs + 1;
       const validUntilMs = maxEpochMs(validFromMs, invalidatedAtMs);
       linearTargets.push({
         note_id: noteId,

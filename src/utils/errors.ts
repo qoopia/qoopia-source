@@ -26,6 +26,8 @@ export type QoopiaErrorCode =
   | "CHECKSUM_MISMATCH"
   | "NOT_READY"
   | "MANUAL_DRIFT"
+  /** Local agent instructions were not written (src/agent-kit/install.ts); details.file names the path. */
+  | "INSTRUCTIONS_LINKED_PATH" | "INSTRUCTIONS_UNSAFE_MODE" | "INSTRUCTIONS_TOO_LARGE" | "INSTRUCTIONS_EDITED" | "INSTRUCTIONS_LOCKED" | "INSTRUCTIONS_NEWER"
   | "INTERNAL"
   /**
    * Raised by src/services/embeddings.ts when the local Ollama call

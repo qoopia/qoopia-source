@@ -4,9 +4,10 @@ import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
+import { supersedePathExists } from "./note-temporal.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict } from "../utils/observability.ts";
-import { assertWriteScope, isAdmin } from "../auth/principal.ts";
+import { assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
 
 export const NOTE_RELATION_TYPES = [
   "supersedes",
@@ -56,34 +57,6 @@ function assertRelationType(value: string): asserts value is NoteRelationType {
   if (!(NOTE_RELATION_TYPES as readonly string[]).includes(value)) {
     throw new QoopiaError("INVALID_INPUT", `unsupported relation_type: ${value}`);
   }
-}
-
-/**
- * Существует ли направленный supersedes-путь `fromNoteId -> … -> toNoteId`.
- * Экспортируется, чтобы V4.1 write-path (`note-temporal.ts`) применял ТУ ЖЕ
- * защиту от цикла, что и legacy-путь, а не собственную копию.
- */
-export function supersedePathExists(
-  workspaceId: string,
-  fromNoteId: string,
-  toNoteId: string,
-): boolean {
-  const row = db.prepare(
-    `WITH RECURSIVE walk(id) AS (
-       SELECT target_note_id
-         FROM note_relations
-        WHERE workspace_id = ? AND source_note_id = ? AND relation_type = 'supersedes'
-       UNION
-       SELECT r.target_note_id
-         FROM note_relations r
-         JOIN walk w ON r.source_note_id = w.id
-        WHERE r.workspace_id = ? AND r.relation_type = 'supersedes'
-     )
-     SELECT 1 AS found FROM walk WHERE id = ? LIMIT 1`,
-  ).get(workspaceId, fromNoteId, workspaceId, toNoteId) as
-    | { found: number }
-    | undefined;
-  return !!row;
 }
 
 function supersedeComponent(workspaceId: string, noteId: string): string[] {
@@ -142,7 +115,7 @@ function visibleComponentState(auth: AuthContext, noteId: string) {
     const cached = visibility.get(id);
     if (cached !== undefined) return cached;
     try {
-      getNote(auth.workspace_id, id, auth.agent_id, isAdmin(auth));
+      getNote(auth.workspace_id, id, auth.agent_id, seesWholeWorkspace(auth));
       visibility.set(id, true);
       return true;
     } catch {
@@ -228,13 +201,13 @@ export function createNoteRelation(input: {
     input.auth.workspace_id,
     sourceNoteId,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   const target = getNote(
     input.auth.workspace_id,
     targetNoteId,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   if (
     (source.visibility === "private" || target.visibility === "private") &&
@@ -264,13 +237,13 @@ export function createNoteRelation(input: {
       input.auth.workspace_id,
       sourceNoteId,
       input.auth.agent_id,
-      isAdmin(input.auth),
+      seesWholeWorkspace(input.auth),
     );
     const currentTarget = getNote(
       input.auth.workspace_id,
       targetNoteId,
       input.auth.agent_id,
-      isAdmin(input.auth),
+      seesWholeWorkspace(input.auth),
     );
     if (
       (currentSource.visibility === "private" || currentTarget.visibility === "private") &&
@@ -360,6 +333,31 @@ export function createNoteRelation(input: {
         targetNoteId,
         input.auth.workspace_id,
       );
+      // Close the target's belief like the 033 backfill does for older edges, regardless of
+      // the bitemporal flag, so turning it on later does not leave the target current.
+      // targetMs (its new updated_at_ms) is the close moment, as in closePredecessor.
+      // Only a belief never closed or skipped before: a second successor leaves the first
+      // close in place, and a component 033 skipped stays untouched (R1).
+      const closeIso = new Date(targetMs).toISOString();
+      const closed = db.prepare(
+        `UPDATE notes
+            SET invalidated_at = ?1, invalidated_at_ms = ?2,
+                valid_until = CASE WHEN valid_until_ms IS NULL OR valid_until_ms > MAX(valid_from_ms, ?2)
+                                   THEN CASE WHEN valid_from_ms > ?2 THEN valid_from ELSE ?1 END
+                                   ELSE valid_until END,
+                valid_until_ms = CASE WHEN valid_until_ms IS NULL OR valid_until_ms > MAX(valid_from_ms, ?2)
+                                      THEN MAX(valid_from_ms, ?2) ELSE valid_until_ms END
+          WHERE id = ?3 AND workspace_id = ?4 AND invalidated_at_ms IS NULL AND valid_from_ms IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM note_temporal_provenance WHERE note_id = ?3)`,
+      ).run(closeIso, targetMs, targetNoteId, input.auth.workspace_id).changes;
+      if (closed === 1) {
+        db.prepare(
+          `INSERT INTO note_temporal_provenance
+             (note_id, workspace_id, invalidated_at_source, valid_until_source,
+              valid_until_inferred, created_at)
+           VALUES (?, ?, 'legacy_relation', 'inferred_from_relation', 1, ?)`,
+        ).run(targetNoteId, input.auth.workspace_id, closeIso);
+      }
     }
 
     logActivity({
@@ -402,7 +400,7 @@ export function listNoteRelations(input: {
     input.auth.workspace_id,
     input.note_id,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   if (input.relation_type) assertRelationType(input.relation_type);
   const params: any[] = [
@@ -421,8 +419,8 @@ export function listNoteRelations(input: {
   // A row is returned only when both endpoints remain visible to this caller.
   const visible = rows.filter((row) => {
     try {
-      getNote(input.auth.workspace_id, row.source_note_id, input.auth.agent_id, isAdmin(input.auth));
-      getNote(input.auth.workspace_id, row.target_note_id, input.auth.agent_id, isAdmin(input.auth));
+      getNote(input.auth.workspace_id, row.source_note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
+      getNote(input.auth.workspace_id, row.target_note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
       return true;
     } catch {
       return false;
@@ -436,7 +434,7 @@ export function getSupersedeChain(input: { auth: AuthContext; note_id: string })
     input.auth.workspace_id,
     input.note_id,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   // Build the connected component only from edges whose two endpoints are
   // already visible. Hidden rows cannot affect IDs, head counts or flags.

@@ -14,7 +14,7 @@ try {
   await new Promise<void>(resolve=>reservation.close(()=>resolve()));
   process.env = { PATH:process.env.PATH, HOME:root, TMPDIR:root, NODE_ENV:'test', QOOPIA_DATA_DIR:root+'/data', QOOPIA_LOG_DIR:root+'/logs', QOOPIA_BACKUP_DIR:root+'/backups',
     QOOPIA_PORT:String(port), QOOPIA_HOST:'127.0.0.1', QOOPIA_PUBLIC_URL:`http://127.0.0.1:${port}`, QOOPIA_STANDALONE:'true', QOOPIA_SERVER_ROLE:'canonical', QOOPIA_LOG_LEVEL:'error',
-    QOOPIA_ADMIN_SECRET:'disposable-owner-http-admin', QOOPIA_SESSION_SECRET:'disposable-owner-http-session' };
+    QOOPIA_ADMIN_SECRET:'disposable-owner-http-admin-secret-32b', QOOPIA_SESSION_SECRET:'disposable-owner-http-session-secret-32b' };
   const connection = await import('../src/db/connection.ts'); closeDb=connection.closeDb;
   const {runMigrations}=await import('../src/db/migrate.ts'); runMigrations();
   const {startHttpServer}=await import('../src/http.ts');

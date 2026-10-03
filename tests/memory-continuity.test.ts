@@ -5,6 +5,8 @@ import {createWorkspace} from '../src/admin/workspaces.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {continuityEvent,checkpointSession,restoreContext} from '../src/services/continuity.ts';
 import {updateNote} from '../src/services/notes.ts';
+import {saveMessage} from '../src/services/sessions.ts';
+import {memoryPrompt} from '../src/services/memory-model.ts';
 import {QoopiaError} from '../src/utils/errors.ts';
 let workspace:string,agent:string,other:string;
 beforeAll(()=>{runMigrations();const ws=createWorkspace({name:'Continuity check',slug:'continuity-check'});workspace=ws.id;
@@ -65,4 +67,53 @@ test('a concurrent manual correction fences an in-flight model result',async()=>
   const result=await checkpointSession(workspace,agent,session,async()=>{updateNote({workspace_id:workspace,agent_id:agent,is_admin:false,id:old.note_id!,text:'Ручное уточнение владельца.'});return summarize();});
   expect(result.state).toBe('changed_during_summary');expect(restoreContext(workspace,agent,session).tail).toHaveLength(1);
   expect(restoreContext(workspace,agent,session).context).toBe('Ручное уточнение владельца.');
+});
+// The real prompt bound of memoryText, with only the model launch stubbed.
+const bounded=async(_w:string,instruction:string,input:unknown)=>{memoryPrompt(instruction,input);return summarize();};
+const cursor=(session:string)=>restoreContext(workspace,agent,session).through_message_id;
+const lastId=(session:string)=>(db.query('SELECT MAX(id) AS id FROM session_messages WHERE session_id=?').get(session) as {id:number}).id;
+const drain=async(session:string)=>{for(let i=0;i<10&&cursor(session)<lastId(session);i++){
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_priority',1) WHERE id=?").run(session);
+  await checkpointSession(workspace,agent,session,bounded);}};
+const save=(session:string,role:'user'|'tool',content:string)=>saveMessage({workspace_id:workspace,agent_id:agent,session_id:session,role,content});
+test('one quote-dense message cannot stall a session: the summary sees an excerpt, the journal keeps it whole',async()=>{
+  const session='mcp:oversized-message',big='"x"\n'.repeat(24_000);
+  save(session,'tool',big);for(let i=0;i<5;i++)save(session,'user','Later decision '+i);
+  await drain(session);
+  expect(restoreContext(workspace,agent,session).revision).toBeGreaterThanOrEqual(1);
+  expect(cursor(session)).toBe(lastId(session));
+  expect((db.query('SELECT content FROM session_messages WHERE session_id=? ORDER BY id LIMIT 1').get(session) as {content:string}).content).toBe(big);
+});
+test('binary tool output that escapes far beyond its raw size still advances the cursor',async()=>{
+  const session='mcp:binary-chunks';
+  for(let i=0;i<4;i++)save(session,'tool','\u0001'.repeat(12_000));save(session,'user','After the dump.');
+  await drain(session);
+  expect(restoreContext(workspace,agent,session).revision).toBeGreaterThanOrEqual(1);
+  expect(cursor(session)).toBe(lastId(session));
+});
+test('an over-long summary is cut at a line boundary instead of being thrown away',async()=>{
+  const session='mcp:long-summary';save(session,'user','Normal turn.');
+  const saved=await checkpointSession(workspace,agent,session,async()=>({text:'Строка состояния.\n'.repeat(500),model:'test-fixture',observed_models:[]}));
+  expect(saved.state).toBe('saved');
+  const context=restoreContext(workspace,agent,session).context;
+  expect(context.length).toBeLessThanOrEqual(8000);expect(context.endsWith('Строка состояния.')).toBe(true);
+});
+test('a batch shrunk by timeouts grows back after recovery, and a pending backlog never waits',async()=>{
+  const session='claude_code:batch-regrowth';
+  continuityEvent(workspace,agent,{session_id:session,project:'/regrowth',runtime:'claude_code',event:'precompact',
+    messages:Array.from({length:60},(_,i)=>({id:'grow-'+i,role:'user',content:'Short turn '+i}))});
+  for(let i=0;i<7;i++)await checkpointSession(workspace,agent,session,async()=>{throw new QoopiaError('MODEL_TIMEOUT','Synthetic timeout');}).catch(()=>{});
+  const meta=()=>JSON.parse((db.query('SELECT metadata FROM sessions WHERE id=?').get(session) as {metadata:string}).metadata);
+  expect(meta().continuity_batch_limit).toBe(1);
+  const sizes:number[]=[],states:string[]=[];
+  const ok=async(_w:string,_i:string,input:unknown)=>{sizes.push((input as any).new_events.length);return summarize();};
+  for(let i=0;i<6;i++)states.push((await checkpointSession(workspace,agent,session,ok)).state);
+  // Five healthy rounds double the batch; the sixth finds only a small remainder, which waits as before.
+  expect(sizes).toEqual([1,2,4,8,16]);expect(states.at(-1)).toBe('waiting');
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_priority',1) WHERE id=?").run(session);
+  expect((await checkpointSession(workspace,agent,session,ok)).state).toBe('saved');
+  expect(meta().continuity_batch_limit).toBe(64);
+  continuityEvent(workspace,agent,{session_id:session,project:'/regrowth',runtime:'claude_code',event:'precompact',messages:[{id:'grow-last',role:'user',content:'One more.'}]});
+  await checkpointSession(workspace,agent,session,ok);
+  expect(meta().continuity_batch_limit).toBeUndefined();
 });

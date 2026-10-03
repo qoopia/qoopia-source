@@ -10,7 +10,7 @@ import { canonical, command, digest } from './commands.ts';
 import { identifier, hash, mutation, reporter, registration, loadoutOf, entriesOf, currentAssignmentPermission, insertFact,
   type Assignment, type Entry, type Loadout } from './loop.ts';
 
-export interface Claim { loadout_id:string; outbox_id:string; token:number; lease_expires_at_ms:number; }
+interface Claim { loadout_id:string; outbox_id:string; token:number; lease_expires_at_ms:number; }
 export const claimSchema=z.object({...mutation,loadout_id:identifier}).strict();
 export function checkClaim(database:Database,auth:AuthContext,claim:Claim){
   const l=loadoutOf(database,auth.workspace_id,claim.loadout_id);reporter(database,auth,l.runtime_id);
@@ -77,12 +77,12 @@ export const evaluatorSchema=z.object({
   comparison:z.object({baseline_run_id:identifier,hypothesis:z.string().min(1).max(1000),dimensions_digest:hash}).strict().optional(),
   native:nativeOptionsSchema.optional(),
 }).strict();
-export interface Run {id:string;workspace_id:string;actor_id:string;loadout_id:string;entry_id:string;version_id:string;attempt_id:string;evaluator_json:string;environment_digest:string;authorization_expires_at_ms:number;}
+interface Run {id:string;workspace_id:string;actor_id:string;loadout_id:string;entry_id:string;version_id:string;attempt_id:string;evaluator_json:string;environment_digest:string;authorization_expires_at_ms:number;}
 export function runOf(database:Database,workspace:string,id:string):Run{
   const r=database.query('SELECT * FROM skill_runs WHERE id=? AND workspace_id=?').get(id,workspace) as Run|null;
   if(!r)throw new QoopiaError('NOT_FOUND','Run not found');return r;
 }
-export function entryOf(database:Database,l:Loadout,id:string,versionId:string,projectionDigest:string):Entry{
+function entryOf(database:Database,l:Loadout,id:string,versionId:string,projectionDigest:string):Entry{
   const e=entriesOf(database,l.id).find(e=>e.id===id);
   if(!e || e.version_id!==versionId || e.projection_digest!==projectionDigest)throw new QoopiaError('CHECKSUM_MISMATCH','Receipt does not match the frozen loadout entry');return e;
 }

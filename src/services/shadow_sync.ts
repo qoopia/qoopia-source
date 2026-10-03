@@ -26,7 +26,6 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { writeFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import {
   assertDatabaseIntegrity,
-  configureWritableDatabase,
   openReadonlyDatabase,
   openWritableDatabase,
   SQLITE_BUSY_TIMEOUT_MS,
@@ -117,7 +116,7 @@ export function rowHash(
   return h.digest("hex");
 }
 
-export interface NoteRow {
+interface NoteRow {
   id: string;
   type: string;
   text: string;
@@ -134,7 +133,7 @@ export interface NoteRow {
   visibility: string;
 }
 
-export interface ActivityRow {
+interface ActivityRow {
   id: string;
   workspace_id: string;
   agent_id: string | null;
@@ -356,7 +355,7 @@ function readActivity(db: Database): ActivityRow[] {
  * Build the candidate set for `notes`. Pure function — no DB writes.
  * Sides labelled M (Mac mini) and C (Corsair) by argument position.
  */
-export function planNotesSync(macRows: NoteRow[], corRows: NoteRow[]): Candidate[] {
+function planNotesSync(macRows: NoteRow[], corRows: NoteRow[]): Candidate[] {
   const macById = new Map<string, NoteRow>();
   for (const r of macRows) macById.set(r.id, r);
   const corById = new Map<string, NoteRow>();
@@ -501,7 +500,7 @@ export function planNotesSync(macRows: NoteRow[], corRows: NoteRow[]): Candidate
  * no-op, while divergent content is an explicit conflict rather than being
  * silently discarded. origin_host is receiver metadata and is not hashed.
  */
-export function planActivitySync(
+function planActivitySync(
   macRows: ActivityRow[],
   corRows: ActivityRow[],
 ): Candidate[] {
@@ -754,7 +753,7 @@ export interface ApplyResult {
   transaction: "committed" | "rolled_back";
 }
 
-export interface ApplyOptions {
+interface ApplyOptions {
   /** Target Corsair DB, opened READ-WRITE. */
   corDbPath: string;
   /** Source Mac DB, opened READ-ONLY (never written). */
@@ -770,11 +769,6 @@ export interface ApplyOptions {
 }
 
 export const SYNC_BUSY_TIMEOUT_MS = SQLITE_BUSY_TIMEOUT_MS;
-
-/** Connection-local safety required for every writable shadow-sync handle. */
-export function configureWritableSyncConnection(db: Database): void {
-  configureWritableDatabase(db, { busyTimeoutMs: SYNC_BUSY_TIMEOUT_MS });
-}
 
 function emptyTableResult(): ApplyTableResult {
   return { inserted: 0, updated: 0, hashesRecorded: 0, conflictsBlocked: 0, skippedIdempotent: 0 };
@@ -1053,7 +1047,7 @@ export function renderApplyReport(
   return lines.join("\n");
 }
 
-export interface ApplyAuthorizationPayload {
+interface ApplyAuthorizationPayload {
   version: 1;
   operation: "shadow-sync-apply";
   run_id: string;
@@ -1141,7 +1135,7 @@ export function createApplyAuthorizationManifest(args: {
   return { ...payload, signature: manifestSignature(payload, args.secret) };
 }
 
-export function validateApplyAuthorizationManifest(args: {
+function validateApplyAuthorizationManifest(args: {
   secret: string | undefined;
   manifest: ApplyAuthorizationManifest;
   plan: SyncPlan;

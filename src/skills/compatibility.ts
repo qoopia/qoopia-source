@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AuthContext } from "../auth/middleware.ts";
 import { db } from "../db/connection.ts";
 import { QoopiaError } from "../utils/errors.ts";
+import { toEpochMs } from "../utils/temporal.ts";
 import { command } from "./commands.ts";
 import { reviseDraft, draftOf, requireSkillRead } from "./authority.ts";
 import { contentSchema } from "./format.ts";
@@ -39,7 +40,7 @@ export function legacyMarkTested(auth: AuthContext | undefined, input: {
 }): UpsertResult {
   if (!auth || auth.workspace_id !== input.workspace_id) throw new QoopiaError("UNAUTHENTICATED", "Self-report requires authentication");
   if (input.tester_agent !== auth.agent_id && input.tester_agent !== auth.agent_name) throw new QoopiaError("FORBIDDEN", "tester_agent must identify the authenticated reporter");
-  if (!Number.isFinite(Date.parse(input.tested_at))) throw new QoopiaError("INVALID_INPUT", "tested_at must be an ISO timestamp");
+  toEpochMs(input.tested_at, "tested_at"); // canonical UTC only: lax or zone-less forms would read differently per host TZ
   if (!input.idempotency_key || input.expected_revision === undefined) throw new QoopiaError("INVALID_INPUT", "Self-report requires idempotency_key and expected_revision");
   const row = db.query(`SELECT d.id AS draft_id,d.skill_id,e.slug FROM skill_drafts d JOIN entity_pages e ON e.id=d.skill_id
     WHERE d.workspace_id=? AND (e.id=? OR e.slug=?)`).get(auth.workspace_id, input.id ?? null, input.slug ?? null) as { draft_id: string; skill_id: string; slug: string } | null;
@@ -55,7 +56,8 @@ export function legacyMarkTested(auth: AuthContext | undefined, input: {
       return { data: { skill_id: row.skill_id }, revision: draft.revision };
     });
   return { id: row.skill_id, created: false, slug: row.slug, type: "skill", workspace_id: auth.workspace_id,
-    updated_at: input.tested_at, revision: response.revision, draft_id: row.draft_id };
+    updated_at: new Date((db.query("SELECT updated_at_ms FROM skill_drafts WHERE id=?").get(row.draft_id) as { updated_at_ms: number }).updated_at_ms).toISOString(),
+    revision: response.revision, draft_id: row.draft_id };
 }
 
 export function sunsetAllowed(input: { release_at_ms: number; now_ms: number; subsequent_minor_releases: number; consumers_migrated: boolean }): boolean {

@@ -5,18 +5,19 @@ import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
 import { EMBED_PROVIDER, cosineSim, embedText } from "./embeddings.ts";
 import {
-  loadAllEmbeddings,
-  loadAllEntityEmbeddings,
   loadWorkspaceEmbeddings,
   loadWorkspaceEntityEmbeddings,
 } from "./embedding-store.ts";
 import { redactQuery } from "./recall_log_redaction.ts";
+import { FTS5_MATCH_NOTHING, analyzeFtsQuery, buildFtsMatch } from "./fts-query.ts";
 import { isReadOnlyInstance } from "../utils/instance-role.ts";
-import { runV4Recall, v4RecallRequested } from "./recall/v4-pipeline.ts";
-import { boundDefaultRecall } from "./recall/response-envelope.ts";
+import { runV4Recall, v4RecallRequested, type V4RecallResponse } from "./recall/v4-pipeline.ts";
+import { boundDefaultRecall, type FullBodyRequest } from "./recall/response-envelope.ts";
 import { chooseRerankBackend, rerankResults } from "./recall/rerank.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
+import { readLevel, visibleRowSql, visibleTranscriptSql } from "../auth/principal.ts";
 import {
+  archivedExclusionSql,
   resolveTemporalFilter,
   temporalDeletedSql,
   temporalWhereSql,
@@ -25,7 +26,6 @@ import {
 } from "./recall/temporal-filter.ts";
 
 import {
-  MAX_QUERY_CHARS,
   VECTOR_TYPE_FILTER_TYPES,
   getVectorTypeFilterMaxLen,
   hybridChannelTopN,
@@ -36,6 +36,14 @@ import {
 } from "./recall/config.ts";
 
 export type RecallMode = "fts5" | "hybrid";
+
+/**
+ * ADR-020 (supersedes F-078's same-owner reach): every recall channel reads the
+ * caller's own workspace only, whatever cross_workspace says.
+ */
+function workspaceScope(p: RecallParams, column: string): { sql: string; params: string[] } {
+  return { sql: `${column} = ?`, params: [p.workspace_id] };
+}
 
 /**
  * Read the recall mode from the environment. `fts5` (default) preserves
@@ -50,62 +58,56 @@ export function getRecallMode(): RecallMode {
 }
 
 /**
- * Sanitize a free-text query into an FTS5 MATCH expression.
- * Rules:
- *  - Strip FTS5 operators that confuse users (AND/OR/NOT/NEAR when not in quotes)
- *  - Escape double quotes
- *  - Each term gets prefix match (word*)
- *  - Terms joined with OR (any term matches), ranking handled by bm25 via
- *    ORDER BY rank in the SQL caller. Prior behaviour was implicit AND which
- *    zero'd out multi-word recall on morphology/synonym mismatches — see
- *    docs/recall-baseline.txt for the 20-query measurement.
- *  - Truncate to MAX_QUERY_CHARS
+ * Sanitize a free-text query into an FTS5 MATCH expression (fts-query.ts).
+ * Each term is quoted with prefix match and terms are joined with OR, ranking
+ * handled by bm25 via ORDER BY rank in the SQL caller. Prior behaviour was
+ * implicit AND which zero'd out multi-word recall on morphology/synonym
+ * mismatches — see docs/recall-baseline.txt for the 20-query measurement.
+ *
+ * INVALID_INPUT means nothing was asked (blank, structural characters or
+ * sub-minimum tokens only). Text with no searchable term ("🚀") is the
+ * no-match expression, so hybrid recall still reaches the vector channel.
  */
 export function sanitizeFtsQuery(query: string): string {
   if (!query || !query.trim()) {
     throw new QoopiaError("INVALID_INPUT", "query is required");
   }
-  let raw = query.slice(0, MAX_QUERY_CHARS).trim();
-
-  // Remove characters that break FTS5 parsing
-  raw = raw.replace(/["`]/g, " ");
-  raw = raw.replace(/[()[\]{}]/g, " ");
-
-  // Drop boolean operators (uppercase) so plain typing works. We apply our
-  // own OR-join below; user-typed AND/OR/NOT/NEAR are not honoured (yet).
-  const terms = raw
-    .split(/\s+/)
-    .filter((tok) => tok.length > 0)
-    .filter((tok) => !/^(AND|OR|NOT|NEAR)$/i.test(tok))
-    .map((tok) => tok.toLowerCase())
-    .filter((t) => t.length >= 2);
-
-  if (terms.length === 0) {
+  const { candidates, terms } = analyzeFtsQuery(query);
+  if (candidates.length === 0) {
     throw new QoopiaError("INVALID_INPUT", "query has no usable terms");
   }
-
-  // Prefix match each term, join with OR. Single-term queries collapse to
-  // `"term"*` (no OR), unchanged from the prior AND-join behaviour for
-  // mono-term cases.
-  return terms.map((t) => `"${t}"*`).join(" OR ");
+  // F-276: a prefix OR over stop words makes bm25 rank most of the shared
+  // index. Drop them unless nothing else was asked.
+  const meaningful = terms.filter((t) => !FTS_STOP_WORDS.has(t));
+  if (meaningful.length === 0) return buildFtsMatch(query) || FTS5_MATCH_NOTHING;
+  return meaningful.map((t) => `"${t}"*`).join(" OR ");
 }
+
+// ponytail: short EN/RU function-word list; a language-aware tokenizer if recall quality needs it.
+const FTS_STOP_WORDS = new Set(
+  ("a an the and or but if of to in on at by for with from as is are was were be been being it its " +
+    "this that these those what which who whom when where why how do does did done we you he she they " +
+    "me my our your their them us about into there here have has had not no so can will would should could " +
+    "и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по ее мне было вот от " +
+    "меня еще нет о из ему ли если уже или ни быть был до вас там они тут где есть для мы тебя их чем была " +
+    "это этот эти того этого этой кто про при об над под без после через между мой моя наш").split(" "),
+);
 
 export interface RecallParams {
   workspace_id: string;
   /** QRERUN-003 / ADR-014: agent_id of the caller — needed to surface
    *  their own private notes alongside workspace-visibility ones. */
   caller_agent_id: string;
-  /** QRERUN-003 / ADR-014: true for steward/claude-privileged; bypasses
-   *  the private-note filter. Distinct from `privileged` below, which
-   *  controls cross-workspace search. */
+  /** ADR-020: true for the steward and the owner — the whole workspace;
+   *  otherwise the caller's shared-context toggle decides (visibleRowSql). */
   is_admin: boolean;
   query: string;
   limit?: number;
   scope?: "notes" | "activity" | "sessions" | "entities" | "all";
   type?: string;
   project_id?: string;
+  /** Accepted for compatibility and ignored: no recall leaves the caller's workspace (ADR-020). */
   cross_workspace?: boolean;
-  privileged?: boolean;
   /** Include notes whose metadata.status = 'archived'. Default false — archived
    *  rows are hidden from recall to keep results focused on live state. */
   include_archived?: boolean;
@@ -210,6 +212,8 @@ export interface ResultRow {
   project_id: string | null;
   created_at: string;
   workspace_id: string;
+  /** Notes only: the server-recorded creator, unlike any author claim in metadata. */
+  agent_id?: string | null;
   rank: number;
   source?: "notes" | "activity" | "sessions" | "entity";
   /**
@@ -231,7 +235,7 @@ export interface ResultRow {
   valid_until_inferred?: number | null;
   completeness?: "complete" | "excerpt";
   omitted_fields?: string[];
-  full_body_request?: { tool: "note_get"; arguments: { id: string } };
+  full_body_request?: FullBodyRequest;
 }
 
 const GLOBAL_SOURCE_PRIORITY: Record<NonNullable<ResultRow["source"]>, number> = {
@@ -289,18 +293,14 @@ function ftsNoteCandidates(
   sanitized: string,
   topN: number,
 ): Array<ResultRow & { rowid_rank: number }> {
-  const canCrossWorkspace = !!(p.cross_workspace && p.privileged);
   const includeArchived = !!p.include_archived;
   const temporal = p._temporal ?? null;
   const deleted = temporalDeletedSql("n", temporal);
-  const where: string[] = [`notes_fts MATCH ?`, ...deleted.where];
-  const params: any[] = [sanitized, ...deleted.params];
-  if (!canCrossWorkspace) {
-    where.push(`n.workspace_id = ?`);
-    params.push(p.workspace_id);
-  }
-  where.push(`(n.visibility = 'workspace' OR n.agent_id = ? OR ? = 1)`);
-  params.push(p.caller_agent_id, p.is_admin ? 1 : 0);
+  const scope = workspaceScope(p, "n.workspace_id");
+  const where: string[] = [`notes_fts MATCH ?`, ...deleted.where, scope.sql];
+  const params: any[] = [sanitized, ...deleted.params, ...scope.params];
+  where.push(visibleRowSql("n"));
+  params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
   if (p.type) {
     where.push(`n.type = ?`);
     params.push(p.type);
@@ -309,11 +309,7 @@ function ftsNoteCandidates(
     where.push(`n.project_id = ?`);
     params.push(p.project_id);
   }
-  if (!includeArchived) {
-    where.push(
-      `(json_extract(n.metadata, '$.status') IS NULL OR json_extract(n.metadata, '$.status') != 'archived')`,
-    );
-  }
+  if (!includeArchived) where.push(archivedExclusionSql("n", temporal));
   // §7.3: темпоральный предикат применяется в канале, ДО RRF.
   const temporalSql = temporalWhereSql("n", temporal);
   where.push(...temporalSql.where);
@@ -351,6 +347,7 @@ function ftsNoteCandidates(
     project_id: r.project_id,
     created_at: r.created_at,
     workspace_id: r.workspace_id,
+    agent_id: r.agent_id,
     rank: r.rank,
     source: "notes" as const,
     ...(withTemporalColumns ? temporalRowFields(r) : {}),
@@ -403,10 +400,7 @@ async function vectorNoteCandidates(
 ): Promise<Array<{ note_id: string; sim: number; vector_rank: number }>> {
   try {
     const queryVec = await embedText(p.query);
-    const canCrossWorkspace = !!(p.cross_workspace && p.privileged);
-    const rows = canCrossWorkspace
-      ? loadAllEmbeddings()
-      : loadWorkspaceEmbeddings(p.workspace_id);
+    const rows = loadWorkspaceEmbeddings(p.workspace_id);
     if (rows.length === 0) return [];
 
     // Noise filter step 1 (v2, refs PR #25): drop short project/task
@@ -415,25 +409,17 @@ async function vectorNoteCandidates(
     // against almost any query, poisoning RRF. type='memory' is NOT
     // covered — short memory anchors ("Aidan port 18789") must remain
     // reachable via vector. Lookup (type, length) for the embedding ids
-    // in one round-trip.
+    // with hydrateFusedNotes' eligibility WHERE, without selecting text.
     const minLen = getVectorTypeFilterMaxLen();
     const ids = [...new Set(rows.map(r=>r.note_id))];
-    const metaRows:Array<{id:string;type:string;len:number}>=[];
-    for(let offset=0;offset<ids.length;offset+=500){const batch=ids.slice(offset,offset+500);
-      metaRows.push(...db.query(`SELECT id,type,length(text) AS len FROM notes WHERE id IN (${batch.map(()=>'?').join(',')})`).all(...batch) as typeof metaRows);}
-    const dropIds = new Set<string>();
-    for (const m of metaRows) {
-      if (VECTOR_TYPE_FILTER_TYPES.has(m.type) && m.len < minLen) {
-        dropIds.add(m.id);
-      }
-    }
     const eligible = new Set<string>();
     // SQLite variable limits stay bounded even for a large workspace.
     for (let offset=0; offset<ids.length; offset+=500) {
-      const batch=ids.slice(offset,offset+500);
-      for (const row of hydrateFusedNotes(p,batch.map(id=>({id,rrf:0})),batch.length)) eligible.add(row.id);
+      const where=fusedNotesWhere(p,ids.slice(offset,offset+500));
+      for (const m of db.prepare(`SELECT n.id,n.type,length(n.text) AS len FROM notes n WHERE ${where.sql}`).all(...where.params) as Array<{id:string;type:string;len:number}>)
+        if (!(VECTOR_TYPE_FILTER_TYPES.has(m.type) && m.len < minLen)) eligible.add(m.id);
     }
-    const filteredRows = rows.filter((r) => eligible.has(r.note_id) && !dropIds.has(r.note_id));
+    const filteredRows = rows.filter((r) => eligible.has(r.note_id));
 
     // Score every surviving candidate. 700 × cosine over 1024-d = ~3ms.
     const best=new Map<string,number>();
@@ -535,6 +521,38 @@ function rrfFuse(
 }
 
 /**
+ * The visibility / archived / type / project / temporal WHERE shared by
+ * hydrateFusedNotes and the vector-channel eligibility query, so a row
+ * reaching recall() via the vector channel respects the same boundary.
+ */
+function fusedNotesWhere(p: RecallParams, ids: string[]): { sql: string; params: any[] } {
+  const includeArchived = !!p.include_archived;
+  // Build a parameterised IN clause. SQLite has no array binding, so
+  // generate `?,?,?...` placeholders.
+  const placeholders = ids.map(() => "?").join(",");
+  const temporal = p._temporal ?? null;
+  const deleted = temporalDeletedSql("n", temporal);
+  const scope = workspaceScope(p, "n.workspace_id");
+  const where: string[] = [`n.id IN (${placeholders})`, ...deleted.where, scope.sql];
+  const params: any[] = [...ids, ...deleted.params, ...scope.params];
+  where.push(visibleRowSql("n"));
+  params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
+  if (p.type) {
+    where.push(`n.type = ?`);
+    params.push(p.type);
+  }
+  if (p.project_id) {
+    where.push(`n.project_id = ?`);
+    params.push(p.project_id);
+  }
+  if (!includeArchived) where.push(archivedExclusionSql("n", temporal));
+  const temporalSql = temporalWhereSql("n", temporal);
+  where.push(...temporalSql.where);
+  params.push(...temporalSql.params);
+  return { sql: where.join(" AND "), params };
+}
+
+/**
  * Hydrate the notes portion of a result set: take the fused note_ids,
  * load the rows from `notes`, apply the same visibility / archived /
  * type / project_id filters as ftsNoteCandidates so a row reaching
@@ -546,48 +564,17 @@ function hydrateFusedNotes(
   limit: number,
 ): ResultRow[] {
   if (rankedIds.length === 0) return [];
-  const includeArchived = !!p.include_archived;
-  const canCrossWorkspace = !!(p.cross_workspace && p.privileged);
-  // Build a parameterised IN clause. SQLite has no array binding, so
-  // generate `?,?,?...` placeholders.
-  const ids = rankedIds.map((r) => r.id);
-  const placeholders = ids.map(() => "?").join(",");
-  const temporal = p._temporal ?? null;
-  const deleted = temporalDeletedSql("n", temporal);
-  const where: string[] = [`n.id IN (${placeholders})`, ...deleted.where];
-  const params: any[] = [...ids, ...deleted.params];
-  if (!canCrossWorkspace) {
-    where.push(`n.workspace_id = ?`);
-    params.push(p.workspace_id);
-  }
-  where.push(`(n.visibility = 'workspace' OR n.agent_id = ? OR ? = 1)`);
-  params.push(p.caller_agent_id, p.is_admin ? 1 : 0);
-  if (p.type) {
-    where.push(`n.type = ?`);
-    params.push(p.type);
-  }
-  if (p.project_id) {
-    where.push(`n.project_id = ?`);
-    params.push(p.project_id);
-  }
-  if (!includeArchived) {
-    where.push(
-      `(json_extract(n.metadata, '$.status') IS NULL OR json_extract(n.metadata, '$.status') != 'archived')`,
-    );
-  }
-  const temporalSql = temporalWhereSql("n", temporal);
-  where.push(...temporalSql.where);
-  params.push(...temporalSql.params);
+  const where = fusedNotesWhere(p, rankedIds.map((r) => r.id));
   const withTemporalColumns = bitemporalEnabled();
   const rows = db
     .prepare(
-      `SELECT n.id, n.type, n.text, n.metadata, n.project_id, n.created_at, n.workspace_id
+      `SELECT n.id, n.type, n.text, n.metadata, n.project_id, n.created_at, n.workspace_id, n.agent_id
        ${withTemporalColumns ? TEMPORAL_SELECT : ""}
        FROM notes n
        ${withTemporalColumns ? TEMPORAL_JOIN : ""}
-       WHERE ${where.join(" AND ")}`,
+       WHERE ${where.sql}`,
     )
-    .all(...params) as Array<
+    .all(...where.params) as Array<
     TemporalColumns & {
       id: string;
       type: string;
@@ -596,6 +583,7 @@ function hydrateFusedNotes(
       project_id: string | null;
       created_at: string;
       workspace_id: string;
+      agent_id: string | null;
     }
   >;
   const byId = new Map(rows.map((r) => [r.id, r]));
@@ -611,6 +599,7 @@ function hydrateFusedNotes(
       project_id: r.project_id,
       created_at: r.created_at,
       workspace_id: r.workspace_id,
+      agent_id: r.agent_id,
       // Carry the RRF score in `rank` for transparency. Negate so the
       // existing "smaller rank == better" caller contract holds.
       rank: -rrf,
@@ -646,16 +635,12 @@ async function entityCandidates(
   diagnostics: RecallDiagnosticCollector | null = null,
 ): Promise<ResultRow[]> {
   if (topN <= 0) return [];
-  const canCrossWorkspace = !!(p.cross_workspace && p.privileged);
   const includeArchived = !!p.include_archived;
   const requestedMode = p.mode || getRecallMode();
+  const scope = workspaceScope(p, "e.workspace_id");
 
-  const where: string[] = [`entity_pages_fts MATCH ?`, `e.authority_private=0`];
-  const params: any[] = [sanitized];
-  if (!canCrossWorkspace) {
-    where.push(`e.workspace_id = ?`);
-    params.push(p.workspace_id);
-  }
+  const where: string[] = [`entity_pages_fts MATCH ?`, `e.authority_private=0`, scope.sql];
+  const params: any[] = [sanitized, ...scope.params];
   if (!includeArchived) {
     where.push(`e.status = 'active'`);
   }
@@ -726,9 +711,7 @@ async function entityCandidates(
   let vecHits: Array<{ entity_id: string; sim: number; vector_rank: number }> = [];
   try {
     const queryVec = await embedText(p.query);
-    const rows = canCrossWorkspace
-      ? loadAllEntityEmbeddings()
-      : loadWorkspaceEntityEmbeddings(p.workspace_id);
+    const rows = scope.params.flatMap((id) => loadWorkspaceEntityEmbeddings(id));
     if (rows.length > 0) {
       const scored = rows
         .map((r) => ({
@@ -795,13 +778,10 @@ async function entityCandidates(
              e.status, e.metadata, e.created_at, e.updated_at, 0 AS rank
         FROM entity_pages e
        WHERE e.id IN (${placeholders}) AND e.authority_private=0
-         ${canCrossWorkspace ? "" : "AND e.workspace_id = ?"}
+         AND ${scope.sql}
          ${includeArchived ? "" : "AND e.status = 'active'"}
     `;
-    const hydrateParams = canCrossWorkspace
-      ? missingIds
-      : [...missingIds, p.workspace_id];
-    const more = db.prepare(hydrateSql).all(...hydrateParams) as EntityFtsRow[];
+    const more = db.prepare(hydrateSql).all(...missingIds, ...scope.params) as EntityFtsRow[];
     for (const r of more) ftsIndex.set(r.id, r);
   }
 
@@ -822,17 +802,33 @@ async function entityCandidates(
   return out;
 }
 
+// F-100: SUM(length(text)) reads every note body, so it dominated recall latency.
+// ponytail: up to 60s stale per workspace; bounded by the number of workspaces.
+const CORPUS_CHARS_TTL_MS = 60_000;
+const corpusChars = new Map<string, { chars: number; at: number }>();
+function workspaceCorpusChars(workspaceId: string): number {
+  const cached = corpusChars.get(workspaceId);
+  if (cached && Date.now() - cached.at < CORPUS_CHARS_TTL_MS) return cached.chars;
+  const { chars } = db.prepare(
+    `SELECT COALESCE(SUM(length(text)),0) AS chars FROM notes WHERE workspace_id = ? AND deleted_at IS NULL`,
+  ).get(workspaceId) as { chars: number };
+  corpusChars.set(workspaceId, { chars, at: Date.now() });
+  return chars;
+}
+
 export async function recallBaseline(p: RecallParams) {
   const t0 = performance.now();
-  const principalQuery=db.query('SELECT active,type,tool_profile,policy_epoch,session_version FROM agents WHERE id=? AND workspace_id=?');
+  // metadata carries the ADR-020 shared-context toggle: switching it mid-call also revokes.
+  const principalQuery=db.query('SELECT active,type,tool_profile,policy_epoch,session_version,metadata FROM agents WHERE id=? AND workspace_id=?');
   const principalBefore=JSON.stringify(principalQuery.get(p.caller_agent_id,p.workspace_id));
   const subscription=memoryProfile(p.workspace_id);
+  // The model steps are optional: past this short wait for the shared slot, recall keeps its FTS
+  // ranking (MODEL_BUSY) instead of queueing behind a background checkpoint.
+  const modelDeadline=Date.now()+500,modelWait=()=>({wait_ms:Math.max(0,modelDeadline-Date.now())});
   let modelApplied=false,modelFailure:string|undefined,evidenceSufficient:boolean|undefined;
-  let recallBackendUsed: "fts" | "vector" | "hybrid" | "deep" | "deep_llm" = "fts";
   const limit = Math.min(Math.max(p.limit || 10, 1), 50);
   const sanitized = sanitizeFtsQuery(p.query);
   const scope = p.scope || "notes";
-  const canCrossWorkspace = !!(p.cross_workspace && p.privileged);
   const requestedMode = p.mode || getRecallMode();
   const diagnostics: RecallDiagnosticCollector | null = p._v4_diagnostics ? new Map() : null;
   // Pull a bounded pool from each eligible source. The extra depth gives the
@@ -890,7 +886,6 @@ export async function recallBaseline(p: RecallParams) {
         // Pure FTS — record the fallback for observability but still
         // use the FTS-only ordering.
         effectiveMode = "fts5-fallback";
-        recallBackendUsed = "fts";
         ftsRows.forEach((row) => mergeDiagnostic(diagnostics, "notes", row.id, {
           inner_rrf: 1 / (rrfK() + row.rowid_rank),
           post_rerank_rank: row.rowid_rank,
@@ -901,7 +896,6 @@ export async function recallBaseline(p: RecallParams) {
           noteResults.push(clean);
         }
       } else {
-        recallBackendUsed = "hybrid";
         const scores = rrfFuse(ftsRows, vecRows);
         for (const [id, innerRrf] of scores) {
           mergeDiagnostic(diagnostics, "notes", id, { inner_rrf: innerRrf });
@@ -930,7 +924,7 @@ export async function recallBaseline(p: RecallParams) {
 
   if(subscription&&(scope==='notes'||scope==='all')) {
     if(noteResults.length<3)try {
-      const expanded=await memoryText(p.workspace_id,'Suggest up to three short alternative search queries: synonyms or translations in the likely source languages. Preserve exact names and identifiers. Return a JSON array of strings inside result.',{query:p.query});
+      const expanded=await memoryText(p.workspace_id,'Suggest up to three short alternative search queries: synonyms or translations in the likely source languages. Preserve exact names and identifiers. Return a JSON array of strings inside result.',{query:p.query},modelWait());
       const queries=z.array(z.string().min(1).max(300)).max(3).parse(parseMemoryJson(expanded.text));
       const seen=new Set(noteResults.map(r=>r.id));
       for(const query of queries)for(const row of ftsNoteCandidates(p,sanitizeFtsQuery(query),20))if(!seen.has(row.id)){seen.add(row.id);noteResults.push(row);}
@@ -953,7 +947,6 @@ export async function recallBaseline(p: RecallParams) {
   // same final selection when the embedder is unavailable or explicitly off.
   const backend=chooseRerankBackend(p);
   if (backend && noteResults.length) {
-    recallBackendUsed=backend.label==='llm'?'deep_llm':'deep';
     rerankBackendLabel=backend.label;
     const judged=await rerankResults(p.query,noteResults,backend.endpoint,backend.timeoutMs,backend.label);
     rerankSucceeded=judged.mode==='rerank';
@@ -983,15 +976,12 @@ export async function recallBaseline(p: RecallParams) {
   if (scope === "activity" || scope === "all") {
     // Migration 009 added activity_fts (mirrors notes_fts pattern).
     // No vector channel for activity — summaries are short, FTS suffices.
-    const where: string[] = [`activity_fts MATCH ?`];
-    const params: any[] = [sanitized];
-    if (!canCrossWorkspace) {
-      where.push(`a.workspace_id = ?`);
-      params.push(p.workspace_id);
-    }
-    // QTHIRD-001: hide activity rows tied to sibling private notes.
-    where.push(`(a.visibility = 'workspace' OR a.agent_id = ? OR ? = 1)`);
-    params.push(p.caller_agent_id, p.is_admin ? 1 : 0);
+    const workspaces = workspaceScope(p, "a.workspace_id");
+    const where: string[] = [`activity_fts MATCH ?`, workspaces.sql];
+    const params: any[] = [sanitized, ...workspaces.params];
+    // QTHIRD-001 / ADR-020: siblings' rows only with shared context, never their private notes' rows.
+    where.push(visibleRowSql("a"));
+    params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
     const sql = `
       SELECT a.id, 'activity' as type, a.summary as text, a.details as metadata,
              a.project_id, a.created_at, a.workspace_id, rank
@@ -1033,15 +1023,12 @@ export async function recallBaseline(p: RecallParams) {
   }
 
   if (scope === "sessions" || scope === "all") {
-    // session_messages_fts — same private-message-only policy.
-    const where: string[] = [`session_messages_fts MATCH ?`];
-    const params: any[] = [sanitized];
-    if (!canCrossWorkspace) {
-      where.push(`m.workspace_id = ?`);
-      params.push(p.workspace_id);
-    }
-    where.push(`(m.agent_id = ? OR ? = 1)`);
-    params.push(p.caller_agent_id, p.is_admin ? 1 : 0);
+    // session_messages_fts — ADR-020: siblings' transcripts with shared context.
+    const workspaces = workspaceScope(p, "m.workspace_id");
+    const where: string[] = [`session_messages_fts MATCH ?`, workspaces.sql];
+    const params: any[] = [sanitized, ...workspaces.params];
+    where.push(visibleTranscriptSql("m"));
+    params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
     const sql = `
       SELECT m.id, m.role as type, m.content as text, m.metadata, NULL as project_id,
              m.created_at, m.workspace_id, m.session_id, rank
@@ -1109,7 +1096,7 @@ export async function recallBaseline(p: RecallParams) {
       text:passageForRerank(r.text,p.query,1600),metadata:{valid_from:r.valid_from,valid_until:r.valid_until,invalidated_at:r.invalidated_at}}));
     const output=await memoryText(p.workspace_id,
       'Select and rank only documents useful for answering the query. Consider time, explicit corrections, contradictions and exact names. Include conflicting evidence when relevant. An empty list is correct when nothing fits. Return JSON {"ids":["candidate id",...],"sufficient":true|false} inside result. Sufficient means these sources support an answer; this is an assessment, not a probability. Do not answer the query or invent candidate IDs.',
-      {query:p.query,documents});
+      {query:p.query,documents},modelWait());
     const judged=z.object({ids:z.array(z.string()).max(20),sufficient:z.boolean()}).strict().parse(parseMemoryJson(output.text));
     if(new Set(judged.ids).size!==judged.ids.length||judged.ids.some(id=>!/^\d+$/.test(id)||!pool[Number(id)]))throw new Error('Unknown or duplicate candidate');
     // Re-check permissions and live content after the asynchronous model call.
@@ -1120,8 +1107,10 @@ export async function recallBaseline(p: RecallParams) {
   } catch(error){modelFailure=error instanceof QoopiaError?error.code:'MODEL_INVALID_RESPONSE';finalResults=finalResults.slice(0,limit);}
   else finalResults=finalResults.slice(0,limit);
   if(JSON.stringify(principalQuery.get(p.caller_agent_id,p.workspace_id))!==principalBefore)throw new QoopiaError('REVOKED','Authority changed during recall');
+  const level=readLevel(p.caller_agent_id,p.is_admin);
   const liveNotes=new Map(hydrateFusedNotes(p,finalResults.filter(r=>r.source==='notes').map(r=>({id:r.id,rrf:0})),50).map(r=>[r.id,r]));
-  finalResults=finalResults.filter(r=>r.source==='notes'?liveNotes.get(r.id)?.text===r.text:r.source==='sessions'?!!db.query('SELECT 1 FROM session_messages WHERE id=? AND workspace_id=? AND (agent_id=? OR ?=1)').get(r.id,r.workspace_id,p.caller_agent_id,p.is_admin?1:0):r.source==='activity'?!!db.query("SELECT 1 FROM activity WHERE id=? AND workspace_id=? AND (visibility='workspace' OR agent_id=? OR ?=1)").get(r.id,r.workspace_id,p.caller_agent_id,p.is_admin?1:0):true);
+  finalResults=finalResults.filter(r=>r.source==='notes'?liveNotes.get(r.id)?.text===r.text:r.source==='sessions'?!!db.query(`SELECT 1 FROM session_messages WHERE id=? AND workspace_id=? AND ${visibleTranscriptSql()}`).get(r.id,r.workspace_id,p.caller_agent_id,level):r.source==='activity'?!!db.query(`SELECT 1 FROM activity WHERE id=? AND workspace_id=? AND ${visibleRowSql()}`).get(r.id,r.workspace_id,p.caller_agent_id,level):true);
+
   results.push(...finalResults);
   if (p._v4_diagnostics && diagnostics) {
     p._v4_diagnostics({ items: Object.fromEntries(diagnostics) });
@@ -1131,14 +1120,9 @@ export async function recallBaseline(p: RecallParams) {
     0,
   );
 
-  // Rough cost metric: compare to a naive full scan estimate (avg note 200
-  // chars × rows). Good enough to demonstrate savings to the agent.
-  const totalRow = db
-    .prepare(
-      `SELECT COUNT(*) as c, COALESCE(SUM(length(text)),0) as total_chars FROM notes WHERE workspace_id = ? AND deleted_at IS NULL`,
-    )
-    .get(p.workspace_id) as { c: number; total_chars: number };
-  const fullScanTokens = Math.ceil(totalRow.total_chars / 4);
+  // Rough cost metric: compare to a naive full scan estimate. Good enough to
+  // demonstrate savings to the agent.
+  const fullScanTokens = Math.ceil(workspaceCorpusChars(p.workspace_id) / 4);
   const savings =
     fullScanTokens > 0 ? 1 - tokensReturned / fullScanTokens : 0;
 
@@ -1216,8 +1200,10 @@ export async function recall(p: RecallParams) {
   // ни один запрос ниже не меняется (Flag-OFF byte-identical).
   const temporal = resolveTemporalFilter(p);
   const params = temporal === null ? p : { ...p, _temporal: temporal };
-  const response = !v4RecallRequested(params)
+  // Annotated: an unannotated union of the two shapes would drop trace_id/effective_options.
+  const response: V4RecallResponse = !v4RecallRequested(params)
     ? await recallBaseline(params)
     : await runV4Recall(params, recallBaseline);
-  return (params.scope ?? "notes") === "notes" ? boundDefaultRecall(response) : response;
+  // F-107: every scope, not only notes; sessions/all could otherwise return ~5MB of bodies.
+  return boundDefaultRecall(response);
 }

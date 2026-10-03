@@ -10,9 +10,11 @@
  *   4. registerTools end-to-end via a fake McpServer that captures the
  *      list of registered tool names. We assert that the per-agent
  *      filter actually trims the canonical tools, the admin tools, AND
- *      the V2 compat aliases — the V2 alias step is the load-bearing
- *      part of the patch (a 'read-only' agent must NOT see `create` /
+ *      the V2 compat aliases. The aliases register only with
+ *      QOOPIA_ENABLE_V2_COMPAT=true, so the alias checks that matter run
+ *      with the flag on (a 'read-only' agent must NOT see `create` /
  *      `update` / `delete` / `note`, otherwise the boundary is theatre).
+ *      tests/compat-aliases.test.ts calls each alias handler.
  *   5. agent_set_profile admin tool — including the self-demote and
  *      last-active-steward guards.
  */
@@ -221,9 +223,9 @@ describe("QSA-F: registerTools per-agent profile filter", () => {
     expect(fake.registered).not.toContain("agent_onboard");
     expect(fake.registered).not.toContain("agent_deactivate");
     expect(fake.registered).not.toContain("agent_set_profile");
-    // V2 compat mutator aliases blocked — this is the load-bearing
-    // part of the patch. If this fails, a read-only agent could
-    // bypass the boundary by calling `create` instead of `note_create`.
+    // V2 compat mutator aliases absent. With the flag off nothing
+    // registers; the flag-on profile check is the
+    // "QOOPIA_ENABLE_V2_COMPAT=true: read-only and no-destructive" test.
     expect(fake.registered).not.toContain("create");
     expect(fake.registered).not.toContain("update");
     expect(fake.registered).not.toContain("delete");
@@ -249,6 +251,34 @@ describe("QSA-F: registerTools per-agent profile filter", () => {
       expect(fake.registered).toContain("note");
       expect(fake.registered).toContain("update");
       expect(fake.registered).toContain("delete");
+    } finally {
+      if (old === undefined) delete process.env.QOOPIA_ENABLE_V2_COMPAT;
+      else process.env.QOOPIA_ENABLE_V2_COMPAT = old;
+    }
+  });
+
+  test("QOOPIA_ENABLE_V2_COMPAT=true: read-only and no-destructive still drop the mutator aliases", () => {
+    const old = process.env.QOOPIA_ENABLE_V2_COMPAT;
+    process.env.QOOPIA_ENABLE_V2_COMPAT = "true";
+    const registered = (agentToolProfile: AgentToolProfile) => {
+      const fake = makeFakeServer();
+      registerTools(
+        fake as unknown as Parameters<typeof registerTools>[0],
+        () => fakeAuth(),
+        "full",
+        { isSteward: true, agentToolProfile },
+      );
+      return fake.registered;
+    };
+    try {
+      const readOnly = registered("read-only");
+      expect(readOnly).toContain("list");
+      expect(readOnly).toContain("get");
+      for (const alias of ["create", "update", "delete", "note"]) expect(readOnly).not.toContain(alias);
+      const noDestructive = registered("no-destructive");
+      for (const alias of ["create", "note", "list", "get"]) expect(noDestructive).toContain(alias);
+      expect(noDestructive).not.toContain("update");
+      expect(noDestructive).not.toContain("delete");
     } finally {
       if (old === undefined) delete process.env.QOOPIA_ENABLE_V2_COMPAT;
       else process.env.QOOPIA_ENABLE_V2_COMPAT = old;
@@ -288,7 +318,6 @@ describe("QSA-F: agent_set_profile self-demote + last-steward guards", () => {
   let STEWARD_NAME = "";
   let SECOND_STEWARD_NAME = "";
   let STANDARD_NAME = "";
-  let WORKSPACE_SLUG = "";
 
   beforeAll(() => {
     runMigrations();
@@ -297,7 +326,6 @@ describe("QSA-F: agent_set_profile self-demote + last-steward guards", () => {
       slug: "qsa-f-profile",
     });
     WORKSPACE_ID = ws.id;
-    WORKSPACE_SLUG = ws.slug;
 
     STEWARD_NAME = "qsa-f-steward";
     createAgent({ name: STEWARD_NAME, workspaceSlug: ws.slug, type: "steward" });
@@ -307,10 +335,6 @@ describe("QSA-F: agent_set_profile self-demote + last-steward guards", () => {
     // steward in the SAME workspace which the index forbids in real
     // flows. We bypass the index because the test only needs a row that
     // *acts* as a steward for the last-steward count.
-    // Use claude-privileged here so we don't trip the per-workspace
-    // single-steward unique index, but treat it as admin via type query.
-    // For the purposes of the last-steward guard test we keep the row
-    // type='steward' inserted directly.
     SECOND_STEWARD_NAME = "qsa-f-steward-2";
     // Drop the partial unique index that guarantees one active steward
     // per workspace so this test can stage two stewards in one workspace
@@ -321,7 +345,6 @@ describe("QSA-F: agent_set_profile self-demote + last-steward guards", () => {
     const row = createAgent({
       name: SECOND_STEWARD_NAME,
       workspaceSlug: ws.slug,
-      type: "claude-privileged",
     });
     db.prepare(`UPDATE agents SET type = 'steward' WHERE id = ?`).run(row.id);
     // We deliberately do NOT recreate idx_one_steward inside this test

@@ -27,7 +27,7 @@ const events:unknown[]=[];
 server.on('request',(req,res)=>{
  const route=(req.url??'').split('?')[0]!;if(!route.startsWith('/mcp')&&!route.startsWith('/oauth')&&!route.startsWith('/.well-known'))return;
  const event:{at:string;path:string;method?:string;status?:number;rpc?:string;tool?:string}={at:new Date().toISOString(),path:route,method:req.method};events.push(event);
- if(route.startsWith('/mcp')&&req.method==='POST'){let body='';req.on('data',c=>{if(body.length<131072)body+=c.toString();});req.on('end',()=>{try{const input=JSON.parse(body);event.rpc=input.method;if(input.method==='tools/call')event.tool=input.params?.name;}catch{}body='';});}
+ if(route.startsWith('/mcp')&&req.method==='POST'){let body='';req.on('data',c=>{if(body.length<131072)body+=c.toString();});req.on('end',()=>{try{const input=JSON.parse(body);event.rpc=input.method;if(input.method==='tools/call')event.tool=input.params?.name;}catch{/* Non-JSON body: no rpc label. */}body='';});}
  res.once('finish',()=>{event.status=res.statusCode;fs.writeFileSync(path.join(out,'events.json'),JSON.stringify(events,null,2),{mode:0o600});});
 });
 function stop(){if(stopping)return;stopping=true;tunnel.kill('SIGTERM');edge?.close();server.closeAllConnections();server.close();fs.writeFileSync(path.join(out,'final-state.json'),JSON.stringify(connectionAction(owner.agent_id,{action:'status'}),null,2));db.close();fs.rmSync(root,{recursive:true,force:true});setTimeout(()=>process.exit(0),250).unref();}

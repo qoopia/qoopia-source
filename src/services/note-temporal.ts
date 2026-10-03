@@ -14,7 +14,8 @@ import { db } from "../db/connection.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { logActivity } from "./activity.ts";
-import { supersedePathExists } from "./note-relations.ts";
+import { readLevel, visibleRowSql } from "../auth/principal.ts";
+import { logger } from "../utils/logger.ts";
 import {
   assertSubjectKey,
   bitemporalEnabled,
@@ -23,6 +24,31 @@ import {
   temporalFeatureDisabled,
   toEpochMs,
 } from "../utils/temporal.ts";
+
+/** Lead over the wall clock beyond which a note write is reported as clock skew. */
+const CLOCK_SKEW_WARN_MS = 60_000;
+let lastSkewWarnMs = 0;
+
+/**
+ * Следующий строго возрастающий epoch-ms записи ноты — общий для notes.ts и
+ * note_supersede: max(часы, каждый floor + 1, глобальный high-water + 1).
+ * (note-relations.ts намеренно берёт high-water своего workspace.) Монотонность намеренная: откат часов не сдвигает строку
+ * назад и не меняет known_as_of задним числом. Но одна строка из будущего
+ * (откат часов, импорт со сбитыми часами) уводит вперёд все новые ноты, поэтому
+ * опережение больше CLOCK_SKEW_WARN_MS пишется в лог, не чаще раза в минуту.
+ */
+export function nextNoteWriteMs(...floors: number[]): number {
+  const row = db
+    .prepare(`SELECT COALESCE(MAX(updated_at_ms), 0) AS max_ms FROM notes`)
+    .get() as { max_ms: number };
+  const now = Date.now();
+  const ms = Math.max(now, row.max_ms + 1, ...floors.map((floor) => floor + 1));
+  if (ms - now > CLOCK_SKEW_WARN_MS && Math.abs(now - lastSkewWarnMs) > 60_000) {
+    lastSkewWarnMs = now;
+    logger.warn("note clock skew", { lead_ms: ms - now });
+  }
+  return ms;
+}
 
 export interface TemporalWriteFields {
   supersedes_id?: string | null;
@@ -45,7 +71,7 @@ interface PredecessorRow {
   invalidated_at_ms: number | null;
 }
 
-export interface ResolvedTemporalWrite {
+interface ResolvedTemporalWrite {
   valid_from_iso: string;
   valid_from_ms: number;
   valid_until_iso: string | null;
@@ -137,6 +163,31 @@ export function resolveTemporalWrite(input: {
     input.caller_agent_id,
     input.is_admin,
   );
+  assertSupersessionInterval(predecessor, validFromMs);
+  if (subjectKey === null) {
+    subjectKey = predecessor.subject_key;
+  } else if (predecessor.subject_key !== null && predecessor.subject_key !== subjectKey) {
+    throw new QoopiaError("INVALID_INPUT", "subject_key must be identical along a supersede chain");
+  }
+
+  return {
+    valid_from_iso: isoFromEpochMs(validFromMs),
+    valid_from_ms: validFromMs,
+    valid_until_iso: validUntilMs === null ? null : isoFromEpochMs(validUntilMs),
+    valid_until_ms: validUntilMs,
+    subject_key: subjectKey,
+    supersedes_id: predecessor.id,
+    predecessor,
+    expected_updated_at_ms: Number(fields.expected_superseded_updated_at_ms),
+  };
+}
+
+/**
+ * Интервал supersession — общий для note_create(supersedes_id) и note_supersede.
+ * Запрет будущего valid_from проверяют вызывающие: в resolveTemporalWrite он
+ * идёт ДО чтения предшественника, чтобы не менять приоритет ошибок.
+ */
+function assertSupersessionInterval(predecessor: PredecessorRow, validFromMs: number): void {
   if (predecessor.valid_from_ms !== null && validFromMs < predecessor.valid_from_ms) {
     throw new QoopiaError(
       "INVALID_INPUT",
@@ -157,22 +208,6 @@ export function resolveTemporalWrite(input: {
       "valid_from must precede the superseded note's valid_until",
     );
   }
-  if (subjectKey === null) {
-    subjectKey = predecessor.subject_key;
-  } else if (predecessor.subject_key !== null && predecessor.subject_key !== subjectKey) {
-    throw new QoopiaError("INVALID_INPUT", "subject_key must be identical along a supersede chain");
-  }
-
-  return {
-    valid_from_iso: isoFromEpochMs(validFromMs),
-    valid_from_ms: validFromMs,
-    valid_until_iso: validUntilMs === null ? null : isoFromEpochMs(validUntilMs),
-    valid_until_ms: validUntilMs,
-    subject_key: subjectKey,
-    supersedes_id: predecessor.id,
-    predecessor,
-    expected_updated_at_ms: Number(fields.expected_superseded_updated_at_ms),
-  };
 }
 
 /**
@@ -192,15 +227,16 @@ function readPredecessor(
               subject_key, valid_from_ms, valid_until_ms, invalidated_at_ms
          FROM notes
         WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
-          AND (visibility = 'workspace' OR agent_id = ? OR ? = 1)
+          AND ${visibleRowSql()}
         LIMIT 1`,
     )
-    .get(noteId, workspaceId, callerAgentId, isAdmin ? 1 : 0) as PredecessorRow | undefined;
+    .get(noteId, workspaceId, callerAgentId, readLevel(callerAgentId, isAdmin)) as PredecessorRow | undefined;
+
   if (!row) throw new QoopiaError("NOT_FOUND", `note ${noteId} not found`);
   return row;
 }
 
-export interface ClosePredecessorInput {
+interface ClosePredecessorInput {
   workspace_id: string;
   agent_id: string;
   is_admin: boolean;
@@ -310,6 +346,35 @@ export function closePredecessor(input: ClosePredecessorInput): { relation_id: s
 }
 
 /**
+ * Существует ли направленный supersedes-путь `fromNoteId -> … -> toNoteId`.
+ * Живёт здесь, а legacy-путь (`note-relations.ts`) импортирует его отсюда:
+ * оба пути применяют ТУ ЖЕ защиту от цикла, и импорт не замыкает цикл
+ * notes -> note-temporal -> note-relations -> notes.
+ */
+export function supersedePathExists(
+  workspaceId: string,
+  fromNoteId: string,
+  toNoteId: string,
+): boolean {
+  const row = db.prepare(
+    `WITH RECURSIVE walk(id) AS (
+       SELECT target_note_id
+         FROM note_relations
+        WHERE workspace_id = ? AND source_note_id = ? AND relation_type = 'supersedes'
+       UNION
+       SELECT r.target_note_id
+         FROM note_relations r
+         JOIN walk w ON r.source_note_id = w.id
+        WHERE r.workspace_id = ? AND r.relation_type = 'supersedes'
+     )
+     SELECT 1 AS found FROM walk WHERE id = ? LIMIT 1`,
+  ).get(workspaceId, fromNoteId, workspaceId, toNoteId) as
+    | { found: number }
+    | undefined;
+  return !!row;
+}
+
+/**
  * §6.4 — supersession для УЖЕ существующего преемника (`note_supersede` при
  * включённом флаге). Отличие от createNote только в том, что B не создаётся:
  * ему проставляется `supersedes_id`, а предшественник закрывается тем же
@@ -351,12 +416,7 @@ export function supersedeExistingNote(input: {
     if (successorValidFromMs === null) {
       throw new QoopiaError("INVALID_INPUT", "successor note has no valid_from");
     }
-    if (predecessor.valid_from_ms !== null && successorValidFromMs < predecessor.valid_from_ms) {
-      throw new QoopiaError(
-        "INVALID_INPUT",
-        "successor valid_from must not precede the superseded note's valid_from",
-      );
-    }
+    assertSupersessionInterval(predecessor, successorValidFromMs);
     if (
       predecessor.subject_key !== null &&
       successor.subject_key !== null &&
@@ -381,15 +441,11 @@ export function supersedeExistingNote(input: {
     }
     // Тот же инвариант строго возрастающего updated_at_ms, что и в
     // notes.nextNoteWriteTimestamp: high-water mark из БД, а не только часы.
-    const highWater = db
-      .prepare(`SELECT COALESCE(MAX(updated_at_ms), 0) AS max_ms FROM notes`)
-      .get() as { max_ms: number };
-    const closeMs = Math.max(
-      Date.now(),
-      highWater.max_ms + 1,
-      successor.updated_at_ms + 1,
-      predecessor.updated_at_ms + 1,
-    );
+    const closeMs = nextNoteWriteMs(successor.updated_at_ms, predecessor.updated_at_ms);
+    // Как в resolveTemporalWrite: замена не вступает в силу в будущем (§6.1).
+    if (successorValidFromMs > closeMs) {
+      throw new QoopiaError("INVALID_INPUT", "successor valid_from must not be in the future");
+    }
     // Ровно одна изменённая строка — предусловие закрытия предшественника.
     // Ноль строк означал бы гонку (кто-то проставил supersedes_id между
     // чтением и записью); закрывать A в этом случае нельзя.

@@ -8,12 +8,13 @@ import {loginBroker} from '../src/identity/broker.ts';
 import {accounts} from '../src/identity/account.ts';
 import {newsletter,NEWS_CONSENT_VERSION,newsMessage} from '../src/identity/newsletter.ts';
 import {prepareNews,sendNews} from '../src/identity/news-sender.ts';
+import {fakeFetch} from './helpers/fake-fetch.ts';
 
 test('news consent requires confirmed identity, stays optional, survives restart, and owner data is isolated',async()=>{
  const db=new Database(':memory:'),origin='https://auth.example.test',mails:string[]=[];
  const identify=accounts(db),ownerId=identify({email:'owner@example.test'}),otherId=identify({email:'other@example.test'});
  const config={origin,resendKey:'fixture',from:'fixture@example.test',googleClientId:'fixture',googleClientSecret:'fixture',owner:{accountId:ownerId,releaseTag:'fixture'}};
- const provider=(async(_url,init)=>{mails.push(JSON.parse(String(init?.body)).text);return Response.json({id:'fixture'});}) as typeof fetch;
+ const provider=fakeFetch(async(_url,init)=>{mails.push(JSON.parse(String(init?.body)).text);return Response.json({id:'fixture'});});
  let handler=loginBroker(db,config,provider);const jar:Record<string,string>={};
  async function call(path:string,body?:unknown,cookies=jar,from=origin){
   const r=await handler(new Request(origin+path,{method:body===undefined?'GET':'POST',headers:{cookie:Object.entries(cookies).map(([k,v])=>k+'='+v).join('; '),origin:from,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}),'fixture');
@@ -24,10 +25,11 @@ test('news consent requires confirmed identity, stays optional, survives restart
   expect((await call('/profile/news',{subscribed:true,language:'ru'})).status).toBe(401);
   expect((await call('/owner')).status).toBe(401);
   expect((await call('/profile/start',{method:'email',email:'owner@example.test',news:'yes'})).status).toBe(400);
-  expect((await call('/profile/start',{method:'email',email:'owner@example.test',news:true,language:'ru'})).status).toBe(200);
+  const started=await call('/profile/start',{method:'email',email:'owner@example.test',news:true,language:'ru'});expect(started.status).toBe(200);
+  const code=(await started.json() as {code:string}).code;
   expect(newsletter(db).preference(ownerId)).toBeNull();
   const token=new URL(mails.at(-1)!.match(/https:\/\/\S+/)![0]).hash.slice(1);
-  expect((await call('/confirm',{token})).status).toBe(200);expect((await call('/profile/poll',{})).status).toBe(200);
+  expect((await call('/confirm',{token,code})).status).toBe(200);expect((await call('/profile/poll',{})).status).toBe(200);
   expect(newsletter(db).preference(ownerId)?.subscribed).toBe(1);
   expect(db.query('SELECT source,text_version,language FROM news_consents').get()).toEqual({source:'signup',text_version:NEWS_CONSENT_VERSION,language:'ru'});
   expect(db.query('SELECT login_count FROM account_activity WHERE account_id=?').get(ownerId)).toEqual({login_count:1});
@@ -65,7 +67,7 @@ test('newsletter sending is explicit, suppresses opt-outs, records acceptance an
  const db=new Database(':memory:'),identify=accounts(db),id=identify({email:'reader@example.test'}),store=newsletter(db),account={id,email:'reader@example.test'};
  const config={origin:'https://auth.example.test',from:'Qoopia <fixture@example.test>',postalAddress:'Fixture address',resendKey:'fixture'};
  let sends=0;const payloads:Record<string,unknown>[]=[];
- const provider=(async(_url,init)=>{sends++;payloads.push(JSON.parse(String(init?.body)));return Response.json({id:'provider-fixture'});}) as typeof fetch;
+ const provider=fakeFetch(async(_url,init)=>{sends++;payloads.push(JSON.parse(String(init?.body)));return Response.json({id:'provider-fixture'});});
  try{
   store.change(account,true,'ru','profile');const campaign=prepareNews(db,'Новости','Полезные инструкции.','ru');
   await expect(sendNews(db,campaign,{...config,postalAddress:''},provider)).rejects.toThrow('SENDER_DETAILS_REQUIRED');expect(sends).toBe(0);
@@ -74,7 +76,7 @@ test('newsletter sending is explicit, suppresses opt-outs, records acceptance an
   expect(payloads[0]!.to).toEqual(['reader@example.test']);expect(String(payloads[0]!.text)).toContain('Отписаться');
   await sendNews(db,campaign,config,provider);expect(sends).toBe(1);
   const uncertain=prepareNews(db,'Следующий релиз','Содержание','ru');
-  const timeout=(async()=>{sends++;throw new Error('network timeout');}) as typeof fetch;
+  const timeout=fakeFetch(async()=>{sends++;throw new Error('network timeout');});
   expect((await sendNews(db,uncertain,config,timeout)).uncertain).toBe(1);
   await sendNews(db,uncertain,config,provider);expect(sends).toBe(2);
   expect(db.query('SELECT status FROM news_deliveries WHERE campaign_id=?').get(uncertain)).toEqual({status:'uncertain'});
@@ -85,10 +87,10 @@ test('owner page uses a bounded current snapshot and escapes private values',asy
  const root=mkdtempSync(join(tmpdir(),'qoopia-owner-')),db=new Database(':memory:');
  try{
   const id=accounts(db)({email:'<owner>@example.test'}),token='owner-fixture';
-  const file=join(root,'latest.json');writeFileSync(file,JSON.stringify({generated_at:new Date().toISOString(),latest:[{source:'github_releases',metric:'asset_downloads',value:7,observed_at:new Date().toISOString(),dimensions:{tag:'current',file:'mac.dmg'}}],event_daily:[],source_runs:['github_releases','account_service','first_party_events'].map(source=>({source,status:'ok',finished_at:new Date().toISOString()}))}));
+  const file=join(root,'latest.json');writeFileSync(file,JSON.stringify({generated_at:new Date().toISOString(),latest:[{source:'github_releases',metric:'asset_downloads',value:7,observed_at:new Date().toISOString(),dimensions:{tag:'current',file:'mac.dmg'}}],event_daily:[],download_clicks:{total:3,last_7d:2,last_30d:3,since:new Date().toISOString(),by_release:[{platform:'linux',version:'5.0.14',clicks:2}],daily:[]},source_runs:['github_releases','account_service','first_party_events'].map(source=>({source,status:'ok',finished_at:new Date().toISOString()}))}));
   const origin='https://auth.example.test',handler=loginBroker(db,{origin,resendKey:'fixture',from:'fixture@example.test',googleClientId:'fixture',googleClientSecret:'fixture',owner:{accountId:id,analyticsFile:file,releaseTag:'current'}});
   db.query('INSERT INTO profile_sessions VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'),id,Date.now()+10000);
   const r=await handler(new Request(origin+'/owner',{headers:{cookie:'__Host-qoopia_profile='+token}}),'fixture'),html=await r.text();
-  expect(r.status).toBe(200);expect(html).toContain('Данные свежие');expect(html).toContain('macOS Apple Silicon');expect(html).toContain('&lt;owner&gt;');expect(html).not.toContain('<owner>');
+  expect(r.status).toBe(200);expect(html).toContain('Данные свежие');expect(html).toContain('macOS Apple Silicon');expect(html).toContain('Нажатия «Скачать» на сайте');expect(html).toContain('<td><!--email_off-->Linux x64<!--/email_off--></td><td><!--email_off-->5.0.14<!--/email_off--></td><td><!--email_off-->2<!--/email_off--></td>');expect(html).toContain('&lt;owner&gt;');expect(html).not.toContain('<owner>');
  }finally{db.close();rmSync(root,{recursive:true,force:true});}
 });

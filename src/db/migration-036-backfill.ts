@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { contentSchema, COMPILER, contentDigest, missingRequirements } from "../skills/format.ts";
-import { canonical, digest } from "../skills/commands.ts";
+import { canonical, digest } from "../skills/canonical.ts";
 
 /** Existing generic skill rows gain an immutable original, never an inferred human author. Runs inside migration transaction. */
 export function backfill036(database: Database) {
@@ -25,9 +25,12 @@ export function backfill036(database: Database) {
     }
     const metadata = JSON.parse(row.metadata);
     const list = (value: unknown): string[] => Array.isArray(value) && value.every((v) => typeof v === "string") ? value.slice(0, 100) : [];
-    const content = contentSchema.parse({ title: row.title, purpose: row.summary ?? "", trigger: list(metadata.trigger_conditions),
+    const parsed = contentSchema.safeParse({ title: row.title, purpose: row.summary ?? "", trigger: list(metadata.trigger_conditions),
       procedure: list(metadata.exact_steps), verification: list(metadata.verification_gates), failure_modes: list(metadata.failure_modes),
       rollback: typeof metadata.rollback === "string" ? metadata.rollback : "", compatibility: list(metadata.prerequisites) });
+    // Legacy rows were not bounded like contentSchema; refuse by id instead of truncating the original.
+    if (!parsed.success) throw new Error(`Migration036 cannot compile legacy skill identity ${row.id} (${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}); shorten it or restore pre-migrate backup`);
+    const content = parsed.data;
     const now = Date.parse(row.updated_at);
     if (!Number.isSafeInteger(now)) throw new Error(`Migration036 requires an unambiguous updated_at for skill identity ${row.id}; restore pre-migrate backup`);
     const draft = randomUUID(), revision = randomUUID();

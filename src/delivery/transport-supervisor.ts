@@ -20,7 +20,7 @@ export function transportSupervisor(options:{root:string;upstreamPort:number;bin
     expires=0;const process=child;child=undefined;
     if(process){process.kill('SIGTERM');const force=setTimeout(()=>process.kill('SIGKILL'),3000);force.unref();process.once('close',()=>clearTimeout(force));}
     edge?.closeAllConnections();edge?.close();edge=undefined;metrics=0;
-    if(socketPath){try{fs.unlinkSync(socketPath);}catch{}socketPath=undefined;}
+    if(socketPath){try{fs.unlinkSync(socketPath);}catch{/* Already gone; a leftover socket in the private dir is harmless. */}socketPath=undefined;}
   };
   const startChild=async(c:TransportConfig,started:number)=>{
     if(!c.device||!c.tunnel)throw new Error('Device enrollment required');

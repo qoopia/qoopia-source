@@ -44,7 +44,7 @@
  * filesystem writes happen. Without --apply both are no-ops.
  *
  * Hard rule (per task brief): NEVER --apply against
- * /home/askhat/.ductor-corsairmain/workspace/memory_system/MAINMEMORY.md
+ * ~/.<agent-home>/workspace/memory_system/MAINMEMORY.md
  * from this PR. Only synthetic /tmp inputs in tests.
  */
 import fs from "node:fs";

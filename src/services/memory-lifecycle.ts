@@ -4,7 +4,7 @@ import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { recordLifecycleChange } from "../utils/observability.ts";
 import { getNote } from "./notes.ts";
 import { resolveNoteProvenance } from "./provenance.ts";
-import { assertWriteScope, isAdmin } from "../auth/principal.ts";
+import { assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
 
 interface LifecycleRow {
   workspace_id: string;
@@ -98,7 +98,7 @@ export function computeLifecycleFactor(input: {
     input.auth.workspace_id,
     input.note_id,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   const lifecycle = rowOrDefault(input.auth.workspace_id, input.note_id);
   const reason = protectedReason(input.auth.workspace_id, note, lifecycle);
@@ -150,9 +150,9 @@ export function computeLifecycleFactor(input: {
 
 export function confirmMemory(input: { auth: AuthContext; note_id: string }) {
   assertWriteScope(input.auth);
-  getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, isAdmin(input.auth));
+  getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
   const result = db.transaction(() => {
-    getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, isAdmin(input.auth));
+    getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
     const timestamp = nowIso();
     db.prepare(
       `INSERT INTO memory_lifecycle
@@ -178,7 +178,7 @@ export function setMemoryPin(input: {
   if (!PIN_TYPES.has(input.auth.type)) {
     throw new QoopiaError("FORBIDDEN", "pin and unpin require owner or steward capability");
   }
-  getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, isAdmin(input.auth));
+  getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
   const result = db.transaction(() => {
     // Recheck live authorization and note visibility inside the transaction.
     const actor = db.prepare(
@@ -189,7 +189,7 @@ export function setMemoryPin(input: {
     if (!actor || actor.active !== 1 || !PIN_TYPES.has(actor.type)) {
       throw new QoopiaError("FORBIDDEN", "pin authorization changed");
     }
-    getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, isAdmin(input.auth));
+    getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
     const timestamp = nowIso();
     db.prepare(
       `INSERT INTO memory_lifecycle (workspace_id, note_id, owner_pinned, updated_at)
@@ -205,7 +205,7 @@ export function setMemoryPin(input: {
 }
 
 /** Synchronous primitive used by the bounded write-behind worker. */
-export function recordAccessReinforcement(input: {
+function recordAccessReinforcement(input: {
   workspace_id: string;
   note_id: string;
   recalled_at?: string;
@@ -252,7 +252,7 @@ export function getMemoryLifecycle(input: { auth: AuthContext; note_id: string }
     input.auth.workspace_id,
     input.note_id,
     input.auth.agent_id,
-    isAdmin(input.auth),
+    seesWholeWorkspace(input.auth),
   );
   const state = rowOrDefault(input.auth.workspace_id, input.note_id);
   return {

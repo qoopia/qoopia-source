@@ -1,7 +1,7 @@
 import { appendManagedLog } from "./managed-logs.ts";
 import { hash } from "./fs.ts";
 import { env } from "./env.ts";
-import { detectSecretLabels } from "./secret-guard.ts";
+import { redactSecretSpans } from "./secret-guard.ts";
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 const threshold = LEVELS[env.LOG_LEVEL] ?? LEVELS.info;
@@ -12,8 +12,8 @@ export function redactLogContext(value: unknown, key = "", depth = 0): unknown {
   if (SENSITIVE_KEY.test(key)) return "[REDACTED]";
   if (depth > 6) return "[TRUNCATED]";
   if (typeof value === "string") {
-    if (detectSecretLabels(value).length > 0) return "[REDACTED_SECRET]";
-    return value.length > 1_024 ? `${value.slice(0, 1_024)}...[TRUNCATED]` : value;
+    const masked = redactSecretSpans(value);
+    return masked.length > 1_024 ? `${masked.slice(0, 1_024)}...[TRUNCATED]` : masked;
   }
   if (Array.isArray(value)) {
     return value.slice(0, 100).map((item) => redactLogContext(item, key, depth + 1));
@@ -29,11 +29,17 @@ export function redactLogContext(value: unknown, key = "", depth = 0): unknown {
 }
 
 export function sanitizeLogMessage(message: string): string {
-  if (detectSecretLabels(message).length > 0) return "[REDACTED_SECRET_MESSAGE]";
-  const bounded = message.length > 2_048 ? `${message.slice(0, 2_048)}...[TRUNCATED]` : message;
+  // Mask secret spans (not the whole line) before bounding: a cut could shorten
+  // a token below its detector floor and leak the fragment.
+  const masked = redactSecretSpans(message);
+  const bounded = masked.length > 2_048 ? `${masked.slice(0, 2_048)}...[TRUNCATED]` : masked;
   return bounded
     .replace(/((?:authorization|cookie|password|secret|token|api[_-]?key|private[_-]?key|body|content|query|note[_-]?text)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|\S+)/gi, "$1[REDACTED]")
-    .replace(/([?&][A-Za-z0-9_.~-]{1,100}=)[^&\s]*/g, "$1[REDACTED]");
+    .replace(/([?&][A-Za-z0-9_.~-]{1,100}=)[^&\s]*/g, "$1[REDACTED]")
+    // One call, one line: escape CR/LF, NEL, LS/PS, ESC and other controls so
+    // request data interpolated into a message cannot forge log lines.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 function fmt(level: string, msg: string, ctx?: unknown): string {
@@ -67,3 +73,15 @@ export const logger = {
     if (threshold <= LEVELS.error) console.error(fmt("error", msg, ctx));
   },
 };
+
+// A background loop fails on every tick while its cause lasts: one warn per
+// task per minute keeps it visible without flooding the log. Only the error
+// message is logged, never the data the task was handling.
+export function backgroundFailure(task: string, everyMs = 60_000) {
+  let lastAt = -Infinity;
+  return (error: unknown) => {
+    if (Date.now() - lastAt < everyMs) return;
+    lastAt = Date.now();
+    logger.warn(`${task} failed`, { error: error instanceof Error ? error.message : String(error) });
+  };
+}

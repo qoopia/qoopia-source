@@ -7,9 +7,9 @@ const inputSchema=z.object({runtime_kind:z.enum(['codex','claude_code']),connect
 type Expected={root:string;instance:string;bundle:string;generation:string;port:number;build:string;version:string;schema:number};
 
 function parseMcp(text:string){
-  try{return JSON.parse(text);}catch{}
+  try{return JSON.parse(text);}catch{/* Not plain JSON; try SSE frames. */}
   const frames=text.split('\n').filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trim()).filter(Boolean);
-  for(let i=frames.length-1;i>=0;i--)try{return JSON.parse(frames[i]!);}catch{}
+  for(let i=frames.length-1;i>=0;i--)try{return JSON.parse(frames[i]!);}catch{/* Try the previous frame. */}
   throw new Error('invalid MCP response');
 }
 

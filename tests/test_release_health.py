@@ -1,5 +1,9 @@
+import base64
 import datetime
+import hashlib
+import hmac
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -34,6 +38,22 @@ class ReleaseHealthTests(unittest.TestCase):
         for body in [b'[]', b'not JSON', b'null']:
             with self.subTest(body=body), patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, body, b'')):
                 self.assertFalse(health.request(('auth', 'https://example.invalid'))[1]['ok'])
+
+    def test_structured_not_ready_names_the_failed_check(self):
+        body = b'{"status":"not_ready","checks":{"schema_version":"ok","storage":"degraded","Odd Key<script>":"bad"}}'
+        with patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, body + b'\n503', b'')):
+            name, result = health.request(('memory', 'https://example.invalid/ready'))
+        self.assertEqual(result, {'ok': False, 'error': 'NOT_READY', 'failed_checks': ['storage']})
+        self.assertEqual(health.request_issues({name: result, 'auth': {'ok': False, 'error': 'HTTP_OR_NETWORK_FAILURE'}}), ['memory:not_ready:storage', 'auth'])
+        self.assertEqual(health.request_issues({'review': {'ok': False, 'error': 'NOT_READY', 'failed_checks': []}}), ['review:not_ready:unknown'])
+
+    def test_readiness_without_the_not_ready_shape_stays_a_generic_failure(self):
+        for body, code in [(b'<html>Cloudflare 503</html>', b'503'), (b'{"status":"not_ready"}', b'503'), (b'private response', b'502')]:
+            with self.subTest(code=code), patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, body + b'\n' + code, b'')):
+                result = health.request(('memory', 'https://example.invalid/ready'))[1]
+            self.assertEqual(result, {'ok': False, 'error': 'HTTP_OR_NETWORK_FAILURE'})
+        with patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'{"status":"ready"}\n200', b'')):
+            self.assertEqual(health.request(('review', 'https://example.invalid/ready'))[1]['data'], {'status': 'ready'})
 
     def test_timeout_is_failure(self):
         with patch.object(health.subprocess, 'run', side_effect=subprocess.TimeoutExpired('curl', 15)):
@@ -144,6 +164,76 @@ class MirrorTests(unittest.TestCase):
     def test_unreachable_mirror_does_not_expose_git_error(self):
         with patch.object(health.subprocess, 'check_output', side_effect=subprocess.CalledProcessError(128, ['git'])):
             self.assertEqual(health.mirror_issues('/example', '5.0.9'), ['git_mirror:unavailable'])
+
+
+class AlertDeliveryTests(unittest.TestCase):
+    KEY = bytes(range(32))
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='qoopia-health-alert-')
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root, ignore_errors=True))
+        self.channels = os.path.join(self.root, 'channels.json')
+        policy = {'format': 'qoopia-alert-channels/1', 'channels': [{'id': 'owner', 'url': 'https://alerts.example.test/qoopia', 'allowed_hosts': ['alerts.example.test'], 'signing_key_base64url': base64.urlsafe_b64encode(self.KEY).rstrip(b'=').decode()}]}
+        with open(os.open(self.channels, os.O_WRONLY | os.O_CREAT, 0o600), 'w') as f:
+            json.dump(policy, f)
+        self.sent = []
+
+    def receiver(self, accept=True):
+        def run(args, input=None, **_):
+            self.assertEqual(args[0], 'curl')
+            self.assertIn('=https', args)
+            signature = 'sha256=' + base64.urlsafe_b64encode(hmac.new(self.KEY, input, hashlib.sha256).digest()).rstrip(b'=').decode()
+            self.assertIn('x-qoopia-signature: ' + signature, args)
+            event = json.loads(input)
+            self.sent.append(event)
+            receipt = {'accepted': True, 'event_id': event['id'], 'payload_sha256': hashlib.sha256(input).hexdigest()} if accept else {}
+            return subprocess.CompletedProcess(args, 0, json.dumps(receipt).encode(), b'')
+        return run
+
+    def run_main(self, channels, receiver, auth=None, extra=()):
+        argv = ['release-health.py', '--root', self.root, '--source', 'a' * 40, '--schema-version', '47', '--version', '5.0.14', '--ios-version', '5.0.8', '--ios-build', '3',
+                '--analytics', os.path.join(self.root, 'none.json'), '--git-mirror', os.path.join(self.root, 'none'), '--alert-channels', channels, *extra]
+
+        def request(item):
+            if item[0] == 'auth' and auth is not None:
+                return 'auth', {'ok': True, 'data': auth}
+            return item[0], {'ok': False, 'error': 'HTTP_OR_NETWORK_FAILURE'}
+        with patch.object(sys, 'argv', argv), patch.object(health, 'request', request), \
+                patch.object(health, 'mirror_issues', return_value=[]), patch.object(health.subprocess, 'run', side_effect=receiver), patch('builtins.print'):
+            code = health.main()
+        return code, json.loads(Path(self.root, 'status.json').read_text())
+
+    def test_sign_in_service_must_report_the_expected_release_sha(self):
+        good = {'version': '5.0.14', 'ready': True, 'release_sha': 'a' * 40}
+        issues = lambda auth, extra=(): self.run_main('', None, auth, extra)[1]['issues']
+        self.assertNotIn('auth:unexpected_state', issues(good))
+        self.assertIn('auth:unexpected_state', issues({**good, 'release_sha': 'b' * 40}))
+        self.assertIn('auth:unexpected_state', issues({'version': '5.0.14', 'ready': True}))
+        self.assertNotIn('auth:unexpected_state', issues({**good, 'release_sha': 'b' * 40}, ('--auth-source', 'b' * 40)))
+
+    def test_alert_transition_reaches_owner_channel_once(self):
+        code, status = self.run_main(self.channels, self.receiver())
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0]['event_type'], 'operational_alert')
+        self.assertEqual(self.sent[0]['payload']['subject'], 'ALERT')
+        self.assertEqual(status['alert']['state'], 'delivered')
+        self.run_main(self.channels, self.receiver())
+        self.assertEqual(len(self.sent), 1)
+
+    def test_failed_delivery_is_visible_and_retried(self):
+        code, status = self.run_main(self.channels, self.receiver(accept=False))
+        self.assertEqual(code, 1)
+        self.assertEqual(status['alert']['state'], 'failed')
+        code, status = self.run_main(self.channels, self.receiver())
+        self.assertEqual(status['alert']['state'], 'delivered')
+        self.assertEqual([e['id'] for e in self.sent], [self.sent[0]['id']] * 2)
+
+    def test_unconfigured_monitor_sends_nothing(self):
+        def forbidden(*_a, **_k):
+            raise AssertionError('no channel configured')
+        _, status = self.run_main('', forbidden)
+        self.assertEqual(status['alert']['state'], 'not_configured')
 
 
 if __name__ == '__main__':

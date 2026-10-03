@@ -46,6 +46,26 @@ describe("agent instruction path validation", () => {
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toContain("tools/CLAUDE/GEMINI/AGENTS.md");
   });
+
+  test("checks @imports and anchored links, and resolves links from the file that contains them [F-232]", () => {
+    const root = scratch();
+    fs.mkdirSync(path.join(root, "docs/sub"), { recursive: true });
+    fs.writeFileSync(path.join(root, "docs/real.md"), "# Real\n");
+    fs.writeFileSync(path.join(root, "present.md"), "# Present\n");
+    fs.writeFileSync(
+      path.join(root, "CLAUDE.md"),
+      "@present.md\n@missing.md\n[x](missing.md#a)\n[y](docs/real.md#section)\n",
+    );
+    fs.writeFileSync(path.join(root, "docs/sub/NESTED.md"), "[up](../real.md)\n");
+    const result = validateAgentInstructionPaths({
+      workspaceRoot: root,
+      instructionFiles: ["CLAUDE.md", "docs/sub/NESTED.md"],
+    });
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors.join("\n")).toContain("@missing.md");
+    expect(result.errors.join("\n")).toContain("missing.md#a");
+    expect(result.checkedReferences).toContain(path.join(root, "docs/real.md"));
+  });
 });
 
 describe("fleet tool tree digest", () => {

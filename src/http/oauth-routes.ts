@@ -8,14 +8,14 @@ import { connectionOrigin, connectionResource, connectionIssuer, resourceConnect
 import { ownerIdentity } from "../identity/local.ts";
 import {
   checkDashboardAuth,
+  dashboardMutationAllowed,
   originAllowed as dashboardOriginAllowed,
   dashboardOriginDiagnostics,
   type DashboardAuth,
 } from "../dashboard-api.ts";
 import type { AuthContext } from "../auth/middleware.ts";
-import { stringArrayEquals, stringArraySubsetOf, isChatGptRedirectArray } from "../auth/dcr-policy.ts";
+import { stringArrayEquals, stringArraySubsetOf, isChatGptRedirectArray, CLAUDE_AI_REDIRECT_URI } from "../auth/dcr-policy.ts";
 import {
-  createAuthorizationCode,
   exchangeCodeForTokens,
   refreshTokens,
   revokeTokenForClient,
@@ -24,12 +24,11 @@ import {
   getClient,
   createConsentTicket,
   getConsentTicket,
-  rememberFinalizeRedirect,
+  finalizeConsentTicket,
   replayFinalizeRedirect,
   consentTicketStatus,
   approveConsentTicket,
   denyConsentTicket,
-  redeemConsentTicket,
   consumeConsentNonce,
   rotateConsentNonce,
   pruneConsentTickets,
@@ -38,6 +37,7 @@ import {
   describeScope,
   assertValidPkceS256Challenge,
   validateOAuthResource,
+  type OAuthScope,
 } from "../auth/oauth.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { db } from "../db/connection.ts";
@@ -73,23 +73,37 @@ function accountConsentAllowed(ticket: NonNullable<ReturnType<typeof getConsentT
 // rotated atomically. The dashboard-side approve POST uses
 // consumeConsentNonce() for one-time semantics.
 
-export {rememberFinalizeRedirect,replayFinalizeRedirect} from '../auth/oauth.ts';
+type ConsentLanguage = "en" | "ru";
+/** Same order as the dashboard's i18n.js: ?lang, the shared language cookie, then the browser language. */
+function consentLanguage(req: IncomingMessage): ConsentLanguage {
+  const query = new URL(req.url || "/", "http://localhost").searchParams.get("lang");
+  if (query === "en" || query === "ru") return query;
+  const cookie = /(?:^|;\s*)qoopia_language=(en|ru)(?:;|$)/.exec(req.headers.cookie || "")?.[1];
+  if (cookie === "en" || cookie === "ru") return cookie;
+  return /^\s*ru\b/i.test(req.headers["accept-language"] || "") ? "ru" : "en";
+}
+const scopeDescriptionRu: Record<OAuthScope, string> = {
+  "mcp:read": "Читать память и журнал аудита Qoopia без изменений.",
+  "mcp:write": "Создавать и обновлять записи Qoopia без удаления.",
+  "mcp:admin": "Удаляющие и административные операции MCP.",
+};
 
-export function oauthAlreadyCompletedHtml(): string {
+function oauthAlreadyCompletedHtml(lang: ConsentLanguage = "en"): string {
+  const tr = (en: string, ru: string) => (lang === "ru" ? ru : en);
   return `<!doctype html>
-<html lang="en">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorization already completed</title>
+  <title>${tr("Authorization already completed", "Доступ уже подтверждён")}</title>
   ${brandHead}
 </head>
 <body class="q-auth">
   <main>${brandLockup}
-    <h1>Authorization already completed</h1>
-    <p>This OAuth approval link was already used.</p>
-    <p>You can close this tab and return to Claude.</p>
-    <p>If Claude still does not show the connector, start a new connector flow.</p>
+    <h1>${tr("Authorization already completed", "Доступ уже подтверждён")}</h1>
+    <p>${tr("This OAuth approval link was already used.", "Эта ссылка подтверждения OAuth уже использована.")}</p>
+    <p>${tr("You can close this tab and return to Claude.", "Можно закрыть вкладку и вернуться в Claude.")}</p>
+    <p>${tr("If Claude still does not show the connector, start a new connector flow.", "Если Claude всё ещё не показывает подключение, начните подключение заново.")}</p>
   </main>
 </body>
 </html>`;
@@ -126,7 +140,7 @@ export function stopConsentTicketGc(): void {
 // POST authenticated by the qoopia_dash cookie (per ADR-015), and OAuth
 // client registration is gated on Bearer api_key + steward/claude-priv type.
 
-export function parseForm(body: Buffer): Record<string, string> {
+function parseForm(body: Buffer): Record<string, string> {
   const out: Record<string, string> = {};
   const s = body.toString("utf8");
   for (const pair of s.split("&")) {
@@ -153,7 +167,7 @@ export function parseForm(body: Buffer): Record<string, string> {
  * branch the body was unreadable → grant_type undefined → unsupported_grant_type
  * → no access token (claude.ai connector stuck at code→token exchange).
  */
-export function parseJsonForm(body: Buffer): Record<string, string> {
+function parseJsonForm(body: Buffer): Record<string, string> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.toString("utf8"));
@@ -199,50 +213,16 @@ export function handleAuthorizeRedirect(
   const codeChallengeMethod = u.searchParams.get("code_challenge_method") || "S256";
   const state = u.searchParams.get("state") || "";
   const selectedConnection=u.searchParams.get("connection");
-  let resource: string;
-  let scope = "";
-  try {
-    if (u.searchParams.getAll("resource").length > 1) throw new Error("invalid_target");
-    resource=validateOAuthResource(u.searchParams.get("resource") ?? (selectedConnection?connectionResource(selectedConnection):undefined));
-  } catch { return json(res, 400, {error: "invalid_target"}); }
   logger.info(`OAuth authorize ENTER client=${clientId || "<none>"} redirect=${redirectUri || "<none>"} has_state=${state ? "y" : "n"} ua=${(req.headers["user-agent"] || "").slice(0, 40)}`);
 
-  try {
-    scope = normalizeScope(u.searchParams.get("scope")).normalized;
-  } catch (err) {
-    const msg = (err as Error).message || "invalid_scope";
-    if (msg.startsWith("invalid_scope:")) {
-      return json(res, 400, {
-        error: "invalid_scope",
-        error_description: `Unknown scope '${msg.slice("invalid_scope:".length)}'`,
-      });
-    }
-    throw err;
-  }
-
-  if (!clientId || !redirectUri || responseType !== "code" || !codeChallenge) {
+  // RFC 6749 §4.1.2.1: a missing/unknown client or an unregistered redirect_uri is
+  // answered here and never redirected, so this endpoint cannot become an open redirect.
+  if (!clientId || !redirectUri) {
     return json(res, 400, {
       error: "invalid_request",
-      error_description:
-        "Missing required: client_id, redirect_uri, response_type=code, code_challenge",
+      error_description: "Missing required: client_id, redirect_uri",
     });
   }
-  if (codeChallengeMethod !== "S256") {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "Only S256 code_challenge_method is supported",
-    });
-  }
-  try {
-    assertValidPkceS256Challenge(codeChallenge);
-  } catch {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description:
-        "code_challenge must be a 43-character base64url S256 challenge",
-    });
-  }
-
   const client = getClient(clientId);
   if (!client) {
     return json(res, 400, {
@@ -250,21 +230,57 @@ export function handleAuthorizeRedirect(
       error_description: "Unknown client_id — register first via /oauth/register",
     });
   }
-  const assignedConnection=db.query("SELECT id FROM client_connections WHERE agent_id=?").get(client.agent_id) as {id:string}|null;
-  if(assignedConnection && resource !== connectionResource(assignedConnection.id))return json(res,400,{error:'invalid_target'});
-  const resourceId=resourceConnection(resource!);
-  if(resourceId){
-    const connection=publicConnection(resourceId);
-    if(client.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id)return json(res,400,{error:"invalid_target"});
-    if(connection.access_mode==="read"&&scope.split(" ").some(s=>s!=="mcp:read"))return json(res,400,{error:"invalid_scope"});
-    if(scope.includes("mcp:admin"))return json(res,400,{error:"invalid_scope"});
-    if(!scope)scope=connection.access_mode==="read"?"mcp:read":"mcp:read mcp:write";
-  }
   if (!client.redirect_uris.includes(redirectUri)) {
     return json(res, 400, {
       error: "invalid_request",
       error_description: "redirect_uri not registered for this client",
     });
+  }
+  const assignedConnection=db.query("SELECT id FROM client_connections WHERE agent_id=?").get(client.agent_id) as {id:string}|null;
+  // F-190: every other error goes back to the validated callback with state and iss.
+  const fail = (error: string, description?: string) => {
+    const url = new URL(redirectUri);
+    url.searchParams.set("error", error);
+    if (description) url.searchParams.set("error_description", description);
+    if (state) url.searchParams.set("state", state);
+    url.searchParams.set("iss", assignedConnection ? connectionIssuer(assignedConnection.id) : env.OAUTH_ISSUER);
+    res.writeHead(302, { location: url.toString(), "cache-control": "no-store" });
+    res.end();
+  };
+  let resource: string;
+  let scope = "";
+  try {
+    if (u.searchParams.getAll("resource").length > 1) throw new Error("invalid_target");
+    resource=validateOAuthResource(u.searchParams.get("resource") ?? (selectedConnection?connectionResource(selectedConnection):undefined));
+  } catch { return fail("invalid_target"); }
+
+  try {
+    scope = normalizeScope(u.searchParams.get("scope")).normalized;
+  } catch (err) {
+    const msg = (err as Error).message || "invalid_scope";
+    if (msg.startsWith("invalid_scope:")) {
+      return fail("invalid_scope", `Unknown scope '${msg.slice("invalid_scope:".length)}'`);
+    }
+    throw err;
+  }
+
+  if (responseType !== "code") return fail("unsupported_response_type");
+  if (!codeChallenge) return fail("invalid_request", "code_challenge is required");
+  if (codeChallengeMethod !== "S256") return fail("invalid_request", "Only S256 code_challenge_method is supported");
+  try {
+    assertValidPkceS256Challenge(codeChallenge);
+  } catch {
+    return fail("invalid_request", "code_challenge must be a 43-character base64url S256 challenge");
+  }
+
+  if(assignedConnection && resource !== connectionResource(assignedConnection.id))return fail("invalid_target");
+  const resourceId=resourceConnection(resource);
+  if(resourceId){
+    const connection=publicConnection(resourceId);
+    if(client.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id)return fail("invalid_target");
+    if(connection.access_mode==="read"&&scope.split(" ").some(s=>s!=="mcp:read"))return fail("invalid_scope");
+    if(scope.includes("mcp:admin"))return fail("invalid_scope");
+    if(!scope)scope=connection.access_mode==="read"?"mcp:read":"mcp:read mcp:write";
   }
   if (!client.workspace_id) {
     // Legacy oauth_clients row that escaped migration 011's backfill.
@@ -280,7 +296,7 @@ export function handleAuthorizeRedirect(
   const ticket = createConsentTicket({
     clientId,
     workspaceId: client.workspace_id,
-    resource: resource!,
+    resource,
     redirectUri,
     codeChallenge,
     codeChallengeMethod,
@@ -312,181 +328,22 @@ export function handleAuthorizeRedirect(
 }
 
 /**
- * ADR-017: GET /oauth/authorize/finalize?ticket=...
+ * GET /oauth/authorize/finalize — retired (F-076).
  *
- * Reads the consent_ticket, requires it to be approved-but-not-redeemed-and-
- * not-expired-and-not-denied, atomically marks redeemed=1, emits the OAuth
- * code, and 302s to client.redirect_uri. Single-use: replaying the URL
- * returns 400.
- *
- * Cookies are NOT read here. The only state trusted is the ticket row,
- * whose `approved_by_agent_id` was set by the dashboard-side approve POST.
+ * A bare ticket id is not a credential: /oauth/authorize hands it to whoever
+ * started the flow, so redeeming it here gave that party the code once the
+ * owner approved. The approve handlers now redeem the ticket and redirect
+ * straight to the registered redirect_uri. Stale links get the completed page.
  */
-export function handleAuthorizeFinalize(
-  req: IncomingMessage,
-  res: ServerResponse,
-  clientIp: string,
-) {
-  const u = new URL(req.url || "/", env.PUBLIC_URL);
-  const ticketId = u.searchParams.get("ticket") || "";
-  const ticketFp = ticketId ? fingerprintIdentifier(ticketId, 12) : "";
-  logger.info(`OAuth finalize ENTER ticket_fp=${ticketFp} ua=${(req.headers["user-agent"] || "").slice(0, 50)}`);
-  if (!ticketId) {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "Missing ticket parameter",
-    });
-  }
-  const ticket = getConsentTicket(ticketId);
-  if (!ticket) {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "ticket not found",
-    });
-  }
-  if (ticket.redeemed) {
-    const replayLocation = replayFinalizeRedirect(ticket.id);
-    if (replayLocation) {
-      logger.info(`OAuth finalize REPLAY-redirect ticket_fp=${ticketFp}`);
-      res.writeHead(302, {
-        location: replayLocation,
-        "cache-control": "no-store",
-      });
-      res.end();
-      return;
-    }
-    logger.warn(`OAuth finalize ALREADY-USED (redeemed, no replay entry) ticket_fp=${ticketFp}`);
-    return sendHtml(res, 400, oauthAlreadyCompletedHtml(), req);
-  }
-  if (ticket.denied) {
-    return json(res, 400, {
-      error: "access_denied",
-      error_description: "ticket denied",
-    });
-  }
-  if (ticket.expires_at <= nowIsoUtc()) {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "ticket expired",
-    });
-  }
-  if (!ticket.approved_by_agent_id) {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "ticket not approved",
-    });
-  }
-  const client = getClient(ticket.client_id);
-  if (!client) {
-    return json(res, 400, { error: "invalid_client" });
-  }
-  // Codex HIGH #1 (2026-04-28): re-verify the *approving agent's current
-  // workspace* still matches the ticket's workspace, not the registering
-  // client owner's. The previous version called clientWorkspace(client_id),
-  // which resolves the registrar — that doesn't catch the actual drift case
-  // (approver moves workspaces between approve and finalize). Also reject
-  // if the approver was deactivated in the gap.
-  const approver = db
-    .prepare(
-      `SELECT id, workspace_id, active FROM agents WHERE id = ?`,
-    )
-    .get(ticket.approved_by_agent_id) as
-    | { id: string; workspace_id: string; active: number }
-    | undefined;
-  if (!approver || !approver.active) {
-    audit({
-      event: "oauth_consent",
-      result: "deny",
-      ip: clientIp,
-      workspace_id: ticket.workspace_id,
-      agent_id: ticket.approved_by_agent_id,
-      detail: `finalize: approver missing/inactive ticket_fp=${ticketFp}`,
-    });
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "approving agent is no longer active",
-    });
-  }
-  if (approver.workspace_id !== ticket.workspace_id) {
-    audit({
-      event: "workspace_mismatch",
-      result: "deny",
-      ip: clientIp,
-      workspace_id: ticket.workspace_id,
-      agent_id: ticket.approved_by_agent_id,
-      detail: `finalize: approver moved workspaces ticket=${ticket.workspace_id} approver_now=${approver.workspace_id}`,
-    });
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "approving agent's workspace no longer matches the ticket",
-    });
-  }
-
-  // Atomic redeem; fails if a parallel request already redeemed OR if the
-  // approver/workspace state drifted between the pre-check SELECT above
-  // and this UPDATE. The redeemConsentTicket UPDATE folds the approver
-  // active+workspace predicates into the same statement (Codex HIGH #1
-  // round 2, 2026-04-28), so this is fully atomic in SQLite. If the
-  // pre-check passed but redeem failed, log the race-loss for forensics —
-  // the only ways for that to happen are (a) parallel finalize won the
-  // race, or (b) approver state flipped in the gap.
-  if (!redeemConsentTicket(ticket.id)) {
-    logger.warn(`OAuth finalize REDEEM-RACE-LOST (parallel finalize won or approver drift) ticket_fp=${ticketFp}`);
-    audit({
-      event: "oauth_consent",
-      result: "deny",
-      ip: clientIp,
-      workspace_id: ticket.workspace_id,
-      agent_id: ticket.approved_by_agent_id,
-      detail: `finalize: redeem race lost or approver drift after pre-check ticket_fp=${ticketFp}`,
-    });
-    return sendHtml(res, 400, oauthAlreadyCompletedHtml(), req);
-  }
-
-  const code = createAuthorizationCode({
-    clientId: ticket.client_id,
-    // Bind the OAuth code to the *approving* agent's id so the resulting
-    // token is workspace-scoped to the operator who approved (ADR-017 §4).
-    agentId: ticket.approved_by_agent_id,
-    workspaceId: ticket.workspace_id,
-    codeChallenge: ticket.code_challenge,
-    codeChallengeMethod: ticket.code_challenge_method,
-    redirectUri: ticket.redirect_uri,
-    grantedScope: ticket.scope,
-    resource: ticket.resource ?? undefined,
-  });
-
-  audit({
-    event: "oauth_consent",
-    result: "allow",
-    ip: clientIp,
-    workspace_id: ticket.workspace_id,
-    agent_id: ticket.approved_by_agent_id,
-    detail: `client=${ticket.client_id} ticket_fp=${ticketFp} finalized`,
-  });
-
-  const url = new URL(ticket.redirect_uri);
-  url.searchParams.set("code", code);
-  if (ticket.state) url.searchParams.set("state", ticket.state);
-  // RFC 9207 Authorization Server Issuer Identification — strict OAuth 2.1 / MCP
-  // clients (incl. claude.ai) require `iss` in the authorization response and
-  // silently drop the callback (no token exchange) when it is absent.
-  url.searchParams.set("iss", ticket.resource && resourceConnection(ticket.resource) ? connectionIssuer(resourceConnection(ticket.resource)!) : env.OAUTH_ISSUER);
-  const redirectLocation = url.toString();
-  rememberFinalizeRedirect(ticket.id, redirectLocation);
-  logger.info(`OAuth finalize SUCCESS → 302 host=${url.host} path=${url.pathname} has_state=${ticket.state ? "y" : "n"} ticket_fp=${ticketFp}`);
-  res.writeHead(302, {
-    location: redirectLocation,
-    "cache-control": "no-store",
-  });
-  res.end();
+export function handleAuthorizeFinalize(req: IncomingMessage, res: ServerResponse) {
+  logger.warn(`OAuth finalize REFUSED (retired; approve redirects to the client) ua=${(req.headers["user-agent"] || "").slice(0, 50)}`);
+  return sendHtml(res, 400, oauthAlreadyCompletedHtml(consentLanguage(req)), req);
 }
 
-const CLAUDE_AI_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback";
 const CLAUDE_PRIVILEGED_AGENT_ID = "01CLAUDE0CODE0AGENT0000001";
 const PUBLIC_DCR_AGENT_NAME = process.env.QOOPIA_PUBLIC_DCR_AGENT_NAME || "GPT";
 const PUBLIC_DCR_WORKSPACE_SLUG = process.env.QOOPIA_PUBLIC_DCR_WORKSPACE_SLUG || "default";
-export function authContextFromAgentRow(row: {
+function authContextFromAgentRow(row: {
   id: string;
   name: string;
   workspace_id: string;
@@ -503,7 +360,7 @@ export function authContextFromAgentRow(row: {
   };
 }
 
-export function resolveChatGptUnauthenticatedDcrAuth(parsed: Record<string, unknown>): AuthContext | null {
+function resolveChatGptUnauthenticatedDcrAuth(parsed: Record<string, unknown>): AuthContext | null {
   if (!isChatGptRedirectArray(parsed.redirect_uris)) return null;
   if (
     parsed.token_endpoint_auth_method !== undefined &&
@@ -545,6 +402,7 @@ export function resolveTrustedUnauthenticatedDcrAuth(body: Buffer): TrustedDcrAu
   } catch {
     return null;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 
   const claudeAiAuth = resolveClaudeAiUnauthenticatedDcrAuthParsed(parsed);
   if (claudeAiAuth) {
@@ -567,9 +425,11 @@ export function resolveTrustedUnauthenticatedDcrAuth(body: Buffer): TrustedDcrAu
  * but that also broke Claude.ai self-registration. Keep the unauthenticated
  * exception intentionally tiny: only Claude's fixed callback URL, public or
  * client_secret_post auth, authorization_code/refresh_token grants, code response, and only bound
- * to the default claude-privileged agent.
+ * to the default Claude connector agent. V1 installations bind it to the owner's ordinary "Claude"
+ * agent; a pre-V1 installation (no human owner) keeps its legacy connector row, whose
+ * 'claude-privileged' type string is an ordinary agent since ADR-020 and selects nothing else.
  */
-export function resolveClaudeAiUnauthenticatedDcrAuthParsed(parsed: Record<string, unknown>): AuthContext | null {
+function resolveClaudeAiUnauthenticatedDcrAuthParsed(parsed: Record<string, unknown>): AuthContext | null {
   if (!stringArrayEquals(parsed.redirect_uris, [CLAUDE_AI_REDIRECT_URI])) return null;
   if (
     parsed.token_endpoint_auth_method !== undefined &&
@@ -627,6 +487,12 @@ export function handleRegister(
       error_description: "Body must be JSON",
     });
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return json(res, 400, {
+      error: "invalid_request",
+      error_description: "Body must be a JSON object",
+    });
+  }
   try {
     const out = registerClient(
       {
@@ -654,22 +520,18 @@ export function handleRegister(
       }),
     );
   } catch (err) {
+    // Only registerClient's own validation text reaches the caller; anything else is a server fault.
+    if (!(err instanceof QoopiaError)) throw err;
     return json(res, 400, {
       error: "invalid_request",
-      error_description: err instanceof Error ? err.message : String(err),
+      error_description: err.message,
     });
   }
 }
 
-// nowIsoUtc trims sub-second precision to align with `nowIso()` in
-// auth/oauth.ts so SQL string compares (`expires_at <= ?`) match.
-export function nowIsoUtc(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
 // ---------- Dashboard-scoped OAuth consent bridge (ADR-017) ----------
 
-export function escapeHtmlSafe(s: string): string {
+function escapeHtmlSafe(s: string): string {
   return escapeHtml(s);
 }
 
@@ -682,11 +544,9 @@ export function escapeHtmlSafe(s: string): string {
  *      OAuth client could fetch the consent page, read the rotated nonce, and
  *      self-approve a new ticket — defeating the bridge pattern entirely.
  *
- *   2) standard agents — registration is restricted to steward/claude-priv
- *      (assertCanRegisterOAuth), so consent (which trusts a connector with the
- *      caller's full agent surface) must be at least as restrictive. A standard
- *      agent in the same workspace approving a ticket would mint OAuth tokens
- *      bound to itself.
+ *   2) ordinary agents (a legacy 'claude-privileged' row included, ADR-020) —
+ *      registration is restricted to the steward and the owner
+ *      (assertCanRegisterOAuth), so consent must be at least as restrictive.
  *
  * Returns null if eligible, else a short reason code for the caller to
  * translate into the right HTTP shape.
@@ -733,7 +593,7 @@ export function handleDashboardOAuthConsentGet(
   }
   if (status !== "ok") {
     if (status === "redeemed") {
-      return sendHtml(res, 400, oauthAlreadyCompletedHtml(), req);
+      return sendHtml(res, 400, oauthAlreadyCompletedHtml(consentLanguage(req)), req);
     }
     return json(res, 400, {
       error: "invalid_request",
@@ -775,25 +635,29 @@ export function handleDashboardOAuthConsentGet(
       error_description:
         reject === "oauth_token_not_accepted"
           ? "OAuth access tokens are not accepted on the consent surface; sign in to the dashboard with a static API key."
-          : "OAuth client consent requires a steward or claude-privileged agent.",
+          : "OAuth client consent requires the steward or the workspace owner.",
     });
   }
 
   if(!accountConsentAllowed(ticket!,auth))return json(res,403,{error:'forbidden',error_description:'Use this installation’s human owner session.'});
   const t = ticket!;
+  const lang = consentLanguage(req);
+  const tr = (en: string, ru: string) => (lang === "ru" ? ru : en);
   const client = getClient(t.client_id);
-  const safeClientName = escapeHtmlSafe(client?.name || "Unknown client");
+  const safeClientName = escapeHtmlSafe(client?.name || tr("Unknown client", "Неизвестный клиент"));
   const requestedScopes = parseGrantedScope(t.scope) || [];
   const scopeRows = requestedScopes.length > 0
     ? requestedScopes
         .map(
           (scope) =>
-            `<li><strong>${escapeHtmlSafe(scope)}</strong> — ${escapeHtmlSafe(describeScope(scope))}</li>`,
+            `<li><strong>${escapeHtmlSafe(scope)}</strong> — ${escapeHtmlSafe(lang === "ru" ? scopeDescriptionRu[scope] : describeScope(scope))}</li>`,
         )
         .join("")
-    : `<li><strong>legacy/full agent profile</strong> — this client did not request explicit OAuth scopes, so access is limited by the connected agent’s MCP tool profile.</li>`;
+    : tr(`<li><strong>legacy/full agent profile</strong> — this client did not request explicit OAuth scopes, so access is limited by the connected agent’s MCP tool profile.</li>`,
+        `<li><strong>устаревший/полный профиль агента</strong> — клиент не запросил явные права OAuth, поэтому доступ ограничен профилем инструментов MCP подключённого агента.</li>`);
+  const languageLinks = `<nav class="languages" aria-label="${tr("Language", "Язык")}"><a lang="en" href="?${escapeHtmlSafe(new URLSearchParams({ ticket: t.id, lang: "en" }).toString())}">EN</a> / <a lang="ru" href="?${escapeHtmlSafe(new URLSearchParams({ ticket: t.id, lang: "ru" }).toString())}">RU</a></nav>`;
 
-  const sharedCss = `.scope-list{padding-left:24px}.info.warn{border:2px solid var(--qoopia-white);padding:16px}`;
+  const sharedCss = `.scope-list{padding-left:24px}.info.warn{border:2px solid var(--qoopia-ivory);padding:16px}.languages{text-align:right}.languages a{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px}`;
 
   if (auth.workspace_id !== t.workspace_id) {
     audit({
@@ -804,19 +668,19 @@ export function handleDashboardOAuthConsentGet(
       detail: `oauth-consent GET cookie=${auth.workspace_id} ticket=${t.workspace_id}`,
     });
     const html = `<!DOCTYPE html>
-<html lang="en">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
-  <title>Wrong workspace — Qoopia</title><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${tr("Wrong workspace", "Другое пространство")} — Qoopia</title><meta name="viewport" content="width=device-width,initial-scale=1">
   ${brandHead}<style>${sharedCss}</style>
 </head>
 <body class="q-auth">
-  <div class="card">
+  <main class="card">
     ${brandLockup}
-    <h1>Wrong workspace</h1>
-    <p class="info warn">You are signed in to one workspace, but <span class="client">${safeClientName}</span> belongs to a different workspace.</p>
-    <p class="info">Sign out, then sign in as the agent that registered this connector.</p>
-  </div>
+    <h1>${tr("Wrong workspace", "Другое пространство")}</h1>
+    <p class="info warn">${tr(`You are signed in to one workspace, but <span class="client">${safeClientName}</span> belongs to a different workspace.`, `Вы вошли в одно пространство, а <span class="client">${safeClientName}</span> относится к другому.`)}</p>
+    <p class="info">${tr("Sign out, then sign in as the agent that registered this connector.", "Выйдите и войдите как агент, который зарегистрировал это подключение.")}</p>
+  </main>
 </body>
 </html>`;
     res.writeHead(403, {
@@ -836,34 +700,37 @@ export function handleDashboardOAuthConsentGet(
     });
   }
 
+  const callbackHost = escapeHtmlSafe(new URL(t.redirect_uri).host);
   const html = `<!DOCTYPE html>
-<html lang="en">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize — Qoopia</title>
+  <title>${tr("Authorize", "Разрешение доступа")} — Qoopia</title>
   ${brandHead}<style>${sharedCss}</style>
 </head>
 <body class="q-auth">
-  <div class="card">
+  <main class="card">
     ${brandLockup}
-    <h1>Authorize access</h1>
-    <p><span class="client">${safeClientName}</span> wants to connect to your workspace.</p>
-    <p class="info">Approving will connect this client through its agent in this workspace. Your owner account stays separate.</p>
+    ${languageLinks}
+    <h1>${tr("Authorize access", "Разрешить доступ")}</h1>
+    <p>${tr(`<span class="client">${safeClientName}</span> wants to connect to your workspace.`, `<span class="client">${safeClientName}</span> хочет подключиться к вашему пространству.`)}</p>
+    <p class="info">${tr(`Approving sends the authorization to <strong>${callbackHost}</strong>. Continue only if you started this connection there.`, `После разрешения доступ будет передан на <strong>${callbackHost}</strong>. Продолжайте, только если вы сами начали это подключение там.`)}</p>
+    <p class="info">${tr("Approving will connect this client through its agent in this workspace. Your owner account stays separate.", "Клиент подключится через своего агента в этом пространстве. Ваша учётная запись владельца остаётся отдельной.")}</p>
     <ul class="scope-list">${scopeRows}</ul>
     <div class="actions">
       <form method="POST" action="/api/dashboard/oauth-consent/deny">
         <input type="hidden" name="ticket" value="${escapeHtmlSafe(t.id)}">
         <input type="hidden" name="nonce" value="${escapeHtmlSafe(fresh)}">
-        <button type="submit" class="deny">Deny</button>
+        <button type="submit" class="deny">${tr("Deny", "Отклонить")}</button>
       </form>
       <form method="POST" action="/api/dashboard/oauth-consent/approve">
         <input type="hidden" name="ticket" value="${escapeHtmlSafe(t.id)}">
         <input type="hidden" name="nonce" value="${escapeHtmlSafe(fresh)}">
-        <button type="submit" class="approve">Approve</button>
+        <button type="submit" class="approve">${tr("Approve", "Разрешить")}</button>
       </form>
     </div>
-  </div>
+  </main>
 </body>
 </html>`;
   // Allow the OAuth client's callback origin in form-action/navigate-to so the
@@ -887,8 +754,9 @@ export function handleDashboardOAuthConsentGet(
  *
  * Cookie auth + Origin/Referer match + nonce one-time consume + workspace
  * re-check (defense in depth even though the GET hides the button on
- * mismatch). On success, marks ticket approved by cookie.agent_id and 302s
- * to /oauth/authorize/finalize?ticket=...
+ * mismatch). On success, marks the ticket approved, redeems it in the same
+ * request and 302s straight to the registered redirect_uri with the code
+ * (F-076: the code never leaves through a URL that only needs the ticket id).
  */
 export function handleDashboardOAuthConsentApprove(
   req: IncomingMessage,
@@ -945,7 +813,7 @@ export function handleDashboardOAuthConsentApprove(
       error_description:
         reject === "oauth_token_not_accepted"
           ? "OAuth access tokens are not accepted on the consent surface."
-          : "OAuth client consent requires a steward or claude-privileged agent.",
+          : "OAuth client consent requires the steward or the workspace owner.",
     });
   }
   const ticket = getConsentTicket(ticketId);
@@ -957,32 +825,8 @@ export function handleDashboardOAuthConsentApprove(
       error_description: "ticket not found",
     });
   }
-  if (status !== "ok") {
-    if (status === "redeemed") {
-      // Idempotent double-submit recovery. claude.ai's browser POSTs this approve
-      // more than once (duplicate consent-form submit). The first approve already
-      // ran finalize → redeemed the ticket, minted the code, and stored the
-      // finalize redirect. Returning a dead-end "already used" page on the second
-      // POST strands the OAuth client: the duplicate POST is the navigation the
-      // browser actually displays, so it never follows the code-bearing redirect
-      // to the client callback and never exchanges the code (the exact claude.ai
-      // failure). Re-issue the SAME finalize redirect (302 → client callback with
-      // the code) so whichever approve the browser lands on reaches the callback.
-      const replay = replayFinalizeRedirect(ticketId);
-      if (replay) {
-        logger.info(`OAuth consent APPROVE on redeemed ticket → replay redirect ticket_fp=${fingerprintIdentifier(ticketId, 12)}`);
-        res.writeHead(302, { location: replay, "cache-control": "no-store" });
-        res.end();
-        return;
-      }
-      logger.warn(`OAuth consent APPROVE on redeemed ticket, no replay entry → already-used ticket_fp=${fingerprintIdentifier(ticketId, 12)}`);
-      return sendHtml(res, 400, oauthAlreadyCompletedHtml(), req);
-    }
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: `ticket ${status}`,
-    });
-  }
+  // F-076: the workspace check precedes the redeemed-replay branch, so a
+  // foreign-workspace caller holding the ticket id cannot collect the code.
   if (auth.workspace_id !== ticket!.workspace_id) {
     audit({
       event: "workspace_mismatch",
@@ -997,6 +841,30 @@ export function handleDashboardOAuthConsentApprove(
       error_description: "Workspace mismatch.",
     });
   }
+  if (status !== "ok") {
+    if (status === "redeemed") {
+      // Idempotent double-submit recovery. claude.ai's browser POSTs this approve
+      // more than once (duplicate consent-form submit). The first approve already
+      // redeemed the ticket, minted the code and cached the callback. Returning a
+      // dead-end "already used" page on the second POST strands the OAuth client:
+      // the duplicate POST is the navigation the browser actually displays, so it
+      // never reaches the client callback (the exact claude.ai failure). Re-issue
+      // the SAME callback, but only to the principal that approved (F-076).
+      const replay = replayFinalizeRedirect(ticketId, auth.agent_id);
+      if (replay) {
+        logger.info(`OAuth consent APPROVE on redeemed ticket → replay redirect ticket_fp=${fingerprintIdentifier(ticketId, 12)}`);
+        res.writeHead(302, { location: replay, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      logger.warn(`OAuth consent APPROVE on redeemed ticket, no replay entry for this approver → already-used ticket_fp=${fingerprintIdentifier(ticketId, 12)}`);
+      return sendHtml(res, 400, oauthAlreadyCompletedHtml(consentLanguage(req)), req);
+    }
+    return json(res, 400, {
+      error: "invalid_request",
+      error_description: `ticket ${status}`,
+    });
+  }
 
   // Atomic single-use nonce consume.
   if (!consumeConsentNonce(ticket!.id, nonce)) {
@@ -1006,16 +874,13 @@ export function handleDashboardOAuthConsentApprove(
     });
   }
 
-  // A human authorizes the registered agent, never lends the connector human-owner authority.
-  const principal=db.query('SELECT principal_kind FROM agents WHERE id=?').get(auth.agent_id) as {principal_kind:string}|null;
-  let delegate=auth.agent_id;
-  if(principal?.principal_kind==='human') {
-    const client=getClient(ticket!.client_id);
-    const agent=client&&db.query("SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND principal_kind='agent'").get(client.agent_id,auth.workspace_id) as {id:string}|null;
-    if(!agent)return json(res,403,{error:'forbidden',error_description:'Connect with a separate active agent identity.'});
-    delegate=agent.id;
-  }
-  if (!approveConsentTicket(ticket!.id, delegate)) {
+  // The owner or the steward authorizes the client's registered agent and never lends the
+  // connector its own authority (ADR-020: a steward approving a legacy connector grant binds
+  // that connector's ordinary agent, not the steward).
+  const client=getClient(ticket!.client_id);
+  const agent=client&&db.query("SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND principal_kind='agent'").get(client.agent_id,auth.workspace_id) as {id:string}|null;
+  if(!agent)return json(res,403,{error:'forbidden',error_description:'Connect with a separate active agent identity.'});
+  if (!approveConsentTicket(ticket!.id, agent.id)) {
     // Lost the race — ticket was approved/denied/redeemed/expired between
     // status check and approve.
     return json(res, 400, {
@@ -1034,12 +899,11 @@ export function handleDashboardOAuthConsentApprove(
     detail: `client=${ticket!.client_id} ticket_fp=${ticketFp} approved`,
   });
 
-  // Finalize on the consent page's origin. A desktop dashboard and its public
-  // MCP edge have different origins; sending this form through the public edge
-  // violates the consent page's CSP before the client callback is reached.
-  // The ticket still determines the resource, issuer and registered callback.
-  const target = "/oauth/authorize/finalize?" + new URLSearchParams({ticket: ticket!.id});
-  logger.info(`OAuth consent APPROVED → 302 finalize ticket_fp=${fingerprintIdentifier(ticket!.id, 12)}`);
+  // Redeem here and go straight to the registered callback; the consent page's
+  // CSP form-action already allows that origin (securityHeaders(req, clientOrigin)).
+  const target = finalizeConsentTicket(ticket!.id, auth.agent_id, clientIp);
+  if (!target) return sendHtml(res, 400, oauthAlreadyCompletedHtml(consentLanguage(req)), req);
+  logger.info(`OAuth consent APPROVED → 302 client callback ticket_fp=${ticketFp}`);
   res.writeHead(302, {
     location: target,
     "cache-control": "no-store",
@@ -1109,7 +973,7 @@ export function handleDashboardOAuthConsentDeny(
       error_description:
         reject === "oauth_token_not_accepted"
           ? "OAuth access tokens are not accepted on the consent surface."
-          : "OAuth client consent requires a steward or claude-privileged agent.",
+          : "OAuth client consent requires the steward or the workspace owner.",
     });
   }
   const ticket = getConsentTicket(ticketId);
@@ -1205,6 +1069,12 @@ export function handleDashboardRegisterClient(
       error_description: "Dashboard session required.",
     });
   }
+  if (!dashboardMutationAllowed(req, dauth)) {
+    return json(res, 403, {
+      error: "forbidden",
+      error_description: "Same-origin dashboard request required.",
+    });
+  }
   // Codex CRITICAL #1 (2026-04-28 round 2): explicitly reject OAuth bearers
   // here. checkDashboardAuth() accepts both cookie sessions and Bearer
   // tokens; Bearer can be either api_key or an OAuth access token. The
@@ -1273,7 +1143,7 @@ export function handleDashboardRegisterClient(
   return handleRegister(body, res, auth);
 }
 
-export function jsonToken(res: ServerResponse, status: number, body: unknown) {
+function jsonToken(res: ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
@@ -1285,7 +1155,7 @@ export function jsonToken(res: ServerResponse, status: number, body: unknown) {
   res.end(payload);
 }
 
-export function fingerprintIdentifier(value: string, length = 16): string {
+function fingerprintIdentifier(value: string, length = 16): string {
   return crypto
     .createHash("sha256")
     .update(value)
@@ -1293,7 +1163,7 @@ export function fingerprintIdentifier(value: string, length = 16): string {
     .slice(0, length);
 }
 
-export function parseTokenBasicAuth(req: IncomingMessage): { client_id: string; client_secret: string } | null {
+function parseTokenBasicAuth(req: IncomingMessage): { client_id: string; client_secret: string } | null {
   const h = req.headers.authorization || "";
   if (!h.toLowerCase().startsWith("basic ")) return null;
   try {
@@ -1308,6 +1178,8 @@ export function parseTokenBasicAuth(req: IncomingMessage): { client_id: string; 
     return null;
   }
 }
+
+const TOKEN_ERRORS = new Set(["invalid_request", "invalid_client", "invalid_grant", "invalid_target", "invalid_scope", "unsupported_grant_type"]);
 
 export function handleToken(req: IncomingMessage, body: Buffer, res: ServerResponse) {
   let form: Record<string, string>;
@@ -1374,18 +1246,25 @@ export function handleToken(req: IncomingMessage, body: Buffer, res: ServerRespo
     logger.warn(`OAuth token unsupported_grant_type grant_type=${grantType || "<missing>"}`);
     return jsonToken(res, 400, { error: "unsupported_grant_type" });
   } catch (err) {
-    const msg = (err as Error).message || "invalid_grant";
+    const msg = (err as Error).message || "";
     logger.warn(`OAuth token failed error=${msg}`);
-    return jsonToken(res, 400, { error: msg });
+    // F-190: only RFC error codes leave this endpoint; anything else is an internal fault.
+    return TOKEN_ERRORS.has(msg) ? jsonToken(res, 400, { error: msg }) : jsonToken(res, 500, { error: "server_error" });
   }
 }
 
-export function handleRevoke(body: Buffer, res: ServerResponse, clientIp: string) {
+export function handleRevoke(req: IncomingMessage, body: Buffer, res: ServerResponse, clientIp: string) {
   let form: Record<string, string>;
   try {
     form = parseForm(body);
   } catch {
     return json(res, 400, { error: "invalid_request", error_description: "malformed form body" });
+  }
+  // F-129: the same client authentication methods as /oauth/token.
+  const basic = parseTokenBasicAuth(req);
+  if (basic) {
+    form.client_id ||= basic.client_id;
+    form.client_secret ||= basic.client_secret;
   }
   const token = form.token;
   const clientId = form.client_id;

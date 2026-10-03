@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {randomBytes,createHash} from 'node:crypto';
 import type {IncomingMessage,ServerResponse} from 'node:http';
-import {loginBroker} from '../src/identity/broker.ts';
+import {loginBroker,releaseStampSha} from '../src/identity/broker.ts';
 import {localIdentityLogin,ownerIdentity,LOGIN_ORIGIN} from '../src/identity/local.ts';
 import {issueLocalLogin} from '../src/delivery/local-login.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
@@ -38,14 +38,17 @@ test('email and Google require the same one-use email proof; logout, restart and
   const res={setHeader:(k:string,v:string)=>{out[k]=v;},writeHead:(s:number,h:Record<string,string>)=>{status=s;Object.assign(out,h);},end:(v:string)=>{body=v;}} as unknown as ServerResponse;
   return {res,result:()=>{if(out['set-cookie']){const value=out['set-cookie'].split(';')[0]!,i=value.indexOf('=');jar.set(value.slice(0,i),value.slice(i+1));}return {status,data:JSON.parse(body),headers:out};}};
  };
- const call=async(route:string,body:Record<string,unknown>={})=>{const r=response();await local({method:route?'POST':'GET',headers:headers(),socket:{remoteAddress:'127.0.0.1'}} as IncomingMessage,r.res,route,body);return r.result();};
+ // F-125: the code the started sign-in shows; the confirmation page asks for it.
+ let code='';
+ const call=async(route:string,body:Record<string,unknown>={})=>{const r=response();await local({method:route?'POST':'GET',headers:headers(),socket:{remoteAddress:'127.0.0.1'}} as IncomingMessage,r.res,route,body);
+  const result=r.result();if(route==='/start'&&typeof result.data.code==='string')code=result.data.code;return result;};
  const confirm=async()=>{
   const link=mails.at(-1)!.text.match(/https:\/\/[^\s]+/)![0],token=new URL(link).hash.slice(1);
   expect((await handler(new Request(LOGIN_ORIGIN+'/confirm'),'mail-scanner')).status).toBe(200);
   expect((await call('/poll')).data.pending).toBe(true);
-  expect((await post('/confirm',{token},'https://hostile.example')).status).toBe(403);
-  expect((await post('/confirm',{token},LOGIN_ORIGIN)).status).toBe(200);
-  expect((await post('/confirm',{token},LOGIN_ORIGIN)).status).toBe(400);
+  expect((await post('/confirm',{token,code},'https://hostile.example')).status).toBe(403);
+  expect((await post('/confirm',{token,code},LOGIN_ORIGIN)).status).toBe(200);
+  expect((await post('/confirm',{token,code},LOGIN_ORIGIN)).status).toBe(400);
  };
  const google=async()=>{
   const start=await call('/start',{method:'google'});expect(start.status).toBe(200);
@@ -64,12 +67,13 @@ test('email and Google require the same one-use email proof; logout, restart and
   await confirm();expect((await call('/poll')).status).toBe(200);
   expect(ownerIdentity(root)).toEqual({ownerId:owner.agent_id,email:'owner@example.com'});
   const oldCookie=jar.get('qoopia_dash')!;expect(checkDashboardAuth({headers:headers()} as IncomingMessage)?.agent_id).toBe(owner.agent_id);
-  const logout=response();expect(handleDashboardApi({url:'/api/dashboard/logout',method:'POST',headers:headers()} as IncomingMessage,logout.res)).toBe(true);expect(logout.result().status).toBe(200);
+  const logout=response();expect(handleDashboardApi({url:'/api/dashboard/logout',method:'POST',headers:{...headers(),'x-qoopia-csrf':'1'}} as unknown as IncomingMessage/* partial request double */,logout.res)).toBe(true);expect(logout.result().status).toBe(200);
   expect(checkDashboardAuth({headers:{cookie:'qoopia_dash='+oldCookie}} as IncomingMessage)).toBeNull();
   local=localIdentityLogin(root,db,transport);jar.clear();
   expect((await call('/start',{method:'email',email:'owner@example.com'})).status).toBe(200);await confirm();expect((await call('/poll')).status).toBe(200);
   expect(ownerIdentity(root)?.ownerId).toBe(owner.agent_id);
-  expect((await call('/start',{method:'email',email:'stranger@example.com'})).status).toBe(200);await confirm();expect((await call('/poll')).status).toBe(400);
+  // F-126: another address is refused at /start, before any e-mail is sent.
+  const sent=mails.length;expect((await call('/start',{method:'email',email:'stranger@example.com'})).status).toBe(400);expect(mails).toHaveLength(sent);
   expect(ownerIdentity(root)?.email).toBe('owner@example.com');
   await google();await confirm();expect((await call('/poll')).status).toBe(200);expect(ownerIdentity(root)?.googleSub).toBe('stable-google-account');
   googleEmail='renamed@example.com';await google();await confirm();expect((await call('/poll')).status).toBe(200);
@@ -81,4 +85,23 @@ test('email and Google require the same one-use email proof; logout, restart and
   try{expect((await post('/redeem',{id:fresh.id,verifier})).status).toBe(410);}finally{clock.mockRestore();}
   expect((db.query("SELECT COUNT(*) AS n FROM workspace_owners WHERE workspace_id='identity-login'").get() as {n:number}).n).toBe(1);
  }finally{remote.close();fs.rmSync(root,{recursive:true,force:true});if(old===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=old;}
+});
+
+test('sign-in /health reports the stamped release SHA so monitoring can check provenance',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-identity-stamp-')),file=path.join(dir,'release.json');
+ try{
+  fs.writeFileSync(file,JSON.stringify({commit_sha:'c'.repeat(40),dirty:false}));
+  const handler=loginBroker(new Database(':memory:'),{origin:LOGIN_ORIGIN,resendKey:'fixture',from:'Qoopia <login@mail.qoopia.ai>',googleClientId:'fixture-client',googleClientSecret:'fixture-secret',releaseSha:releaseStampSha(file)});
+  expect(await (await handler(new Request(LOGIN_ORIGIN+'/health'),'test-device')).json()).toMatchObject({ready:true,release_sha:'c'.repeat(40)});
+  fs.writeFileSync(file,JSON.stringify({commit_sha:'c'.repeat(40),dirty:true}));
+  expect(()=>releaseStampSha(file)).toThrow('Release stamp invalid');
+  expect(releaseStampSha(undefined)).toBeNull();
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('every sign-in service response carries HSTS (F-127)',async()=>{
+ const handler=loginBroker(new Database(':memory:'),{origin:LOGIN_ORIGIN,resendKey:'fixture',from:'Qoopia <login@mail.qoopia.ai>',googleClientId:'fixture-client',googleClientSecret:'fixture-secret'});
+ for(const request of [new Request(LOGIN_ORIGIN+'/profile'),new Request(LOGIN_ORIGIN+'/confirm'),new Request(LOGIN_ORIGIN+'/privacy'),new Request(LOGIN_ORIGIN+'/brand/base.css'),
+  new Request(LOGIN_ORIGIN+'/requests',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}),new Request('https://elsewhere.example/profile')])
+  expect((await handler(request,'test-device')).headers.get('strict-transport-security'),request.url).toBe('max-age=31536000; includeSubDomains');
 });

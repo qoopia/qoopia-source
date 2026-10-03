@@ -6,6 +6,7 @@ import { appendManagedLog, retainManagedLogs } from '../src/utils/managed-logs.t
 import { recordMaintenance, readOps, opsSummary, opsFile } from '../src/delivery/ops-state.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
 import { hash } from '../src/utils/fs.ts';
+import { fakeFetch } from './helpers/fake-fetch.ts';
 const fixture = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'p3-ops-')));
 const day=86400000;
 const destination={id:'disposable-receiver',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:new Uint8Array(32).fill(17)};
@@ -46,7 +47,7 @@ test('retention refuses replaced inode, hardlinks, symlink file/ancestor and cor
 });
 test('maintenance lifecycle durable pending, active suppression, resolve clears, two distinct confirmed receipts',async()=>{
  const root=fixture();try{
-  const receive:typeof fetch=async(_url,init)=>new Response(JSON.stringify({accepted:true,event_id:JSON.parse(String(init?.body)).id,payload_sha256:hash(String(init?.body))}));
+  const receive=fakeFetch(async(_url,init)=>new Response(JSON.stringify({accepted:true,event_id:JSON.parse(String(init?.body)).id,payload_sha256:hash(String(init?.body))})));
   const first=recordMaintenance(root,'installation','BACKUP_FAILED',1000).alerts[0]!;
   recordMaintenance(root,'installation','BACKUP_FAILED',1001);expect(readOps(root).alerts.length).toBe(1);
   await deliverOpsAlerts(root,[],{},1002);expect(opsSummary(root).pending).toBe(1);
@@ -62,7 +63,7 @@ test('maintenance lifecycle durable pending, active suppression, resolve clears,
 test('2xx alone, forged receipt, wrong digest, redirect, timeout and both channels failing stay visibly pending after restart',async()=>{
  const root=fixture();try{
   let now=1000;recordMaintenance(root,'installation','BACKUP_FAILED',now);
-  const transports:typeof fetch[]=[async()=>new Response('',{status:204}),async()=>new Response('{}'),async()=>new Response(JSON.stringify({accepted:true,event_id:readOps(root).alerts[0]!.id,payload_sha256:'0'.repeat(64)})),async()=>new Response('secret canary',{status:302}),async()=>{throw new Error('secret canary timeout');}];
+  const transports=[async()=>new Response('',{status:204}),async()=>new Response('{}'),async()=>new Response(JSON.stringify({accepted:true,event_id:readOps(root).alerts[0]!.id,payload_sha256:'0'.repeat(64)})),async()=>new Response('secret canary',{status:302}),async()=>{throw new Error('secret canary timeout');}].map(transport=>fakeFetch(transport));
   for(const fetchImpl of transports){now+=86400001;await deliverOpsAlerts(root,[destination,destination],{fetchImpl,resolver},now);expect(readOps(root).alerts[0]!.state).toBe('pending');expect(opsSummary(root).pending).toBe(1);}
   expect(fs.readFileSync(opsFile(root),'utf8')).not.toContain('secret canary');
   recordMaintenance(root,'installation',null,now+1);expect(opsSummary(root).pending).toBe(1);
@@ -84,7 +85,7 @@ test('inflight receiver attempt does not lose a concurrent resolve/recurrence or
  const root=fixture();try{
   recordMaintenance(root,'installation','BACKUP_FAILED',1000);
   let release!:()=>void;const ready=new Promise<void>(resolve=>release=resolve);let calls=0;
-  const fetchImpl:typeof fetch=async(_url,init)=>{calls++;await ready;return new Response(JSON.stringify({accepted:true,event_id:JSON.parse(String(init?.body)).id,payload_sha256:hash(String(init?.body))}));};
+  const fetchImpl=fakeFetch(async(_url,init)=>{calls++;await ready;return new Response(JSON.stringify({accepted:true,event_id:JSON.parse(String(init?.body)).id,payload_sha256:hash(String(init?.body))}));});
   const delivery=deliverOpsAlerts(root,[destination],{fetchImpl,resolver},1001);
   await Promise.resolve();await deliverOpsAlerts(root,[destination],{fetchImpl,resolver},1002);
   recordMaintenance(root,'installation',null,1003);const recurrence=recordMaintenance(root,'installation','BACKUP_FAILED',1004).alerts[1]!.id;

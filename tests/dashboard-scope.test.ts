@@ -1,5 +1,5 @@
 /**
- * QSEC-001 regression: standard agent keys must not read sibling-agent data
+ * QSEC-001 / ADR-020 regression: an agent whose shared context is off must not read sibling-agent data
  * via /api/dashboard/*. Steward keys still see the whole workspace.
  */
 import {
@@ -13,7 +13,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
-import { createAgent } from "../src/admin/agents.ts";
+import { createAgent, setSharedContext } from "../src/admin/agents.ts";
 import { startHttpServer } from "../src/http.ts";
 import { createNote } from "../src/services/notes.ts";
 
@@ -24,7 +24,6 @@ let WORKSPACE_ID = "";
 let AGENT_A_ID = "";
 let AGENT_A_KEY = "";
 let AGENT_B_ID = "";
-let AGENT_B_KEY = "";
 let STEWARD_ID = "";
 let STEWARD_KEY = "";
 
@@ -39,7 +38,6 @@ beforeAll(async () => {
 
   const b = createAgent({ name: "scope-b", workspaceSlug: ws.slug });
   AGENT_B_ID = b.id;
-  AGENT_B_KEY = b.api_key;
 
   const steward = createAgent({
     name: "scope-steward",
@@ -48,6 +46,8 @@ beforeAll(async () => {
   });
   STEWARD_ID = steward.id;
   STEWARD_KEY = steward.api_key;
+  // ADR-020: sibling data is shared context; with A's toggle off the QSEC-001 wall holds.
+  setSharedContext({ workspace_id: WORKSPACE_ID, agent_id: AGENT_A_ID, enabled: false, actor_id: STEWARD_ID });
 
   // Seed a note on agent B that A must NOT see.
   createNote({

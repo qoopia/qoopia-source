@@ -34,7 +34,7 @@ import type { Server } from "node:http";
 import crypto from "node:crypto";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
-import { createAgent } from "../src/admin/agents.ts";
+import { createAgent, setSharedContext } from "../src/admin/agents.ts";
 import { startHttpServer } from "../src/http.ts";
 import { db } from "../src/db/connection.ts";
 import { sha256Hex } from "../src/auth/api-keys.ts";
@@ -75,12 +75,9 @@ beforeAll(async () => {
   STANDARD_ID = standard.id;
   STANDARD_KEY = standard.api_key;
 
-  // Use claude-privileged here so we don't trip the per-workspace
-  // single-steward unique index (migration 002).
   const dead = createAgent({
     name: "qdash-dead",
     workspaceSlug: ws.slug,
-    type: "claude-privileged",
   });
   DEACTIVATED_ID = dead.id;
   DEACTIVATED_KEY = dead.api_key;
@@ -264,6 +261,8 @@ describe("QDASH-COOKIE: cookie authenticates subsequent dashboard reads", () => 
   });
 
   test("standard agent's cookie still enforces per-agent scope", async () => {
+    // ADR-020: sibling data is shared context; with the toggle off the cookie stays per-agent.
+    setSharedContext({ workspace_id: WORKSPACE_ID, agent_id: STANDARD_ID, enabled: false, actor_id: STEWARD_ID });
     const login = await fetch(`${baseUrl}/api/dashboard/login`, {
       method: "POST",
       headers: { authorization: `Bearer ${STANDARD_KEY}` },
@@ -317,6 +316,7 @@ describe("QDASH-COOKIE: logout clears the cookie", () => {
   test("POST /logout → 200 + Set-Cookie with Max-Age=0", async () => {
     const r = await fetch(`${baseUrl}/api/dashboard/logout`, {
       method: "POST",
+      headers: { "x-qoopia-csrf": "1" },
     });
     expect(r.status).toBe(200);
     const sc = getSetCookie(r, "qoopia_dash");
@@ -329,7 +329,7 @@ describe("QDASH-COOKIE: logout clears the cookie", () => {
   test("POST /logout with mismatched Origin → 403", async () => {
     const r = await fetch(`${baseUrl}/api/dashboard/logout`, {
       method: "POST",
-      headers: { origin: "https://evil.example.com" },
+      headers: { origin: "https://evil.example.com", "x-qoopia-csrf": "1" },
     });
     expect(r.status).toBe(403);
   });

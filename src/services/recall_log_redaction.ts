@@ -14,8 +14,13 @@
 // When the rubric §5 source pattern changes, mirror the change here AND
 // update the unit tests in tests/recall_log_redaction.test.ts.
 //
+// F-105: the keyword pattern alone missed bare token-shaped secrets
+// ("find ghp_..."), so the output also goes through the shared secret-guard
+// redactor used by continuity capture. It adds `[REDACTED:<label>]` markers and
+// replaces absolute local paths with `[LOCAL_PATH]`. Strictly more redaction.
+//
 // Hard rules from the parent plan (note 01KSBK5KDR6532W95YV11M4VVS, item 6):
-//  - Pure function, no I/O, no globals beyond the pattern table.
+//  - Pure function, no I/O, no globals beyond the pattern tables.
 //  - Idempotent: redactQuery(redactQuery(x)) === redactQuery(x).
 //  - Bare ULIDs survive (they ARE the recall corpus). ULIDs adjacent to
 //    a redaction marker (within REDACT_PROXIMITY chars) are stripped —
@@ -25,7 +30,23 @@
 //    own output because the `<` and `>` in the marker are not part of
 //    the keyword alternation.
 
-const KIND_ALTERNATION = "api[_-]?key|token|secret|password|bearer|cookie|authorization";
+import { redactSensitive } from "../utils/secret-guard.ts";
+
+export const REDACTION_KINDS: ReadonlyArray<string> = [
+  "api_key",
+  "token",
+  "secret",
+  "password",
+  "bearer",
+  "cookie",
+  "authorization",
+  "ulid",
+];
+
+// Built from REDACTION_KINDS so the exported list (and the test that walks it)
+// cannot drift from what the regex actually matches.
+const KIND_ALTERNATION = REDACTION_KINDS.filter((k) => k !== "ulid")
+  .map((k) => (k === "api_key" ? "api[_-]?key" : k)).join("|");
 
 // One pass, one regex. Capture group 1 = keyword. Replacement derives the
 // canonical KIND label (api_key for any of api_key / apikey / api-key).
@@ -43,17 +64,6 @@ const REDACT_PROXIMITY = 32;
 // Matches a redaction marker emitted by this module — used to anchor the
 // ULID proximity check (step 2) and to keep idempotency provable.
 const REDACTION_MARKER = /<REDACTED:[a-z_]+>/;
-
-export const REDACTION_KINDS: ReadonlyArray<string> = [
-  "api_key",
-  "token",
-  "secret",
-  "password",
-  "bearer",
-  "cookie",
-  "authorization",
-  "ulid",
-];
 
 function normalizeKind(rawKeyword: string): string {
   const lower = rawKeyword.toLowerCase();
@@ -82,5 +92,5 @@ export function redactQuery(text: string): string {
     const ctx = (full as string).slice(start, end);
     return REDACTION_MARKER.test(ctx) ? "<REDACTED:ulid>" : match;
   });
-  return out;
+  return redactSensitive(out).text;
 }

@@ -98,7 +98,7 @@ export function splitSqlStatements(sql: string): string[] {
   return statements;
 }
 
-export interface Migration033Snapshot {
+interface Migration033Snapshot {
   linear_target_count: number;
   skipped_count: number;
   linear_target_ids: string[];

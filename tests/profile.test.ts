@@ -16,11 +16,12 @@ test('profile uses confirmed identity, binds redemption to the initiating browse
     return result;
   };
   const login=async(email:string,cookies:Record<string,string>)=>{
-    expect((await call('/profile/start',{method:'email',email},cookies)).status).toBe(200);
+    const started=await call('/profile/start',{method:'email',email},cookies);expect(started.status).toBe(200);
+    const code=(await started.json() as {code:string}).code;
     expect((await call('/profile/poll',{},cookies)).status).toBe(202);
     const token=new URL(mails.at(-1)!.match(/https:\/\/[^\s]+/)![0]).hash.slice(1);
-    expect((await call('/confirm',{token},{},'https://evil.test')).status).toBe(403);
-    expect((await call('/confirm',{token},{})).status).toBe(200);
+    expect((await call('/confirm',{token,code},{},'https://evil.test')).status).toBe(403);
+    expect((await call('/confirm',{token,code},{})).status).toBe(200);
     expect((await call('/profile/poll',{},{})).status).toBe(410);
     const result=await call('/profile/poll',{},cookies);expect(result.status).toBe(200);
     expect(result.headers.get('set-cookie')).toContain('HttpOnly; Secure; SameSite=Lax; Path=/');
@@ -60,7 +61,7 @@ test('dashboard addresses reject credentials, agent routes and executable or tok
 test('the news form shows only localized messages, never a raw network or parse exception',async()=>{
   const {profileView}=await import('../src/identity/profile-view.ts');
   for(const ru of [false,true]) {
-    const html=profileView((_title,_content,script)=>script??'',ru,{email:'owner@example.com',url:null},'',false,{subscribed:true}) as string;
+    const html=await profileView((_title,_content,script)=>new Response(script??''),ru,{email:'owner@example.com',url:null},'',false,{subscribed:true}).text();
     expect(html).not.toContain('textContent=e.message');
     const M=JSON.parse(html.match(/const M=(\{.*?\}),status=/s)![1]!),known=new Function('M','return '+html.match(/const known=(e=>.*?),show=/s)![1])(M);
     for(const raw of ['Failed to fetch','The operation timed out.','Unexpected token < in JSON at position 0'])expect(known(new TypeError(raw))).toBe(M.failed);

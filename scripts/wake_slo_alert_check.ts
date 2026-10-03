@@ -29,18 +29,19 @@
  *
  * Usage:
  *   bun scripts/wake_slo_alert_check.ts [--mute-hours N] [--state-file PATH] [--window-hours N]
+ *   Workspace: QOOPIA_WORKSPACE_SLUG (default "default").
  *
  * The script DOES NOT install cron. Cron activation is a separate gate
  * (Item D acceptance + 7d post-responder-ship real data).
  */
 import { db } from "../src/db/connection.ts";
+import { workspaceIdBySlug } from "../src/admin/workspaces.ts";
 import { agentSend } from "../src/services/agent-comm.ts";
 import { createNote } from "../src/services/notes.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { env } from "../src/utils/env.ts";
 
-const WORKSPACE_ID = "01KMKRVYF2FN68D9N3C8BEGAHS";
 const SELF_AGENT_NAME = "corsair-main";
 const DEFAULT_WINDOW_HOURS = 24;
 const DEFAULT_THRESHOLD_RATE = 0.05;
@@ -257,7 +258,7 @@ export function recordFire(
   iso: string,
 ): AlertState {
   const current = readState(file);
-  const map = { ...(current.last_fire_by_key || {}) };
+  const map = { ...current.last_fire_by_key };
   map[muteKey(reason, direction)] = iso;
   const next: AlertState = { last_fire_by_key: map };
   writeState(file, next);
@@ -500,7 +501,7 @@ export function run(opts: CliOpts): RunResult {
     return { exit_code: 1, reason: `dry-run breach: ${primary.reason}/${primary.direction}`, breach: primary, payload, stats };
   }
 
-  const workspaceId = opts.workspaceId || WORKSPACE_ID;
+  const workspaceId = opts.workspaceId || workspaceIdBySlug();
   const selfAgentName = opts.selfAgentName || SELF_AGENT_NAME;
   const agentId = opts.agentId || resolveAgentId(workspaceId, selfAgentName);
   const ts = new Date(nowIso).getTime();

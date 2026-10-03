@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export interface FleetToolsContract {
+interface FleetToolsContract {
   schema_version: 1;
   tool_release: string;
   version_marker: string;
@@ -10,33 +10,40 @@ export interface FleetToolsContract {
   tree_excludes: string[];
 }
 
-export interface InstructionValidationResult {
+interface InstructionValidationResult {
   ok: boolean;
   checkedFiles: string[];
   checkedReferences: string[];
   errors: string[];
 }
 
-function instructionReferences(markdown: string): string[] {
-  const candidates: string[] = [];
-  for (const match of markdown.matchAll(/`([^`\n]+)`/g)) {
-    candidates.push(match[1]!.trim());
-  }
-  for (const match of markdown.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
-    candidates.push(match[1]!.trim().replace(/^<|>$/g, ""));
-  }
-  return [...new Set(candidates)]
-    .map((candidate) => candidate.replace(/:\d+$/, ""))
-    .filter((candidate) =>
-      candidate.endsWith(".md") &&
-      candidate.includes("/") &&
-      !candidate.includes(" ") &&
-      !candidate.includes("$") &&
-      !candidate.includes("*") &&
-      !candidate.includes("<") &&
-      !candidate.includes(">") &&
-      !/^[a-z]+:\/\//i.test(candidate)
-    );
+interface InstructionReference {
+  shown: string;
+  target: string;
+  /** Markdown links and Claude Code @imports resolve from the file that contains them. */
+  fromFile: boolean;
+}
+
+function instructionReferences(markdown: string): InstructionReference[] {
+  const found = new Map<string, InstructionReference>();
+  const add = (shown: string, raw: string, fromFile: boolean, needsSlash: boolean) => {
+    const target = raw.trim().replace(/^<|>$/g, "").replace(/#.*$/, "").replace(/:\d+$/, "");
+    if (
+      !target.endsWith(".md") ||
+      (needsSlash && !target.includes("/")) ||
+      /[\s$*<>]/.test(target) ||
+      target.startsWith("~") ||
+      /^[a-z]+:\/\//i.test(target)
+    ) return;
+    found.set(`${fromFile}:${shown}`, { shown, target, fromFile });
+  };
+  // Backticked paths name workspace files (the fleet tools convention).
+  for (const match of markdown.matchAll(/`([^`\n]+)`/g)) add(match[1]!, match[1]!, false, true);
+  for (const match of markdown.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) add(match[1]!, match[1]!, true, false);
+  for (const match of markdown.matchAll(/^@(\S+)$/gm)) add(match[0]!, match[1]!, true, false);
+  // The managed Qoopia block names its documents as JSON strings; absolute, so --check-absolute.
+  for (const match of markdown.matchAll(/"(\/[^"\n]+)"/g)) add(match[1]!, match[1]!, true, false);
+  return [...found.values()];
 }
 
 export function validateAgentInstructionPaths(options: {
@@ -63,14 +70,14 @@ export function validateAgentInstructionPaths(options: {
     }
     const markdown = fs.readFileSync(instructionPath, "utf8");
     for (const reference of instructionReferences(markdown)) {
-      if (path.isAbsolute(reference) && !options.checkAbsolute) continue;
-      const resolved = path.isAbsolute(reference)
-        ? path.normalize(reference)
-        : path.resolve(workspaceRoot, reference);
+      if (path.isAbsolute(reference.target) && !options.checkAbsolute) continue;
+      const resolved = path.isAbsolute(reference.target)
+        ? path.normalize(reference.target)
+        : path.resolve(reference.fromFile ? path.dirname(instructionPath) : workspaceRoot, reference.target);
       checkedReferences.push(resolved);
       if (!fs.existsSync(resolved)) {
         errors.push(
-          `unresolved instruction path in ${instructionPath}: ${reference}`,
+          `unresolved instruction path in ${instructionPath}: ${reference.shown}`,
         );
       }
     }
@@ -158,7 +165,7 @@ export function validateFleetToolLayout(options: {
     }
   }
 
-  for (const toolRoot of [...new Set([canonicalToolsRoot, workspaceToolsRoot])]) {
+  for (const toolRoot of new Set([canonicalToolsRoot, workspaceToolsRoot])) {
     const marker = path.join(toolRoot, options.contract.version_marker);
     if (!fs.existsSync(marker)) {
       errors.push(`missing fleet tool version marker: ${marker}`);

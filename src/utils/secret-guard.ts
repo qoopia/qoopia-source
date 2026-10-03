@@ -47,7 +47,7 @@ interface SecretDetector {
 const BASE_SECRET_DETECTORS: SecretDetector[] = [
   {
     label: "qoopia-token",
-    re: /(?:q_|qa_|qr_|qc_|qcs_)[A-Za-z0-9_\-]{16,}/,
+    re: /(?:q_|qa_|qr_|qc_|qcs_)[A-Za-z0-9_-]{16,}/,
   },
   {
     // Floor lowered from 36 to 20 so a clipped PAT is still caught; `ghp_`
@@ -244,22 +244,33 @@ export function assertNoSecrets(text: string, context: string): void {
   }
 }
 
-/** Capture-only redaction. Existing note/session writes continue to refuse secrets. */
-export function redactSensitive(text: string): { text: string; categories: string[] } {
-  const categories = new Set<string>();
+/** Replace each secret-shaped span with `[REDACTED:<label>]`; `seen` collects the labels hit. */
+export function redactSecretSpans(text: string, seen?: Set<string>): string {
   let clean = text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, () => {
-    categories.add('private-key'); return '[REDACTED:private-key]';
+    seen?.add('private-key'); return '[REDACTED:private-key]';
   });
   for (const { label, re } of allSecretDetectors()) {
     clean = clean.replace(new RegExp(re.source, re.flags.replace('g', '') + 'g'), () => {
-      categories.add(label); return `[REDACTED:${label}]`;
+      seen?.add(label); return `[REDACTED:${label}]`;
     });
   }
-  clean = clean.replace(/\b(?:password|api_key|secret|token)\s*[:=]\s*["']?[^\s"',;]{8,}/gi, () => {
+  return clean;
+}
+
+/** Capture-only redaction. Existing note/session writes continue to refuse secrets. */
+export function redactSensitive(text: string): { text: string; categories: string[] } {
+  const categories = new Set<string>();
+  const clean = redactSecretSpans(text, categories).replace(/\b(?:password|api_key|secret|token)\s*[:=]\s*["']?[^\s"',;]{8,}/gi, () => {
     categories.add('credential-assignment'); return '[REDACTED:credential-assignment]';
   }).replace(/https?:\/\/[^\s/:]+:[^\s/@]+@[^\s]+/gi, () => {
     categories.add('credential-url'); return '[REDACTED:credential-url]';
-  }).replace(/(?:\/(?:Users|home|private|tmp|var)\/[^\s"'`,;]+|[A-Za-z]:[\\/][^\s"'`,;]+)/g, (path: string, offset: number, source: string) => {
+  }).replace(/([?&][\w.-]*(?:token|secret|passw(?:or)?d|key|sig|signature|credential|auth|code)=)[^\s&#"'`]{8,}/gi, (_m: string, name: string) => {
+    categories.add('credential-url'); return name + '[REDACTED:credential-url]';
+  }).replace(/((?:https?|ftp):\/\/[^\s"'`,;\\]+)|\/(?:Users|home|private|tmp|var)\/[^\s"'`,;]+|[A-Za-z]:(?:\\|\/(?!\/))[^\s"'`,;]+/g, (path: string, url: string | undefined, offset: number, source: string) => {
+    // Web URLs are consumed whole and kept, so their path segments are never
+    // read as local paths; a backslash ends the URL so JSON escapes (\n, \t)
+    // cannot hide a path. A drive letter never precedes "//" (every "://").
+    if (url) return url;
     // Serialized JSON/JSONL can end a path match with quote-escape backslashes.
     // Keep only that punctuation before a double quote, never a path segment or
     // arbitrary suffix. Internal Windows separators and their following bytes

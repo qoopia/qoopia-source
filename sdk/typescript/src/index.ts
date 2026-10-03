@@ -8,6 +8,7 @@ export type QoopiaClientOptions = {
   timeoutMs?: number;
 };
 
+/** brief and recall are served by default; the others need QOOPIA_V4_* server flags (see README). */
 export const CANONICAL_V4_TOOLS = [
   "brief",
   "recall",
@@ -30,6 +31,9 @@ const RETRYABLE_READS = new Set([
   "recall_trace_get",
 ]);
 
+/** Only these may succeed on another try; any other answer already reached a decision. */
+const TRANSIENT_STATUS = new Set([429, 502, 503, 504]);
+
 export class QoopiaClientError extends Error {
   constructor(
     message: string,
@@ -39,6 +43,27 @@ export class QoopiaClientError extends Error {
     this.name = "QoopiaClientError";
   }
 }
+
+type Envelope = {
+  id?: unknown;
+  error?: { code?: number; message?: string };
+  result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+};
+
+/** Streamable HTTP answers with SSE when the client accepts it: take this request's JSON-RPC reply. */
+async function readEnvelope(response: Response, id: number): Promise<Envelope> {
+  const body = await response.text();
+  if (!(response.headers.get("content-type") ?? "").includes("text/event-stream")) return JSON.parse(body) as Envelope;
+  for (const event of body.split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
+    if (!data) continue;
+    const message = JSON.parse(data) as Envelope;
+    if (message.id === id && (message.result !== undefined || message.error !== undefined)) return message;
+  }
+  throw new QoopiaClientError("Qoopia stream ended without a reply");
+}
+
+const pause = (attempt: number) => new Promise((resolve) => setTimeout(resolve, 100 * attempt));
 
 export class QoopiaClient {
   private readonly endpoint: string;
@@ -58,12 +83,13 @@ export class QoopiaClient {
   }
 
   async call<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {
-    const retryable = RETRYABLE_READS.has(name) || typeof args.idempotency_key === "string";
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= (retryable ? this.maxAttempts : 1); attempt++) {
+    const attempts = RETRYABLE_READS.has(name) || typeof args.idempotency_key === "string" ? this.maxAttempts : 1;
+    for (let attempt = 1; ; attempt++) {
       const token = await this.tokenProvider();
+      const id = ++this.requestId;
+      let response: Response;
       try {
-        const response = await this.request(this.endpoint, {
+        response = await this.request(this.endpoint, {
           method: "POST",
           headers: {
             authorization: `Bearer ${token}`,
@@ -72,28 +98,35 @@ export class QoopiaClient {
           },
           body: JSON.stringify({
             jsonrpc: "2.0",
-            id: ++this.requestId,
+            id,
             method: "tools/call",
             params: { name, arguments: args },
           }),
           signal: AbortSignal.timeout(this.timeoutMs),
         });
-        if (!response.ok) throw new QoopiaClientError(`Qoopia request failed with HTTP ${response.status}`, response.status);
-        const envelope = await response.json() as {
-          error?: { code?: number; message?: string };
-          result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> };
-        };
-        if (envelope.error) throw new QoopiaClientError(envelope.error.message ?? "Qoopia JSON-RPC error", envelope.error.code);
-        const text = envelope.result?.content?.find((item) => item.type === "text")?.text;
-        if (envelope.result?.isError || text === undefined) throw new QoopiaClientError(text ?? "Qoopia returned no result");
-        return JSON.parse(text) as T;
       } catch (error) {
-        lastError = error;
-        if (attempt >= (retryable ? this.maxAttempts : 1)) break;
+        if (attempt < attempts) { await pause(attempt); continue; }
+        throw new QoopiaClientError(error instanceof Error ? error.message : "Qoopia request failed");
       }
+      if (!response.ok) {
+        if (TRANSIENT_STATUS.has(response.status) && attempt < attempts) { await pause(attempt); continue; }
+        throw new QoopiaClientError(`Qoopia request failed with HTTP ${response.status}`, response.status);
+      }
+      let envelope: Envelope;
+      try {
+        envelope = await readEnvelope(response, id);
+      } catch (error) {
+        throw error instanceof QoopiaClientError ? error : new QoopiaClientError(error instanceof Error ? error.message : "Unreadable Qoopia reply");
+      }
+      if (envelope.error) throw new QoopiaClientError(envelope.error.message ?? "Qoopia JSON-RPC error", envelope.error.code);
+      const text = envelope.result?.content?.find((item) => item.type === "text")?.text;
+      if (envelope.result?.isError || text === undefined) {
+        const message = text ?? "Qoopia returned no result";
+        // Tool errors read "CODE: message".
+        throw new QoopiaClientError(message, /^([A-Z][A-Z0-9_]+):/.exec(message)?.[1]);
+      }
+      return JSON.parse(text) as T;
     }
-    if (lastError instanceof QoopiaClientError) throw lastError;
-    throw new QoopiaClientError(lastError instanceof Error ? lastError.message : "Qoopia request failed");
   }
 
   brief<T>(args: Record<string, unknown> = {}) { return this.call<T>("brief", args); }

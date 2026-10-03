@@ -2,8 +2,6 @@
  * ТЗ §10.2 / §7.5 / §10.6 — паритет при выключенном флаге, MCP-поверхность
  * и планы запросов.
  */
-import fs from "node:fs";
-import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
@@ -199,6 +197,7 @@ describe("§10.6 query plans and isolation", () => {
       `${[...deleted.where, ...temporal.where].join(" AND ")} ` +
       `ORDER BY n.created_at_ms DESC LIMIT 10`;
     expect(sql).toContain("note_temporal_provenance");
+    expect(sql).toContain("skipped_reason IS NOT NULL");
     expect(sql).toContain("relation_type = 'supersedes'");
 
     const plan = db
@@ -215,33 +214,30 @@ describe("§10.6 query plans and isolation", () => {
     }
   });
 
-  test("the COMMITTED explain artifacts show the exact flag-ON predicate", () => {
-    // §7.3 требует зафиксированный EXPLAIN точного предиката. Проверяем сам
-    // закоммиченный артефакт свежайшего бандла, а не только живой план.
-    const root = path.resolve(import.meta.dir, "..", "release-evidence");
-    const bundles = fs
-      .readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-    expect(bundles.length).toBeGreaterThan(0);
-    const latest = path.join(root, bundles.at(-1)!);
+  test("the flag-ON subject chain is index-driven (production helpers)", () => {
+    // Раньше это проверялось по закоммиченному EXPLAIN из release-evidence/;
+    // теперь план строится живьём теми же хелперами, что и на read-path.
+    process.env.QOOPIA_V4_BITEMPORAL = "1";
+    const filter = resolveTemporalFilter({});
+    const deleted = temporalDeletedSql("n", filter);
+    const temporal = temporalWhereSql("n", filter);
+    delete process.env.QOOPIA_V4_BITEMPORAL;
 
-    const currentSlice = fs.readFileSync(path.join(latest, "explain-current-slice.txt"), "utf8");
-    expect(currentSlice).toContain("note_temporal_provenance");
-    expect(currentSlice).toContain("skipped_reason IS NOT NULL");
-    expect(currentSlice).toContain("idx_notes_current_ws");
-    expect(currentSlice).toContain("idx_note_relations_target");
-    for (const line of currentSlice.split("\n")) {
-      if (/\bSCAN\b/.test(line) && /\bnotes\b/.test(line)) {
-        expect(line).toMatch(/USING (COVERING )?INDEX/);
-      }
-    }
+    const sql =
+      `SELECT n.id FROM notes n WHERE n.workspace_id = ? AND n.subject_key = ? AND ` +
+      `${[...deleted.where, ...temporal.where].join(" AND ")} ` +
+      `ORDER BY n.valid_from_ms`;
+    expect(sql).toContain("skipped_reason IS NOT NULL");
 
-    const subjectChain = fs.readFileSync(path.join(latest, "explain-subject-chain.txt"), "utf8");
-    expect(subjectChain).toContain("idx_notes_subject_valid");
-    expect(subjectChain).toContain("note_temporal_provenance");
-    for (const line of subjectChain.split("\n")) {
+    const plan = db
+      .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+      .all(WORKSPACE_ID, "office.address", ...deleted.params, ...temporal.params) as Array<{
+      detail: string;
+    }>;
+    const detail = plan.map((row) => row.detail).join(" | ");
+    expect(detail).toContain("idx_notes_subject_valid");
+    expect(detail).toContain("note_temporal_provenance");
+    for (const line of plan.map((row) => row.detail)) {
       if (/\bSCAN\b/.test(line) && /\bnotes\b/.test(line)) {
         expect(line).toMatch(/USING (COVERING )?INDEX/);
       }

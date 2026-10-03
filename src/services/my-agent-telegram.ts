@@ -9,7 +9,8 @@ import {assertNoSecrets} from '../utils/secret-guard.ts';
 import {canManagePolicy,pendingSave} from './memory-policy.ts';
 import {decideSaveRequest,listSaveRequests} from './memory-save-requests.ts';
 import {QoopiaError} from '../utils/errors.ts';
-import {channel,ensureChannel,queueTelegram,acknowledgeTelegram,recoverTelegram,telegramChunks,TELEGRAM_WAITING_LOGIN,TELEGRAM_LOGIN_REQUIRED,resumeTelegramAfterLogin,scrubTelegramTransit} from './telegram-store.ts';
+import {backgroundFailure} from '../utils/logger.ts';
+import {channel,ensureChannel,queueTelegram,acknowledgeTelegram,recoverTelegram,telegramChunks,TELEGRAM_WAITING_LOGIN,TELEGRAM_LOGIN_REQUIRED,TELEGRAM_LOGIN_ERRORS,resumeTelegramAfterLogin,scrubTelegramTransit} from './telegram-store.ts';
 
 type Pending={digest:string;code:string;expires:number;user?:{id:string;chat:string;name:string}};
 // Pairing survives process/page restarts. Tokens remain in the private token file.
@@ -27,7 +28,7 @@ let timer:ReturnType<typeof setInterval>|undefined;
 const tokenFile=(owner:string)=>path.join(agentDirectory(owner),'telegram.json');
 const token=(owner:string)=>(JSON.parse(readJsonBytes(tokenFile(owner)).toString()) as {token:string}).token;
 /** Never include Telegram URLs or descriptions: they may contain the bot token. */
-export class TelegramError extends QoopiaError {
+class TelegramError extends QoopiaError {
   constructor(readonly status:number,readonly retryAfter:number=0){
     super('NOT_READY',status===409?'Telegram polling conflict: another host is using this bot.':status===401?'Telegram token was refused. Reconnect the bot.':status===429?'Telegram rate limit. Retrying after its cooldown.':'Telegram did not accept the request. Check the token, network and other bot connections.');
   }
@@ -165,7 +166,9 @@ export async function pollTelegramOwner(owner:string) {
           queueTelegram(owner,generation,'new:'+update.update_id,{chat_id:settings.telegram_chat_id,text:'Новый разговор создан. / New conversation ready.'});
         }
         else if(text==='/status'||text==='/start'||text==='/help')queueTelegram(owner,generation,'status:'+update.update_id,{chat_id:settings.telegram_chat_id,text:(state.approvals.length?'Нужен ваш ответ. Проверьте запрос разрешения. / Waiting for your approval.':state.active_conversation?'Агент работает. / Agent is working.':!state.account?'Для выполнения задач войдите в подписку в Qoopia. / Sign in to your subscription in Qoopia.':'Готов принять задачу. / Ready for a task.')+' /stop — остановить, /new — новый разговор.'});
-        else if(text&&!text.startsWith('/')) {
+        // Leading-slash text is never sent to the provider: its CLI would treat it as a slash command.
+        else if(text.startsWith('/'))queueTelegram(owner,generation,'unknown:'+update.update_id,{chat_id:settings.telegram_chat_id,text:'Неизвестная команда. Доступны /stop, /new, /status. Если сообщение начинается с пути, добавьте слово перед ним. / Unknown command. Use /stop, /new or /status. To send a path, put a word before it.'});
+        else if(text) {
           assertNoSecrets(text,'Telegram message');
           db.transaction(()=>{
             const queued=(db.query("SELECT COUNT(*) n FROM qoopia_telegram_inbox WHERE owner_id=? AND generation=? AND state='queued'").get(owner,generation) as {n:number}).n;
@@ -181,9 +184,9 @@ export async function pollTelegramOwner(owner:string) {
         }catch(error){
           // Storage failures must not acknowledge an update that was never saved.
           if(!(error instanceof QoopiaError))throw error;
-          queueTelegram(owner,generation,'refused:'+update.update_id,{chat_id:settings.telegram_chat_id,text:text==='/new'?'Сначала остановите текущую задачу и очередь: /stop. Затем повторите /new. / Use /stop before /new.':'Команда не выполнена. Проверьте состояние в Qoopia. / Command failed. Check Qoopia.'});
+          queueTelegram(owner,generation,'refused:'+update.update_id,{chat_id:settings.telegram_chat_id,text:text==='/new'?'Сначала остановите текущую задачу и очередь: /stop. Затем повторите /new. / Use /stop before /new.':error.code==='INVALID_INPUT'&&!text.startsWith('/')?'Сообщение содержит ключ или пароль и не принято. Отправьте его без секрета. / Message contains a credential and was not accepted. Send it without the secret.':'Команда не выполнена. Проверьте состояние в Qoopia. / Command failed. Check Qoopia.'});
         }
-      }
+      } else if(isBoundTelegramMessage(settings,message))queueTelegram(owner,generation,'unsupported:'+update.update_id,{chat_id:settings.telegram_chat_id,text:'Поддерживаются только текстовые сообщения. / Only text messages are supported.'});
       acknowledgeTelegram(owner,generation,update.update_id);
     }
   }catch(error){
@@ -243,13 +246,16 @@ export async function deliverTelegram(owner:string){
   if(!binding||!settings?.enabled||!settings.telegram_username)return;
   deliverers.add(owner);const generation=binding.generation;
   const currentBinding=()=>channel(owner)?.generation===generation&&!!agentSettings(owner)?.telegram_username;
+  // A Telegram task always asks in Telegram; a dashboard task only when the owner chose Telegram.
+  const asksInTelegram=(runId:string)=>settings.channel==='telegram'||!!db.query('SELECT 1 FROM qoopia_agent_telegram_delivery WHERE run_id=?').get(runId);
   try{
     if(settings.telegram_chat_id){
       const current=telegramAgentState(owner);
       for(const approval of current.approvals){
+        if(!asksInTelegram(approval.run_id))continue;
         const simple=simpleTelegramApproval(approval);
         const text=simple?'Qoopia: разрешить команду один раз? / Allow this command once?\n\n'+approval.params.command:'Qoopia: нужен ваш ответ в дашборде. / Review this request in your dashboard.';
-        queueTelegram(owner,generation,'approval:'+approval.id,{chat_id:settings.telegram_chat_id,text,...(simple?{reply_markup:{inline_keyboard:[[{text:'Разрешить / Allow',callback_data:'qa:'+approval.id+':yes'},{text:'Отклонить / Decline',callback_data:'qa:'+approval.id+':no'}]]}}:{})},approval.run_id);
+        queueTelegram(owner,generation,'approval:'+approval.id,{chat_id:settings.telegram_chat_id,text,...(simple?{reply_markup:{inline_keyboard:[[{text:'Разрешить / Allow',callback_data:'qa:'+approval.id+':yes'},{text:'Отклонить / Decline',callback_data:'qa:'+approval.id+':no'}]]}}:{})});
       }
       // A manual agent's prepared save reaches the owner here. Only the owner of this workspace sees
       // the material, and the delivery key sends each request once however often this loop runs.
@@ -274,20 +280,22 @@ export async function deliverTelegram(owner:string){
       }).immediate();
       if(current.active_conversation&&Date.now()-(typingAt.get(owner)??0)>4000){
         typingAt.set(owner,Date.now());
-        void telegramCall(token(owner),'sendChatAction',{chat_id:settings.telegram_chat_id,action:'typing'}).catch(()=>{});
+        void telegramCall(token(owner),'sendChatAction',{chat_id:settings.telegram_chat_id,action:'typing'}).catch(()=>{/* Typing indicator is cosmetic. */});
       }
     }
     const outbound=db.query("SELECT id,body,delivery_key,run_id FROM qoopia_telegram_outbox WHERE owner_id=? AND generation=? AND state='queued' ORDER BY id LIMIT 5").all(owner,generation) as {id:number;body:string;delivery_key:string;run_id:string|null}[];
     for(const item of outbound){
       if(!currentBinding())return;
       const retry=db.query('SELECT retry_at FROM qoopia_telegram_outbox WHERE id=?').get(item.id) as {retry_at:number};if(retry.retry_at>Date.now())break;
-      if(item.delivery_key.startsWith('approval:')&&!telegramAgentState(owner).approvals.some(a=>a.id===item.delivery_key.slice(9))){db.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE id=?").run(item.id);continue;}
+      if(item.delivery_key.startsWith('approval:')&&!telegramAgentState(owner).approvals.some(a=>a.id===item.delivery_key.slice(9)&&asksInTelegram(a.run_id))){db.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE id=?").run(item.id);continue;}
       // A prepared save that expired or was already decided must not arrive with live buttons.
       if(item.delivery_key.startsWith('save:')&&!pendingSave(settings.workspace_id,item.delivery_key.slice(5))){db.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE id=?").run(item.id);continue;}
       db.query("UPDATE qoopia_telegram_outbox SET state='sending' WHERE id=?").run(item.id);
       try{
         const sent=await telegramCall(token(owner),'sendMessage',JSON.parse(item.body));
         db.query("UPDATE qoopia_telegram_outbox SET state='sent',message_id=? WHERE id=?").run(sent.message_id,item.id);
+        // Delivery works again: drop a stale delivery banner, but keep poll failures and sign-in banners.
+        db.query('UPDATE qoopia_telegram_channels SET error=NULL WHERE owner_id=? AND generation=? AND failures=0 AND error NOT IN (?,?)').run(owner,generation,...TELEGRAM_LOGIN_ERRORS);
       }catch(error){
         // Only explicit 429 is safely retryable. Network loss after send is ambiguous.
         const retryable=error instanceof TelegramError&&error.status===429;
@@ -299,24 +307,26 @@ export async function deliverTelegram(owner:string){
     reconcileTelegramDeliveries(owner,generation);
   }catch(error){
     if(currentBinding()){reconcileTelegramDeliveries(owner,generation);errors.set(owner,error instanceof TelegramError?error.message:'Telegram delivery needs attention. Your answer is saved in Qoopia.');}
-  }finally{deliverers.delete(owner);try{scrubTelegramTransit(owner);}catch{}}
+  }finally{deliverers.delete(owner);try{scrubTelegramTransit(owner);}catch{/* Retried on every delivery tick and by memory maintenance. */}}
 }
 function reconcileTelegramDeliveries(owner:string,generation:string){
   const rows=db.query(`SELECT d.run_id,r.state,r.answer FROM qoopia_agent_telegram_delivery d JOIN qoopia_agent_runs r ON r.id=d.run_id JOIN qoopia_agent_conversations c ON c.id=r.conversation_id WHERE c.owner_id=? AND d.generation=? AND d.state='pending'`).all(owner,generation) as {run_id:string;state:string;answer:string}[];
   for(const run of rows){
-    const parts=db.query('SELECT state,message_id FROM qoopia_telegram_outbox WHERE run_id=? AND generation=?').all(run.run_id,generation) as {state:string;message_id:number|null}[];
+    // Only reply chunks count; an approval prompt sent mid-run is not the answer.
+    const parts=db.query("SELECT state,message_id FROM qoopia_telegram_outbox WHERE run_id=? AND generation=? AND delivery_key LIKE 'run:%'").all(run.run_id,generation) as {state:string;message_id:number|null}[];
     const state=parts.some(p=>p.state==='uncertain')?'uncertain':parts.length&&parts.every(p=>p.state==='sent')?'sent':null;
     if(!state)continue;
     db.query('UPDATE qoopia_agent_telegram_delivery SET state=?,message_id=? WHERE run_id=?').run(state,parts[0]?.message_id??null,run.run_id);
     if(state==='sent'&&run.state==='completed'&&(run.answer||unsavedTurn(run.run_id)?.answer))db.query('UPDATE qoopia_agent_settings SET telegram_verified=1 WHERE owner_id=? AND EXISTS(SELECT 1 FROM qoopia_telegram_channels WHERE owner_id=? AND generation=?)').run(owner,owner,generation);
   }
 }
+const telegramTasks=[[pollTelegramOwner,backgroundFailure('Telegram polling')],[runTelegramQueue,backgroundFailure('Telegram queue')],[deliverTelegram,backgroundFailure('Telegram delivery')]] as const;
 export function startTelegramChannels() {
   if(timer)return;
   recoverTelegram();
   timer=setInterval(()=>{
     const owners=db.query('SELECT owner_id FROM qoopia_agent_settings WHERE enabled=1 AND telegram_username IS NOT NULL').all() as {owner_id:string}[];
-    for(const {owner_id} of owners)for(const task of [pollTelegramOwner,runTelegramQueue,deliverTelegram])void task(owner_id).catch(()=>{});
+    for(const {owner_id} of owners)for(const [task,failed] of telegramTasks)void task(owner_id).catch(failed);
   },1000);timer.unref();
 }
 export function stopTelegramChannels(){if(timer)clearInterval(timer);timer=undefined;for(const controller of polls.values())controller.abort();}

@@ -3,7 +3,7 @@
  const privacySignal=()=>navigator.globalPrivacyControl===true||navigator.doNotTrack==='1';
  let enabled=false,viewSent=false;
  try{enabled=localStorage.getItem(key)==='allow'&&!privacySignal();}catch{}
- const page=({'/':'home','/index.html':'home','/docs':'docs','/docs.html':'docs','/releases':'releases','/releases.html':'releases'})[location.pathname]||'404';
+ const page=({'/':'home','/index.html':'home','/docs':'docs','/docs.html':'docs','/releases':'releases','/releases.html':'releases','/mobile':'mobile','/mobile.html':'mobile'})[location.pathname]||'404';
  const language=()=>window.QI?.language==='ru'?'ru':'en';
  const viewport=()=>innerWidth<600?'small':innerWidth<1024?'medium':'large';
  const referral=()=>{
@@ -26,12 +26,23 @@
  const render=()=>{
   const msg=text=>window.QI?.msg(text)||text;
   summary.textContent=msg('Website statistics');
-  description.textContent=msg('Optional: share page views, download clicks, language, screen size category and loading times. No cookies, persistent visitor ID, full referrer address or page content are sent.');
+  description.textContent=msg('Download button clicks are counted anonymously: platform, version and page only. Optional: also share page views, language, screen size category and loading times. No cookies, persistent visitor ID, full referrer address or page content are sent.');
   labelText.textContent=msg(privacySignal()?'Your browser privacy signal has disabled website statistics.':'Allow technical website statistics');
  };
  render();document.querySelector('footer')?.append(details);window.addEventListener('qoopia:language',render);
  check.addEventListener('change',()=>{enabled=check.checked&&!privacySignal();try{localStorage.setItem(key,enabled?'allow':'deny');}catch{}view();});
- document.addEventListener('click',event=>{const link=event.target instanceof Element?event.target.closest('#download-action a'):null;if(link){const selected=document.querySelector('#platform')?.value;send('download_click',{platform:['mac','linux'].includes(selected)?selected:'other'});}});
+ // Download clicks are an anonymous count sent without opt-in: no cookies, no stored
+ // identifier, no IP. Only platform, public release version, page and referral category.
+ // Browser privacy signals (GPC/DNT) still suppress it. fetch keepalive never delays the download.
+ const downloadClick=link=>{
+  if(privacySignal()||!crypto.randomUUID)return;
+  const platform=['mac','linux'].includes(link.dataset.platform)?link.dataset.platform:'other',version=link.dataset.version||'';
+  const body=JSON.stringify({id:crypto.randomUUID(),kind:'download_click',page,platform,referrer:referral(),...(/^\d{1,3}\.\d{1,3}\.\d{1,3}(-[0-9A-Za-z.-]{1,40})?$/.test(version)?{version}:{})});
+  try{fetch(endpoint,{method:'POST',headers:{'content-type':'text/plain'},body,credentials:'omit',keepalive:true,mode:'cors',cache:'no-store'}).catch(()=>{});}
+  catch{try{navigator.sendBeacon?.(endpoint,new Blob([body],{type:'text/plain'}));}catch{}}
+ };
+ const onDownload=event=>{if(event.type==='auxclick'&&event.button!==1)return;const link=event.target instanceof Element?event.target.closest('#download-action a'):null;if(link)downloadClick(link);};
+ document.addEventListener('click',onDownload);document.addEventListener('auxclick',onDownload);
  view();
  const timing=()=>{const entry=performance.getEntriesByType('navigation')[0];if(!entry)return;for(const [measurement,value] of [['dom_ready',entry.domContentLoadedEventEnd],['load',entry.loadEventEnd]])if(value>0)send('site_performance',{measurement,value:Math.min(300000,Math.round(value))});};
  if(document.readyState==='complete')timing();else window.addEventListener('load',()=>setTimeout(timing,0),{once:true});

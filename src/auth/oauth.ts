@@ -4,8 +4,11 @@ import { db } from "../db/connection.ts";
 import { sha256Hex } from "./api-keys.ts";
 import { nowIso, QoopiaError } from "../utils/errors.ts";
 import { env } from "../utils/env.ts";
+import { audit } from "../utils/audit.ts";
+import { logger } from "../utils/logger.ts";
 import type { AuthContext } from "./middleware.ts";
 import type { RiskClass } from "../mcp/tools.ts";
+import { isLoopbackRedirectHost } from "./dcr-policy.ts";
 
 /**
  * OAuth 2.1 PKCE code flow with opaque tokens.
@@ -100,7 +103,7 @@ export function describeScope(scope: OAuthScope): string {
     case "mcp:read":
       return "Read Qoopia memory and audit data without making changes.";
     case "mcp:write":
-      return "Create and update non-destructive Qoopia records.";
+      return "Add new memory records and make other non-destructive changes. Editing or deleting notes needs mcp:admin.";
     case "mcp:admin":
       return "Destructive and administrative MCP operations.";
   }
@@ -112,21 +115,6 @@ function genOpaque(prefix: string): string {
 
 function plusSec(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-function normalizeLoopbackHost(hostname: string): string {
-  return hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
-}
-
-function isLoopbackRedirectHost(hostname: string): boolean {
-  const host = normalizeLoopbackHost(hostname);
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "::ffff:127.0.0.1" ||
-    host === "::ffff:7f00:1"
-  );
 }
 
 export function constantTimeHexEqual(a: string, b: string): boolean {
@@ -148,7 +136,7 @@ export function assertValidPkceS256Challenge(challenge: string): void {
   }
 }
 
-export function assertValidPkceVerifier(verifier: string): void {
+function assertValidPkceVerifier(verifier: string): void {
   if (!PKCE_VERIFIER_RE.test(verifier)) {
     throw new Error("invalid_request");
   }
@@ -160,11 +148,11 @@ export function oauthResource(): string { return new URL("/mcp", env.PUBLIC_URL)
 export function validateOAuthResource(resource?: string | null): string {
   const expected = oauthResource();
   if (resource === undefined || resource === null || resource === expected) return expected;
-  try { const id=resourceConnection(resource); if(id){publicConnection(id);return resource;} } catch {}
+  try { const id=resourceConnection(resource); if(id){publicConnection(id);return resource;} } catch { /* Unknown or revoked connection resource: invalid_target below (fail closed). */ }
   throw new Error("invalid_target");
 }
 
-export interface OAuthTokenRecord {
+interface OAuthTokenRecord {
   resource: string | null;
   token_hash: string;
   client_id: string;
@@ -225,6 +213,55 @@ export function createAuthorizationCode(opts: {
   return code;
 }
 
+/** PKCE is S256-only end to end (F-190): a row with any other method never verifies. */
+function pkceMatches(codeRow: OAuthTokenRecord, verifier: string): boolean {
+  return (codeRow.code_challenge_method || "S256").toUpperCase() === "S256" &&
+    crypto.createHash("sha256").update(verifier).digest("base64url") === codeRow.code_challenge;
+}
+
+// F-128/F-129: presenting a refresh token or authorization code that was already used is a breach
+// signal (OAuth 2.1 §4.1.3 and §4.3.1, RFC 9700 §4.14.2), so the grant is revoked, not just the
+// request refused.
+// ponytail: oauth_tokens has no grant lineage, so the "grant" is every live token of the same
+// client + agent + workspace (other grants of that client go too); a grant_id column, which needs
+// an owner-gated migration, would narrow it. Detection lasts while the used row exists: retention
+// deletes revoked rows 7 days after created_at.
+const REPLAY_GRACE_MS = 30_000;
+/** token_hash -> when it was redeemed. A client's own concurrent duplicate is not a breach.
+ * In-process only: after a restart a duplicate revokes (fails closed). */
+const recentlyRedeemed = new Map<string, number>();
+
+function markRedeemed(hash: string): void {
+  const now = Date.now();
+  for (const [h, at] of recentlyRedeemed) if (now - at >= REPLAY_GRACE_MS) recentlyRedeemed.delete(h);
+  recentlyRedeemed.set(hash, now);
+}
+
+/** The already-used, unexpired row of this type that the same client presents again. */
+function usedRow(hash: string, type: "code" | "refresh", clientId: string): OAuthTokenRecord | undefined {
+  return db.prepare(
+    `SELECT * FROM oauth_tokens
+      WHERE token_hash = ? AND token_type = ? AND revoked = 1 AND client_id = ? AND expires_at > ?`,
+  ).get(hash, type, clientId, nowIso()) as OAuthTokenRecord | undefined;
+}
+
+function revokeReplayedGrant(row: OAuthTokenRecord): void {
+  const redeemedAt = recentlyRedeemed.get(row.token_hash);
+  if (redeemedAt !== undefined && Date.now() - redeemedAt < REPLAY_GRACE_MS) return;
+  const info = db.prepare(
+    `UPDATE oauth_tokens SET revoked = 1
+      WHERE client_id = ? AND agent_id = ? AND workspace_id = ? AND revoked = 0
+        AND token_type IN ('access', 'refresh')`,
+  ).run(row.client_id, row.agent_id, row.workspace_id);
+  audit({
+    event: "oauth_token",
+    result: "deny",
+    workspace_id: row.workspace_id,
+    agent_id: row.agent_id,
+    detail: `${row.token_type} replay: grant revoked tokens=${info.changes} client_fp=${sha256Hex(row.client_id).slice(0, 16)}`,
+  });
+}
+
 export function exchangeCodeForTokens(opts: {
   code: string;
   codeVerifier: string;
@@ -245,7 +282,7 @@ export function exchangeCodeForTokens(opts: {
     }
   }
 
-  return db.transaction(() => {
+  const out = db.transaction(() => {
     const codeHash = sha256Hex(opts.code);
     // Atomically revoke the code — only succeeds if it exists and is still active
     const revokeInfo = db.prepare(
@@ -263,7 +300,12 @@ export function exchangeCodeForTokens(opts: {
          )`,
     ).run(codeHash, nowIso(), opts.clientId);
 
-    if (revokeInfo.changes !== 1) throw new Error("invalid_grant");
+    if (revokeInfo.changes !== 1) {
+      const used = usedRow(codeHash, "code", opts.clientId);
+      // Only the verifier holder proves a replay: a code leaked from a URL alone revokes nothing.
+      if (used && used.redirect_uri === opts.redirectUri && pkceMatches(used, opts.codeVerifier)) revokeReplayedGrant(used);
+      return null; // a throw here would roll the revocation back; invalid_grant follows the commit
+    }
 
     // Fetch the code row we just revoked (for PKCE & redirect verification)
     const codeRow = db.prepare(
@@ -273,20 +315,8 @@ export function exchangeCodeForTokens(opts: {
     if (codeRow.resource && codeRow.resource !== (opts.resource ?? oauthResource())) throw new Error("invalid_target");
     if (codeRow.redirect_uri !== opts.redirectUri) throw new Error("invalid_grant");
 
-    // PKCE verify
-    const method = (codeRow.code_challenge_method || "S256").toUpperCase();
-    let computed: string;
-    if (method === "S256") {
-      computed = crypto
-        .createHash("sha256")
-        .update(opts.codeVerifier)
-        .digest("base64url");
-    } else {
-      computed = opts.codeVerifier;
-    }
-    if (computed !== codeRow.code_challenge) {
-      throw new Error("invalid_grant");
-    }
+    if (!pkceMatches(codeRow, opts.codeVerifier)) throw new Error("invalid_grant");
+    markRedeemed(codeHash);
 
     // Issue tokens
     const access = genOpaque("qa");
@@ -326,6 +356,8 @@ export function exchangeCodeForTokens(opts: {
       grantedScope: codeRow.granted_scope || "",
     };
   })();
+  if (!out) throw new Error("invalid_grant");
+  return out;
 }
 
 export function refreshTokens(opts: {
@@ -344,7 +376,7 @@ export function refreshTokens(opts: {
     }
   }
 
-  return db.transaction(() => {
+  const out = db.transaction(() => {
     const refreshHash = sha256Hex(opts.refreshToken);
     // Atomically revoke the refresh token — only succeeds once
     const revokeInfo = db.prepare(
@@ -362,7 +394,12 @@ export function refreshTokens(opts: {
          )`,
     ).run(refreshHash, nowIso(), opts.clientId);
 
-    if (revokeInfo.changes !== 1) throw new Error("invalid_grant");
+    if (revokeInfo.changes !== 1) {
+      const used = usedRow(refreshHash, "refresh", opts.clientId);
+      if (used) revokeReplayedGrant(used);
+      return null; // a throw here would roll the revocation back; invalid_grant follows the commit
+    }
+    markRedeemed(refreshHash);
 
     // Fetch row for agent/workspace
     const row = db.prepare(
@@ -408,6 +445,8 @@ export function refreshTokens(opts: {
       grantedScope: row.granted_scope || "",
     };
   })();
+  if (!out) throw new Error("invalid_grant");
+  return out;
 }
 
 
@@ -436,14 +475,22 @@ export function revokeTokenForClient(
     }
   }
   const hash = sha256Hex(token);
-  const info = db
-    .prepare(`UPDATE oauth_tokens SET revoked = 1 WHERE token_hash = ? AND client_id = ?`)
-    .run(hash, clientId);
-  return info.changes > 0;
+  const row = db
+    .prepare(`UPDATE oauth_tokens SET revoked = 1 WHERE token_hash = ? AND client_id = ? RETURNING *`)
+    .get(hash, clientId) as OAuthTokenRecord | null;
+  // F-129 / RFC 7009 §2.1: a refresh token takes the access tokens of its grant with it
+  // (the same coarse client + agent + workspace grant as revokeReplayedGrant).
+  if (row?.token_type === "refresh") {
+    db.prepare(
+      `UPDATE oauth_tokens SET revoked = 1
+        WHERE client_id = ? AND agent_id = ? AND workspace_id = ? AND token_type = 'access' AND revoked = 0`,
+    ).run(row.client_id, row.agent_id, row.workspace_id);
+  }
+  return !!row;
 }
 
 /**
- * ADR-017 §1: only steward and claude-privileged agents may register OAuth
+ * ADR-017 §1 / ADR-020: only the steward and the human owner may register OAuth
  * clients. Standard-agent-creates-connector is a quiet privilege escalation:
  * a compromised standard agent could mint an OAuth surface targeting its own
  * workspace data.
@@ -460,10 +507,10 @@ export function assertCanRegisterOAuth(auth: AuthContext): void {
       "OAuth client registration requires a static API key (Bearer api_*); OAuth access tokens are not accepted on /oauth/register.",
     );
   }
-  if (auth.type !== "steward" && auth.type !== "claude-privileged" && auth.type !== "owner") {
+  if (auth.type !== "steward" && auth.type !== "owner") {
     throw new QoopiaError(
       "FORBIDDEN",
-      "Only steward or claude-privileged agents may register OAuth clients.",
+      "Only the steward or the workspace owner may register OAuth clients.",
     );
   }
 }
@@ -498,32 +545,40 @@ export function registerClient(
   response_types: string[];
   token_endpoint_auth_method: string;
 } {
+  if (input.client_name != null && typeof input.client_name !== "string") {
+    throw new QoopiaError("INVALID_INPUT", "client_name must be a string");
+  }
   if (!Array.isArray(input.redirect_uris) || input.redirect_uris.length === 0) {
-    throw new Error("redirect_uris must be a non-empty array");
+    throw new QoopiaError("INVALID_INPUT", "redirect_uris must be a non-empty array");
   }
   for (const uri of input.redirect_uris) {
     if (typeof uri !== "string") {
-      throw new Error(`Invalid redirect URI: must be a string`);
+      throw new QoopiaError("INVALID_INPUT", `Invalid redirect URI: must be a string`);
     }
     let parsed: URL;
     try {
       parsed = new URL(uri);
     } catch {
-      throw new Error(`Invalid redirect URI: ${uri}`);
+      throw new QoopiaError("INVALID_INPUT", `Invalid redirect URI: ${uri}`);
     }
     if (!["http:", "https:"].includes(parsed.protocol)) {
-      throw new Error(`Invalid redirect URI scheme: ${uri} (only http/https allowed)`);
+      throw new QoopiaError("INVALID_INPUT", `Invalid redirect URI scheme: ${uri} (only http/https allowed)`);
     }
     if (parsed.protocol === "http:" && !isLoopbackRedirectHost(parsed.hostname)) {
-      throw new Error(
+      throw new QoopiaError(
+        "INVALID_INPUT",
         `Invalid redirect URI: non-loopback http:// redirect URIs are not allowed (${uri})`,
       );
+    }
+    // RFC 6749 §3.1.2: the redirection endpoint carries no fragment; credentials hide the real host.
+    if (uri.includes("#") || parsed.username || parsed.password) {
+      throw new QoopiaError("INVALID_INPUT", `Invalid redirect URI: fragments and user credentials are not allowed (${uri})`);
     }
   }
 
   const authMethod = input.token_endpoint_auth_method || "none";
   if (authMethod !== "none" && authMethod !== "client_secret_post" && authMethod !== "client_secret_basic") {
-    throw new Error("token_endpoint_auth_method must be 'none', 'client_secret_post', or 'client_secret_basic'");
+    throw new QoopiaError("INVALID_INPUT", "token_endpoint_auth_method must be 'none', 'client_secret_post', or 'client_secret_basic'");
   }
   const isPublic = authMethod === "none";
 
@@ -593,26 +648,11 @@ export function getClient(client_id: string): {
   let uris: string[] = [];
   try {
     uris = JSON.parse(row.redirect_uris);
-  } catch {}
+  } catch {
+    // Fail closed: no registered redirect matches, so every authorization is refused.
+    logger.warn("OAuth client has unparseable redirect_uris; every redirect will be refused", { client_id });
+  }
   return { ...row, redirect_uris: uris };
-}
-
-/**
- * Resolve a client to its associated agent + workspace (single-user
- * auto-approve path). Returns null if client unknown or agent gone.
- */
-export function clientWorkspace(client_id: string): {
-  agent_id: string;
-  workspace_id: string;
-} | null {
-  const c = getClient(client_id);
-  if (!c) return null;
-  // C2 fix: only return workspace if agent is still active
-  const a = db
-    .prepare(`SELECT id, workspace_id FROM agents WHERE id = ? AND active = 1`)
-    .get(c.agent_id) as { id: string; workspace_id: string } | undefined;
-  if (!a) return null;
-  return { agent_id: a.id, workspace_id: a.workspace_id };
 }
 
 /**
@@ -637,6 +677,7 @@ export function wellKnownAuthorizationServer(connection?:string) {
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
+    revocation_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
     scopes_supported: connection ? (publicConnection(connection).access_mode === "read" ? ["mcp:read"] : ["mcp:read","mcp:write"]) : [...OAUTH_SCOPES],
     // RFC 9207: the authorization response carries an `iss` parameter.
     authorization_response_iss_parameter_supported: true,
@@ -662,7 +703,7 @@ const CONSENT_TICKET_TTL_SEC = 600; // 10 minutes (ADR-017 §2 "TTL")
 /** Hard-delete grace window for finalized/expired/denied tickets. */
 const CONSENT_TICKET_PRUNE_AFTER_SEC = 60 * 60; // 1h
 
-export interface ConsentTicket {
+interface ConsentTicket {
   resource: string | null;
   id: string;
   client_id: string;
@@ -747,7 +788,7 @@ export function getConsentTicket(id: string): ConsentTicket | null {
   return row || null;
 }
 
-export type ConsentTicketState =
+type ConsentTicketState =
   | "ok"
   | "not_found"
   | "expired"
@@ -928,20 +969,73 @@ export function pruneConsentTickets(): number {
   return info.changes;
 }
 
-// Short-lived replay cache for OAuth finalize redirects. Browser-mediated
-// OAuth can double-hit /oauth/authorize/finalize after a successful consent
-// handoff; the ticket must stay single-use, but a duplicate GET should see the
-// same redirect instead of surfacing {ticket redeemed} to the operator.
-const finalizeRedirectReplay = new Map<string, { location: string; expiresAtMs: number }>();
-export function rememberFinalizeRedirect(ticketId: string, location: string): void {
-  finalizeRedirectReplay.set(ticketId, { location, expiresAtMs: Date.now() + 10 * 60_000 });
-}
-export function replayFinalizeRedirect(ticketId: string): string | null {
+// Short-lived replay cache for the code-bearing callback. Browsers can submit
+// the approve form twice; the ticket must stay single-use, but the duplicate
+// submit from the same approver should land on the same callback instead of a
+// dead end. Keyed by ticket AND approver: the ticket id alone is not a secret
+// (it travels in the /oauth/authorize redirect to whoever started the flow).
+const finalizeRedirectReplay = new Map<string, { location: string; approver: string; expiresAtMs: number }>();
+export function replayFinalizeRedirect(ticketId: string, approver: string): string | null {
   const row = finalizeRedirectReplay.get(ticketId);
   if (!row) return null;
   if (row.expiresAtMs <= Date.now()) {
     finalizeRedirectReplay.delete(ticketId);
     return null;
   }
-  return row.location;
+  return row.approver === approver ? row.location : null;
+}
+
+/**
+ * F-076: redeem a just-approved consent ticket and build the client callback
+ * (code, state, RFC 9207 iss). Only the approve handlers call this, in the
+ * request that approved, so the code reaches the approving browser via the
+ * registered redirect_uri and never whoever else holds the ticket id.
+ * `approver` is the authenticated principal that approved (it gates replay).
+ * Returns null when the ticket cannot be redeemed: already redeemed, expired,
+ * or the approved agent is no longer active in the ticket's workspace
+ * (redeemConsentTicket checks that atomically).
+ */
+export function finalizeConsentTicket(ticketId: string, approver: string, ip?: string): string | null {
+  const ticket = getConsentTicket(ticketId);
+  const ticketFp = sha256Hex(ticketId).slice(0, 12);
+  if (!ticket?.approved_by_agent_id || !redeemConsentTicket(ticketId)) {
+    audit({
+      event: "oauth_consent",
+      result: "deny",
+      ip,
+      workspace_id: ticket?.workspace_id,
+      agent_id: ticket?.approved_by_agent_id ?? undefined,
+      detail: `finalize: redeem refused (redeemed, expired or approver inactive/moved) ticket_fp=${ticketFp}`,
+    });
+    return null;
+  }
+  const code = createAuthorizationCode({
+    clientId: ticket.client_id,
+    // Bound to the approved agent: the token is scoped to its workspace (ADR-017 §4).
+    agentId: ticket.approved_by_agent_id,
+    workspaceId: ticket.workspace_id,
+    codeChallenge: ticket.code_challenge,
+    codeChallengeMethod: ticket.code_challenge_method,
+    redirectUri: ticket.redirect_uri,
+    grantedScope: ticket.scope,
+    resource: ticket.resource ?? undefined,
+  });
+  audit({
+    event: "oauth_consent",
+    result: "allow",
+    ip,
+    workspace_id: ticket.workspace_id,
+    agent_id: ticket.approved_by_agent_id,
+    detail: `client=${ticket.client_id} ticket_fp=${ticketFp} finalized`,
+  });
+  const url = new URL(ticket.redirect_uri);
+  url.searchParams.set("code", code);
+  if (ticket.state) url.searchParams.set("state", ticket.state);
+  // RFC 9207: strict OAuth 2.1 / MCP clients (incl. claude.ai) drop a callback without `iss`.
+  const connection = ticket.resource ? resourceConnection(ticket.resource) : undefined;
+  url.searchParams.set("iss", connection ? connectionIssuer(connection) : env.OAUTH_ISSUER);
+  const location = url.toString();
+  finalizeRedirectReplay.set(ticket.id, { location, approver, expiresAtMs: Date.now() + 10 * 60_000 });
+  logger.info(`OAuth finalize SUCCESS → host=${url.host} path=${url.pathname} has_state=${ticket.state ? "y" : "n"} ticket_fp=${ticketFp}`);
+  return location;
 }

@@ -14,7 +14,7 @@
 import { QoopiaError } from "./errors.ts";
 
 /** Feature flag. Default OFF — включение только по owner GO (Class B). */
-export const BITEMPORAL_FLAG = "QOOPIA_V4_BITEMPORAL";
+const BITEMPORAL_FLAG = "QOOPIA_V4_BITEMPORAL";
 
 /**
  * Читается на каждом вызове, а не на загрузке модуля: тот же приём, что у
@@ -79,6 +79,31 @@ function canonicalize(value: string): string {
   return LEGACY_ISO.test(value) ? value.replace(/Z$/, ".000Z") : value;
 }
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Граница окна `since`/`until` у list/search: канонический UTC, как у
+ * `toEpochMs`, или дата `YYYY-MM-DD` (полночь UTC). Смещения, локальное
+ * время и прочее — `INVALID_INPUT`. Возвращает канонический `…SSS Z` ISO,
+ * который сравнивается с колонкой, нормализованной `strftime('%Y-%m-%dT%H:%M:%fZ', …)`.
+ */
+export function parseTimeBound(value: unknown, field: string): string {
+  const moment = typeof value === "string" && DATE_ONLY.test(value) ? `${value}T00:00:00Z` : value;
+  return isoFromEpochMs(toEpochMs(moment, field));
+}
+
+/**
+ * F-281: условие окна `since`/`until` по ISO-колонке. Сравнивает моменты через
+ * `strftime` (F-097); сырая граница ±1 сутки — лишь надмножество (любая точность,
+ * legacy-пробел, смещение), чтобы индекс по колонке читал диапазон, а не всё.
+ */
+export function timeBoundSql(column: string, side: "since" | "until", value: unknown): { sql: string; params: string[] } {
+  const moment = parseTimeBound(value, side);
+  const exact = `strftime('%Y-%m-%dT%H:%M:%fZ', ${column}) ${side === "since" ? ">=" : "<="} ?`;
+  const coarse = side === "since" ? `${column} >= date(?, '-1 day')` : `${column} <= date(?, '+1 day') || '~'`;
+  return { sql: `${coarse} AND ${exact}`, params: [moment, moment] };
+}
+
 /** Единый форматтер отображаемого ISO. Источник — только epoch-ms (R4). */
 export function isoFromEpochMs(ms: number): string {
   if (!Number.isFinite(ms)) {
@@ -90,11 +115,6 @@ export function isoFromEpochMs(ms: number): string {
 /** Числовой максимум двух epoch-ms. Строкового сравнения ISO здесь нет (R4). */
 export function maxEpochMs(a: number, b: number): number {
   return a > b ? a : b;
-}
-
-/** Числовой минимум двух epoch-ms. */
-export function minEpochMs(a: number, b: number): number {
-  return a < b ? a : b;
 }
 
 /**

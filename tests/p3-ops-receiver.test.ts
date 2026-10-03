@@ -7,6 +7,7 @@ import { createHmac } from 'node:crypto';
 import { hash } from '../src/utils/fs.ts';
 import { recordMaintenance, readOps } from '../src/delivery/ops-state.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
+import { fakeFetch } from './helpers/fake-fetch.ts';
 // Actual disposable local receiver; transport seam maps only this fixture host to loopback.
 // Production URL/DNS policy remains exercised separately; no allowlist or TLS relaxation ships.
 test('local receiver verifies request then confirms fire and recurrence; transport-only 200 and failure remain pending',async()=>{
@@ -26,7 +27,7 @@ test('local receiver verifies request then confirms fire and recurrence; transpo
  try{
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   const port=(server.address() as {port:number}).port;
-  const fetchImpl:typeof fetch=async(url,init)=>{expect(String(url)).toBe('https://receiver.example.test/alerts');return fetch(`http://127.0.0.1:${port}/alerts`,init);};
+  const fetchImpl=fakeFetch(async(url,init)=>{expect(String(url)).toBe('https://receiver.example.test/alerts');return fetch(`http://127.0.0.1:${port}/alerts`,init);});
   const destination={id:'local-test',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:key};
   const transport={fetchImpl,resolver:async()=>[{address:'93.184.216.34'}]};
   recordMaintenance(root,'disposable','BACKUP_FAILED',1000);
@@ -51,7 +52,7 @@ test('local receiver refusal survives resolve and restart; retry confirms the sa
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   const port=(server.address() as {port:number}).port;
   const destination={id:'retry-fixture',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:new Uint8Array(32).fill(31)};
-  const fetchImpl:typeof fetch=async(url,init)=>{expect(String(url)).toBe(destination.url);return fetch(`http://127.0.0.1:${port}/alerts`,init);};
+  const fetchImpl=fakeFetch(async(url,init)=>{expect(String(url)).toBe(destination.url);return fetch(`http://127.0.0.1:${port}/alerts`,init);});
   const transport={fetchImpl,resolver:async()=>[{address:'93.184.216.34'}]};
   const id=recordMaintenance(root,'disposable','BACKUP_FAILED',1000).alerts[0]!.id;
   await deliverOpsAlerts(root,[destination,destination],transport,1001);expect(seen).toBe(2);expect(readOps(root).alerts[0]).toMatchObject({id,state:'pending',receipt:null});

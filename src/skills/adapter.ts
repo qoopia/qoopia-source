@@ -121,7 +121,7 @@ function nativeProcess(kind:RuntimeKind,options:NativeOptions,args:string[]){
   const wrapper=assetPath('scripts/runtime/codex-seatbelt.py');
   return {binary:'/usr/bin/python3',args:[wrapper,'--guarded-native',JSON.stringify(options.outer_seatbelt),RUNTIMES[kind].binary,...args]};
 }
-export type NativeToolAccess='assigned'|'none';
+type NativeToolAccess='assigned'|'none';
 export function nativeLaunch(kind:RuntimeKind,sessionRoot:string,prompt:string,input:unknown,source:NodeJS.ProcessEnv=process.env,homeRoot=sessionRoot,boundConnection?:BoundConnection,toolAccess:NativeToolAccess='assigned'){
   // Claude documents --tools "" as disabling all built-ins; pinned Codex has no equivalent.
   if(toolAccess==='none'&&kind==='codex')throw new QoopiaError('UNSUPPORTED','Codex 0.153.3 has no enforceable tool-less exec mode');
@@ -300,6 +300,24 @@ export function prepareNativeSession(sessionRoot:string,homeRoot:string){
     throw new QoopiaError('CONFLICT','Native HOME must be a new directory inside the managed session');
   mkdirSync(homeRoot,{mode:0o700});
 }
+const AUTH_FAILURE=/\b401\b|\bunauthori[sz]ed\b|\bnot logged in\b|\/login\b|\blog ?in again\b|token (?:has )?expired|invalid api key|authentication[_ ](?:error|failed)/i;
+const QUOTA_FAILURE=/\b(?:usage|rate)[ _-]?limit|\bquota\b|\b429\b/i;
+/** A failure that needs the owner (sign in again, wait for quota), read only from CLI-authored
+ * error fields and stderr. Model and reasoning text is never read: it may discuss a "log in" bug
+ * or a "rate limit" in the user's own work. Anything else is the caller's generic failure. */
+export function nativeFailureCode(stdout:string,stderr=''):'UNAUTHENTICATED'|'MODEL_QUOTA'|null {
+  const texts=[stderr];
+  for(const line of stdout.split('\n')) {
+    let event:any;try{event=JSON.parse(line);}catch{continue;}
+    if(event?.error==='authentication_failed'||event?.api_error_status===401)return 'UNAUTHENTICATED';
+    if(event?.error==='rate_limit'||event?.api_error_status===429)return 'MODEL_QUOTA';
+    if(event?.type==='result'&&event.is_error)texts.push(String(event.result??''));
+    if(event?.type==='error')texts.push(String(event.message??''));
+    if(event?.type==='turn.failed')texts.push(String(event.error?.message??''));
+  }
+  const text=texts.join('\n');
+  return QUOTA_FAILURE.test(text)?'MODEL_QUOTA':AUTH_FAILURE.test(text)?'UNAUTHENTICATED':null;
+}
 /** Claude response metadata is evidence; init model/request flags/self-report are
  * not. Codex 0.153.3 exec JSONL has no model field: remain unknown, never guess. */
 export function nativeModelEvidence(kind:RuntimeKind,stdout:string):NativeModelEvidence{
@@ -417,7 +435,7 @@ export function csvTaskInstructions(kind:RuntimeKind,options:NativeOptions,slot:
   return {objective:'Validate and summarize CSV; refuse invalid input; write only inside the managed task directory'+clarification+memory,
     prompt:`Use the ${slot} native skill. Read its SKILL.md through native discovery. In task-${attempt}, summarize input.csv into summary.json. Then validate invalid.csv and record refusal.json; do not create invalid-summary.json. Write only in task-${attempt}. Do not use other agents, subagents, ${options.connection?'external network (except the configured local Qoopia MCP),':'network,'} external services or credentials. Follow the native permission policy; if permission is denied, report that refusal.`+clarification+memory};
 }
-export interface CsvTaskInput {loadout_id:string;entry_id:string;csv:string;auth_mode?:string;model?:string;effort?:string;login_store?:string;login_backend?:string;allow_task_writes?:boolean;configured_profile_functional?:true;outer_seatbelt?:NativeOptions['outer_seatbelt'];connection?:NativeOptions['connection'];}
+interface CsvTaskInput {loadout_id:string;entry_id:string;csv:string;auth_mode?:string;model?:string;effort?:string;login_store?:string;login_backend?:string;allow_task_writes?:boolean;configured_profile_functional?:true;outer_seatbelt?:NativeOptions['outer_seatbelt'];connection?:NativeOptions['connection'];}
 /** Same concrete task preparation as execution; no version/auth/model process or run authorization. */
 export function prepareCsvTask(database:Database,auth:AuthContext,input:CsvTaskInput,source:NodeJS.ProcessEnv=process.env){
   const {l,r,root}=context(database,auth,input.loadout_id),entry=entriesOf(database,l.id).find(e=>e.id===input.entry_id);

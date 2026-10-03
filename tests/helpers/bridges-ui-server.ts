@@ -13,15 +13,16 @@ import {bridgeRelay} from '../../src/bridges/relay.ts';
 import {BRIDGE_RELAY} from '../../src/bridges/protocol.ts';
 import {createAgent} from '../../src/admin/agents.ts';
 import {env} from '../../src/utils/env.ts';
+import {fakeFetch,requestOf} from './fake-fetch.ts';
 
 runMigrations();
 const owner=bootstrapOwner(db,'Preview owner','Private preview'),auth=localOwner(db,owner.agent_id);
 const relayDb=new Database(':memory:'),relay=bridgeRelay(relayDb),nativeFetch=globalThis.fetch;
-const transport=(async(input:string|URL|Request,init?:RequestInit)=>{
+const transport=fakeFetch(async(input,init)=>{
   const url=input instanceof Request?input.url:String(input);
-  if(url.startsWith(BRIDGE_RELAY+'/'))return relay(new Request(input,init),'ui-fixture');
+  if(url.startsWith(BRIDGE_RELAY+'/'))return relay(requestOf(input,init),'ui-fixture');
   return nativeFetch(input,init);
-}) as typeof fetch;
+});
 globalThis.fetch=transport;
 const {bridges}=await import('../../src/bridges/api.ts');
 const workspace=db.query('SELECT slug FROM workspaces WHERE id=?').get(owner.workspace_id) as {slug:string};

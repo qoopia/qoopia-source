@@ -13,7 +13,7 @@ import {
   classifySupersedeComponents,
   DEFAULT_MAX_COMPONENT_SIZE,
   type SupersedeComponent,
-} from "../src/services/temporal-migration.ts";
+} from "../src/db/temporal-migration.ts";
 import {
   cleanupScratchRoots,
   scratchDatabase,
@@ -155,7 +155,7 @@ describe("R6 system-auth boundary", () => {
 
   test("the classifier takes a raw Database and never an AuthContext", () => {
     const source = fs.readFileSync(
-      path.resolve(import.meta.dir, "..", "src", "services", "temporal-migration.ts"),
+      path.resolve(import.meta.dir, "..", "src", "db", "temporal-migration.ts"),
       "utf8",
     );
     // Комментарии сознательно объясняют, ПОЧЕМУ AuthContext не принимается,

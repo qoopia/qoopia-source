@@ -18,7 +18,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,18 +30,14 @@ import {
   buildPlan,
   renderReport,
   reportBodyHash,
-  planNotesSync,
-  planActivitySync,
   createApplyAuthorizationManifest,
-  type NoteRow,
-  type ActivityRow,
   type ApplyAuthorizationManifest,
   type SyncPlan,
 } from "../src/services/shadow_sync.ts";
 
 // -------------------- helpers --------------------
 
-const WORKSPACE = "01KMKRVYF2FN68D9N3C8BEGAHS";
+const WORKSPACE = "01JAAAAAAAAAAAAAAAAAAAAAAA"; // synthetic
 const MIGRATIONS_DIR = join(import.meta.dir, "..", "migrations");
 const MIGRATION_017 = readFileSync(
   join(MIGRATIONS_DIR, "017-updated-at-ms.sql"),

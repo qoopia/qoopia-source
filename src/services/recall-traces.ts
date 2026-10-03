@@ -4,12 +4,12 @@ import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { getNote } from "./notes.ts";
-import { ADMIN_TYPES } from "../auth/principal.ts";
+import { levelOf, seesWholeWorkspace, visibleRowSql, visibleTranscriptSql } from "../auth/principal.ts";
 
 export const RECALL_PIPELINE_VERSION = "v4.0.0-p04.1";
 const TRACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-// Traces are deliberately narrower than the shared admin set: a
-// claude-privileged agent may read every note but not other agents' traces.
+// Other agents' traces are for the steward and the owner only (ADR-020: the two
+// principals that read the whole workspace); shared context does not reach them.
 const TRACE_ADMIN_TYPES = new Set(["owner", "steward"]);
 
 export type TraceResultKind = "note" | "entity" | "activity" | "session_message";
@@ -56,9 +56,6 @@ function isTraceAdmin(auth: AuthContext): boolean {
   return TRACE_ADMIN_TYPES.has(auth.type);
 }
 
-function canReadAllNotes(auth: AuthContext): boolean {
-  return ADMIN_TYPES.has(auth.type);
-}
 
 function round6(value: number): number {
   return Number(value.toFixed(6));
@@ -103,7 +100,7 @@ function itemOut(row: TraceItemRow): RecallDiagnosticItem {
 function resultStillVisible(auth: AuthContext, item: TraceItemRow): boolean {
   if (item.result_kind === "note") {
     try {
-      getNote(auth.workspace_id, item.result_id, auth.agent_id, canReadAllNotes(auth));
+      getNote(auth.workspace_id, item.result_id, auth.agent_id, seesWholeWorkspace(auth));
       return true;
     } catch {
       return false;
@@ -118,13 +115,14 @@ function resultStillVisible(auth: AuthContext, item: TraceItemRow): boolean {
     return !!db.prepare(
       `SELECT 1 FROM activity
         WHERE workspace_id = ? AND id = ?
-          AND (visibility = 'workspace' OR agent_id = ? OR ? = 1)`,
-    ).get(auth.workspace_id, item.result_id, auth.agent_id, isTraceAdmin(auth) ? 1 : 0);
+          AND ${visibleRowSql()}`,
+    ).get(auth.workspace_id, item.result_id, auth.agent_id, levelOf(auth));
   }
   return !!db.prepare(
     `SELECT 1 FROM session_messages
-      WHERE workspace_id = ? AND id = ? AND (agent_id = ? OR ? = 1)`,
-  ).get(auth.workspace_id, Number(item.result_id), auth.agent_id, isTraceAdmin(auth) ? 1 : 0);
+      WHERE workspace_id = ? AND id = ? AND ${visibleTranscriptSql()}`,
+  ).get(auth.workspace_id, Number(item.result_id), auth.agent_id, levelOf(auth));
+
 }
 
 export function createRecallTrace(input: {

@@ -8,6 +8,8 @@ import { assertMigration033Gate, MIGRATION_033_FILENAME } from "./migration-033-
 import { applyMigration033Sql, splitSqlStatements } from "./migration-033-exec.ts";
 import { backfill036 } from "./migration-036-backfill.ts";
 import { backfill041 } from "./migration-041-backfill.ts";
+import { readSchemaVersion } from "../utils/health-metadata.ts";
+import { listMigrationFiles } from "./v4-migrations.ts";
 
 const MIGRATIONS_DIR = assetPath("migrations");
 
@@ -24,10 +26,6 @@ const MIGRATIONS_DIR = assetPath("migrations");
  * it without weakening the DB-level invariant.
  */
 export function getPendingMigrations(): string[] {
-  if (!fs.existsSync(MIGRATIONS_DIR)) {
-    throw new Error(`Migrations directory not found: ${MIGRATIONS_DIR}`);
-  }
-
   const schemaVersionsExists = db
     .prepare(
       `SELECT 1 FROM sqlite_master
@@ -35,26 +33,36 @@ export function getPendingMigrations(): string[] {
     )
     .get() != null;
 
-  const files = fs
-    .readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
-
   const pending: string[] = [];
-  for (const file of files) {
-    const match = file.match(/^(\d+)/);
-    if (!match) continue;
-    const version = parseInt(match[1]!, 10);
+  // F-266: listMigrationFiles refuses two files with one version; applied state is keyed by it.
+  for (const { version, filename } of listMigrationFiles(MIGRATIONS_DIR)) {
     const applied = schemaVersionsExists
       ? db.prepare("SELECT 1 FROM schema_versions WHERE version = ?").get(version)
       : null;
-    if (!applied) pending.push(file);
+    if (!applied) pending.push(filename);
   }
   return pending;
 }
 
+/** The newest migration this build ships (numeric prefix, as getPendingMigrations reads it). */
+export function latestShippedMigration(): number {
+  return Math.max(0, ...listMigrationFiles(MIGRATIONS_DIR).map((m) => m.version));
+}
+
+/** Older software must not open a schema it does not support, e.g. after a code-only rollback. */
+export function assertSchemaNotAhead(operation = "operation"): void {
+  const current = readSchemaVersion(db), shipped = latestShippedMigration();
+  if (current !== null && current > shipped) {
+    throw new Error(
+      `${operation} refused: database schema ${current} is newer than this build supports (${shipped}). ` +
+        "Deploy the release that wrote it, or restore the backup taken before its migration.",
+    );
+  }
+}
+
 /** Refuse a non-migration operation when its code and schema differ. */
 export function assertSchemaCurrent(operation = "operation"): void {
+  assertSchemaNotAhead(operation);
   const pending = getPendingMigrations();
   if (pending.length > 0) {
     throw new Error(
@@ -117,38 +125,25 @@ export function runMigrations() {
     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
   )`);
 
-  if (!fs.existsSync(MIGRATIONS_DIR)) {
-    throw new Error(`Migrations directory not found: ${MIGRATIONS_DIR}`);
-  }
-
-  const files = fs
-    .readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
-
-  for (const file of files) {
-    const match = file.match(/^(\d+)/);
-    if (!match) continue;
-    const version = parseInt(match[1]!, 10);
+  for (const { version, filename: file, path: filePath } of listMigrationFiles(MIGRATIONS_DIR)) {
     const applied = db
       .prepare("SELECT 1 FROM schema_versions WHERE version = ?")
       .get(version);
     if (applied) continue;
 
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), "utf8");
+    const sql = fs.readFileSync(filePath, "utf8");
     try {
-      // V4.1: gate протокола 033 обязан отработать ДО первой мутации, а сам
-      // скрипт — исполняться оператор за оператором: `db.exec` на
-      // многооператорной строке молча проглатывает ошибки времени исполнения
-      // (CHECK / RAISE(ABORT) / FK), из-за чего сбой внутри Phase C оставлял
-      // бы полу-мигрированную БД с записанной версией схемы.
+      // V4.1: gate протокола 033 обязан отработать ДО первой мутации. Каждый
+      // скрипт (F-265: все версии, не только 033 и 036+) исполняется оператор
+      // за оператором: `db.exec` молча проглатывает ошибки времени исполнения
+      // (UNIQUE / CHECK / RAISE(ABORT) / FK) и оставлял бы полу-мигрированную
+      // БД с записанной версией схемы.
       const is033 = file === MIGRATION_033_FILENAME;
       if (is033) assertMigration033Gate(db);
       let authorityReport: ReturnType<typeof backfill036> | undefined;
       db.transaction(() => {
         if (is033) applyMigration033Sql(db, sql);
-        else if (version >= 36) for (const statement of splitSqlStatements(sql)) db.run(statement);
-        else db.exec(sql);
+        else for (const statement of splitSqlStatements(sql)) db.run(statement);
         if (version === 36) authorityReport = backfill036(db);
         if (version === 41) backfill041(db,env.PUBLIC_URL);
         // INSERT OR IGNORE: некоторые исторические migration-файлы (001) содержат

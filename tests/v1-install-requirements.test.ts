@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test';
-import {installationRequirements,inspectInstallationRequirements} from '../src/delivery/requirements.ts';
+import {installationRequirements,inspectInstallationRequirements,glibcVersion} from '../src/delivery/requirements.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,4 +33,18 @@ test('preflight refuses platform mismatch, insufficient physical memory or disk,
  expect(()=>installationRequirements(Number.MAX_SAFE_INTEGER,sample,host)).toThrow();
  expect(()=>installationRequirements(1,{...sample,initial_database_bytes:-1},host)).toThrow();
  expect(()=>installationRequirements(1,sample,{...host,available_disk_bytes:NaN})).toThrow();
+});
+test('Linux requirements report the desktop launcher glibc floor without blocking the CLI; macOS has no glibc check',()=>{
+ const linuxSample={...sample,target:'linux-x64'},linux={...host,target:'linux-x64'};
+ const old=installationRequirements(1,linuxSample,{...linux,glibc:'2.31'});
+ expect(old.ok).toBe(true);expect(old.warnings).toEqual(['GLIBC_BELOW_DESKTOP_LAUNCHER_2_34']);
+ expect(old.glibc).toBe('2.31');expect(old.minimum_glibc_desktop_launcher).toBe('2.34');
+ expect(installationRequirements(1,linuxSample,{...linux,glibc:'2.4'}).warnings).toEqual(['GLIBC_BELOW_DESKTOP_LAUNCHER_2_34']);
+ for(const glibc of ['2.34','2.100','3.0',null])expect(installationRequirements(1,linuxSample,{...linux,glibc}).warnings).toEqual([]);
+ const mac=installationRequirements(1,sample,{...host,glibc:null});
+ expect(mac.warnings).toEqual([]);expect(mac).not.toHaveProperty('glibc');
+ const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-requirements-glibc-')));
+ try{expect(inspectInstallationRequirements({root:dir,manifest:{members:{}}},path.join(dir,'new'),'2.31','linux-x64').warnings).toEqual(['GLIBC_BELOW_DESKTOP_LAUNCHER_2_34']);}
+ finally{fs.rmSync(dir,{recursive:true,force:true});}
+ expect(glibcVersion('darwin')).toBeNull();
 });

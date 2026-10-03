@@ -4,7 +4,7 @@ import path from 'node:path';
 import {hash} from '../src/utils/fs.ts';
 const root=fs.mkdtempSync('/var/tmp/qoopia-memory-qualification-');
 Object.assign(process.env,{QOOPIA_ROOT:root,QOOPIA_DATA_DIR:path.join(root,'data'),QOOPIA_LOG_DIR:path.join(root,'logs'),QOOPIA_BACKUP_DIR:path.join(root,'backups'),QOOPIA_LOG_LEVEL:'error',QOOPIA_SERVER_ROLE:'canonical',QOOPIA_EMBED_PROVIDER:'builtin',QOOPIA_AUTO_EMBED:'false'});
-const {db,closeDb}=await import('../src/db/connection.ts');
+const {closeDb}=await import('../src/db/connection.ts');
 const {runMigrations}=await import('../src/db/migrate.ts');runMigrations();
 const {createWorkspace}=await import('../src/admin/workspaces.ts'),{createAgent}=await import('../src/admin/agents.ts'),{createNote}=await import('../src/services/notes.ts');
 const {upsertNoteEmbedding}=await import('../src/services/embedding-store.ts'),{recall}=await import('../src/services/recall.ts');

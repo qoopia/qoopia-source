@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {hash,safePath,privateDirectory,durableWrite,syncDirectory,readJson,preflightSpace,inventory,inventoryAsync} from '../utils/fs.ts';
+import {hash,safePath,privateDirectory,durableWrite,syncDirectory,readJson,preflightSpace,inventoryAsync} from '../utils/fs.ts';
 import {readCurrent,lockInstallation} from './operations.ts';
 import {RUNTIMES} from './runtime-versions.ts';
 
@@ -16,12 +16,12 @@ export const nativePackageSchema=z.object({runtime:z.enum(['codex','claude_code'
   `https://downloads.claude.ai/claude-code-releases/${p.version}/${p.target}/claude`;
  if(p.url!==expected||p.binary!==(p.runtime==='codex'?'bin/codex':'claude'))ctx.addIssue({code:'custom',message:'Native package identity does not match its official vendor path'});
 });
-export type NativePackage=z.infer<typeof nativePackageSchema>;
+type NativePackage=z.infer<typeof nativePackageSchema>;
 export function nativeProvisionPlan(root:string,input:unknown){
  const pkg=nativePackageSchema.parse(input),r=safePath(root),current=readCurrent(r);
  if(pkg.target!==`${process.platform}-${process.arch}`)throw new Error('Native package is for another platform');
  const plan={format:'qoopia-native-provision/1',root:r,instance:current.instance,bundle:current.bundle,package:pkg,
-  destination:path.join(r,'native-runtimes',pkg.runtime,pkg.version),trust:'official_vendor_https_metadata',
+  destination:path.join(r,'native-runtimes',pkg.runtime,pkg.version),trust:'qoopia_pinned_digest',
   changes:'installation-local files only; no shell profile, login, model call or paid API fallback'};
  return {...plan,plan_digest:hash(JSON.stringify(plan))};
 }
@@ -32,6 +32,7 @@ export async function applyNativeProvision(root:string,input:unknown,approval:st
 /** The running standalone service already owns the installation lifetime lock. */
 export async function applyNativeProvisionLocked(root:string,input:unknown,approval:string){
  const saved=z.object({package:nativePackageSchema,plan_digest:sha}).passthrough().parse(input);
+ assertPinnedNativePackage(saved.package);
   const plan=nativeProvisionPlan(root,saved.package);
   if(approval!==saved.plan_digest||approval!==plan.plan_digest)throw new Error('Native install approval changed; preview again');
   preflightSpace(root,[plan.package.size,1024*1024*1024]);
@@ -53,7 +54,13 @@ export async function nativeRuntimeEnvironment(root:string,source:NodeJS.Process
  }
  return {...source,PATH:[...bins,source.PATH??'/usr/bin:/bin'].join(path.delimiter)};
 }
-/** Vendor HTTPS metadata is the bootstrap trust root, NOT a Qoopia publisher signature. */
+/** Qoopia-pinned version and digest (RUNTIMES) are the trust root; vendor metadata and saved plans must match them. */
+function assertPinnedNativePackage(pkg:NativePackage){
+ const pinned=RUNTIMES[pkg.runtime],artifact=pinned.packages[pkg.target];
+ if(pkg.version!==pinned.version||pkg.sha256!==artifact.sha256||pkg.size!==artifact.size)throw new Error('Native package does not match the Qoopia-pinned version and digest');
+ return pkg;
+}
+/** Parses vendor HTTPS metadata; callers that install must also pass assertPinnedNativePackage. */
 export function vendorPackage(runtime:NativePackage['runtime'],target:string,metadata:unknown):NativePackage{
  targetSchema.parse(target);
  if(runtime==='codex'){
@@ -91,17 +98,9 @@ export async function vendorDownload(url:string,maxBytes:number):Promise<Uint8Ar
 }
 export async function nativePackagePreview(runtime:NativePackage['runtime'],target=`${process.platform}-${process.arch}`){
  const kind=z.enum(['codex','claude_code']).parse(runtime),v=RUNTIMES[kind].version;
- if(kind==='codex')return vendorPackage(kind,target,JSON.parse(Buffer.from(await vendorDownload(`https://api.github.com/repos/openai/codex/releases/tags/rust-v${v}`,2*1024*1024)).toString()));
+ if(kind==='codex')return assertPinnedNativePackage(vendorPackage(kind,target,JSON.parse(Buffer.from(await vendorDownload(`https://api.github.com/repos/openai/codex/releases/tags/rust-v${v}`,2*1024*1024)).toString())));
  const metadata=JSON.parse(Buffer.from(await vendorDownload(`https://downloads.claude.ai/claude-code-releases/${v}/manifest.json`,1024*1024)).toString());
- return vendorPackage(runtime,target,{...metadata,version:v});
-}
-/** No downloaded shell script and no archive.extract: write only bounded regular files into a NEW private directory. */
-export function verifyInstalledNative(input:unknown,destination:string){
- const p=nativePackageSchema.parse(input),dest=safePath(destination),saved=readJson<{package:unknown;members:unknown}>(path.join(dest,'qoopia-native-package.json'));
- if(JSON.stringify(nativePackageSchema.parse(saved.package))!==JSON.stringify(p))throw new Error('Installed native package identity changed');
- const members=inventory(dest,new Set(['qoopia-native-package.json']));
- if(JSON.stringify(saved.members)!==JSON.stringify(members))throw new Error('Installed native package contents changed');
- return {binary:path.join(dest,p.binary),installed_bytes:Object.values(members).reduce((n,m)=>n+m.size,0)};
+ return assertPinnedNativePackage(vendorPackage(runtime,target,{...metadata,version:v}));
 }
 export async function verifyInstalledNativeAsync(input:unknown,destination:string){
  const p=nativePackageSchema.parse(input),dest=safePath(destination),saved=readJson<{package:unknown;members:unknown}>(path.join(dest,'qoopia-native-package.json'));
@@ -110,6 +109,7 @@ export async function verifyInstalledNativeAsync(input:unknown,destination:strin
  if(JSON.stringify(saved.members)!==JSON.stringify(members))throw new Error('Installed native package contents changed');
  return {binary:path.join(dest,p.binary),installed_bytes:Object.values(members).reduce((n,m)=>n+m.size,0)};
 }
+/** No downloaded shell script and no archive.extract: write only bounded regular files into a NEW private directory. */
 export async function unpackNativePackage(input:unknown,bytes:Uint8Array,destination:string){
  const p=nativePackageSchema.parse(input);
  if(bytes.length!==p.size||hash(bytes)!==p.sha256)throw new Error('Native package checksum/size mismatch');

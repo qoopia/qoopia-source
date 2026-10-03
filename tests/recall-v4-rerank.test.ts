@@ -1,7 +1,7 @@
 import {textHash} from "../src/services/embeddings.ts";
 import fs from "node:fs";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
@@ -12,6 +12,9 @@ import { createNoteRelation } from "../src/services/note-relations.ts";
 import { recall } from "../src/services/recall.ts";
 import { getRecallTrace } from "../src/services/recall-traces.ts";
 import { EMBED_DIM, EMBED_MODEL, serializeEmbedding } from "../src/services/embeddings.ts";
+
+const restoreStamps: Array<() => void> = [];
+afterEach(() => { while (restoreStamps.length) restoreStamps.pop()!(); });
 
 type HistoryCase = {
   name: string;
@@ -71,7 +74,7 @@ beforeAll(() => {
     fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === "/api/embed") {
-        const vector = new Array(EMBED_DIM).fill(0);
+        const vector = Array.from({ length: EMBED_DIM }, () => 0);
         vector[0] = 1;
         return Response.json({ model: EMBED_MODEL, embeddings: [vector] });
       }
@@ -144,7 +147,7 @@ describe("P04 frozen history-control matrix", () => {
         return;
       }
       const result = await recall(request);
-      expect(result.effective_options.latest_only).toBe(fixture.effective_latest_only!);
+      expect(result.effective_options!.latest_only).toBe(fixture.effective_latest_only!);
       expect((result.results[0] as any).explain.source_rank).toBe(1);
     });
   }
@@ -195,11 +198,13 @@ describe("P04 rerank success/fallback before relation-head injection", () => {
         });
       }
       const fixed = Date.now() + 10_000;
-      db.prepare(`UPDATE notes SET updated_at_ms = ? WHERE workspace_id = ? AND id = ?`)
-        .run(fixed + 1, auth.workspace_id, headOld.id);
-      if (headNew) {
-        db.prepare(`UPDATE notes SET updated_at_ms = ? WHERE workspace_id = ? AND id = ?`)
-          .run(fixed + 2, auth.workspace_id, headNew.id);
+      // Future stamps make the heads the latest; restore them afterwards, because the note-write
+      // allocator takes MAX(updated_at_ms) over the shared test database and would otherwise push
+      // every later test's notes 10 s into the future.
+      for (const [head, ms] of [[headOld, fixed + 1], ...(headNew ? [[headNew, fixed + 2]] : [])] as Array<[{ id: string }, number]>) {
+        const before = (db.prepare(`SELECT updated_at_ms FROM notes WHERE id = ?`).get(head.id) as { updated_at_ms: number }).updated_at_ms;
+        db.prepare(`UPDATE notes SET updated_at_ms = ? WHERE workspace_id = ? AND id = ?`).run(ms, auth.workspace_id, head.id);
+        restoreStamps.push(() => db.prepare(`UPDATE notes SET updated_at_ms = ? WHERE id = ?`).run(before, head.id));
       }
 
       const result = await recall({

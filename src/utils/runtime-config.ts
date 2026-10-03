@@ -4,14 +4,14 @@ import path from "node:path";
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const IMMUTABLE_IMAGE_RE = /^(?:[a-z0-9._:/-]+@)?sha256:[0-9a-f]{64}$/i;
 
-export interface RuntimePaths {
+interface RuntimePaths {
   rootDir: string;
   dataDir: string;
   logDir: string;
   backupDir: string;
 }
 
-export interface ReleaseInputs {
+interface ReleaseInputs {
   imageRef: string;
   releaseSha: string;
   rootDir: string;
@@ -151,6 +151,8 @@ export function validateRuntimeConfiguration(
   if (!runtimeEnv.QOOPIA_ADMIN_SECRET?.trim()) {
     issues.push("QOOPIA_ADMIN_SECRET is required");
   }
+  const weakSecret = cookieSigningSecretIssue(runtimeEnv);
+  if (weakSecret) issues.push(weakSecret);
   assertUrlEnv(runtimeEnv, "QOOPIA_PUBLIC_URL", issues);
 
   if (issues.length > 0) {
@@ -159,6 +161,20 @@ export function validateRuntimeConfiguration(
     );
   }
   return paths;
+}
+
+/**
+ * Dashboard and owner session cookies are HMAC-signed with
+ * QOOPIA_SESSION_SECRET, or with a key derived from QOOPIA_ADMIN_SECRET when
+ * it is unset (sessionKey() in dashboard-session.ts). The effective secret
+ * needs the same 32-byte floor as QOOPIA_OWNER_BRIDGE_SECRET, in every mode:
+ * the dev recipe (`openssl rand -base64 32`) and all provisioning paths already
+ * generate more. Length only; the value is never echoed.
+ */
+export function cookieSigningSecretIssue(runtimeEnv: NodeJS.ProcessEnv = process.env): string | null {
+  const name = runtimeEnv.QOOPIA_SESSION_SECRET ? "QOOPIA_SESSION_SECRET" : "QOOPIA_ADMIN_SECRET";
+  if (Buffer.byteLength(runtimeEnv[name] ?? "") >= 32) return null;
+  return `${name} must be at least 32 bytes because it signs dashboard session cookies; generate one with \`openssl rand -base64 32\``;
 }
 
 /** Validate non-secret operator inputs used to render the release compose. */

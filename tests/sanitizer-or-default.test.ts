@@ -62,6 +62,15 @@ describe("sanitizeFtsQuery — shape of the FTS5 expression", () => {
     expect(sanitizeFtsQuery("a sample")).toBe('"sample"*');
   });
 
+  test("F-276: stop words do not reach the shared FTS ranking", async () => {
+    expect(sanitizeFtsQuery("what did we decide about the deploy server")).toBe(
+      '"decide"* OR "deploy"* OR "server"*',
+    );
+    expect(sanitizeFtsQuery("что мы решили про деплой")).toBe('"решили"* OR "деплой"*');
+    // Nothing but stop words: keep them rather than search for nothing.
+    expect(sanitizeFtsQuery("what is it")).toBe('"what"* OR "is"* OR "it"*');
+  });
+
   test("empty query throws INVALID_INPUT", async () => {
     expect(() => sanitizeFtsQuery("")).toThrow();
     expect(() => sanitizeFtsQuery("   ")).toThrow();

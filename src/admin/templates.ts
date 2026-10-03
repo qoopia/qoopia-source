@@ -10,13 +10,13 @@
  * versioning system, and 10 real tables is the budget.
  */
 
-export interface BootstrapNote {
+interface BootstrapNote {
   type: string;
   text: string;
   tags: string[];
 }
 
-export interface RolePreset {
+interface RolePreset {
   displayName: string;
   bootstrapNotes: BootstrapNote[];
   systemPrompt: string;

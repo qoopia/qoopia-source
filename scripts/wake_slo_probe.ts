@@ -20,6 +20,7 @@
  *   bun scripts/wake_slo_probe.ts <C2L|L2C>
  */
 import { db } from "../src/db/connection.ts";
+import { workspaceIdBySlug } from "../src/admin/workspaces.ts";
 import {
   agentSessionCreate,
   agentSend,
@@ -34,7 +35,7 @@ if (DIR !== "C2L" && DIR !== "L2C") {
   process.exit(2);
 }
 
-const WORKSPACE_ID = "01KMKRVYF2FN68D9N3C8BEGAHS"; // Default workspace
+const WORKSPACE_ID = workspaceIdBySlug(); // QOOPIA_WORKSPACE_SLUG, default "default"
 const DELIVERY_TIMEOUT_MS = 60_000;
 const REPLY_TIMEOUT_MS = 90_000;
 const POLL_MS = 1_000;
@@ -101,7 +102,7 @@ async function probe(direction: Direction): Promise<void> {
   const recipient_name = direction === "C2L" ? "Leo" : "corsair-main";
 
   const sender_id = resolveAgentId(sender_name);
-  const recipient_id = resolveAgentId(recipient_name);
+  resolveAgentId(recipient_name); // fail fast if recipient is missing/inactive
 
   const started_at = nowIsoMs();
   const ping_iso = started_at;
@@ -117,7 +118,7 @@ async function probe(direction: Direction): Promise<void> {
   let status: "ok" | "failed" = "failed";
   let error_class:
     | "wake_push_failed"
-    | "delivery_timeout"
+    | "ack_timeout"
     | "reply_timeout"
     | "error_envelope"
     | "protocol_mismatch"
@@ -167,7 +168,9 @@ async function probe(direction: Direction): Promise<void> {
       await sleep(POLL_MS);
     }
     if (!delivered_at) {
-      error_class = "delivery_timeout";
+      // The migration-016 CHECK predates the ack->delivery rename in 035 and
+      // still names this class 'ack_timeout'; it means delivery timeout.
+      error_class = "ack_timeout";
       return;
     }
 

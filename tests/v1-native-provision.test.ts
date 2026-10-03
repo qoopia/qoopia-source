@@ -1,5 +1,6 @@
 import {test,expect} from 'bun:test';
-import {vendorPackage,unpackNativePackage,nativeProvisionPlan,applyNativeProvision,nativeRuntimeEnvironment,vendorDownload,verifyInstalledNative} from '../src/delivery/native-provision.ts';
+import {vendorPackage,unpackNativePackage,nativeProvisionPlan,applyNativeProvision,nativeRuntimeEnvironment,vendorDownload,verifyInstalledNativeAsync,nativePackagePreview} from '../src/delivery/native-provision.ts';
+import {RUNTIMES} from '../src/delivery/runtime-versions.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -52,8 +53,26 @@ test('only verified bytes become executable; native archives preserve required l
   const dest=path.join(root,'good');await unpackNativePackage(pkg,bytes,dest);
   expect(fs.readFileSync(path.join(dest,'bin/codex'),'utf8')).toContain('fixture');
   expect(fs.statSync(path.join(dest,'bin/codex')).mode&0o777).toBe(0o700);
-  expect(verifyInstalledNative(pkg,dest).binary).toBe(path.join(dest,'bin/codex'));
-  fs.writeFileSync(path.join(dest,'bin/codex'),'tampered fixture');expect(()=>verifyInstalledNative(pkg,dest)).toThrow();
+  expect((await verifyInstalledNativeAsync(pkg,dest)).binary).toBe(path.join(dest,'bin/codex'));
+  fs.writeFileSync(path.join(dest,'bin/codex'),'tampered fixture');await expect(verifyInstalledNativeAsync(pkg,dest)).rejects.toThrow('contents changed');
   await expect(unpackNativePackage(pkg,bytes,dest)).rejects.toThrow();
  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('installs trust Qoopia-pinned digests: changed vendor metadata or a saved plan with another digest is refused',async()=>{
+ const real=globalThis.fetch,codex=RUNTIMES.codex.packages['darwin-arm64'],claude=RUNTIMES.claude_code.packages['linux-x64'];
+ const serve=(body:unknown)=>{globalThis.fetch=(async()=>new Response(JSON.stringify(body))) as unknown as typeof fetch;};
+ const codexMetadata=(digest:string)=>({tag_name:`rust-v${RUNTIMES.codex.version}`,assets:[{name:'codex-package-aarch64-apple-darwin.tar.gz',size:codex.size,digest:'sha256:'+digest}]});
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-native-pin-fixture-')));
+ try{
+  serve(codexMetadata('0'.repeat(64)));await expect(nativePackagePreview('codex','darwin-arm64')).rejects.toThrow(/pinned/);
+  serve({platforms:{'linux-x64':{checksum:'0'.repeat(64),size:claude.size}}});await expect(nativePackagePreview('claude_code','linux-x64')).rejects.toThrow(/pinned/);
+  serve(codexMetadata(codex.sha256));expect(await nativePackagePreview('codex','darwin-arm64')).toMatchObject({version:RUNTIMES.codex.version,sha256:codex.sha256,size:codex.size});
+  const target=`${process.platform}-${process.arch}` as 'darwin-arm64'|'linux-x64';
+  fs.writeFileSync(path.join(root,'current.json'),JSON.stringify({format:'qoopia-installation/1',generation:'generation-11111111-1111-4111-8111-111111111111',bundle:'b'.repeat(64),bundle_digest:'b'.repeat(64),instance:'fixture-native-pin',port:43737}),{mode:0o600});
+  const forged=vendorPackage('claude_code',target,{version:RUNTIMES.claude_code.version,platforms:{[target]:{checksum:'0'.repeat(64),size:RUNTIMES.claude_code.packages[target].size}}});
+  const plan=nativeProvisionPlan(root,forged);
+  await expect(applyNativeProvision(root,plan,plan.plan_digest)).rejects.toThrow(/pinned/);
+  expect(fs.existsSync(path.join(root,'native-runtimes'))).toBe(false);
+ }finally{globalThis.fetch=real;fs.rmSync(root,{recursive:true,force:true});}
 });

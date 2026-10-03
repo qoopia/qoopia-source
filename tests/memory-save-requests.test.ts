@@ -10,6 +10,7 @@ import {decideSaveRequest,listSaveRequests} from '../src/services/memory-save-re
 import {findTool} from '../src/mcp/tools.ts';
 import {adminTools} from '../src/mcp/admin-tools.ts';
 import {upsertEntity} from '../src/services/entities.ts';
+import {skillUpsert} from '../src/services/skills.ts';
 import {createExtractionRun} from '../src/services/extraction.ts';
 
 let workspace:string,owner:string,steward:string,agent:string,foreignOwner:string;
@@ -85,7 +86,7 @@ test('a declined request, an expired one and a restart all leave nothing behind'
   expect(leaked).toEqual([]);
 });
 
-test('the other write paths are not a side door: update, summary, compat alias and a full queue',()=>{
+test('the other write paths are not a side door: update, summary and a full queue',()=>{
   setMemoryPolicy({workspace_id:workspace,agent_id:agent,mode:'auto',actor_id:owner});
   const existing=createNote({workspace_id:workspace,agent_id:agent,text:'Синтетика: исходный текст.'});
   setMemoryPolicy({workspace_id:workspace,agent_id:agent,mode:'manual',actor_id:owner});
@@ -96,7 +97,7 @@ test('the other write paths are not a side door: update, summary, compat alias a
   expect(refused(()=>sessionSummarize({workspace_id:workspace,agent_id:agent,session_id:'none',content:'Синтетика',msg_start_id:1,msg_end_id:1})).code).toBe('APPROVAL_REQUIRED');
   decideSaveRequest({workspace_id:workspace,actor_id:owner,id:requestId(held),accept:true});
   expect(notes('Синтетика: подменённый текст.')).toBe(1);
-  for(let i=0;i<25;i++)try{createNote({workspace_id:workspace,agent_id:agent,text:'Синтетика: очередь '+i});}catch{}
+  for(let i=0;i<25;i++)try{createNote({workspace_id:workspace,agent_id:agent,text:'Синтетика: очередь '+i});}catch{/* Expected: APPROVAL_REQUIRED until 20 requests are held, then RATE_LIMITED. */}
   expect(listSaveRequests(workspace,owner,agent).length).toBe(20);
   expect(refused(()=>createNote({workspace_id:workspace,agent_id:agent,text:'Синтетика: сверх лимита'})).code).toBe('RATE_LIMITED');
 });
@@ -117,9 +118,52 @@ test('the other doors into memory are shut too: knowledge pages, skills and extr
   if(entity)expect(refused(()=>entity.handler({type:'knowledge',slug:'canary-knowledge',title:'Синтетика'},auth(agent))).code).toBe('APPROVAL_REQUIRED');
   // The guard sits on the writer, so skill_upsert cannot reach it either.
   expect(refused(()=>upsertEntity({workspace_id:workspace,type:'knowledge',slug:'direct-knowledge',title:'Синтетика',summary:null},auth(agent))).code).toBe('APPROVAL_REQUIRED');
+  // The agent protocol names skill_upsert as refused in manual [F-231].
+  expect(refused(()=>skillUpsert({workspace_id:workspace,slug:'synthetic-skill',title:'Синтетика',summary:'Шаги',status:'draft',metadata:{skill_version:'1',owner_agent:'save-synthetic-agent',
+    trigger_conditions:['t'],scope:'s',prerequisites:['p'],exact_steps:['a'],verification_gates:['v'],failure_modes:['f'],rollback:'r',related_code_paths:['c'],related_incidents:['i']}} as any,auth(agent))).code).toBe('APPROVAL_REQUIRED');
   expect(refused(()=>createExtractionRun({auth:auth(agent),session_id:'none',source_start_id:1,source_end_id:1,
     extractor_version:'test',prompt_hash:'0'.repeat(64),candidates:[]})).code).toBe('APPROVAL_REQUIRED');
   // An owner-started agent task records under the target agent's identity: covered in
   // tests/v1-runtime.test.ts, where the runtime registration the task needs actually exists.
   setMemoryPolicy({workspace_id:workspace,agent_id:agent,mode:'auto',actor_id:owner});
+});
+
+test('a confirmed note_update asked again is a no-op; once the note moved on it is a new request',()=>{
+  const editor=createAgent({name:'save-update-repeat',workspaceSlug:'save-request-check'}).id;
+  const mode=(m:'auto'|'manual')=>setMemoryPolicy({workspace_id:workspace,agent_id:editor,mode:m,actor_id:owner});
+  const note=createNote({workspace_id:workspace,agent_id:editor,text:'Синтетика: до правки.'});
+  const text=()=>(db.query('SELECT text FROM notes WHERE id=?').get(note.id) as {text:string}).text;
+  const edit={workspace_id:workspace,agent_id:editor,is_admin:false,id:note.id,text:'Синтетика: после правки.'};
+  mode('manual');
+  const first=requestId(refused(()=>updateNote(edit)));
+  decideSaveRequest({workspace_id:workspace,actor_id:owner,id:first,accept:true});
+  expect(updateNote(edit)).toMatchObject({updated:false,id:note.id,fields_updated:[]});
+  expect(listSaveRequests(workspace,owner,editor)).toHaveLength(0);
+  mode('auto');updateNote({...edit,text:'Синтетика: третья версия.'});mode('manual');
+  const second=requestId(refused(()=>updateNote(edit)));
+  expect(second).not.toBe(first);
+  decideSaveRequest({workspace_id:workspace,actor_id:owner,id:second,accept:true});
+  expect(text()).toBe('Синтетика: после правки.');
+  mode('auto');
+});
+
+test('note_create idempotency is settled before the manual hold',()=>{
+  const flag=process.env.QOOPIA_V4_BITEMPORAL;process.env.QOOPIA_V4_BITEMPORAL='true';
+  const keyed=createAgent({name:'save-idempotent-key',workspaceSlug:'save-request-check'}).id;
+  const create=(text:string,key:string)=>createNote({workspace_id:workspace,agent_id:keyed,text,idempotency_key:key});
+  try{
+    const first=create('Синтетика: ключ один.','save-key-1');
+    setMemoryPolicy({workspace_id:workspace,agent_id:keyed,mode:'manual',actor_id:owner});
+    // A retry of a committed key replays the note: nothing new waits for the owner.
+    expect(create('Синтетика: ключ один.','save-key-1').id).toBe(first.id);
+    expect(refused(()=>create('Синтетика: другое под ключом один.','save-key-1')).code).toBe('IDEMPOTENCY_MISMATCH');
+    // A key held for the owner is taken as well: other material under it is refused, not queued.
+    const held=requestId(refused(()=>create('Синтетика: ключ два.','save-key-2')));
+    expect(requestId(refused(()=>create('Синтетика: ключ два.',' save-key-2 ')))).toBe(held);
+    expect(refused(()=>create('Синтетика: другое под ключом два.','save-key-2')).code).toBe('IDEMPOTENCY_MISMATCH');
+    expect(listSaveRequests(workspace,owner,keyed).map(r=>r.id)).toEqual([held]);
+  }finally{
+    if(flag===undefined)delete process.env.QOOPIA_V4_BITEMPORAL;else process.env.QOOPIA_V4_BITEMPORAL=flag;
+    setMemoryPolicy({workspace_id:workspace,agent_id:keyed,mode:'auto',actor_id:owner});
+  }
 });

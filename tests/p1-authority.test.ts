@@ -3,7 +3,7 @@ import { ownerFixture, principalAuth, completeContent } from "./helpers/p1-fixtu
 import { issuePairing, redeemPairing, revokePrincipal } from "../src/auth/pairings.ts";
 import { authorize, currentToolAuth } from "../src/auth/policy.ts";
 import { parseGrantedScope } from "../src/auth/oauth.ts";
-import { reviseDraft, compileDraft, reviewSkill, registerPublisherKey, sealSkill, requireExactConsent } from "../src/skills/authority.ts";
+import { reviseDraft, compileDraft, reviewSkill, registerPublisherKey, sealSkill, requireExactConsent, skillReviewState } from "../src/skills/authority.ts";
 import { keyFromSeedHex, signManifest } from "../src/skills/legacy/signing.ts";
 import { signaturePayload, parsePackage } from "../src/skills/format.ts";
 
@@ -94,7 +94,10 @@ describe("P1 authority", () => {
     const { database: d, auth } = ownerFixture();
     try {
       const draft = reviseDraft(auth, { slug: "exact", expected_revision: 0, content: completeContent, idempotency_key: "create" }, d);
+      const skillId = (d.query("SELECT skill_id FROM skill_drafts WHERE id=?").get(draft.data.draft_id) as { skill_id: string }).skill_id;
+      expect(skillReviewState(d, auth.workspace_id, skillId).state).toBe("unreviewed_draft");
       const c = compileDraft(auth, { draft_id: draft.data.draft_id, expected_revision: 1, version_label: "1.0.0", license: "MIT", idempotency_key: "compile" }, d);
+      expect(skillReviewState(d, auth.workspace_id, skillId).state).toBe("candidate");
       const review = reviewSkill(auth, { version_id: c.data.version_id, expected_digest: c.data.candidate_digest, expected_revision: 0,
         kind: "content_review", decision: "approve", evidence_class: "self_reported", target_scope: "personal", capabilities: ["file_read"],
         expires_at_ms: Date.now() + 600_000, policy_epoch: 1, idempotency_key: "review" }, d);
@@ -107,6 +110,8 @@ describe("P1 authority", () => {
       const stored = d.query("SELECT package_bytes FROM skill_versions WHERE id=?").get(c.data.version_id) as { package_bytes: Uint8Array };
       expect(parsePackage(Buffer.from(stored.package_bytes), sealed.data.package_digest, k.publicKeyB64url, "fixture-publisher").candidate_digest).toBe(c.data.candidate_digest);
       expect(() => d.query("UPDATE skill_versions SET license='changed' WHERE id=?").run(c.data.version_id)).toThrow("frozen");
+      expect(skillReviewState(d, auth.workspace_id, skillId)).toEqual({ state: "sealed", sealed_version_label: "1.0.0",
+        draft_revision: 1, draft_newer_than_sealed: false, content_review_approved: true });
       const paired = issuePairing(auth, { name: "Target", runtime_id: "runtime", profile: "skill-author", expected_revision: 1, idempotency_key: "target" }, d);
       const target = redeemPairing(paired.one_time_code!, d);
       const binding = { version_id: c.data.version_id, package_digest: sealed.data.package_digest, target_agent_id: target.data.agent_id,

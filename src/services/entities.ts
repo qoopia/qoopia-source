@@ -21,6 +21,7 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { buildFtsMatch } from "./fts-query.ts";
 import { upsertEntityEmbedding } from "./embedding-store.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { legacySkillUpsert } from "../skills/compatibility.ts";
@@ -82,7 +83,7 @@ function isValidSlug(slug: string): boolean {
   return /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/.test(slug);
 }
 
-export interface EntityRow {
+interface EntityRow {
   id: string;
   workspace_id: string;
   type: string;
@@ -276,7 +277,7 @@ export function upsertEntity(input: UpsertInput, auth?: AuthContext): UpsertResu
   };
 }
 
-export interface GetParams {
+interface GetParams {
   workspace_id: string;
   id?: string;
   slug?: string;
@@ -309,7 +310,7 @@ export function getEntity(p: GetParams): Entity {
   return toEntity(row);
 }
 
-export interface SearchParams {
+interface SearchParams {
   workspace_id: string;
   type?: EntityType;
   query?: string;
@@ -349,24 +350,12 @@ function makePreview(s: string | null): string {
  * fragment as a column reference, raising SQLiteError "no such column: item"
  * (PHASE3_HYGIENE_FTS5_SANITIZE_BUG). Quoting fixes this for all callers
  * (skill_search, entity_search, and the recall entity channel via this path).
+ * The single implementation lives in fts-query.ts.
  *
  * Returns "" when there are no usable terms; the caller maps "" -> [].
  */
 function ftsSanitize(q: string): string {
-  const cleaned = q
-    .replace(/["`]/g, " ")
-    .replace(/[()[\]{}]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!cleaned) return "";
-  const tokens = cleaned
-    .split(/\s+/)
-    .filter((t) => t.length > 0)
-    .filter((t) => !/^(AND|OR|NOT|NEAR)$/i.test(t))
-    .map((t) => t.toLowerCase())
-    .filter((t) => t.length >= 2);
-  if (tokens.length === 0) return "";
-  return tokens.map((t) => `"${t}"*`).join(" OR ");
+  return buildFtsMatch(q, "OR", true);
 }
 
 export function searchEntities(p: SearchParams): SearchHit[] {
@@ -442,7 +431,7 @@ export function searchEntities(p: SearchParams): SearchHit[] {
   }));
 }
 
-export interface LinkInput {
+interface LinkInput {
   workspace_id: string;
   source_entity_id: string;
   target_entity_id: string;
@@ -451,7 +440,7 @@ export interface LinkInput {
   source?: string;
 }
 
-export interface LinkResult {
+interface LinkResult {
   link_id: number | null;
   inserted: boolean;
   source_entity_id: string;
@@ -570,7 +559,7 @@ export function addLink(input: LinkInput): LinkResult {
   };
 }
 
-export interface RenderParams {
+interface RenderParams {
   workspace_id: string;
   id?: string;
   slug?: string;

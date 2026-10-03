@@ -3,7 +3,7 @@
   "spec_requirement_source": "QOOPIA_V4_PROFESSIONAL_TZ.md#14",
   "requirements": [
     { "id": "R01", "decision": "Qoopia remains canonical; no Mem0 dependency", "evidence": ["docs/decisions/ADR-V4-001.md", "docs/v4/architecture.md"] },
-    { "id": "R02", "decision": "Version lineage starts at accepted P00 SHA", "evidence": ["artifacts/v4/checkpoints/P00.md", "docs/v4/README.md"] },
+    { "id": "R02", "decision": "Version lineage starts at accepted P00 SHA", "evidence": ["docs/operations/evidence-archive.md", "docs/v4/README.md"] },
     { "id": "R03", "decision": "Split-brain guard remains a compatibility boundary", "evidence": ["docs/v4/api-compatibility.md", "docs/v4/threat-model.md"] },
     { "id": "R04", "decision": "Legacy denominator cannot shrink", "evidence": ["docs/v4/schema-contract.md"] },
     { "id": "R05", "decision": "Supersede heads expand before top-k", "evidence": ["docs/decisions/ADR-V4-002.md", "docs/v4/recall-ranking.md"] },

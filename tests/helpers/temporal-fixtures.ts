@@ -18,7 +18,7 @@ import {
   supersedeGraphDigest,
 } from "../../src/db/migration-033-gate.ts";
 import { applyMigration033Sql } from "../../src/db/migration-033-exec.ts";
-import { DEFAULT_MAX_COMPONENT_SIZE } from "../../src/services/temporal-migration.ts";
+import { DEFAULT_MAX_COMPONENT_SIZE } from "../../src/db/temporal-migration.ts";
 import {
   buildStagingPlan,
   runPhaseA,

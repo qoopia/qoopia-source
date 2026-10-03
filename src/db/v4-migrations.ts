@@ -4,18 +4,18 @@ import path from "node:path";
 import type { Database } from "bun:sqlite";
 import { recordMigrationStatus } from "../utils/observability.ts";
 import { assertMigration033Gate, MIGRATION_033_FILENAME } from "./migration-033-gate.ts";
-import { applyMigration033Sql } from "./migration-033-exec.ts";
+import { applyMigration033Sql, splitSqlStatements } from "./migration-033-exec.ts";
 
-export const V4_TARGET_SCHEMA = 32;
+const V4_TARGET_SCHEMA = 32;
 
 
-export interface MigrationFile {
+interface MigrationFile {
   version: number;
   filename: string;
   path: string;
 }
 
-export interface MigrationRunResult {
+interface MigrationRunResult {
   initial_schema: number;
   final_schema: number;
   target_schema: number;
@@ -23,7 +23,7 @@ export interface MigrationRunResult {
   no_op: boolean;
 }
 
-export interface ApplyMigrationOptions {
+interface ApplyMigrationOptions {
   migrationsDir: string;
   targetVersion?: number;
 }
@@ -83,6 +83,12 @@ export function applyMigrationsToDatabase(
   options: ApplyMigrationOptions,
 ): MigrationRunResult {
   const targetVersion = options.targetVersion ?? V4_TARGET_SCHEMA;
+  if (targetVersion > 35) {
+    throw new Error(
+      "applyMigrationsToDatabase supports targets <= 35; 036+ need runMigrations " +
+        "(code backfills 036/041)",
+    );
+  }
   const initialSchema = readSchemaVersion(db);
   if (initialSchema > targetVersion) {
     throw new Error(
@@ -117,7 +123,8 @@ export function applyMigrationsToDatabase(
     if (is033) assertMigration033Gate(db);
     db.transaction(() => {
       if (is033) applyMigration033Sql(db, sql);
-      else db.exec(sql);
+      // F-265: db.exec drops runtime errors; run each statement so any failure rolls back.
+      else for (const statement of splitSqlStatements(sql)) db.run(statement);
       db.query(
         `INSERT OR IGNORE INTO schema_versions (version, description)
          VALUES (?, ?)`,

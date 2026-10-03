@@ -40,6 +40,8 @@ const budgetPath = arg("--budgets");
 const reportsDir = arg("--reports");
 const budgets = JSON.parse(readFileSync(budgetPath, "utf8")) as {
   latency_ms: Record<string, number>;
+  latency_ms_not_gated: { keys: string[] };
+  baseline_rule_gate: { max_ratio: number; noise_floor_ms: number };
   quality: Record<string, number>;
 };
 const reports = readdirSync(reportsDir)
@@ -49,6 +51,12 @@ const reports = readdirSync(reportsDir)
 
 const failures: string[] = [];
 const requireGate = (condition: boolean, message: string) => { if (!condition) failures.push(message); };
+// A declared budget either has a check below or is explicitly informational (F-308).
+const gatedLatency = new Set(["default_recall_p50_max", "default_recall_p95_max", "default_recall_p99_max", "lifecycle_on_recall_p95_max"]);
+const notGated = new Set(budgets.latency_ms_not_gated.keys);
+for (const key of new Set([...Object.keys(budgets.latency_ms), ...notGated])) {
+  requireGate(key in budgets.latency_ms && gatedLatency.has(key) !== notGated.has(key), `latency budget ${key} must be gated or listed once in latency_ms_not_gated`);
+}
 const byCandidate = new Map(reports.map((report) => [report.comparison.candidate, report]));
 const off = byCandidate.get("v4-flags-off");
 const on = byCandidate.get("v4-flags-on");
@@ -71,6 +79,17 @@ if (off && on) {
     requireGate(scale.flags_off_bit_identical, `scale ${scale.scale}: flags OFF result IDs differ from V3`);
     requireGate(scale.baseline.result_signature_sha256 === scale.candidate.result_signature_sha256, `scale ${scale.scale}: flags OFF signature mismatch`);
     requireGate(scale.fallback.pass, `scale ${scale.scale}: unavailable embedder fallback failed`);
+    // Flags off is the production default: default recall budgets plus the V3 baseline rule.
+    const latency = scale.candidate.latency_ms;
+    const v3 = scale.baseline.latency_ms.p50;
+    const rule = budgets.baseline_rule_gate;
+    requireGate(latency.p50 <= budgets.latency_ms.default_recall_p50_max!, `scale ${scale.scale}: flags-off p50 above budget`);
+    requireGate(latency.p95 <= budgets.latency_ms.default_recall_p95_max!, `scale ${scale.scale}: flags-off p95 above budget`);
+    requireGate(latency.p99 <= budgets.latency_ms.default_recall_p99_max!, `scale ${scale.scale}: flags-off p99 above budget`);
+    if (v3 <= budgets.latency_ms.default_recall_p50_max!) {
+      requireGate(latency.p50 <= Math.max(v3 * rule.max_ratio, v3 + rule.noise_floor_ms),
+        `scale ${scale.scale}: flags-off p50 regressed beyond the V3 baseline rule (${latency.p50.toFixed(2)} ms vs ${v3.toFixed(2)} ms)`);
+    }
   }
   for (const scale of on.scale_reports) {
     const quality = scale.candidate.quality;
@@ -98,5 +117,6 @@ console.log(JSON.stringify({
   reports: reports.length,
   corpus_sha256: on!.corpus.sha256,
   scales: on!.scale_reports.map((item) => item.scale),
-  gates: ["flags-off-identical", "quality", "latency", "leakage", "fallback", "token-budget", "extraction-no-auto-write"],
+  gates: ["flags-off-identical", "quality", "latency", "flags-off-latency", "v3-baseline-rule", "leakage", "fallback", "token-budget", "extraction-no-auto-write"],
+  latency_not_gated: [...notGated],
 }));

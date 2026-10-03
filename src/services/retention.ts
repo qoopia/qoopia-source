@@ -11,6 +11,7 @@ import { db } from "../db/connection.ts";
 import { env } from "../utils/env.ts";
 import { logger } from "../utils/logger.ts";
 import { nowIso } from "../utils/errors.ts";
+import { nextNoteWriteTimestamp } from "./notes.ts";
 import { ensureSafeDir } from "../utils/fs-perms.ts";
 import { AGENT_WAKE_MAX_ATTEMPTS } from "./agent-wake.ts";
 
@@ -18,7 +19,7 @@ import { AGENT_WAKE_MAX_ATTEMPTS } from "./agent-wake.ts";
  * Daily maintenance job:
  *  1. Task-bound purge (notes/sessions/messages bound to closed tasks > 1h old)
  *  2. Expired idempotency keys
- *  3. Old activity (> N days)
+ *  3. Old activity (> N days) and recall_log (> 90 days)
  *  4. Terminal AgentComm wake events
  *  5. Expired oauth codes/access tokens
  *  6. Daily backup via VACUUM INTO
@@ -69,9 +70,14 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     const hasDraftRefs = hasTable('skill_draft_revisions');
     const hasCaptures = hasTable('skill_captures');
     const hasLoadouts = hasTable('session_loadouts');
-    const deletedAt = nowIso();
+    const deletedUnlessReferenced = (sql: string, id: string) => {
+      try { db.transaction(() => db.prepare(sql).run(id))(); return true; }
+      catch (error) { if (String((error as Error)?.message).includes('FOREIGN KEY constraint failed')) return false; throw error; }
+    };
     // Skill evidence is immutable. Purge private source payloads in this shared transaction,
     // but keep a workspace-scoped, observable tombstone for its existing reference.
+    const reindexNote = db.prepare(`INSERT INTO notes_fts(rowid, text) SELECT n.rowid, n.text FROM notes n
+      WHERE n.id = ? AND NOT EXISTS (SELECT 1 FROM notes_fts_docsize d WHERE d.id = n.rowid)`);
     const purgeTaskBound = db.transaction(() => {
       for (const t of closed) {
         const noteRefs = hasDraftRefs
@@ -79,16 +85,22 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
               WHERE r.workspace_id=n.workspace_id AND json_extract(ref.value,'$.kind')='note'
                 AND json_extract(ref.value,'$.id')=n.id)`
           : '0';
-        const notes = db.prepare(`SELECT n.id, ${noteRefs} AS held FROM notes n WHERE n.task_bound_id=?`).all(t.id) as Array<{ id: string; held: number }>;
+        const notes = db.prepare(`SELECT n.id, n.updated_at_ms, ${noteRefs} AS held FROM notes n WHERE n.task_bound_id=?`).all(t.id) as Array<{ id: string; updated_at_ms: number; held: number }>;
         for (const note of notes) {
-          if (note.held) {
-            db.prepare(`UPDATE notes SET text='',metadata='{"source_deleted":true}',tags='[]',project_id=NULL,
-              session_id=NULL,task_bound_id=NULL,deleted_at=?,updated_at=? WHERE id=?`).run(deletedAt, deletedAt, note.id);
-            notesTombstoned++;
-          } else {
-            db.prepare('DELETE FROM notes WHERE id=?').run(note.id);
-            notesPurged++;
-          }
+          // F-106: deleteNote already dropped a soft-deleted note from notes_fts, and the
+          // notes_ad/notes_au triggers below send an FTS 'delete' regardless. Re-index the row
+          // first so that delete is balanced instead of drifting the stored row total.
+          // ponytail: guarding the triggers on index presence is the schema-level fix (owner-gated migration).
+          reindexNote.run(note.id);
+          // A row another table still references (feedback, traces, relations, provenance,
+          // lifecycle, child notes...) cannot be deleted; it becomes a tombstone instead of
+          // failing the whole job. The SAVEPOINT keeps the failed DELETE from leaking.
+          if (!note.held && deletedUnlessReferenced('DELETE FROM notes WHERE id=?', note.id)) { notesPurged++; continue; }
+          // A note write like any other: the shared allocator keeps updated_at_ms with updated_at.
+          const ts = nextNoteWriteTimestamp(note.updated_at_ms);
+          db.prepare(`UPDATE notes SET text='',metadata='{"source_deleted":true}',tags='[]',project_id=NULL,
+            session_id=NULL,task_bound_id=NULL,deleted_at=?,updated_at=?,updated_at_ms=? WHERE id=?`).run(ts.iso, ts.iso, ts.ms, note.id);
+          notesTombstoned++;
         }
 
         const sessionRefs = [
@@ -101,17 +113,19 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
           messagesPurged += (db.query('SELECT count(*) AS n FROM session_messages WHERE session_id=?').get(session.id) as { n: number }).n;
           db.prepare('DELETE FROM session_messages WHERE session_id=?').run(session.id);
           db.prepare('DELETE FROM summaries WHERE session_id=?').run(session.id);
-          if (session.held) {
-            db.prepare(`UPDATE sessions SET title=NULL,metadata='{"source_deleted":true}',task_bound_id=NULL WHERE id=?`).run(session.id);
-            sessionsTombstoned++;
-          } else {
-            db.prepare('DELETE FROM sessions WHERE id=?').run(session.id);
-            sessionsPurged++;
-          }
+          if (!session.held && deletedUnlessReferenced('DELETE FROM sessions WHERE id=?', session.id)) { sessionsPurged++; continue; }
+          db.prepare(`UPDATE sessions SET title=NULL,metadata='{"source_deleted":true}',task_bound_id=NULL WHERE id=?`).run(session.id);
+          sessionsTombstoned++;
         }
       }
     });
-    purgeTaskBound();
+    // An unexpected purge failure must not stop token/trace expiry or the daily backup.
+    let purgeFailure: string | null = null;
+    try { purgeTaskBound(); }
+    catch (error) {
+      purgeFailure = 'TASK_BOUND_PURGE_FAILED';
+      logger.error("Maintenance task-bound purge failed", { error_code: purgeFailure, error_class: (error as Error)?.name ?? 'Error' });
+    }
     report.task_bound_closed = closed.length;
     report.notes_purged = notesPurged;
     report.notes_tombstoned = notesTombstoned;
@@ -130,12 +144,18 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     report.idempotency_keys_deleted = idemp.changes;
 
     // 3. Old activity — use datetime() on both sides for consistent comparison
-    const activityDeleted = db
-      .prepare(
-        `DELETE FROM activity WHERE datetime(created_at) < datetime('now', ?)`,
-      )
-      .run(`-${env.RETENTION_ACTIVITY_DAYS} days`);
-    report.activity_deleted = activityDeleted.changes;
+    db.prepare(
+      `DELETE FROM activity WHERE datetime(created_at) < datetime('now', ?)`,
+    ).run(`-${env.RETENTION_ACTIVITY_DAYS} days`);
+    // F-280: Bun's .changes also counts the activity_ad trigger's FTS shadow writes;
+    // changes() counts only the rows this DELETE removed.
+    report.activity_deleted = (db.query("SELECT changes() AS n").get() as { n: number }).n;
+
+    // F-105: recall_log keeps (redacted) query text; the 90-day sweep migration 015 promised.
+    // Raw ISO comparison keeps idx_recall_log_created_at usable; created_at uses the same format.
+    report.recall_log_deleted = db
+      .prepare(`DELETE FROM recall_log WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 days')`)
+      .run().changes;
 
     // 4. Terminal AgentComm wake events. Retryable work is never pruned.
     report.agent_wake_events_deleted = pruneTerminalAgentWakeEvents();
@@ -186,9 +206,10 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     report.backups_kept = keep.size; report.backups_deleted = deleted;
 
     stage = 'STATUS';
-    const state = recordMaintenance(env.OPS_STATE_DIR, installation, null);
+    const state = recordMaintenance(env.OPS_STATE_DIR, installation, purgeFailure);
     report.operations = opsSummary(env.OPS_STATE_DIR);
-    report.ok = state.last_run?.ok === true;
+    if (purgeFailure) report.error = purgeFailure;
+    report.ok = state.last_run?.ok === true && !purgeFailure;
     report.finished_at = nowIso();
     logger.info("Maintenance complete", report);
     return { ok: report.ok === true, report };

@@ -17,37 +17,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const EXPECTED_PDFJS = "5.4.296";
-const EXPECTED_UNPDF = "1.4.0";
+export const EXPECTED_PDFJS = "5.4.296";
+export const EXPECTED_UNPDF = "1.4.0";
 // GHSA-hq66-cqwq-w95j: pdfjs-dist >=5.6.83 <6.2.108.
 const ADVISORY_RANGE = { atLeast: "5.6.83", below: "6.2.108" };
-
-function fail(message: string): never {
-  process.stderr.write(`check-vendored-pdfjs: ${message}\n`);
-  process.exit(1);
-}
-
-const unpdfRoot = path.resolve(import.meta.dir, "../node_modules/unpdf");
-const unpdfVersion = JSON.parse(
-  fs.readFileSync(path.join(unpdfRoot, "package.json"), "utf8"),
-).version as string;
-if (unpdfVersion !== EXPECTED_UNPDF) {
-  fail(`unpdf is ${unpdfVersion}, expected ${EXPECTED_UNPDF}. Re-verify the vendored pdf.js, then bump both constants.`);
-}
-
-const bundle = path.join(unpdfRoot, "dist/pdfjs.mjs");
-if (!fs.existsSync(bundle)) fail(`vendored bundle missing at ${bundle}`);
-
-// pdf.js stamps its own version into the bundle as a quoted literal.
-const found = new Set(
-  [...fs.readFileSync(bundle, "utf8").matchAll(/["'](\d+\.\d+\.\d+)["']/g)].map((m) => m[1]!),
-);
-if (!found.has(EXPECTED_PDFJS)) {
-  fail(
-    `expected pdf.js ${EXPECTED_PDFJS} in ${bundle}, found version literals: ` +
-      `${[...found].slice(0, 10).join(", ") || "none"}`,
-  );
-}
 
 // An equality pin alone only proves the bundle matches the constant. If someone
 // later edits the constant to a vulnerable version to make the check pass, this
@@ -60,13 +33,44 @@ const cmp = (a: string, b: string): number => {
   }
   return 0;
 };
-if (cmp(EXPECTED_PDFJS, ADVISORY_RANGE.atLeast) >= 0 && cmp(EXPECTED_PDFJS, ADVISORY_RANGE.below) < 0) {
-  fail(
-    `pdf.js ${EXPECTED_PDFJS} is inside GHSA-hq66-cqwq-w95j ` +
-      `(>=${ADVISORY_RANGE.atLeast} <${ADVISORY_RANGE.below}). Pin an unpdf whose bundle is outside it.`,
+
+/** Throws unless the installed unpdf is the pinned one and vendors the pinned, unaffected pdf.js. */
+export function checkVendoredPdfjs(unpdfRoot = path.resolve(import.meta.dir, "../node_modules/unpdf")) {
+  const unpdfVersion = JSON.parse(
+    fs.readFileSync(path.join(unpdfRoot, "package.json"), "utf8"),
+  ).version as string;
+  if (unpdfVersion !== EXPECTED_UNPDF) {
+    throw new Error(`unpdf is ${unpdfVersion}, expected ${EXPECTED_UNPDF}. Re-verify the vendored pdf.js, then bump both constants.`);
+  }
+
+  const bundle = path.join(unpdfRoot, "dist/pdfjs.mjs");
+  if (!fs.existsSync(bundle)) throw new Error(`vendored bundle missing at ${bundle}`);
+
+  // pdf.js stamps its own version into the bundle as a quoted literal.
+  const found = new Set(
+    [...fs.readFileSync(bundle, "utf8").matchAll(/["'](\d+\.\d+\.\d+)["']/g)].map((m) => m[1]!),
   );
+  if (!found.has(EXPECTED_PDFJS)) {
+    throw new Error(
+      `expected pdf.js ${EXPECTED_PDFJS} in ${bundle}, found version literals: ` +
+        `${[...found].slice(0, 10).join(", ") || "none"}`,
+    );
+  }
+
+  if (cmp(EXPECTED_PDFJS, ADVISORY_RANGE.atLeast) >= 0 && cmp(EXPECTED_PDFJS, ADVISORY_RANGE.below) < 0) {
+    throw new Error(
+      `pdf.js ${EXPECTED_PDFJS} is inside GHSA-hq66-cqwq-w95j ` +
+        `(>=${ADVISORY_RANGE.atLeast} <${ADVISORY_RANGE.below}). Pin an unpdf whose bundle is outside it.`,
+    );
+  }
+  return { unpdf: unpdfVersion, vendored_pdfjs: EXPECTED_PDFJS };
 }
 
-process.stdout.write(
-  `${JSON.stringify({ unpdf: unpdfVersion, vendored_pdfjs: EXPECTED_PDFJS, ok: true })}\n`,
-);
+if (import.meta.main) {
+  try {
+    process.stdout.write(`${JSON.stringify({ ...checkVendoredPdfjs(), ok: true })}\n`);
+  } catch (error) {
+    process.stderr.write(`check-vendored-pdfjs: ${(error as Error).message}\n`);
+    process.exit(1);
+  }
+}

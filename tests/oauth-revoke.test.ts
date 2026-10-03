@@ -46,8 +46,8 @@ async function registerConfidentialClient(): Promise<{
   return (await r.json()) as { client_id: string; client_secret: string };
 }
 
-function mintAccessToken(clientId: string): string {
-  const access = `qa_${crypto.randomBytes(32).toString("base64url")}`;
+function mintAccessToken(clientId: string, type: "access" | "refresh" = "access"): string {
+  const access = `${type === "access" ? "qa" : "qr"}_${crypto.randomBytes(32).toString("base64url")}`;
   const now = new Date()
     .toISOString()
     .replace(/\.\d{3}Z$/, "Z");
@@ -57,16 +57,24 @@ function mintAccessToken(clientId: string): string {
   db.prepare(
     `INSERT INTO oauth_tokens
       (token_hash, client_id, agent_id, workspace_id, token_type, expires_at, revoked, created_at)
-     VALUES (?, ?, ?, ?, 'access', ?, 0, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
   ).run(
     sha256Hex(access),
     clientId,
     AGENT_ID,
     WORKSPACE_ID,
+    type,
     exp,
     now,
   );
   return access;
+}
+
+function isActive(token: string): boolean {
+  const row = db
+    .prepare(`SELECT revoked FROM oauth_tokens WHERE token_hash = ?`)
+    .get(sha256Hex(token)) as { revoked: number } | undefined;
+  return row?.revoked === 0;
 }
 
 async function revoke(params: {
@@ -255,5 +263,66 @@ describe("/oauth/revoke hardening", () => {
       .filter(Boolean);
     expect(fingerprints.length).toBeGreaterThanOrEqual(2);
     expect(new Set(fingerprints).size).toBe(1);
+  });
+});
+
+describe("F-129: grant-wide revoke and client_secret_basic", () => {
+  test("revoking a refresh token also revokes the client's access tokens, not another client's", async () => {
+    const { client_id, client_secret } = await registerConfidentialClient();
+    const other = await registerConfidentialClient();
+    const access = mintAccessToken(client_id);
+    const refresh = mintAccessToken(client_id, "refresh");
+    const otherAccess = mintAccessToken(other.client_id);
+
+    const r = await revoke({ token: refresh, clientId: client_id, clientSecret: client_secret });
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe("{}");
+    expect(isActive(refresh)).toBe(false);
+    expect(isActive(access)).toBe(false);
+    expect(isActive(otherAccess)).toBe(true);
+  });
+
+  test("revoking an access token leaves the refresh token alone", async () => {
+    const { client_id, client_secret } = await registerConfidentialClient();
+    const access = mintAccessToken(client_id);
+    const refresh = mintAccessToken(client_id, "refresh");
+
+    expect((await revoke({ token: access, clientId: client_id, clientSecret: client_secret })).status).toBe(200);
+    expect(isActive(access)).toBe(false);
+    expect(isActive(refresh)).toBe(true);
+  });
+
+  test("a confidential client can authenticate with HTTP Basic only", async () => {
+    const { client_id, client_secret } = await registerConfidentialClient();
+    const token = mintAccessToken(client_id);
+    const basic = (secret: string) => "Basic " + Buffer.from(
+      `${encodeURIComponent(client_id)}:${encodeURIComponent(secret)}`,
+    ).toString("base64");
+    const send = (secret: string) => fetch(`${baseUrl}/oauth/revoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: basic(secret),
+      },
+      body: new URLSearchParams({ token }).toString(),
+    });
+
+    const auditPath = path.join(env.LOG_DIR, "audit.log");
+    let auditOffset = 0;
+    try {
+      auditOffset = fs.statSync(auditPath).size;
+    } catch {
+      // file may not exist yet
+    }
+    const wrong = await send("wrong-secret");
+    expect(wrong.status).toBe(401);
+    expect(readAuditRows(auditPath, auditOffset).some(
+      (row) => row.event === "auth_failure" && row.scope === "/oauth/revoke",
+    )).toBe(true);
+    expect(isActive(token)).toBe(true);
+
+    const ok = await send(client_secret);
+    expect(ok.status).toBe(200);
+    expect(isActive(token)).toBe(false);
   });
 });

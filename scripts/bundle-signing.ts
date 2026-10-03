@@ -22,10 +22,41 @@ function regularAbsoluteFile(file:string,label:string) {
   if(stat.isSymbolicLink()||!stat.isFile())throw new Error(`${label} must be a regular non-symlink file`);
 }
 
+/** Everything the bundle reads from the checkout (SOURCE-MANIFEST and assets); models/ is prepared and digest-verified separately. */
+// Private-only paths inside published directories. The list itself is private (the public repo keeps its
+// own copy or none), so its names never reach a public artifact.
+const exclusionsFile=fileURLToPath(new URL('./public-source-exclusions.json',import.meta.url));
+export const PUBLIC_SOURCE_EXCLUSIONS:string[]=fs.existsSync(exclusionsFile)?JSON.parse(fs.readFileSync(exclusionsFile,'utf8')).paths:[];
+
+export const BUNDLE_SOURCE_ROOTS=['src','scripts','migrations','package.json','bun.lock','docs/v4/export-table-policy.json','docs/v4/export-schema-columns.json','LICENSE'];
+export const BUNDLE_ASSETS=['models','migrations','src/public','scripts/runtime','docs/v4/export-table-policy.json','docs/v4/export-schema-columns.json'];
+/** Runtime assets under ASSETS. migrations/rollback/ stays out: migrate reads only top-level
+ * migrations/*.sql, and those operator scripts are destructive on a current database. */
+export function copyBundleAssets(root:string,assets:string){
+  const rollback=path.join(root,'migrations','rollback');
+  for(const p of BUNDLE_ASSETS){
+    const dest=path.join(assets,p);fs.mkdirSync(path.dirname(dest),{recursive:true,mode:0o700});
+    fs.cpSync(path.join(root,p),dest,{recursive:true,dereference:false,filter:source=>source!==rollback});
+  }
+}
+
+/** path -> sha256 of the bundle source, for the public SOURCE-MANIFEST; private-only paths are left out like in the public export. */
+export function collectBundleSource() {
+  const excluded=new Set(PUBLIC_SOURCE_EXCLUSIONS),source:Record<string,string>={};
+  const collect=(p:string)=>{if(excluded.has(p))return;const st=fs.lstatSync(p);if(st.isSymbolicLink())throw new Error('Source link refused');if(st.isDirectory())for(const n of fs.readdirSync(p).sort())collect(path.join(p,n));else source[p]=hash(fs.readFileSync(p));};
+  for(const p of BUNDLE_SOURCE_ROOTS)collect(p);
+  return source;
+}
+
 export function assertCleanSource(cwd=process.cwd()) {
   const run=spawnSync('git',['status','--porcelain=v1','--untracked-files=all'],{cwd,encoding:'utf8'});
   if(run.status!==0)throw new Error('Release build refused: source status unavailable');
   if(run.stdout!=='')throw new Error('Release build refused: source checkout is not clean');
+  // The bundle walks the filesystem, so gitignored files (.env, *.log) under its roots would ship.
+  // Pathspec only: node_modules/, models/ and .cache/ are always present and ignored.
+  const ignored=spawnSync('git',['status','--porcelain=v1','--untracked-files=all','--ignored=matching','--',...BUNDLE_SOURCE_ROOTS],{cwd,encoding:'utf8'});
+  if(ignored.status!==0)throw new Error('Release build refused: source status unavailable');
+  if(ignored.stdout!=='')throw new Error('Release build refused: ignored files under bundle roots');
 }
 
 export function loadReleaseAuthorization(file:string,expected:{buildSha:string,target:string,publisherKeySha256:string}) {
@@ -74,7 +105,7 @@ function assertDeveloperId(binary:string,identity:string,runner:CommandRunner) {
 const bunRuntimeEntitlements=fileURLToPath(new URL('./darwin-runtime-entitlements.plist',import.meta.url));
 const bunRuntimeEntitlementKeys=['com.apple.security.cs.allow-jit','com.apple.security.cs.allow-unsigned-executable-memory','com.apple.security.cs.disable-executable-page-protection','com.apple.security.cs.allow-dyld-environment-variables','com.apple.security.cs.disable-library-validation'].sort();
 
-export function signAndVerifyDarwin(libraries:string[],bunExecutable:string,authorization:NonNullable<ReleaseAuthorization['darwin']>,runner:CommandRunner=systemRunner,sparkleArchive={file:path.resolve('.cache/sparkle-'+SPARKLE.version+'/archive.tar.xz'),sha256:SPARKLE.sha256}) {
+export function signAndVerifyDarwin(libraries:string[],bunExecutable:string,authorization:NonNullable<ReleaseAuthorization['darwin']>,runner:CommandRunner=systemRunner) {
   if(process.platform!=='darwin')throw new Error('Darwin platform signing requires a Darwin build host');
   if(authorization.codesign_identity==='-'||!authorization.codesign_identity.startsWith('Developer ID Application:'))throw new Error('Darwin release requires an explicit Developer ID Application identity');
   for(const binary of [...libraries,bunExecutable]){

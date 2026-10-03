@@ -15,8 +15,8 @@ import { QoopiaError } from "../utils/errors.ts";
 import { detectSecretLabels } from "../utils/secret-guard.ts";
 import { recordConflict, v4Metrics } from "../utils/observability.ts";
 
-export const EXPORT_FORMAT = "qoopia-v4-export/1" as const;
-export const EXPORT_SCHEMA_VERSION = 32 as const;
+const EXPORT_FORMAT = "qoopia-v4-export/1" as const;
+const EXPORT_SCHEMA_VERSION = 32 as const;
 const PLAN_TTL_MS = 15 * 60 * 1_000;
 const PLAN_CACHE_MAX = 256;
 const MANIFEST_MAX_BYTES = 8 * 1024 * 1024;
@@ -41,11 +41,11 @@ interface TablePolicy {
 }
 interface PolicyDocument { schema_version: number; database_schema_version: number; logical_table_count: number; tables: TablePolicy[] }
 
-export interface ExportSigner {
+interface ExportSigner {
   private_key: string | Buffer | KeyObject;
 }
 
-export interface ExportPlan {
+interface ExportPlan {
   format: typeof EXPORT_FORMAT;
   schema_version: typeof EXPORT_SCHEMA_VERSION;
   counts: Record<string, number>;
@@ -65,7 +65,7 @@ interface InternalPlan extends ExportPlan {
   data_version: number;
 }
 
-export interface ExportBundleResult {
+interface ExportBundleResult {
   artifact_id: string;
   format: typeof EXPORT_FORMAT;
   schema_version: typeof EXPORT_SCHEMA_VERSION;
@@ -85,7 +85,7 @@ export interface ImportConflict {
   target_hash: string | null;
 }
 
-export interface ImportPlanResult {
+interface ImportPlanResult {
   artifact_id: string;
   format: typeof EXPORT_FORMAT;
   schema_version: typeof EXPORT_SCHEMA_VERSION;
@@ -389,7 +389,7 @@ export function createExportPlan(input: {
     v4Metrics.observe("v4_export_plan_rows", Object.values(counts).reduce((a, b) => a + b, 0), { include_ephemeral: String(includeEphemeral) });
     return { format: internal.format, schema_version: internal.schema_version, counts, policies, estimated_bytes: estimatedBytes, plan_hash: planHash, expires_at: expiresAt };
   } catch (error) {
-    try { database.exec("ROLLBACK"); } catch {}
+    try { database.exec("ROLLBACK"); } catch { /* No open transaction; the original error is rethrown below. */ }
     throw error;
   }
 }
@@ -457,6 +457,10 @@ function readExistingBundle(input: {
   const stat = fs.lstatSync(input.outputDir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new QoopiaError("CONFLICT", "existing export artifact is not a safe directory");
+  }
+  // A failed cleanup or a killed export leaves a directory without its manifest.
+  if (!fs.existsSync(path.join(input.outputDir, "manifest.json"))) {
+    throw new QoopiaError("CONFLICT", "partial export artifact blocks replay; remove it before retrying");
   }
   const manifestText = readRegularFile(
     path.join(input.outputDir, "manifest.json"), input.outputDir, MANIFEST_MAX_BYTES,
@@ -623,9 +627,10 @@ export function materializeExportBundle(input: {
       archive_path: archivePath,
     };
   } catch (error) {
-    try { database.exec("ROLLBACK"); } catch {}
-    try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch {}
-    try { fs.rmSync(`${outputDir}.tar`, { force: true }); } catch {}
+    try { database.exec("ROLLBACK"); } catch { /* No open transaction; the original error is rethrown below. */ }
+    // Best effort: a partial bundle that survives is refused as CONFLICT on replay (readExistingBundle).
+    try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch { /* see above */ }
+    try { fs.rmSync(`${outputDir}.tar`, { force: true }); } catch { /* an orphaned archive is refused on the next attempt */ }
     v4Metrics.increment("v4_export_bundle_total", { result: "failed" });
     throw error;
   }
@@ -862,6 +867,9 @@ export function validateImportPlan(input: {
   for (const row of rowsByTable.get("extraction_candidates") ?? []) requireRef("extraction_runs", row.run_id, runs);
   for (const row of rowsByTable.get("recall_feedback") ?? []) { requireRef("notes", row.note_id, notes); requireRef("recall_traces", row.trace_id, traces); requireRef("agents", row.actor_agent_id, agents); }
   for (const row of rowsByTable.get("entity_links") ?? []) { requireRef("entity_pages", row.source_entity_id, entities); requireRef("entity_pages", row.target_entity_id, entities); }
+  for (const row of rowsByTable.get("agent_comm_messages") ?? []) requireRef("agent_comm_messages", row.parent_message_id, messages);
+  for (const row of rowsByTable.get("agent_wake_events") ?? []) requireRef("agent_comm_messages", row.message_id, messages);
+  for (const row of rowsByTable.get("agent_comm_delivery_receipts") ?? []) requireRef("agent_comm_messages", row.message_id, messages);
   for (const ref of missing) conflicts.push({ table: ref.split(":", 1)[0]!, row_id: ref, code: "MISSING_REFERENCE", source_hash: null, target_hash: null });
   database.exec("COMMIT");
   if (conflicts.length > 0) recordConflict("import");
@@ -879,7 +887,7 @@ export function validateImportPlan(input: {
     apply_allowed: false,
   };
   } catch (error) {
-    try { database.exec("ROLLBACK"); } catch {}
+    try { database.exec("ROLLBACK"); } catch { /* No open transaction; the original error is rethrown below. */ }
     v4Metrics.increment("v4_import_plan_total", { result: "failed" });
     throw error;
   }

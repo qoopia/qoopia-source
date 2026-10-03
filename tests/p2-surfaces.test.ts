@@ -1,11 +1,11 @@
 import {test,expect} from 'bun:test';
-import {dashboardSource,dashboardPage,dashboardScript} from './helpers/dashboard-source.ts';
+import {dashboardPage,dashboardScript} from './helpers/dashboard-source.ts';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {registerAuthorityTools,handleAuthorityRequest,effectiveAuthority,getOperation} from '../src/api/authority.ts';
 import {loopFixture,csvContent,accepted,assigned,opened} from './helpers/p2-fixtures.ts';
-import {writeFileSync,mkdtempSync,mkdirSync,rmSync,readFileSync} from 'node:fs';
+import {writeFileSync,mkdtempSync,mkdirSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 

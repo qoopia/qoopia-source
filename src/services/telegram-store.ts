@@ -4,10 +4,12 @@ import {randomBytes} from 'node:crypto';
 // paused: 0 = ready, 1 = explicitly stopped, 2 = waiting for subscription sign-in.
 export const TELEGRAM_WAITING_LOGIN=2;
 export const TELEGRAM_LOGIN_REQUIRED='Sign in to your subscription in Qoopia. Your saved tasks will continue after sign-in.';
+/** Sign-in banners, current and legacy: only a sign-in clears them, never a delivery. */
+export const TELEGRAM_LOGIN_ERRORS=[TELEGRAM_LOGIN_REQUIRED,'Sign in to your subscription in Qoopia, then send a message to continue.'] as const;
 export function resumeTelegramAfterLogin(owner:string){
-  db.query('UPDATE qoopia_telegram_channels SET paused=0,error=CASE WHEN error IN (?,?) THEN NULL ELSE error END WHERE owner_id=? AND paused IN (0,?)').run(TELEGRAM_LOGIN_REQUIRED,'Sign in to your subscription in Qoopia, then send a message to continue.',owner,TELEGRAM_WAITING_LOGIN);
+  db.query('UPDATE qoopia_telegram_channels SET paused=0,error=CASE WHEN error IN (?,?) THEN NULL ELSE error END WHERE owner_id=? AND paused IN (0,?)').run(...TELEGRAM_LOGIN_ERRORS,owner,TELEGRAM_WAITING_LOGIN);
 }
-export type TelegramChannel={owner_id:string;generation:string;bot_id:string|null;pairing_code:string|null;pairing_expires:number|null;candidate_id:string|null;candidate_chat:string|null;candidate_name:string|null;conversation_id:string|null;paused:number;error:string|null;last_poll_at:number|null;retry_at:number;failures:number};
+type TelegramChannel={owner_id:string;generation:string;bot_id:string|null;pairing_code:string|null;pairing_expires:number|null;candidate_id:string|null;candidate_chat:string|null;candidate_name:string|null;conversation_id:string|null;paused:number;error:string|null;last_poll_at:number|null;retry_at:number;failures:number};
 export function channel(owner:string){return db.query('SELECT * FROM qoopia_telegram_channels WHERE owner_id=?').get(owner) as TelegramChannel|null;}
 export function ensureChannel(owner:string){
   db.query('INSERT OR IGNORE INTO qoopia_telegram_channels(owner_id,generation) VALUES(?,?)').run(owner,randomBytes(16).toString('hex'));

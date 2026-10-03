@@ -30,7 +30,7 @@ continuityEvent(ws.id,working,{session_id:'claude_code:preview',project:'/previe
 createNote({workspace_id:ws.id,agent_id:working,text:'Синтетическая нота для предпросмотра дашборда.',type:'note'});
 setMemoryPolicy({workspace_id:ws.id,agent_id:asking,mode:'manual',actor_id:owner.agent_id});
 // One prepared save waiting for the owner, so the confirmation UI has something to show.
-try{createNote({workspace_id:ws.id,agent_id:asking,text:'Синтетика: пользователь попросил запомнить адрес склада.',type:'note'});}catch{}
+try{createNote({workspace_id:ws.id,agent_id:asking,text:'Синтетика: пользователь попросил запомнить адрес склада.',type:'note'});}catch(error){/* Manual mode: createNote prepares the save request and throws APPROVAL_REQUIRED by design. */if((error as {code?:string}).code!=='APPROVAL_REQUIRED')throw error;}
 const {startHttpServer}=await import('../src/http.ts');
 const server=startHttpServer();if(!server.listening)await once(server,'listening');
 const {issueLocalLogin}=await import('../src/delivery/local-login.ts');

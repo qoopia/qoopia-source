@@ -23,9 +23,10 @@ function auth(over: Partial<AuthContext> = {}): AuthContext {
 }
 
 describe("isAdmin", () => {
-  test("recognises exactly owner, steward and claude-privileged", () => {
-    expect([...ADMIN_TYPES].sort()).toEqual(["claude-privileged", "owner", "steward"]);
-    for (const type of ["owner", "steward", "claude-privileged"] as const) {
+  test("recognises exactly owner and steward (ADR-020: claude-privileged is an ordinary agent)", () => {
+    expect([...ADMIN_TYPES].sort()).toEqual(["owner", "steward"]);
+    expect(isAdmin(auth({ type: "claude-privileged" }))).toBe(false);
+    for (const type of ["owner", "steward"] as const) {
       expect(isAdmin(auth({ type }))).toBe(true);
     }
     expect(isAdmin(auth({ type: "standard" }))).toBe(false);

@@ -6,6 +6,7 @@ import { readOps, readRecoveryOps, writeOps, validateRecoveryOps, opsFile, opsSu
 import { backupOperations } from '../src/delivery/snapshot.ts';
 import { durableWrite, hash } from '../src/utils/fs.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
+import { fakeFetch } from './helpers/fake-fetch.ts';
 
 const fixture=()=>fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'p3-journal-version-')));
 const manifest=(bytes:string)=>({format:'qoopia-backup/2',instance:'fixture',operations:{size:Buffer.byteLength(bytes),sha256:hash(bytes)}} as Parameters<typeof backupOperations>[1]);
@@ -20,7 +21,7 @@ test('legacy /1, pre-D1 /1+hold and current /3 read without rewriting and write 
    writeOps(root,state);expect(JSON.parse(fs.readFileSync(opsFile(root),'utf8'))).toEqual(parsed);
    if(held){
     recordMaintenance(root,'fixture','BACKUP_FAILED',1000);let sends=0,resolves=0;
-    await deliverOpsAlerts(root,[],{fetchImpl:(async()=>{sends++;throw new Error('no network');}) as typeof fetch,resolver:async()=>{resolves++;return []; }},2000);
+    await deliverOpsAlerts(root,[],{fetchImpl:fakeFetch(async()=>{sends++;throw new Error('no network');}),resolver:async()=>{resolves++;return []; }},2000);
     expect(readOps(root).delivery_hold).toBe(RECOVERY_DELIVERY_HOLD);expect(readOps(root).alerts[0]!.attempts).toBe(0);expect(sends+resolves).toBe(0);
    }
   }finally{fs.rmSync(root,{recursive:true,force:true});}

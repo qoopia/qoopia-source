@@ -36,6 +36,9 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
     CREATE TABLE IF NOT EXISTS profile_pending(hash TEXT PRIMARY KEY,request_id TEXT NOT NULL,verifier TEXT NOT NULL,expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_news_pending(hash TEXT PRIMARY KEY,language TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_dashboards(account_id TEXT PRIMARY KEY,url TEXT NOT NULL);`);
+  if(!(db.query('PRAGMA table_info(profile_pending)').all() as {name:string}[]).some(c=>c.name==='code'))db.exec('ALTER TABLE profile_pending ADD COLUMN code TEXT');
+  // The pending cookie belongs to the browser that started; it sees its own confirmation code again after a reload.
+  const pendingCode=(req:Request)=>(db.query('SELECT code FROM profile_pending WHERE hash=?').get(hash(cookie(req,pendingName))) as {code:string|null}|null)?.code;
   const cleanup=()=>{
     db.query('DELETE FROM profile_sessions WHERE expires<=?').run(Date.now());
     db.query('DELETE FROM profile_pending WHERE expires<=?').run(Date.now());
@@ -53,11 +56,13 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       if(url.searchParams.get('app')==='ios'){
         const id=url.searchParams.get('request');
         if(id&&(!/^[A-Za-z0-9_-]{43}$/.test(id)||!handoff.get(id)))return page(ru?'Вход истёк':'Sign-in expired',`<a href="/profile?app=ios">${ru?'Вернуться в Qoopia':'Return to Qoopia'}</a>`,'',410,ru?'ru':'en');
-        return appProfileView(page,ru,account,!!db.query('SELECT hash FROM profile_pending WHERE hash=?').get(hash(cookie(req,pendingName))),id);
+        const code=pendingCode(req);
+        return appProfileView(page,ru,account,code!==undefined,id,code);
       }
       let suggested='';try{suggested=dashboardAddress(url.searchParams.get('dashboard'));}catch{/* Untrusted URL is never reflected without validation. */}
       const preference=account?news.preference(account.id):null;
-      return profileView(page,ru,account,suggested,!!db.query('SELECT hash FROM profile_pending WHERE hash=?').get(hash(cookie(req,pendingName))),{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id});
+      const code=pendingCode(req);
+      return profileView(page,ru,account,suggested,code!==undefined,{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id,code});
     }
     if(req.method!=='POST')return json(404,{error:'NOT_FOUND'});
     if(req.headers.get('origin')!==origin)return json(403,{error:'ORIGIN_REFUSED'});
@@ -68,13 +73,15 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       if(url.pathname==='/profile/start'){
         if(body.news!==undefined&&typeof body.news!=='boolean')return json(400,{error:'INVALID_REQUEST'});
         const verifier=secret(),pending=secret();
-        const response=await call('/requests',{method:body.method,email:body.email,language:body.language==='ru'?'ru':'en',challenge:hash(verifier)},ip);
-        const result=await response.json() as {id?:string;error?:string;email?:string;google_url?:string};
+        // F-125: the e-mail confirmation needs the code this browser shows.
+        const response=await call('/requests',{method:body.method,email:body.email,language:body.language==='ru'?'ru':'en',bind:true,challenge:hash(verifier)},ip);
+        const result=await response.json() as {id?:string;error?:string;email?:string;google_url?:string;confirm_code?:string};
         if(!response.ok)return json(response.status,{error:result.error});
+        if(!/^\d{6}$/.test(String(result.confirm_code)))return json(503,{error:'SIGN_IN_UNAVAILABLE'});
         db.query('DELETE FROM profile_pending WHERE hash=?').run(hash(cookie(req,pendingName)));
-        db.query('INSERT INTO profile_pending VALUES (?,?,?,?)').run(hash(pending),result.id!,verifier,Date.now()+600_000);
+        db.query('INSERT INTO profile_pending(hash,request_id,verifier,expires,code) VALUES (?,?,?,?,?)').run(hash(pending),result.id!,verifier,Date.now()+600_000,result.confirm_code!);
         if(body.news===true)db.query('INSERT INTO profile_news_pending VALUES (?,?)').run(hash(pending),body.language==='ru'?'ru':'en');
-        const out=json(200,{email:result.email,google_url:result.google_url});out.headers.set('set-cookie',setCookie(pendingName,pending,600));return out;
+        const out=json(200,{email:result.email,google_url:result.google_url,code:result.confirm_code});out.headers.set('set-cookie',setCookie(pendingName,pending,600));return out;
       }
       if(url.pathname==='/profile/poll'){
         const key=hash(cookie(req,pendingName));

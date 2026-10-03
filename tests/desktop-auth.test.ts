@@ -47,8 +47,7 @@ test('Desktop wizard HTTP handoff returns immediately, polls OAuth, resumes one 
     const consent=await fetch(consentUrl,{headers:{cookie}}),nonce=(await consent.text()).match(/name="nonce" value="([^"]+)"/)![1]!;
     const approved=await fetch(base+'/api/dashboard/oauth-consent/approve',{method:'POST',redirect:'manual',headers:{cookie,origin:base,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket,nonce})});
     expect(approved.status).toBe(302);
-    const finalized=await fetch(new URL(approved.headers.get('location')!,base),{redirect:'manual'});
-    expect((await fetch(finalized.headers.get('location')!)).status).toBe(200);
+    expect((await fetch(approved.headers.get('location')!)).status).toBe(200);
     let saved:any;
     for(let i=0;i<100;i++){
       saved=await action({action:'client-auth-status',id:connection.id});
@@ -64,7 +63,7 @@ test('Desktop wizard HTTP handoff returns immediately, polls OAuth, resumes one 
     await action({action:'client-auth-start',id:connection.id});const second=await waitForHandoff();
     const callback=new URL(second.open_url).searchParams.get('redirect_uri')!;
     await action({action:'disconnect',id:connection.id});
-    const binding={format:'qoopia-client-connection/1',connection_id:connection.id,workspace_id:owner.workspace_id,surface:'claude_desktop' as const,access_mode:'read' as const,mcp_url:connection.mcp_url};
+    const binding={format:'qoopia-client-connection/1' as const,connection_id:connection.id,workspace_id:owner.workspace_id,surface:'claude_desktop' as const,access_mode:'read' as const,mcp_url:connection.mcp_url};
     let released=false;
     for(let i=0;i<100;i++){
       try{lockStdioCredentials(stdioFolder(root,binding))();released=true;break;}catch{await Bun.sleep(10);}

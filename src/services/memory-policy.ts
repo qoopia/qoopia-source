@@ -2,9 +2,11 @@ import {ulid} from 'ulid';
 import type {Database} from 'bun:sqlite';
 import {db} from '../db/connection.ts';
 import {QoopiaError} from '../utils/errors.ts';
+import {idempotencyMismatch} from './note-idempotency.ts';
+import {toEpochMs} from '../utils/temporal.ts';
 
 export type MemoryMode='auto'|'manual';
-export interface MemoryPolicy {agent_id:string;name:string;mode:MemoryMode;revision:number;updated_at_ms:number|null;actor_id:string|null}
+interface MemoryPolicy {agent_id:string;name:string;mode:MemoryMode;revision:number;updated_at_ms:number|null;actor_id:string|null}
 
 /** Where a write came from. The server decides this at the call site: an agent
  * naming its own source proves nothing, so this is never read from a request body. */
@@ -35,10 +37,10 @@ export function assertAutomaticMemoryAllowed(workspace:string,agent:string,origi
     throw new QoopiaError('APPROVAL_REQUIRED','Automatic memory is off for this agent. Ask the owner to turn it back on, or save the material explicitly.');
 }
 
-export type HeldOperation='note_create'|'note_update';
+type HeldOperation='note_create'|'note_update';
 export const SAVE_REQUEST_TTL_MS=24*60*60*1000;
 const MAX_PENDING_PER_AGENT=20,MAX_PENDING_TOTAL=200;
-export interface PendingSave {id:string;workspace_id:string;agent_id:string;operation:HeldOperation;request_hash:string;input:object;created_at_ms:number;expires_at_ms:number}
+interface PendingSave {id:string;workspace_id:string;agent_id:string;operation:HeldOperation;request_hash:string;input:object;created_at_ms:number;expires_at_ms:number}
 
 /** Prepared saves live here and nowhere else. The server cannot prove that the user asked for
  * one, so the material is unverified and must not reach the database: a restart discards it and
@@ -68,8 +70,10 @@ function saveMaterialHash(operation:HeldOperation,input:object) {
 
 /** A note write by a manual agent. A flag from the model cannot prove the user asked, so the
  * prepared note waits for the owner instead. Returns the note id when this exact save was
- * already confirmed; otherwise holds the request and refuses the write. */
-export function holdSaveForOwner(workspace:string,agent:string,operation:HeldOperation,input:object,origin:MemoryOrigin='automatic'):string|null {
+ * already confirmed; otherwise holds the request and refuses the write. An update whose result
+ * the note no longer holds passes reuseConfirmed=false: the earlier confirmation is spent and the
+ * same edit goes back to the owner as a new request. */
+export function holdSaveForOwner(workspace:string,agent:string,operation:HeldOperation,input:object,origin:MemoryOrigin='automatic',reuseConfirmed=true):string|null {
   if(origin==='owner_confirmed'||memoryPolicy(workspace,agent).mode==='auto')return null;
   const hash=saveMaterialHash(operation,input),now=Date.now();
   expireSaveRequests(now);
@@ -77,7 +81,11 @@ export function holdSaveForOwner(workspace:string,agent:string,operation:HeldOpe
   const saved=db.query(`SELECT d.note_id FROM memory_save_decisions d JOIN notes n ON n.id=d.note_id AND n.deleted_at IS NULL
     WHERE d.workspace_id=? AND d.agent_id=? AND d.request_hash=? AND d.decision='saved' ORDER BY d.decided_at_ms DESC LIMIT 1`)
     .get(workspace,agent,hash) as {note_id:string}|null;
-  if(saved)return saved.note_id;
+  if(saved&&reuseConfirmed)return saved.note_id;
+  // A key already waiting for the owner is taken: other material under it is refused, not queued.
+  const key=(value:object)=>String((value as {idempotency_key?:unknown}).idempotency_key??'').trim();
+  if(key(input)&&[...pendingSaves.values()].some(row=>row.workspace_id===workspace&&row.agent_id===agent
+    &&row.operation===operation&&row.request_hash!==hash&&key(row.input)===key(input)))idempotencyMismatch();
   let held=[...pendingSaves.values()].find(row=>row.workspace_id===workspace&&row.agent_id===agent&&row.request_hash===hash);
   if(!held) {
     if(pendingSavesFor(workspace,agent).length>=MAX_PENDING_PER_AGENT||pendingSaves.size>=MAX_PENDING_TOTAL)
@@ -89,7 +97,7 @@ export function holdSaveForOwner(workspace:string,agent:string,operation:HeldOpe
 }
 
 /** The closed and open manual periods of this agent, from the policy log. */
-export function manualSpans(workspace:string,agent:string):[number,number][] {
+function manualSpans(workspace:string,agent:string):[number,number][] {
   const rows=db.query('SELECT mode,created_at_ms FROM agent_memory_policy_log WHERE workspace_id=? AND agent_id=? ORDER BY id')
     .all(workspace,agent) as {mode:MemoryMode;created_at_ms:number}[];
   const spans:[number,number][]=[];let start:number|null=null;
@@ -98,28 +106,29 @@ export function manualSpans(workspace:string,agent:string):[number,number][] {
   return spans;
 }
 
-/** Plausibility window for a client-supplied message time. Wider than any real clock drift,
- * narrower than the shortest interesting manual period. */
+/** How far into the future a client-supplied message time may lie and still be believed. */
 const TRUSTED_CLOCK_MS=48*60*60*1000;
 
 /** Was this moment inside a manual period? A client that kept its own transcript cursor
- * re-sends that material after the owner returns to auto, and it must not be backfilled.
+ * re-sends that material after the owner returns to auto, and it must not be backfilled —
+ * however long after the period the replay arrives (a client offline for the whole period,
+ * or a transcript cursor reset).
  *
- * The timestamp comes from the client, so it is used only while it is plausible; one the server
- * cannot parse, or one further than two days from server time, falls back to the server's own
- * receipt time. Live capture therefore never suffers from a client clock, and a replayed batch
- * is still caught because every supported adapter stamps its transcript records.
- *
- * This is the secondary guard. The structural one in continuityEvent — a session this server
- * never recorded is not resumed into existence — needs no clock at all and covers the whole
- * replay case, because a manual period never creates sessions here. */
+ * A message is refused when either the server's receipt time or its own parseable stamp lies
+ * inside a manual period. Any past stamp counts, so an old replay is caught; a stamp more than two
+ * days in the future is ignored, and the id ledger in continuityEvent covers that skew. The
+ * trade-off is in the safe direction: a client clock running days slow can lose live turns whose
+ * wrong stamps land in a closed manual period. A record with no stamp, or one the server cannot
+ * parse, is judged by receipt time only; both supported adapters stamp their records. */
 export function duringManual(workspace:string,agent:string) {
   const spans=manualSpans(workspace,agent);
   if(!spans.length)return ()=>false;
+  const inSpan=(at:number)=>spans.some(([from,to])=>at>=from&&at<to);
   return (timestamp?:string|null)=>{
-    const now=Date.now(),parsed=timestamp?Date.parse(timestamp):Number.NaN;
-    const at=Number.isFinite(parsed)&&Math.abs(parsed-now)<=TRUSTED_CLOCK_MS?parsed:now;
-    return spans.some(([from,to])=>at>=from&&at<to);
+    // Canonical UTC only: Date.parse would read a stamp without a zone in the server's own TZ.
+    const now=Date.now();let parsed=Number.NaN;
+    if(timestamp)try{parsed=toEpochMs(timestamp,'timestamp');}catch{/* unparseable: receipt time only */}
+    return inSpan(now)||(Number.isFinite(parsed)&&parsed<=now+TRUSTED_CLOCK_MS&&inSpan(parsed));
   };
 }
 
@@ -152,7 +161,7 @@ export function canManagePolicy(workspace:string,actor:string) {
   return !!row;
 }
 
-export interface SetMemoryPolicyInput {workspace_id:string;agent_id:string;mode:MemoryMode;actor_id:string;expected_revision?:number}
+interface SetMemoryPolicyInput {workspace_id:string;agent_id:string;mode:MemoryMode;actor_id:string;expected_revision?:number}
 
 /** Atomic and idempotent. Repeating a command that already holds returns the current
  * state instead of asking for confirmation again or inflating the revision. */
@@ -183,8 +192,8 @@ export function resolveAgentByName(workspace:string,name:string):MemoryPolicy {
   throw new QoopiaError('CONFLICT',`Several agents are named ${name}. Use the agent id: ${matches.map(m=>m.id).join(', ')}`);
 }
 
-export type MemoryChannelState='working'|'manual'|'waiting'|'behind'|'sign_in'|'error';
-export interface AgentMemoryStatus {mode:MemoryMode;revision:number;state:MemoryChannelState;last_capture_at:string|null;last_summary_at_ms:number|null;pending_sessions:number;pending_saves:number;error_code:string|null}
+type MemoryChannelState='working'|'manual'|'waiting'|'behind'|'sign_in'|'error';
+interface AgentMemoryStatus {mode:MemoryMode;revision:number;state:MemoryChannelState;last_capture_at:string|null;last_summary_at_ms:number|null;pending_sessions:number;pending_saves:number;error_code:string|null}
 
 /** The wanted mode and what the channel actually does, side by side: auto with a broken
  * channel must not look healthy. Counts and timestamps only — never conversation content. */

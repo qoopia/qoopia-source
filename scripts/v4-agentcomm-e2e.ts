@@ -108,6 +108,7 @@ try {
   process.env[`${prefix}_URL`] = `http://127.0.0.1:${port}/hooks/e2e`;
   process.env[`${prefix}_SECRET`] = SECRET;
   process.env[`${prefix}_AUTH`] = "hmac";
+  process.env[`${prefix}_AGENT_ID`] = recipient.id;
 
   const deliveredAt = (messageId: string): string | null => {
     const row = connection.db.prepare(

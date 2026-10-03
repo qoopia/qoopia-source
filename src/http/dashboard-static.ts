@@ -6,7 +6,7 @@ import { securityHeaders } from "./respond.ts";
 
 // ---------- Dashboard ----------
 
-export let dashboardHtml: string | null = null;
+let dashboardHtml: string | null = null;
 export let dashboardVersion = "";
 
 export function serveDashboard(req: IncomingMessage, res: ServerResponse) {
@@ -29,6 +29,9 @@ export function serveDashboard(req: IncomingMessage, res: ServerResponse) {
     "cache-control": "no-cache",
     "x-qoopia-dashboard-version": dashboardVersion,
     ...securityHeaders(req),
+    // A native form POST from this page (the owner-code form before dashboard.js attaches)
+    // then carries its real Origin instead of `null`; other origins still get no Referer.
+    "referrer-policy": "same-origin",
   });
   res.end(req.method === "HEAD" ? undefined : dashboardHtml);
 }

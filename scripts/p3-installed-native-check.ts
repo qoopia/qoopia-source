@@ -99,7 +99,7 @@ try{
       server=Bun.spawn([binary,'start',...common],{cwd:outer,env,stdout:'ignore',stderr:'ignore'});
       for(let i=0;i<100;i++){
         if(server.exitCode!==null)throw new Error('Installed server exited');
-        try{if((await fetch(`http://127.0.0.1:${current.port}/health`)).ok)break;}catch{}
+        try{if((await fetch(`http://127.0.0.1:${current.port}/health`)).ok)break;}catch{/* Not listening yet; retry until the deadline. */}
         if(i===99)throw new Error('Installed server timeout');await Bun.sleep(50);
       }
       const {requestOwnerLogin}=await import('../src/delivery/owner-control.ts');
@@ -132,7 +132,7 @@ try{
       const {StreamableHTTPClientTransport}=await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
       for(let i=0;i<100;i++){
         if(server.exitCode!==null)throw new Error('Installed server exited');
-        try{if((await fetch(`http://127.0.0.1:${current.port}/health`)).ok)break;}catch{}
+        try{if((await fetch(`http://127.0.0.1:${current.port}/health`)).ok)break;}catch{/* Not listening yet; retry until the deadline. */}
         if(i===99)throw new Error('Installed server timeout');await Bun.sleep(50);
       }
       for(const kind of ['claude_code','codex'] as const){

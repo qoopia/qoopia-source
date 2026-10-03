@@ -30,7 +30,7 @@
         <string>canonical</string>
         <key>QOOPIA_AUTO_MIGRATE</key>
         <string>false</string>
-        <!-- QRERUN-001: required. /oauth/authorize will refuse to start without it. -->
+        <!-- Required (fail-closed, 32+ bytes): keys dashboard session cookies when QOOPIA_SESSION_SECRET is unset. -->
         <key>QOOPIA_ADMIN_SECRET</key>
         <string>{{QOOPIA_ADMIN_SECRET}}</string>
     </dict>

@@ -47,6 +47,11 @@ const runs = Number(arg("--runs", "3"));
 const requestedSeed = Number(arg("--seed", "400"));
 const output = arg("--json", "artifacts/v4/evidence/P09/report.json");
 const holdoutOnly = enabled("--holdout");
+// Background notes per scale; the default 50*scale is a toy size (F-308).
+const backgroundNotes = process.argv.includes("--background-notes") ? Number(arg("--background-notes", "")) : null;
+if (backgroundNotes !== null && !(Number.isInteger(backgroundNotes) && backgroundNotes >= 0 && backgroundNotes <= 50_000)) {
+  throw new Error("--background-notes must be 0..50000");
+}
 if (baselineName !== "v3") throw new Error("only the frozen v3 baseline is supported");
 if (!new Set(["v4-flags-off", "v4-flags-on"]).has(candidateName)) throw new Error("unsupported candidate");
 if (!Number.isInteger(runs) || runs < 3 || runs > 20) throw new Error("--runs must be 3..20");
@@ -256,7 +261,7 @@ async function executeVariant(name: string, seeded: SeededCase[], workspaceId: s
     const invoke = () => isBaseline ? recallBaseline(params) : recall(params);
     await invoke();
     const latencies: number[] = [];
-    let response: Awaited<ReturnType<typeof recallBaseline>> | null = null;
+    let response: Awaited<ReturnType<typeof invoke>> | null = null;
     for (let run = 0; run < runs; run++) {
       const started = performance.now();
       response = await invoke();
@@ -322,8 +327,15 @@ try {
     const agent = createAgent({ name: `p09-agent-${scale}`, workspaceSlug: workspace.slug });
     const sibling = createAgent({ name: `p09-sibling-${scale}`, workspaceSlug: workspace.slug });
     const seeded = cases.map((item, index) => seedCase(item, index, scale, workspace.id, agent, sibling));
-    for (let index = 0; index < 50 * scale; index++) {
-      createNote({ workspace_id: workspace.id, agent_id: agent.id, text: `deterministic background row ${scale} ${index}`, type: "memory" });
+    // Deterministic 0.4-2.3 KB notes over a skewed 5,000-word vocabulary, so recall pays
+    // realistic per-row costs. 32-bit LCG (Numerical Recipes constants), seeded per scale.
+    let state = 400 + scale;
+    const random = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+    const syllables = ["ka", "lo", "mi", "ra", "ne", "to", "su", "vi", "de", "po", "an", "er", "ix", "ul", "ob", "ze", "qu", "ha", "ji", "we"];
+    const vocabulary = Array.from({ length: 5000 }, (_, i) => Array.from({ length: 2 + (i % 3) }, () => syllables[Math.floor(random() * 20)]).join("") + (i % 7));
+    for (let index = 0; index < (backgroundNotes ?? 50 * scale); index++) {
+      const words = Array.from({ length: 60 + Math.floor(random() * 300) }, () => vocabulary[Math.floor(random() ** 3 * 5000)]).join(" ");
+      createNote({ workspace_id: workspace.id, agent_id: agent.id, text: `deterministic background row ${scale} ${index} ${words}`, type: "memory" });
     }
     const baseline = await executeVariant("v3", seeded, workspace.id, agent.id);
     const candidate = await executeVariant(candidateName, seeded, workspace.id, agent.id);
@@ -332,7 +344,7 @@ try {
 
     setCandidateFlags(false);
     const fallbackCase = seeded.find((item) => item.category === "exact_lexical")!;
-    const priorEndpoint = process.env.QOOPIA_EMBED_ENDPOINT;
+    const priorEndpoint: string | undefined = process.env.QOOPIA_EMBED_ENDPOINT;
     process.env.QOOPIA_EMBED_ENDPOINT = "http://127.0.0.1:1/api/embed";
     const fallback = await recallBaseline({
       workspace_id: workspace.id, caller_agent_id: agent.id, is_admin: false,
@@ -355,7 +367,7 @@ try {
     generated_at: new Date().toISOString(),
     network: "offline-loopback-fixture-only",
     corpus: { format: corpus.format, version: corpus.version, sha256: sha256(corpusText), seed: corpus.seed, holdout_only: holdoutOnly, cases: cases.length },
-    comparison: { baseline: baselineName, candidate: candidateName, scales, runs, warmups_per_case: 1 },
+    comparison: { baseline: baselineName, candidate: candidateName, scales, runs, warmups_per_case: 1, background_notes: backgroundNotes ?? "50*scale" },
     environment: { bun: Bun.version, platform: platform(), arch: arch(), cpus: cpus().length, cpu_model: cpus()[0]?.model ?? "unknown" },
     qualification_coverage: corpus.qualification_cases,
     extraction: {

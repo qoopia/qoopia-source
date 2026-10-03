@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {z} from 'zod';
-import {hash,safePath,readJsonBytes,durableWrite,privateDirectory} from '../utils/fs.ts';
+import {hash,safePath,readJsonBytes,durableWrite,privateDirectory,hasNulOrNewline} from '../utils/fs.ts';
 import {stdioBindingSchema,stdioFolder} from './stdio-oauth.ts';
 
 const receiptSchema=z.object({format:z.literal('qoopia-desktop-launcher/1'),binding_hash:z.string().regex(/^[a-f0-9]{64}$/),
@@ -18,7 +18,7 @@ function owned(file:string){
 export function prepareDesktopLauncher(root:string,raw:unknown,binary:string,apply=false,allowTestFixture=false) {
   const binding=stdioBindingSchema.parse(raw),folder=stdioFolder(root,binding),file=path.join(folder,'binding.json'),launcher=path.join(folder,'launch.sh');
   root=safePath(root);binary=safePath(binary);
-  if(/[\0\r\n]/.test(root+binary))throw new Error('Invalid adapter installation path');
+  if(hasNulOrNewline(root+binary))throw new Error('Invalid adapter installation path');
   const bindingBytes=JSON.stringify(binding),bindingHash=hash(bindingBytes),receiptFile=path.join(folder,'desktop-launcher.json');
   const receipt=fs.existsSync(receiptFile)?receiptSchema.parse(JSON.parse(owned(receiptFile).toString())):null;
   if(receipt&&receipt.binding_hash!==bindingHash)throw new Error('Local adapter belongs to another connection');

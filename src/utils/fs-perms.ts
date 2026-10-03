@@ -9,7 +9,18 @@
  * (022) backup files could end up world-readable. These helpers fix that.
  */
 import fs from "node:fs";
-import { logger } from "./logger.ts";
+
+/**
+ * Apply the private mode, then fail closed if group/other bits remain. A path
+ * we cannot chmod (another uid, odd mount) is accepted only if already private.
+ */
+function tighten(target: string, privateMode: number): void {
+  try { fs.chmodSync(target, privateMode); } catch { /* the mode check below decides */ }
+  const mode = fs.statSync(target).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    throw new Error(`${target} has mode 0${mode.toString(8)}, but it holds secrets and must not be group/other accessible. Run: chmod 0${privateMode.toString(8)} ${target}`);
+  }
+}
 
 /**
  * Create dir (recursive) and set mode 0700. Idempotent.
@@ -18,13 +29,7 @@ import { logger } from "./logger.ts";
  */
 export function ensureSafeDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(dir, 0o700);
-  } catch (err) {
-    logger.warn(`ensureSafeDir: chmod 0700 failed for ${dir}`, {
-      error: String(err),
-    });
-  }
+  tighten(dir, 0o700);
 }
 
 /**
@@ -32,40 +37,5 @@ export function ensureSafeDir(dir: string): void {
  * tokens, or hashes (e.g., backup .db, exported snapshots).
  */
 export function ensureSafeFile(file: string): void {
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch (err) {
-    logger.warn(`ensureSafeFile: chmod 0600 failed for ${file}`, {
-      error: String(err),
-    });
-  }
+  tighten(file, 0o600);
 }
-
-/**
- * Audit a directory's mode bits. Returns true if it is 0700 (or stricter for
- * the group/other bits). Logs a warning for anything looser. Used at startup
- * to surface unsafe pre-existing installs that predate this hardening.
- *
- * Note: we only warn — we do NOT auto-chmod here, because the dir might have
- * been intentionally widened by the operator. The dedicated ensureSafeDir
- * call paths (connection.ts, install.ts) handle the create-time tightening.
- */
-export function auditDirMode(dir: string): boolean {
-  try {
-    const st = fs.statSync(dir);
-    const mode = st.mode & 0o777;
-    if ((mode & 0o077) !== 0) {
-      logger.warn(
-        `permission audit: ${dir} mode is 0${mode.toString(8)}, expected 0700 — ` +
-          `group/other bits are set; secrets and backups may be readable by ` +
-          `other local users. Run: chmod 0700 ${dir}`,
-      );
-      return false;
-    }
-    return true;
-  } catch {
-    // Dir doesn't exist yet (cold start before ensureSafeDir) — skip silently.
-    return true;
-  }
-}
-

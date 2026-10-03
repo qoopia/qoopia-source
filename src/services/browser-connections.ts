@@ -19,7 +19,7 @@ export function browserAgent(name:'GPT'|'Claude') {
       {id:string;name:string;workspace_id:string;type:string;tool_profile:string}|null;
     const existing=read();if(existing)return existing;
     // An explicitly revoked identity must not be silently recreated by a public request.
-    if(db.query('SELECT 1 FROM agents WHERE workspace_id=? AND name=?').get(owner.workspace_id,name))return null;
+    if(db.query('SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)').get(owner.workspace_id,name))return null;
     const agent=createAgent({name,workspaceSlug:owner.slug,type:'standard'});
     db.query("UPDATE agents SET tool_profile='no-destructive',legacy_skill_access=0 WHERE id=?").run(agent.id);
     return read();

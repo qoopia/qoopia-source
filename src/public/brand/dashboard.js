@@ -20,13 +20,16 @@
   const main = $('#main');
   const crumb = $('#crumb');
   $('.q-skip').onclick=e=>{e.preventDefault();main.focus();};
+  // Until the session check answers, show a neutral status instead of the sign-in card (F-324).
+  $('#loginView').style.display = 'none';
+  document.body.insertAdjacentHTML('afterbegin', '<p class="loading" id="sessionCheck" role="status">' + QI.msg('Checking your session…') + '</p>');
 
   // ---------- API ----------
   async function api(path) {
     const r = await fetch(BASE + path, { credentials: 'same-origin', signal: AbortSignal.timeout(15000) });
     if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error_description || data.error?.message || data.error || ('HTTP ' + r.status));
+    if (!r.ok) throw Object.assign(new Error(data.error_description || data.error?.message || data.error || ('HTTP ' + r.status)), { status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 });
     return data;
   }
   async function apiWrite(path, body) {
@@ -37,7 +40,7 @@
     });
     if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error_description || ('HTTP ' + r.status));
+    if (!r.ok) throw Object.assign(new Error(data.error_description || ('HTTP ' + r.status)), { status: r.status });
     return data;
   }
 
@@ -62,9 +65,11 @@
     try{const data=await identityPost('start',{method:'account',language:QI.language});const url=new URL(data.accountUrl);if(url.origin!=='https://auth.qoopia.ai'||url.pathname!=='/profile')throw new Error(QI.msg('Sign-in is temporarily unavailable'));location.assign(url.href);}catch(e){loginError(e);}
   }
   $('#accountLoginBtn').onclick=startAccountLogin;
-  async function awaitEmailConfirmation(googleUrl,openGoogle=false,code=null){
+  async function awaitEmailConfirmation(googleUrl,openGoogle=false,code=null,confirmCode=null){
     const poll=++loginPoll;
     $('#emailLoginStatus').textContent=QI.msg(code?'Opening your dashboard…':googleUrl?"Choose your Google account in the browser, then confirm the email from Qoopia. Return here to finish signing in.":"Confirm the new email, then return here. This page will open your workspace automatically.");
+    // F-125: the confirmation page asks for this code, so only this screen can finish the sign-in.
+    if(confirmCode){const c=document.createElement('strong');c.textContent=confirmCode;$('#emailLoginStatus').append(' '+QI.msg("When the confirmation page asks, enter this code:")+' ',c);}
     if(googleUrl){const a=document.createElement('a');a.href=googleUrl;a.target='_blank';a.rel='noopener';a.textContent=QI.msg("Choose your Google account");$('#emailLoginStatus').append(' ',a);if(openGoogle)a.click();}
     const cancel=document.createElement('button');cancel.type='button';cancel.textContent=QI.msg("Cancel sign-in");cancel.onclick=()=>{++loginPoll;loginAbort?.abort();$('#loginView').classList.remove('account-connecting');$('#emailLoginStatus').textContent=QI.msg("Sign-in cancelled. You can try again.");$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;};$('#emailLoginStatus').append(' ',cancel);
     for(let i=0;i<240&&poll===loginPoll;i++){
@@ -87,14 +92,14 @@
     try{
       const data=await identityPost('start',{method,language:QI.language,...(method==='email'?{email}:{})});
       if(data.googleUrl&&popup){popup.location.replace(data.googleUrl);popupNavigated=true;}
-      await awaitEmailConfirmation(data.googleUrl,!!data.googleUrl&&!popup);
+      await awaitEmailConfirmation(data.googleUrl,!!data.googleUrl&&!popup,null,data.code);
     }catch(e){if(popup&&!popupNavigated&&!popup.closed)popup.close();if(!controller.signal.aborted)loginError(e);}
     finally{if(loginAbort===controller){$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;}}
   }
   $('#emailLoginForm').onsubmit=e=>{e.preventDefault();startEmailLogin('email');};
   $('#googleLoginBtn').onclick=()=>startEmailLogin('google');
-  function showLogin() { chat?.dispose();chat=null;localWorkspace=null; $('#loginView').style.display = 'flex'; $('#appView').style.display = 'none'; pollFn = null; }
-  function showApp() { $('#loginView').style.display = 'none'; $('#appView').style.display = 'block'; }
+  function showLogin() { chat?.dispose();chat=null;localWorkspace=null; $('#sessionCheck')?.remove(); $('#loginView').style.display = 'flex'; $('#appView').style.display = 'none'; pollFn = null; }
+  function showApp() { $('#sessionCheck')?.remove(); $('#loginView').style.display = 'none'; $('#appView').style.display = 'block'; }
   function consumeSafeNext() {
     const next = new URLSearchParams(window.location.search).get('next') || '';
     if (!next.startsWith('/api/dashboard/oauth-consent')) return false;
@@ -136,7 +141,7 @@
   $('#logoutBtn').onclick = async () => {
     loginPoll++;
     try {
-      const r=await fetch(BASE + '/api/dashboard/logout', { method: 'POST', credentials: 'same-origin' });
+      const r=await fetch(BASE + '/api/dashboard/logout', { method: 'POST', credentials: 'same-origin', headers: { 'X-Qoopia-CSRF': '1' } });
       if(!r.ok)throw new Error((QI.msg("Could not sign out. Please try again.")));
       showLogin();
     }catch(e){alert(e.message||(QI.msg("Could not sign out. Please try again.")));}
@@ -186,11 +191,12 @@
     return 'other';
   }
   function initial(name) { return (name || '?').charAt(0).toUpperCase(); }
+  // Activity in words, appended to a meta line; the old dots were identical and hover-only (F-322).
   function liveStatus(iso) {
     if (!iso) return '';
     const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-    if (diff < 90) return ("<span class=\"live-dot\" title=\"" + QI.msg("active now") + "\"></span>");
-    if (diff < 600) return ("<span class=\"recent-dot\" title=\"" + QI.msg("active recently") + "\"></span>");
+    if (diff < 90) return ' · ' + QI.msg("active now");
+    if (diff < 600) return ' · ' + QI.msg("active recently");
     return '';
   }
   async function copyText(el, text) {
@@ -207,6 +213,31 @@
   function actionStyle(action) {
     const paths=action==='created'?'<path d="M12 5v14M5 12h14"/>':action==='deleted'?'<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>':action.startsWith('agent_')?'<path d="M3 5h18v14H3zM3 5l9 8 9-8"/>':'<path d="m5 12 4 4L19 6"/>';
     return {icon:lineIcon(paths),color:'var(--text2)'};
+  }
+
+  // Polled lists are rewritten only when their markup changed, and the row a keyboard user
+  // was on (its data-id, else its position) keeps focus across the rewrite (F-313).
+  function patch(el, html) {
+    if (!el || el.html === html && el.firstChild === el.htmlStart) return; // Same markup, not overwritten since.
+    const focused = el.contains(document.activeElement) ? document.activeElement : null;
+    const rows = () => [...el.querySelectorAll('button,a[href]')], id = focused?.dataset.id, nth = focused ? rows().indexOf(focused) : -1;
+    el.innerHTML = el.html = html; el.htmlStart = el.firstChild;
+    if (focused) (id && el.querySelector('[data-id="' + CSS.escape(id) + '"]') || rows()[nth])?.focus({ preventScroll: true });
+  }
+
+  // ---------- Errors ----------
+  // A failed load says what failed and why in words and offers Retry; codes stay off the page (F-323).
+  function errReason(e) {
+    if (e?.status === 429) return QI.msg('Too many requests. Try again in {s} s.', { s: e.retryAfter || 60 });
+    if (e?.status) return QI.msg('The server could not complete the request.');
+    return QI.msg('Could not reach the server. Check your connection.');
+  }
+  function errBox(el, what, retry, e) {
+    if (!el || e?.message === 'unauthorized') return;
+    if (!e?.status) setConn(false); // Only an unreachable server is Offline; a 429 or 5xx answered (F-311).
+    el.classList.remove('loading', 'empty');
+    el.innerHTML = '<div class="err" style="grid-column:1/-1">' + what + ' ' + errReason(e) + ' <button type="button" class="btn">' + QI.msg('Retry') + '</button></div>';
+    el.querySelector('button').onclick = retry;
   }
 
   // ---------- Navigation ----------
@@ -251,16 +282,27 @@
   function go(page) {
     if(page==='my-agent'){chat?.open();return;}
     if(page!=='profile'&&!(page==='owner'&&serviceOwner)&&!NAV.some(n=>n.id===page))return;
-    try{localStorage.setItem('qoopia.dashboard.page',page);}catch{}
+    try{localStorage.setItem('qoopia.dashboard.page',page);}catch{/* Storage unavailable (private mode or blocked); continue without persistence. */}
     history.pushState(null,'',location.pathname+location.search+'#'+(page==='work'?'memory':page));
     state={page:pageFromHash(),drill:null};Promise.resolve(route()).then(()=>{if(document.contains(main))main.focus({preventScroll:true});});
   }
   window.addEventListener('hashchange',()=>{if($('#appView').style.display!=='none'){state={page:pageFromHash(),drill:null};Promise.resolve(route()).then(()=>{if(document.contains(main))main.focus({preventScroll:true});});}});
 
   function setCrumb(html) { crumb.innerHTML = html;document.title=QI.resolve(crumb.textContent)+' · Qoopia'; }
+  window.addEventListener('qoopia:language',()=>{document.title=crumb.textContent+' · Qoopia';});
 
   // ---------- Router ----------
-  function route(force) {
+  async function route(force) {
+    // Refresh drops cached agent data; the open agent card is a snapshot of that list.
+    if (force) {
+      agentsCache = null;
+      const drill = state.drill;
+      if (drill?.kind === 'agent') {
+        try { const fresh = ((await api('/api/dashboard/agents')).items || []).find(x => x.id === drill.agent.id); if (fresh) drill.agent = fresh; }
+        catch (e) { if (e.message === 'unauthorized') return; /* Otherwise keep the snapshot; the tab body reports the failure. */ }
+        if (state.drill !== drill) return; // The user moved on while this loaded.
+      }
+    }
     pollFn = null;
     renderNav();
     if (state.drill) {
@@ -288,7 +330,7 @@
   });
 
   // single global poll loop, paused when tab hidden
-  let lastPoll=0,pollRunning=false;async function pollPage(){if(pollRunning||!pollFn)return;pollRunning=true;try{await pollFn();}catch{}finally{pollRunning=false;}}setInterval(() => { if (!document.hidden && pollFn && Date.now()-lastPoll>=5000){lastPoll=Date.now();void pollPage();} }, 1000);
+  let lastPoll=0,pollRunning=false;async function pollPage(){if(pollRunning||!pollFn)return;pollRunning=true;try{await pollFn();}catch{/* Each page's poll shows its own failure; this only keeps the loop alive. */}finally{pollRunning=false;}}setInterval(() => { if (!document.hidden && pollFn && Date.now()-lastPoll>=5000){lastPoll=Date.now();void pollPage();} }, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && pollFn) void pollPage(); });
 
   // ================= FILES =================
@@ -308,10 +350,10 @@
     setCrumb(("<span style=\"color:var(--text)\">" + QI.msg("Files") + "</span>"));
     main.innerHTML =
       '<div class="panel">' +
-        ("<div class=\"panel-h\"><h3>" + QI.msg("My Files") + "</h3><span class=\"meta\">" + QI.msg("upload from phone or mac · any agent can read them") + "</span></div>") +
+        ("<div class=\"panel-h\"><h1>" + QI.msg("My Files") + "</h1><span class=\"meta\">" + QI.msg("upload from phone or mac · any agent can read them") + "</span></div>") +
         '<div class="filter-bar">' +
           '<select class="sel" id="fFolder" aria-label="Folder" data-i18n-aria-label="Folder"></select>' +
-          ("<input class=\"input-text\" id=\"fNewFolder\" aria-label=\"New folder\" data-i18n-aria-label=\"New folder\" placeholder=\"" + QI.msg("or type a new folder") + "\" style=\"max-width:180px\">") +
+          ("<input class=\"input-text\" id=\"fNewFolder\" maxlength=\"200\" aria-label=\"New folder\" data-i18n-aria-label=\"New folder\" placeholder=\"" + QI.msg("or type a new folder") + "\" style=\"max-width:180px\">") +
         '</div>' +
         '<label id="fDrop" style="display:block;text-align:center;padding:22px;margin:10px 0;border:1px dashed var(--border);border-radius:8px;cursor:pointer">' +
           '<input type="file" id="fInput" multiple style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden">' +
@@ -372,17 +414,28 @@
       ).join('');
       list.querySelectorAll('[data-del]').forEach(b => b.onclick = () => filesDelete(b.getAttribute('data-del')));
       setConn(true);
-    } catch (e) { if (e.message !== 'unauthorized') { list.className = 'err'; list.textContent = (QI.msg("Failed to load.")); setConn(false); } }
+    } catch (e) { errBox(list, QI.msg("Failed to load files."), filesLoadList, e); }
+  }
+  // A refused batch stores nothing: the server names the reason, the dashboard words it.
+  function uploadRefusal(j) {
+    if (j && j.reason === 'empty_file') return QI.msg('Nothing was uploaded: {file} is empty.', { file: j.file });
+    if (j && j.reason === 'invalid_filename') return QI.msg('Nothing was uploaded: rename {file} to at most 180 characters, without control or text-direction characters.', { file: j.file });
+    if (j && j.reason === 'invalid_folder') return QI.msg('Nothing was uploaded: use a folder name of at most 200 characters, without control or text-direction characters, backslashes, or empty, “.” or “..” parts.');
+    return '';
   }
   function filesUpload(fileList) {
     if (!fileList || !fileList.length) return;
     const folder = filesCurrentFolder();
     const prog = $('#fProg'); if (prog) prog.textContent = (QI.msg("Uploading") + " ") + fileList.length + (" " + QI.msg("file(s)…"));
+    // Bun's multipart parser drops an empty file's name, so name it here before sending.
+    const empty = [].find.call(fileList, f => !f.size);
+    if (empty) { if (prog) prog.textContent = uploadRefusal({ reason: 'empty_file', file: empty.name }); return; }
     const fd = new FormData();
     fd.append('folder', folder);
     for (const f of fileList) fd.append('file', f);
     const xhr = new XMLHttpRequest();
     xhr.open('POST', BASE + '/api/dashboard/files');
+    xhr.setRequestHeader('X-Qoopia-CSRF', '1');
     xhr.withCredentials = true;
     xhr.upload.onprogress = (e) => { if (e.lengthComputable && prog) prog.textContent = (QI.msg("Uploading…") + " ") + Math.round(e.loaded / e.total * 100) + '%'; };
     xhr.onload = () => {
@@ -393,7 +446,7 @@
         const nf = $('#fNewFolder'); if (nf) nf.value = '';
         filesLoadFolders().then(() => { const sel = $('#fFolder'); if (sel && [].some.call(sel.options, o => o.value === folder)) { sel.value = folder; } filesLoadList(); });
       } else if (xhr.status === 413) { if (prog) prog.textContent = QI.msg('File too large (maximum 100 MB).'); }
-      else { var d = ''; try { var j = JSON.parse(xhr.responseText); d = ' — ' + (j.detail || j.error || ''); } catch (e) {} if (prog) prog.textContent = QI.msg('Could not load (') + xhr.status + ')' + d; }
+      else { var d = ''; try { var j = JSON.parse(xhr.responseText); d = ' — ' + (j.detail || j.error || ''); } catch { /* Non-JSON error body; the status code is shown alone. */ } if (prog) prog.textContent = uploadRefusal(j) || QI.msg('Could not load (') + xhr.status + ')' + d; }
     };
     xhr.onerror = () => { if (prog) prog.textContent = (QI.msg("Upload error.")); };
     xhr.send(fd);
@@ -401,7 +454,7 @@
   async function filesDelete(id) {
     if(!window.confirm(QI.resolve(QI.msg('Delete this file? This cannot be undone.'))))return;
     try {
-      const r = await fetch(BASE + '/api/dashboard/files/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin' });
+      const r = await fetch(BASE + '/api/dashboard/files/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin', headers: { 'X-Qoopia-CSRF': '1' } });
       if (r.status === 401) { showLogin(); return; }
       if (r.status === 403) { alert((QI.msg("Only the owner can delete."))); return; }
       await filesLoadList();
@@ -473,11 +526,7 @@
       paintFeed(act.items, $('#ccFeed'));
       const sub = $('#feedSub'); if (sub) sub.textContent = (act.items || []).length + (" " + QI.msg("recent events"));
       paintAgentsBoard($('#ccAgents'), agentsCache, true);
-    } catch (e) {
-      setConn(false);
-      const cards=$('#ccCards'); if(cards) cards.innerHTML=("<div class=\"err\" style=\"grid-column:1/-1\">" + QI.msg("Could not load the overview.") + " ")+esc(e.message)+(" <button type=\"button\" id=\"overviewRetry\">" + QI.msg("Retry") + "</button></div>");
-      const retry=$('#overviewRetry'); if(retry) retry.onclick=fillOverview;
-    }
+    } catch (e) { errBox($('#ccCards'), QI.msg("Could not load the overview."), fillOverview, e); }
   }
 
   function paintCards(ov) {
@@ -509,13 +558,13 @@
 
   function paintFeed(items, el) {
     if (!el) return;
-    if (!items || !items.length) { el.innerHTML = ("<div class=\"empty\">" + QI.msg("No activity yet.") + "</div>"); return; }
-    el.innerHTML = items.map(it => {
+    if (!items || !items.length) { patch(el, "<div class=\"empty\">" + QI.msg("No activity yet.") + "</div>"); return; }
+    patch(el, items.map(it => {
       const st = actionStyle(it.action);
       const who = it.agent_name || (it.agent_id ? it.agent_id.slice(0, 8) : 'system');
       const summary = it.summary || (it.action + (it.entity_type ? ' · ' + it.entity_type : ''));
       const agentChip = it.agent_id
-        ? '<span class="chip click" data-aid="' + esc(it.agent_id) + '">' + esc(who) + '</span>'
+        ? '<button type="button" class="chip click" style="border:0;font-family:inherit" data-aid="' + esc(it.agent_id) + '">' + esc(who) + '</button>'
         : '<span class="chip">' + esc(who) + '</span>';
       return '<div class="frow">' +
         '<div class="fic" style="color:' + st.color + '">' + st.icon + '</div>' +
@@ -527,7 +576,7 @@
             (it.origin_host ? '<span class="ftime" style="opacity:.6">@' + esc(it.origin_host) + '</span>' : '') +
           '</div>' +
         '</div></div>';
-    }).join('');
+    }).join(''));
     el.querySelectorAll('[data-aid]').forEach(c => {
       c.onclick = () => drillAgentById(c.getAttribute('data-aid'));
     });
@@ -552,9 +601,10 @@
     return '<button type="button" class="agent-card" data-id="' + esc(a.id) + '">' +
       '<div class="agent-head">' +
         '<div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
-        '<div style="min-width:0"><div class="agent-name">' + liveStatus(lastIso) + esc(a.name) + '</div>' +
-        '<div class="agent-meta">' + esc(a.type || 'agent') + ' · ' + fmtTime(lastIso) + '</div></div>' +
+        '<div style="min-width:0"><div class="agent-name">' + esc(a.name) + '</div>' +
+        '<div class="agent-meta">' + esc(a.type || 'agent') + ' · ' + fmtTime(lastIso) + liveStatus(lastIso) + '</div></div>' +
       '</div>' + coverageLine(a) +
+      (a.shared_context === false ? '<div class="agent-meta coverage-line"><span aria-hidden="true">◐</span> ' + esc(QI.msg("Own context only")) + '</div>' : '') +
       '<div class="agent-stats">' +
         '<div class="stat"><div class="stat-val">' + fmtNum(a.sessions_count) + ("</div><div class=\"stat-lbl\">" + QI.msg("Sessions") + "</div></div>") +
         '<div class="stat"><div class="stat-val">' + fmtNum(a.messages_count) + ("</div><div class=\"stat-lbl\">" + QI.msg("Messages") + "</div></div>") +
@@ -563,14 +613,17 @@
   }
   function paintAgentsBoard(el, items, compact) {
     if (!el) return;
-    if (!items || !items.length) { el.innerHTML = ("<div class=\"empty\" style=\"grid-column:1/-1\">" + QI.msg("No agents.") + "</div>"); return; }
+    if (!items || !items.length) { patch(el, "<div class=\"empty\" style=\"grid-column:1/-1\">" + QI.msg("No agents.") + "</div>"); return; }
     const live = items.filter(a => !isInfra(a)).sort(byRecent);
     const sys = items.filter(a => isInfra(a)).sort(byRecent);
-    let html = live.map(agentCard).join('');
+    // Overview is a summary: the 8 most recent agents and a link to the rest (F-325).
+    const shown = compact ? live.slice(0, 8) : live;
+    let html = shown.map(agentCard).join('');
+    if (live.length > shown.length) html += '<a class="btn-more" href="#agents" style="grid-column:1/-1;text-align:center;text-decoration:none">' + QI.msg('+{n} more agents', { n: live.length - shown.length }) + '</a>';
     if (!compact && sys.length) {
       html += ("</div><div class=\"section-title\" style=\"margin-top:28px\">" + QI.msg("System & integration agents") + "</div><div class=\"agent-grid system-grid\">") + sys.map(agentCard).join('');
     }
-    el.innerHTML = html;
+    patch(el, html);
     el.querySelectorAll('.agent-card').forEach(c => {
       c.onclick = () => drillAgentById(c.getAttribute('data-id'));
     });
@@ -578,7 +631,7 @@
   }
   async function renderAgentsPage() {
     setCrumb(("<span style=\"color:var(--text)\">" + QI.msg("Agents") + "</span>"));
-    main.innerHTML = ("<div class=\"section-title\">" + QI.msg("Your agents · open their notes and sessions") + "</div><div id=\"agentsWrap\"><div class=\"loading\">" + QI.msg("Loading agents…") + "</div></div>");
+    main.innerHTML = ("<h1 class=\"section-title\">" + QI.msg("Your agents · open their notes and sessions") + "</h1><div id=\"agentsWrap\"><div class=\"loading\">" + QI.msg("Loading agents…") + "</div></div>");
     try {
       const d = await api('/api/dashboard/agents');
       setConn(true); agentsCache = d.items;
@@ -589,7 +642,7 @@
         '<div class="agent-grid">' + (live.map(agentCard).join('') || ("<div class=\"empty\" style=\"grid-column:1/-1\">" + QI.msg("None") + "</div>")) + '</div>' +
         (sys.length ? ("<div class=\"section-title\" style=\"margin-top:30px; color:var(--text3)\">" + QI.msg("System & integration agents") + "</div><div class=\"agent-grid system-grid\">") + sys.map(agentCard).join('') + '</div>' : '');
       $('#agentsWrap').querySelectorAll('.agent-card').forEach(c => c.onclick = () => drillAgentById(c.getAttribute('data-id')));
-    } catch (e) { setConn(false); $('#agentsWrap').innerHTML = ("<div class=\"err\">" + QI.msg("Failed to load agents.") + "</div>"); }
+    } catch (e) { errBox($('#agentsWrap'), QI.msg("Failed to load agents."), renderAgentsPage, e); }
   }
 
   function drillAgentById(id) {
@@ -627,26 +680,53 @@
       return '<li><span aria-hidden="true">' + st[0] + '</span> <strong>' + esc(QI.msg(m.title)) + '</strong> — ' + esc(st[1]) +
         (m.reason ? '<br><span class="meta">' + esc(QI.msg(m.reason)) + ' ' + esc(QI.msg(m.action || '')) + '</span>' : '') + '</li>'; }).join('') + '</ul></details>';
   }
+  // ADR-020: one switch per agent. The steward and the owner have none (shared_context null):
+  // they always read the whole workspace. Only the owner gets the button.
+  function contextPanel(a) {
+    if (typeof a.shared_context !== 'boolean') return '';
+    const on = a.shared_context;
+    return '<section class="memory-panel" aria-labelledby="contextPanelTitle"><div><h3 id="contextPanelTitle">' + esc(QI.msg("Shared context")) + '</h3>' +
+      '<p class="memory-state">' + esc(on ? QI.msg("Reads the notes and conversations of every agent in this workspace.") : QI.msg("Reads only its own notes and conversations.")) + '</p>' +
+      '<p class="memory-note">' + esc(QI.msg("Private notes stay with their author, the steward and the owner. No agent reads another workspace.")) + '</p></div>' +
+      (a.can_switch_shared_context ? '<div class="memory-action"><button type="button" id="contextToggle" role="switch" aria-checked="' + on + '" aria-labelledby="contextPanelTitle" aria-describedby="contextResult">' +
+        esc(on ? QI.msg("On") : QI.msg("Off")) + '</button><p id="contextResult" role="status" aria-live="polite"></p></div>' : '') + '</section>';
+  }
+  function bindContextPanel(a) {
+    const button = $('#contextToggle'); if (!button) return;
+    button.onclick = async () => {
+      button.disabled = true; $('#contextResult').textContent = QI.msg("Saving…");
+      try {
+        const next = await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/shared-context', { enabled: !a.shared_context });
+        agentsCache = null; state.drill.agent = { ...a, shared_context: next.shared_context };
+        renderAgentDetail(); const done = $('#contextResult');
+        if (done) done.textContent = next.shared_context ? QI.msg("Done. This agent now reads the context of its sibling agents.") : QI.msg("Done. This agent now reads only its own context.");
+      } catch (e) {
+        button.disabled = false; const result = $('#contextResult');
+        if (result && e.message !== 'unauthorized') result.textContent = e.status === 403 ? QI.msg("Only the workspace owner can change this.") : QI.msg("Could not complete this.") + ' ' + e.message;
+      }
+    };
+  }
   function memoryPanel(a) {
     const m = a.memory; if (!m) return '';
     const st = memoryState(m.state) || memoryState('error'), auto = m.mode === 'auto';
-    return '<section class="memory-panel" aria-labelledby="memoryPanelTitle"><div><h3 id="memoryPanelTitle">' + esc(QI.msg("Session memory")) + '</h3>' +
+    return '<section class="memory-panel" aria-labelledby="memoryPanelTitle"><div><h2 id="memoryPanelTitle">' + esc(QI.msg("Session memory")) + '</h2>' +
       '<p class="memory-state"><span aria-hidden="true">' + st[0] + '</span> ' + esc(st[1]) + '</p>' +
       '<p class="memory-facts">' + esc(QI.msg("Last saved:")) + ' ' + (m.last_capture_at ? fmtTime(m.last_capture_at) : '—') + ' · ' +
         esc(QI.msg("Last summary:")) + ' ' + (m.last_summary_at_ms ? fmtTime(new Date(m.last_summary_at_ms).toISOString()) : '—') +
         (m.pending_sessions ? ' · ' + esc(QI.msg("Conversations awaiting a summary:")) + ' ' + fmtNum(m.pending_sessions) : '') + '</p>' +
       '<p class="memory-note">' + esc(auto ? QI.msg("New conversations are saved to Qoopia automatically.") : QI.msg("Nothing new is saved unless you ask. Existing memory stays available. The history kept by Claude, ChatGPT or Telegram is separate.")) + '</p></div>' +
-      '<div class="memory-action"><button type="button" id="memoryToggle" aria-describedby="memoryResult">' + esc(auto ? QI.msg("Switch to only on request") : QI.msg("Turn automatic saving on")) + '</button>' +
+      '<div class="memory-action"><button type="button" class="btn" id="memoryToggle" aria-describedby="memoryResult">' + esc(auto ? QI.msg("Switch to only on request") : QI.msg("Turn automatic saving on")) + '</button>' +
       '<p id="memoryResult" role="status" aria-live="polite"></p></div>' +
-      (m.pending_saves ? '<div class="memory-saves" id="memorySaves"><h4>' + esc(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(m.pending_saves) + '</h4></div>' : '') + '</section>';
+      (m.pending_saves ? '<div class="memory-saves" id="memorySaves"><h3>' + esc(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(m.pending_saves) + '</h3></div>' : '') + '</section>';
   }
   // The agent prepared these notes while it saves only on request; nothing is memory until the owner confirms.
   async function bindMemorySaves(a) {
     const host = $('#memorySaves'); if (!host) return;
-    let items; try { items = ((await api('/api/dashboard/memory-saves')).items || []).filter(x => x.agent_id === a.id); } catch { return; }
+    let items; try { items = ((await api('/api/dashboard/memory-saves')).items || []).filter(x => x.agent_id === a.id); }
+    catch (e) { host.insertAdjacentHTML('beforeend', '<div></div>'); const box = host.lastElementChild; errBox(box, QI.msg("Could not load the saves waiting for confirmation."), () => { box.remove(); void bindMemorySaves(a); }, e); return; }
     host.insertAdjacentHTML('beforeend', items.map(x => '<article data-save="' + esc(x.id) + '"><p class="meta">' + esc(x.operation === 'note_update' ? QI.msg("Change to an existing note") : (x.type || 'note')) +
       ' · ' + esc(QI.msg("Expires:")) + ' ' + fmtTimeFull(new Date(x.expires_at_ms).toISOString()) + '</p><pre>' + esc(x.text || '') + '</pre>' +
-      '<button type="button" data-accept="1">' + esc(QI.msg("Save to memory")) + '</button> <button type="button" data-accept="">' + esc(QI.msg("Decline")) + '</button></article>').join(''));
+      '<button type="button" class="btn primary" data-accept="1">' + esc(QI.msg("Save to memory")) + '</button> <button type="button" class="btn" data-accept="">' + esc(QI.msg("Decline")) + '</button></article>').join(''));
     host.querySelectorAll('button').forEach(button => button.onclick = async () => {
       const card = button.closest('article'), result = $('#memoryResult'), accept = !!button.dataset.accept;
       card.querySelectorAll('button').forEach(b => b.disabled = true);
@@ -655,9 +735,9 @@
         card.remove(); result.textContent = accept ? QI.msg("Saved to memory.") : QI.msg("Declined. The prepared text was removed.");
         const left = host.querySelectorAll('article').length;
         if (a.memory) a.memory.pending_saves = left;
-        if (left) host.querySelector('h4').textContent = QI.resolve(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(left);
+        if (left) host.querySelector('h3').textContent = QI.resolve(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(left);
         else host.remove();
-      } catch (e) { result.textContent = QI.msg("Could not complete this. Only the workspace owner can confirm a save."); card.querySelectorAll('button').forEach(b => b.disabled = false); }
+      } catch (e) { card.querySelectorAll('button').forEach(b => b.disabled = false); await memoryWriteFailed(e, QI.msg("Could not complete this. Only the workspace owner can confirm a save.")); }
     });
   }
   function bindMemoryPanel(a) {
@@ -669,8 +749,14 @@
         const fresh = ((await api('/api/dashboard/agents')).items || []).find(x => x.id === a.id);
         agentsCache = null; state.drill.agent = fresh || { ...a, memory: { ...a.memory, mode: next.mode, revision: next.revision, state: next.mode === 'manual' ? 'manual' : a.memory.state } };
         renderAgentDetail(); const done = $('#memoryResult'); if (done) done.textContent = next.mode === 'manual' ? QI.msg("Done. Only on request from now on.") : QI.msg("Done. Automatic saving is on from now on.");
-      } catch (e) { result.textContent = QI.msg("Could not change the setting. Only the workspace owner can do this."); button.disabled = false; }
+      } catch (e) { button.disabled = false; await memoryWriteFailed(e, QI.msg("Could not change the setting. Only the workspace owner can do this.")); }
     };
+  }
+  // Only 403 means "not the owner". Stale, decided or expired state re-reads the card; anything else shows the server's reason.
+  async function memoryWriteFailed(e, ownerOnly) {
+    if (e.message === 'unauthorized' || !$('#memoryResult')) return;
+    if ([404, 409, 410].includes(e.status)) await route(true);
+    const result = $('#memoryResult'); if (result) result.textContent = e.status === 403 ? ownerOnly : QI.msg("Could not complete this.") + ' ' + e.message;
   }
   function renderAgentDetail() {
     const a = state.drill.agent;
@@ -678,16 +764,17 @@
     main.innerHTML =
       '<div class="detail-head">' +
         '<div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
-        '<div><div class="detail-title">' + esc(a.name) + '</div>' +
-        '<div class="detail-sub">' + fmtNum(a.sessions_count) + (" " + QI.msg("sessions ·") + " ") + fmtNum(a.messages_count) + (" " + QI.msg("messages ·") + " ") + fmtNum(a.notes_count) + (" " + QI.msg("notes") + "</div></div>") +
-      '</div>' + memoryPanel(a) + mechanismsPanel(a) +
+        '<div><h1 class="detail-title">' + esc(a.name) + '</h1>' +
+        '<div class="detail-sub">' + QI.count(a.sessions_count,'session') + ' · ' + QI.count(a.messages_count,'message') + ' · ' + QI.count(a.notes_count,'note') + '</div></div>' +
+      '</div>' + memoryPanel(a) + contextPanel(a) + mechanismsPanel(a) +
       '<div class="tabs">' +
         '<button class="tab ' + (state.drill.tab === 'sessions' ? 'active' : '') + ("\" data-tab=\"sessions\">" + QI.msg("Sessions") + " <span class=\"tab-badge\">") + fmtNum(a.sessions_count) + '</span></button>' +
         '<button class="tab ' + (state.drill.tab === 'memory' ? 'active' : '') + ("\" data-tab=\"memory\">" + QI.msg("Notes") + " <span class=\"tab-badge\">") + fmtNum(a.notes_count) + '</span></button>' +
         '<button class="tab ' + (state.drill.tab === 'search' ? 'active' : '') + ("\" data-tab=\"search\">" + QI.msg("Search") + "</button>") +
       ("</div><div id=\"tabBody\"><div class=\"loading\">" + QI.msg("Loading…") + "</div></div>");
     main.querySelectorAll('.tab').forEach(el => el.onclick = () => { state.drill.tab = el.getAttribute('data-tab'); renderAgentDetail(); });
-    bindMemoryPanel(a); void bindMemorySaves(a); void loadMechanisms(a);
+    bindMemoryPanel(a); bindContextPanel(a); void bindMemorySaves(a); void loadMechanisms(a);
+
     if (state.drill.tab === 'sessions') return renderSessions();
     if (state.drill.tab === 'memory') return renderMemory();
     if (state.drill.tab === 'search') return renderAgentSearch();
@@ -700,42 +787,54 @@
       if (!data.items.length) { body.innerHTML = ("<div class=\"empty\">" + QI.msg("No sessions yet.") + "</div>"); return; }
       body.innerHTML = '<div class="sess-list">' + data.items.map(s => {
         return '<button type="button" class="sess-item" data-id="' + esc(s.id) + '"><div class="sess-info">' +
-          '<div class="sess-title">' + liveStatus(s.last_active) + esc(s.title || '(untitled)') + '</div>' +
+          '<div class="sess-title">' + esc(s.title || QI.msg('(untitled)')) + '</div>' +
           '<div class="sess-id">' + esc(s.id) + '</div></div>' +
           '<div class="sess-badges"><span class="sess-badge">' + s.message_count + (" " + QI.msg("msgs") + "</span>") +
-          '<span class="sess-badge">' + fmtTime(s.last_active) + '</span></div><div class="sess-chev">›</div></button>';
+          '<span class="sess-badge">' + fmtTime(s.last_active) + liveStatus(s.last_active) + '</span></div><div class="sess-chev">›</div></button>';
       }).join('') + '</div>';
       body.querySelectorAll('.sess-item').forEach(el => el.onclick = () => {
         const s = data.items.find(x => x.id === el.getAttribute('data-id'));
         if (s) { state = { page: 'agents', drill: { kind: 'session', agent: a, session: s } }; route(); }
       });
-    } catch (e) { setConn(false); body.innerHTML = ("<div class=\"err\">" + QI.msg("Failed to load sessions.") + "</div>"); }
+    } catch (e) { errBox(body, QI.msg("Failed to load sessions."), renderSessions, e); }
   }
   const NOTE_TYPES = ['memory','rule','decision','knowledge','task','deal','project','context','contact','finance','note'];
-  async function renderMemory() {
-    const a = state.drill.agent; const body = $('#tabBody');
-    const sortBy = state.drill.notesSort || 'created_desc';
-    const url = '/api/dashboard/agents/' + encodeURIComponent(a.id) + '/notes?limit=500' + (state.drill.noteType ? '&type=' + encodeURIComponent(state.drill.noteType) : '');
+  const noteTypeLabel = t => NOTE_TYPES.includes(t) ? QI.msg(t) : QI.code(t);
+  // F-312: notes arrive 200 at a time; Load more follows the server cursor to the oldest one.
+  async function renderMemory(more) {
+    const a = state.drill.agent; const body = $('#tabBody'); const d = state.drill;
+    if (!more) d.notesList = { items: [], next: null, types: [] };
+    const list = d.notesList;
+    const url = '/api/dashboard/agents/' + encodeURIComponent(a.id) + '/notes?limit=200' + (d.noteType ? '&type=' + encodeURIComponent(d.noteType) : '') + (more ? '&before=' + encodeURIComponent(list.next) : '');
     try {
-      const data = await api(url); setConn(true);
-      const bd = Object.fromEntries((data.type_breakdown || []).map(x => [x.type, x.c]));
-      const filters = ['<button class="note-filter ' + (state.drill.noteType === null ? 'active' : '') + ("\" data-t=\"\">" + QI.msg("All") + "</button>")]
-        .concat(NOTE_TYPES.filter(t => bd[t]).map(t => '<button class="note-filter ' + (state.drill.noteType === t ? 'active' : '') + '" data-t="' + t + '">' + t + ' <span style="opacity:.6">· ' + bd[t] + '</span></button>')).join('');
-      const sorted = data.items.slice().sort((x, y) => { const k = sortBy === 'updated_desc' ? 'updated_at' : 'created_at'; return (y[k] || '').localeCompare(x[k] || ''); });
-      const sortToggle = '<div style="display:flex; justify-content:flex-end; gap:6px; margin-bottom:12px;">' +
-        '<button class="note-filter ' + (sortBy === 'created_desc' ? 'active' : '') + ("\" data-sort=\"created_desc\">" + QI.msg("Newest created") + "</button>") +
-        '<button class="note-filter ' + (sortBy === 'updated_desc' ? 'active' : '') + ("\" data-sort=\"updated_desc\">" + QI.msg("Recently updated") + "</button></div>");
-      const items = sorted.length ? sorted.map(n => '<div class="note t-' + esc(QI.code(n.type)) + '"><div class="note-head">' +
-        '<span class="note-type">' + esc(QI.code(n.type)) + '</span><span>' + fmtTimeFull(n.created_at) + '</span>' +
-        (n.updated_at && n.updated_at !== n.created_at ? ("<span>" + QI.msg("· upd") + " ") + fmtTime(n.updated_at) + '</span>' : '') +
-        '<span style="flex:1"></span><span class="copyable mono" style="opacity:.55" data-copy="' + esc(n.id) + '" title="copy id">' + esc(String(n.id).slice(0, 12)) + '</span></div>' +
-        '<div class="note-text">' + esc(n.text) + '</div>' +
-        (n.tags && n.tags.length ? '<div class="note-meta">tags: ' + n.tags.map(esc).join(', ') + '</div>' : '') + '</div>').join('') : ("<div class=\"empty\">" + QI.msg("No notes matching filter.") + "</div>");
-      body.innerHTML = '<div class="note-filters">' + filters + '</div>' + sortToggle + '<div class="note-list">' + items + '</div>';
-      body.querySelectorAll('[data-t]').forEach(el => el.onclick = () => { state.drill.noteType = el.getAttribute('data-t') || null; renderMemory(); });
-      body.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { state.drill.notesSort = el.getAttribute('data-sort'); renderMemory(); });
-      body.querySelectorAll('.copyable[data-copy]').forEach(el => el.onclick = (ev) => { ev.stopPropagation(); copyText(el, el.getAttribute('data-copy')); });
-    } catch (e) { setConn(false); body.innerHTML = ("<div class=\"err\">" + QI.msg("Failed to load memory.") + "</div>"); }
+      const data = await api(url); if (state.drill !== d || d.tab !== 'memory' || d.notesList !== list) return; setConn(true);
+      list.items = list.items.concat(data.items || []); list.next = data.next_before || null; list.types = data.type_breakdown || [];
+      paintNotes();
+      if (more) ($('#notesMore') || body.querySelector('.note-list')).focus({ preventScroll: true });
+    } catch (e) { errBox(body, QI.msg("Failed to load memory."), () => renderMemory(), e); }
+  }
+  function paintNotes() {
+    const d = state.drill, list = d.notesList, body = $('#tabBody'); if (!body) return;
+    const sortBy = d.notesSort || 'created_desc';
+    const bd = Object.fromEntries(list.types.map(x => [x.type, x.c]));
+    const filters = ['<button class="note-filter ' + (d.noteType === null ? 'active' : '') + ("\" data-t=\"\">" + QI.msg("All") + "</button>")]
+      .concat(NOTE_TYPES.filter(t => bd[t]).map(t => '<button class="note-filter ' + (d.noteType === t ? 'active' : '') + '" data-t="' + t + '">' + esc(noteTypeLabel(t)) + ' <span>· ' + bd[t] + '</span></button>')).join('');
+    const sorted = list.items.slice().sort((x, y) => { const k = sortBy === 'updated_desc' ? 'updated_at' : 'created_at'; return (y[k] || '').localeCompare(x[k] || ''); });
+    const sortToggle = '<div style="display:flex; justify-content:flex-end; gap:6px; margin-bottom:12px;">' +
+      '<button class="note-filter ' + (sortBy === 'created_desc' ? 'active' : '') + ("\" data-sort=\"created_desc\">" + QI.msg("Newest created") + "</button>") +
+      '<button class="note-filter ' + (sortBy === 'updated_desc' ? 'active' : '') + ("\" data-sort=\"updated_desc\">" + QI.msg("Recently updated") + "</button></div>");
+    const items = sorted.length ? sorted.map(n => '<div class="note t-' + esc(QI.code(n.type)) + '"><div class="note-head">' +
+      '<span class="note-type">' + esc(noteTypeLabel(n.type)) + '</span><span>' + fmtTimeFull(n.created_at) + '</span>' +
+      (n.updated_at && n.updated_at !== n.created_at ? ("<span>" + QI.msg("· upd") + " ") + fmtTime(n.updated_at) + '</span>' : '') +
+      '<span style="flex:1"></span><span class="copyable mono" data-copy="' + esc(n.id) + '" title="copy id">' + esc(String(n.id).slice(0, 12)) + '</span></div>' +
+      '<div class="note-text">' + esc(n.text) + '</div>' +
+      (n.tags && n.tags.length ? '<div class="note-meta">tags: ' + n.tags.map(esc).join(', ') + '</div>' : '') + '</div>').join('') : ("<div class=\"empty\">" + QI.msg("No notes matching filter.") + "</div>");
+    body.innerHTML = '<div class="note-filters">' + filters + '</div>' + sortToggle + '<div class="note-list" tabindex="-1">' + items + '</div>' +
+      (list.next ? '<button type="button" class="btn-more" id="notesMore">' + QI.msg("Load more") + '</button>' : '');
+    body.querySelectorAll('[data-t]').forEach(el => el.onclick = () => { d.noteType = el.getAttribute('data-t') || null; renderMemory(); });
+    body.querySelectorAll('[data-sort]').forEach(el => el.onclick = () => { d.notesSort = el.getAttribute('data-sort'); paintNotes(); });
+    body.querySelectorAll('.copyable[data-copy]').forEach(el => el.onclick = (ev) => { ev.stopPropagation(); copyText(el, el.getAttribute('data-copy')); });
+    const more = $('#notesMore'); if (more) more.onclick = () => { more.disabled = true; void renderMemory(true); };
   }
   async function renderAgentSearch() {
     const a = state.drill.agent; const body = $('#tabBody'); const q = state.drill.searchQuery || '';
@@ -752,19 +851,19 @@
         setConn(true);
         if (!data.items.length) { results.innerHTML = ("<div class=\"empty\">" + QI.msg("Nothing found.") + "</div>"); return; }
         results.innerHTML = '<div class="transcript">' + data.items.map(m => '<button type="button" class="msg search-result" data-role="' + esc(m.role) + '" data-session="' + esc(m.session_id) + '"><div class="msg-head">' + roleIcon(m.role) +
-          '<span class="msg-role ' + esc(m.role) + '">' + esc(m.role) + '</span><span>' + fmtTimeFull(m.created_at) + '</span><span style="flex:1"></span>' +
-          ("<span class=\"copyable mono\" style=\"opacity:.55\" title=\"" + QI.msg("copy session_id") + "\">") + esc(String(m.session_id).slice(0, 16)) + '…</span></div>' +
+          '<span class="msg-role ' + esc(m.role) + '">' + esc(QI.code(m.role)) + '</span><span>' + fmtTimeFull(m.created_at) + '</span><span style="flex:1"></span>' +
+          ("<span class=\"copyable mono\" title=\"" + QI.msg("copy session_id") + "\">") + esc(String(m.session_id).slice(0, 16)) + '…</span></div>' +
           '<div class="msg-content">' + esc(m.content) + '</div></button>').join('') + '</div>';
         results.querySelectorAll('.copyable').forEach((el, i) => { const sid = data.items[i].session_id; el.onclick = (ev) => { ev.stopPropagation(); copyText(el, sid); }; });
         results.querySelectorAll('.msg').forEach(el => { el.onclick = () => { state = { page: 'agents', drill: { kind: 'session', agent: a, session: { id: el.getAttribute('data-session'), title: null } } }; route(); }; });
-      } catch (e) { setConn(false); results.innerHTML = ("<div class=\"err\">" + QI.msg("Search failed.") + "</div>"); }
+      } catch (e) { errBox(results, QI.msg("Search failed."), doSearch, e); }
     }
   }
   async function renderSession() {
     const a = state.drill.agent; const s = state.drill.session;
     setCrumb(("<a data-go=\"agents\">" + QI.msg("Agents") + "</a><span class=\"crumb-sep\">›</span><a data-route id=\"bkAgent\">") + esc(a.name) + '</a><span class="crumb-sep">›</span>' + esc(String(s.id).slice(0, 12)));
     main.innerHTML = '<div class="detail-head"><div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
-      '<div style="flex:1; min-width:0"><div class="detail-title">' + esc(s.title || '(untitled session)') + '</div>' +
+      '<div style="flex:1; min-width:0"><h1 class="detail-title">' + esc(s.title || QI.msg('(untitled session)')) + '</h1>' +
       ("<div class=\"detail-sub mono\"><span class=\"copyable\" id=\"sidCopy\" title=\"" + QI.msg("copy") + "\">") + esc(s.id) + '</span></div></div></div>' +
       ("<div id=\"tabBody\"><div class=\"loading\">" + QI.msg("Loading transcript…") + "</div></div>");
     const bk = $('#bkAgent'); if (bk) bk.onclick = () => { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'memory', noteType: null } }; route(); };
@@ -775,9 +874,9 @@
       setConn(true);
       if (!data.messages.length) { body.innerHTML = ("<div class=\"empty\">" + QI.msg("No messages.") + "</div>"); return; }
       body.innerHTML = '<div class="transcript">' + data.messages.map(m => '<div class="msg ' + esc(m.role) + '"><div class="msg-head">' + roleIcon(m.role) +
-        '<span class="msg-role ' + esc(m.role) + '">' + esc(m.role) + '</span><span>' + fmtTimeFull(m.created_at) + '</span>' +
+        '<span class="msg-role ' + esc(m.role) + '">' + esc(QI.code(m.role)) + '</span><span>' + fmtTimeFull(m.created_at) + '</span>' +
         (m.token_count != null ? '<span>· ' + m.token_count + (" " + QI.msg("tok") + "</span>") : '') + '</div><div class="msg-content">' + esc(m.content) + '</div></div>').join('') + '</div>';
-    } catch (e) { setConn(false); body.innerHTML = ("<div class=\"err\">" + QI.msg("Failed to load transcript.") + "</div>"); }
+    } catch (e) { errBox(body, QI.msg("Failed to load transcript."), renderSession, e); }
   }
 
   // ================= COMMS =================
@@ -800,9 +899,9 @@
 
   async function renderAgentCommPage() {
     setCrumb(("<span style=\"color:var(--text)\">" + QI.msg("Agent conversations") + "</span>"));
-    main.innerHTML = ("<div class=\"panel\"><div class=\"panel-h\"><h3>" + QI.msg("Conversations") + ("</h3><span class=\"meta\">" + QI.msg("read-only") + "</span></div>")) +
+    main.innerHTML = ("<div class=\"panel\"><div class=\"panel-h\"><h1>" + QI.msg("Conversations") + ("</h1><span class=\"meta\">" + QI.msg("read-only") + "</span></div>")) +
       ("<div id=\"acChats\"><div class=\"loading\">" + QI.msg("Loading conversations…") + "</div></div></div>");
-    $('#acChats').insertAdjacentHTML('beforebegin','<div class="agent-toolbar"><label for="acSearch">'+esc(QI.msg('Find a conversation'))+'</label><input type="search" id="acSearch"><label for="acRecent">'+esc(QI.msg('Period'))+'</label><select id="acRecent"><option value="all">'+esc(QI.msg('All conversations'))+'</option><option value="day">'+esc(QI.msg('Last 24 hours'))+'</option></select></div>');$('#acSearch').oninput=()=>fillAcThreads(true);$('#acRecent').onchange=()=>fillAcThreads(true);
+    $('#acChats').insertAdjacentHTML('beforebegin','<div class="agent-toolbar"><label for="acSearch">'+esc(QI.msg('Find a conversation'))+'</label><input type="search" id="acSearch" class="sel"><label for="acRecent">'+esc(QI.msg('Period'))+'</label><select id="acRecent" class="sel"><option value="all">'+esc(QI.msg('All conversations'))+'</option><option value="day">'+esc(QI.msg('Last 24 hours'))+'</option></select></div>');$('#acSearch').oninput=()=>fillAcThreads(true);$('#acRecent').onchange=()=>fillAcThreads(true);
     await fillAcThreads();
     pollFn = ()=>fillAcThreads();
   }
@@ -812,14 +911,14 @@
     try {
       if(!cached){const d=await api('/api/dashboard/agentcomm/threads?limit=100');if(!box.isConnected)return;acThreads=d.items||[];setConn(true);}
       const query=($('#acSearch')?.value||'').toLocaleLowerCase(),recent=$('#acRecent')?.value==='day';const items=acThreads.filter(t=>(!recent||Date.now()-new Date(t.last_message_at).getTime()<86400000)&&(!query||[acName(t.agent_a),acName(t.agent_b),t.last_message?.preview||''].join(' ').toLocaleLowerCase().includes(query)));
-      if (!items.length) { box.innerHTML = ("<div class=\"empty\">" + QI.msg("No agent conversations yet.") + "</div>"); return; }
-      box.innerHTML = '<div class="tg-chats">' + items.map((t, i) => {
+      if (!items.length) { patch(box, "<div class=\"empty\">" + QI.msg("No agent conversations yet.") + "</div>"); return; }
+      patch(box, '<div class="tg-chats">' + items.map((t, i) => {
         const an = acName(t.agent_a), bn = acName(t.agent_b);
         const last = t.last_message;
         const prev = last
           ? '<b>' + esc(acName({ name: last.sender_name, id: last.sender_agent_id })) + ':</b> ' + esc(String(last.preview || '').replace(/\s+/g, ' '))
           : (QI.msg("No messages"));
-        return '<button type="button" class="tg-chat" data-i="' + i + '">' +
+        return '<button type="button" class="tg-chat" data-i="' + i + '" data-id="' + esc(t.agent_a.id + '|' + t.agent_b.id) + '">' +
           '<div class="tg-duo">' +
             '<div class="agent-avatar ' + avatarClass(t.agent_a.name) + '">' + initial(an) + '</div>' +
             '<div class="agent-avatar ' + avatarClass(t.agent_b.name) + '">' + initial(bn) + '</div>' +
@@ -832,7 +931,7 @@
             '<span class="tg-chat-time">' + fmtTime(t.last_message_at) + '</span>' +
             '<span class="tg-count">' + fmtNum(t.message_count) + '</span>' +
           '</div></button>';
-      }).join('') + '</div>';
+      }).join('') + '</div>');
       box.querySelectorAll('.tg-chat').forEach(el => {
         el.onclick = () => {
           const t = items[parseInt(el.getAttribute('data-i'), 10)];
@@ -840,7 +939,7 @@
           route();
         };
       });
-    } catch (e) { setConn(false); box.innerHTML = ("<div class=\"err\">" + QI.msg("Failed to load conversations.") + "</div>"); }
+    } catch (e) { errBox(box, QI.msg("Failed to load conversations."), () => fillAcThreads(), e); }
   }
 
   async function renderAcThread() {
@@ -850,7 +949,7 @@
     main.innerHTML = '<div class="detail-head">' +
       '<div class="tg-duo"><div class="agent-avatar ' + avatarClass(p.agent_a.name) + '">' + initial(an) + '</div>' +
       '<div class="agent-avatar ' + avatarClass(p.agent_b.name) + '">' + initial(bn) + '</div></div>' +
-      '<div style="flex:1;min-width:0"><div class="detail-title">' + esc(an) + ' ↔ ' + esc(bn) + '</div>' +
+      '<div style="flex:1;min-width:0"><h1 class="detail-title">' + esc(an) + ' ↔ ' + esc(bn) + '</h1>' +
       ("<div class=\"detail-sub\" id=\"acSub\">" + QI.msg("loading…") + "</div></div></div>") +
       ("<div class=\"panel tg-panel\"><div id=\"acBody\"><div class=\"loading\">" + QI.msg("Loading conversation…") + "</div></div></div>");
     acState = { messages: [], nextBefore: null, hasMore: false, busy: false };
@@ -874,8 +973,8 @@
       if (sub) sub.textContent = fmtNum(d.total) + (" " + QI.msg("messages · showing") + " ") + fmtNum(acState.messages.length);
       renderAcMessages(first);
     } catch (e) {
-      setConn(false);
-      const b = $('#acBody'); if (b && first) b.innerHTML = ("<div class=\"err\">" + QI.msg("Failed to load conversation.") + "</div>");
+      if (first) errBox($('#acBody'), QI.msg("Failed to load conversation."), () => loadAcPage(true), e);
+      else { if (!e?.status) setConn(false); const more = $('#acMore'); if (more) more.textContent = QI.msg("Load older messages"); }
     } finally { current.busy = false; }
   }
 
@@ -943,8 +1042,7 @@
     if (method !== 'GET') skillPending = {path, method, body: JSON.parse(JSON.stringify(body)), expected};
     try {
       const response = await fetch(loopUrl + path, {method, credentials:'same-origin', signal:controller.signal,
-        headers: method === 'GET' ? {} : {'content-type':'application/json','X-Qoopia-CSRF':'1','Idempotency-Key':key,'If-Match':String(expected)},
-        body: method === 'GET' ? undefined : JSON.stringify(body)});
+        ...(method === 'GET' ? {} : {headers:{'content-type':'application/json','X-Qoopia-CSRF':'1','Idempotency-Key':key,'If-Match':String(expected)}, body:JSON.stringify(body)})});
       const value = await response.json();
       if (!response.ok) { const error = new Error(value.error?.message || (QI.msg("Request failed"))); error.code = value.error?.code || 'HTTP_' + response.status; throw error; }
       if (method !== 'GET') skillPending = null;
@@ -1044,10 +1142,14 @@
   // ================= GLOBAL SEARCH =================
   async function renderSearchPage() {
     setCrumb(("<span style=\"color:var(--text)\">" + QI.msg("Search") + "</span>"));
-    if (!agentsCache) { try { agentsCache = (await api('/api/dashboard/agents')).items; } catch {} }
-    main.innerHTML =
-      ("<div style=\"margin-bottom:18px\"><input type=\"text\" id=\"gSearch\" aria-label=\"Search messages\" data-i18n-aria-label=\"Search messages\" class=\"input-text\" placeholder=\"" + QI.msg("Search messages across all visible agents…") + "\"></div>") +
-      ("<div style=\"font-size:.74rem;color:var(--text3);margin-bottom:14px\">" + QI.msg("Searches") + " ") + ((agentsCache || []).length) + (" " + QI.msg("agents you can access.") + "</div>") +
+    if (!agentsCache) {
+      try { agentsCache = (await api('/api/dashboard/agents')).items; }
+      catch (e) { if (e.message !== 'unauthorized' && state.page === 'search') { setConn(false); main.innerHTML = ("<div class=\"err\">" + QI.msg("Failed to load agents.") + " <button type=\"button\" data-route>" + QI.msg("Retry") + "</button></div>"); } return; }
+      if (state.page !== 'search') return; // The user moved on while this loaded.
+    }
+    main.innerHTML = '<h1 class="sr-only">' + QI.msg("Search") + '</h1>' +
+      ("<div style=\"margin-bottom:18px\"><input type=\"text\" id=\"gSearch\" aria-label=\"Search messages\" data-i18n-aria-label=\"Search messages\" class=\"input-text\" placeholder=\"" + QI.msg("Search messages and notes across all visible agents…") + "\"></div>") +
+      ("<div style=\"font-size:.74rem;color:var(--text3);margin-bottom:14px\">" + QI.msg("Agents you can search:") + " ") + fmtNum((agentsCache || []).length) + "</div>" +
       ("<div id=\"gResults\" aria-live=\"polite\"><div class=\"empty\">" + QI.msg("Type to search…") + "</div></div>");
     const inp = $('#gSearch'); inp.focus(); let dt;
     inp.oninput = () => { clearTimeout(dt); dt = setTimeout(() => doGlobalSearch(inp.value.trim()), 400); };
@@ -1057,31 +1159,38 @@
     if(!out)return;
     out.dataset.query=q;
     if (!q) { out.innerHTML = ("<div class=\"empty\">" + QI.msg("Type to search…") + "</div>"); return; }
-    out.innerHTML = ("<div class=\"loading\">" + QI.msg("Searching") + " ") + ((agentsCache || []).length) + (" " + QI.msg("agents…") + "</div>");
-    try {
-      const results = await Promise.all((agentsCache || []).map(async a => {
-        const base='/api/dashboard/agents/'+encodeURIComponent(a.id);
-        const [messages,notes]=await Promise.all([api(base+'/search?q='+encodeURIComponent(q)+'&limit=20'),api(base+'/notes?limit=500')]);
-        return (messages.items||[]).map(m=>({...m,_agent:a,_kind:(QI.msg("Message"))})).concat((notes.items||[]).filter(n=>(n.text||'').toLowerCase().includes(q.toLowerCase())).map(n=>({...n,content:n.text,created_at:n.updated_at,_agent:a,_kind:(QI.msg("Context note"))})));
-      }));
-      setConn(true);
-      if(!out.isConnected||out.dataset.query!==q)return;
-      let merged = [].concat.apply([], results);
-      merged.sort((x, y) => (y.created_at || '').localeCompare(x.created_at || ''));
-      merged = merged.slice(0, 120);
-      if (!merged.length) { out.innerHTML = ("<div class=\"empty\">" + QI.msg("Nothing found across any agent.") + "</div>"); return; }
-      out.innerHTML = '<div style="font-size:.74rem;color:var(--text3);margin-bottom:12px">' + merged.length + (" " + QI.msg("results") + "</div><div class=\"transcript\">") +
-        merged.map((m, i) => '<button type="button" class="msg search-result" data-role="' + esc(m.role||'note') + '" data-i="' + i + '" '+(m.session_id?'data-session="'+esc(m.session_id)+'"':'')+'><div class="msg-head">' + roleIcon(m.role) +
-          '<span class="msg-role ' + esc(m.role||'note') + '">' + esc(m._kind) + '</span>' +
-          '<span class="chip click" data-aid="' + esc(m._agent.id) + '">' + esc(m._agent.name) + '</span>' +
-          '<span>' + fmtTimeFull(m.created_at) + '</span></div>' +
-          '<div class="msg-content">' + esc(m.content) + '</div></button>').join('') + '</div>';
-      out.querySelectorAll('[data-aid]').forEach(c => c.onclick = (ev) => { ev.stopPropagation(); drillAgentById(c.getAttribute('data-aid')); });
-      out.querySelectorAll('.msg[data-session]').forEach(el => { el.onclick = () => {
-        const m = merged[+el.getAttribute('data-i')];
-        state = { page: 'agents', drill: { kind: 'session', agent: m._agent, session: { id: m.session_id, title: null } } }; route();
-      }; });
-    } catch (e) { if(!out.isConnected||out.dataset.query!==q)return;setConn(false); out.innerHTML = ("<div class=\"err\">" + QI.msg("Search failed:") + " ")+esc(e.message)+'. Retry, or open an agent to search its visible scope.</div>'; }
+    out.innerHTML = ("<div class=\"loading\">" + QI.msg("Searching…") + "</div>");
+    // One request per page: the server searches every agent this session may open (F-304).
+    let hits = [], next = null;
+    const page = async () => {
+      const params = new URLSearchParams({ q, limit: '50' });
+      for (const [k, v] of Object.entries(next || {})) if (v) params.set(k, v);
+      try {
+        const data = await api('/api/dashboard/search?' + params);
+        if(!out.isConnected||out.dataset.query!==q)return;
+        setConn(true);
+        const first = hits.length;
+        hits = hits.concat(data.items || []); next = data.next;
+        if (!hits.length) { out.innerHTML = ("<div class=\"empty\">" + QI.msg("Nothing found across any agent.") + "</div>"); return; }
+        out.innerHTML = '<div style="font-size:.74rem;color:var(--text3);margin-bottom:12px">' + (next ? QI.msg("Showing the newest matches: {n}", { n: hits.length }) : hits.length + " " + QI.msg("results")) + "</div><div class=\"transcript\">" +
+          // One article per hit with real buttons for the agent and the session; the excerpt is plain text (F-326).
+          hits.map((m, i) => '<article class="msg" data-i="' + i + '"><div class="msg-head">' + roleIcon(m.role) +
+            '<span class="msg-role' + (m.kind === 'message' ? ' ' + esc(m.role) : '') + '">' + esc(m.kind === 'message' ? QI.msg("Message") : QI.msg("Context note")) + '</span>' +
+            '<button type="button" class="chip click" style="border:0;font-family:inherit" data-aid="' + esc(m.agent_id) + '">' + esc(m.agent_name) + '</button>' +
+            '<span>' + fmtTimeFull(m.created_at) + '</span>' +
+            (m.session_id ? '<span style="flex:1"></span><button type="button" class="btn" data-open="' + i + '">' + QI.msg("Open session") + '</button>' : '') + '</div>' +
+            '<div class="msg-content">' + esc(m.excerpt) + '</div></article>').join('') + '</div>' +
+          (next ? '<button type="button" class="btn-more" id="gMore">' + QI.msg("Load more") + '</button>' : '');
+        out.querySelectorAll('[data-aid]').forEach(c => c.onclick = () => drillAgentById(c.getAttribute('data-aid')));
+        out.querySelectorAll('[data-open]').forEach(el => { el.onclick = () => {
+          const m = hits[+el.dataset.open], agent = (agentsCache || []).find(a => a.id === m.agent_id) || { id: m.agent_id, name: m.agent_name };
+          state = { page: 'agents', drill: { kind: 'session', agent, session: { id: m.session_id, title: null } } }; route();
+        }; });
+        const more = $('#gMore'); if (more) more.onclick = () => { more.disabled = true; void page(); };
+        if (first) out.querySelector('[data-i="' + first + '"] button')?.focus();
+      } catch (e) { if(!out.isConnected||out.dataset.query!==q)return; errBox(out, QI.msg("Search failed."), () => doGlobalSearch(q), e); }
+    };
+    await page();
   }
 
   // ---------- Bridges: an external folder owned by this installation ----------
@@ -1198,8 +1307,8 @@
     const messages={not_connected:(QI.msg("Choose the subscription you want Qoopia to use.")),selected:(QI.msg("Sign in if needed, then check the connection.")),ready:(QI.msg("Connected. Ready to organise your memory.")),auth_required:(QI.msg("Sign in again to resume.")),quota:(QI.msg("Your subscription limit was reached. Saved events are waiting safely.")),timeout:(QI.msg("The model took too long. Search and saved events are still available.")),unavailable:(QI.msg("The model is unavailable. Check your subscription connection.")),invalid_response:(QI.msg("The model returned an unusable result. Your last saved context is preserved."))};
     main.innerHTML=("<section class=\"work\"><header><h1>" + QI.msg("Memory settings") + "</h1><p>" + QI.msg("Configure how this workspace keeps and finds context.") + "</p></header><div class=\"work-grid\"><div><section class=\"memory-first\"><h2>" + QI.msg("Your agents, connected.") + "</h2><p>" + QI.msg("Connect ChatGPT, Claude and your native agents in one place. Your steward and existing connections stay with this workspace.") + "</p><div class=\"work-actions\"><button id=\"memoryConnections\">" + QI.msg("Open connections →") + "</button></div></section><h2>" + QI.msg("Optional: a model for your memory") + "</h2><p>" + QI.msg("Use your own subscription to organise session notes and assess search results. Text search and built-in semantic search remain available without it.") + "</p><div class=\"work-controls memory-model-controls\"><div><label for=\"memoryProvider\">" + QI.msg("Your subscription") + "</label><select id=\"memoryProvider\"><option value=\"claude_code\">Claude · Haiku</option><option value=\"codex\">ChatGPT · Codex</option></select></div><div class=\"work-actions\"><button id=\"memorySelect\">" + QI.msg("Use this subscription") + "</button></div></div><p class=\"work-status\" role=\"status\" id=\"memoryModelStatus\">")+esc(messages[model.state]||model.state)+(model.model?' · '+esc(model.model):'')+("</p><div class=\"work-actions\"><button id=\"memoryLogin\">" + QI.msg("Sign in to") + " ")+esc(names[model.runtime]||(QI.msg("subscription")))+("</button><button class=\"primary\" id=\"memoryCheck\">" + QI.msg("Check connection") + "</button></div><div id=\"memoryLoginInfo\"></div><p id=\"memoryActionStatus\" role=\"status\" aria-live=\"polite\" class=\"work-status\"></p></div><aside><h2>" + QI.msg("Already in your memory") + "</h2><p><strong>")+esc(data.embedding.embedded)+' / '+esc(data.embedding.total_notes)+("</strong><br>" + QI.msg("notes indexed for semantic search") + "</p><p><strong>")+esc(data.sessions.summarized)+' / '+esc(data.sessions.tracked)+("</strong><br>" + QI.msg("tracked sessions with a context note") + "</p><div class=\"work-result\"><h2>" + QI.msg("How continuity works") + "</h2><p>" + QI.msg("Events are saved as you work. A compact note evolves with the session. When you return, your agent receives the note and recent events that have not yet been summarised.") + "</p><p>" + QI.msg("Everything stays in this workspace. Existing notes, namespaces and connections remain in place.") + "</p><button id=\"memorySessions\">" + QI.msg("Browse agent sessions →") + "</button></div></aside></div></section>");
     const root=main.firstElementChild;let actionBusy=false,polling=false;
-    let savedProvider;try{savedProvider=sessionStorage.getItem('qoopia.memory.provider');}catch{}$('#memoryProvider').value=['claude_code','codex'].includes(savedProvider)?savedProvider:model.runtime||'claude_code';
-    $('#memoryProvider').onchange=e=>{try{sessionStorage.setItem('qoopia.memory.provider',e.target.value);}catch{}};
+    let savedProvider;try{savedProvider=sessionStorage.getItem('qoopia.memory.provider');}catch{/* Storage unavailable; use the configured runtime. */}$('#memoryProvider').value=['claude_code','codex'].includes(savedProvider)?savedProvider:model.runtime||'claude_code';
+    $('#memoryProvider').onchange=e=>{try{sessionStorage.setItem('qoopia.memory.provider',e.target.value);}catch{/* Storage unavailable; the choice is not remembered. */}};
     const op=data.operation;if(op?.state==='running')$('#memoryActionStatus').textContent=QI.msg('Preparing your subscription. You can use other pages.');else if(op?.state==='failed')$('#memoryActionStatus').textContent=QI.msg(op.error);else if(op?.state==='completed'&&op.action==='check')$('#memoryActionStatus').textContent=QI.msg('Connection checked with a real model response.');
     $('#memoryLogin').disabled=!model.runtime||data.busy;$('#memoryCheck').disabled=!model.runtime||data.busy;$('#memorySelect').disabled=data.busy;
     $('#memorySessions').onclick=()=>go('agents');
@@ -1241,8 +1350,8 @@
     const t=(en,ru)=>QI.pair(en,ru);
     const names={codex:'Codex CLI',claude_code:'Claude Code',muse_code:'Muse Code CLI',muse_app:'Muse.app',grok_bot:'Grok Bot',claude_desktop:'Claude Desktop',claude_web:'Claude Web',chatgpt_web:'ChatGPT Web',chatgpt_desktop:'ChatGPT Desktop'};
     const guides={
-      chatgpt_web:{url:'https://chatgpt.com/plugins',text:t('Open Plugins → + → New plugin. Choose OAuth and paste this address. Developer mode may be required in Settings → Security and login.','Откройте Плагины → + → Новый плагин. Выберите OAuth и вставьте адрес. При необходимости включите режим разработчика в Настройки → Безопасность и вход.'),limit:t('Verified with ChatGPT Pro in the web client: OAuth, connection check, reading, adding and repeat requests. Availability depends on your ChatGPT plan and workspace settings. If a client check is blocked, stop and leave the connection unverified.','Проверено с ChatGPT Pro в браузере: OAuth, проверка подключения, чтение, добавление и повторные запросы. Доступность зависит от плана ChatGPT и настроек пространства. Если клиент блокирует проверку, остановите её и оставьте подключение неподтверждённым.')},
-      chatgpt_desktop:{url:'https://developers.openai.com/apps-sdk/deploy/connect-chatgpt',text:t('Open Plugins in the desktop client and add this address using OAuth. If the desktop app does not offer custom plugins, use another supported client.','Откройте Плагины в настольном клиенте и добавьте адрес с OAuth. Если приложение не позволяет добавлять свои плагины, используйте другой поддерживаемый клиент.'),limit:t('OAuth, authenticated verification, reading, writing and retries without duplicates passed on Mac. Use New chat → Chat. A repeated one-use verification does not undo an earlier success. Stop any client-blocked action.','OAuth, подтверждение подключения, чтение, запись и повтор без дублей проверены на Mac. Используйте Новый чат → Чат. Повтор одноразовой проверки не отменяет прежний успех. Не повторяйте действие, заблокированное клиентом.')},
+      chatgpt_web:{url:'https://chatgpt.com/plugins',text:t('Open Plugins → + → New plugin. Choose OAuth and paste this address. Developer mode may be required in Settings → Security and login.','Откройте Плагины → + → Новый плагин. Выберите OAuth и вставьте адрес. При необходимости включите режим разработчика в Настройки → Безопасность и вход.'),limit:t('Last verified with ChatGPT Pro in the web client on 15 September 2026: OAuth, connection check, reading, adding and repeat requests. The current consent and automatic confirmation have not been re-verified with a real ChatGPT account. Availability depends on your ChatGPT plan and workspace settings. If a client check is blocked, stop and leave the connection unverified.','Последняя проверка с ChatGPT Pro в браузере — 15 сентября 2026 года: OAuth, проверка подключения, чтение, добавление и повторные запросы. Текущие согласие и автоматическое подтверждение с настоящим аккаунтом ChatGPT повторно не проверялись. Доступность зависит от плана ChatGPT и настроек пространства. Если клиент блокирует проверку, остановите её и оставьте подключение неподтверждённым.')},
+      chatgpt_desktop:{url:'https://developers.openai.com/apps-sdk/deploy/connect-chatgpt',text:t('Open Plugins in the desktop client and add this address using OAuth. If the desktop app does not offer custom plugins, use another supported client.','Откройте Плагины в настольном клиенте и добавьте адрес с OAuth. Если приложение не позволяет добавлять свои плагины, используйте другой поддерживаемый клиент.'),limit:t('On 15 September 2026 OAuth, authenticated verification, reading, writing and retries without duplicates passed on Mac. The current consent and automatic confirmation have not been re-verified with a real ChatGPT account. Use New chat → Chat. Stop any client-blocked action.','15 сентября 2026 года на Mac проверены OAuth, подтверждение подключения, чтение, запись и повтор без дублей. Текущие согласие и автоматическое подтверждение с настоящим аккаунтом ChatGPT повторно не проверялись. Используйте Новый чат → Чат. Не повторяйте действие, заблокированное клиентом.')},
       claude_web:{url:'https://claude.ai/customize/connectors',text:t('Open Customize → Connectors → + → Add custom connector. Paste this address, add it and choose Connect. Enable it in the conversation.','Откройте Настройка → Коннекторы → + → Добавить свой коннектор. Вставьте адрес, добавьте коннектор и нажмите Подключить. Включите его в беседе.'),limit:t('Free allows one custom connector. Team/Enterprise require an organization owner to add it.','На Free доступен один собственный коннектор. В Team/Enterprise его добавляет владелец организации.')},
       claude_desktop:{url:'https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop',text:t('Add the local adapter on your Mac, or open the downloaded setup file there. Approve this connection in Qoopia, restart Claude Desktop, then send the request below in a new conversation.','Добавьте локальный адаптер на Mac или откройте там скачанный файл настройки. Подтвердите доступ в Qoopia, перезапустите Claude Desktop и отправьте запрос ниже в новой беседе.'),limit:t('The local adapter targets Claude Desktop on macOS. A server workspace still needs its external address to be reachable. Actual Desktop acceptance is reported separately.','Локальный адаптер предназначен для Claude Desktop на macOS. Для памяти на сервере требуется доступный внешний адрес. Приёмка реального приложения учитывается отдельно.')},
       codex:{url:'https://developers.openai.com/codex/mcp',text:t('Add this URL as a Streamable HTTP MCP server in Codex, then use its OAuth login. Approve access when asked, then send the request below in Codex.','Добавьте адрес как MCP-сервер Streamable HTTP в Codex, затем выполните его OAuth-вход. Подтвердите доступ и отправьте запрос ниже в Codex.'),limit:t('MCP grants access to memory. Background model authorization remains separate.','MCP даёт доступ к памяти. Авторизация модели для фоновых задач выполняется отдельно.')},
@@ -1270,7 +1379,7 @@
     const call=async body=>{if(actionBusy)throw Error(QI.resolve(QI.msg('Please wait for the current action')));actionBusy=true;revision++;feedback.textContent=QI.msg('Working…');host.setAttribute('aria-busy','true');try{return await apiWrite('/api/dashboard/connection-setup',body);}finally{actionBusy=false;if(host.isConnected)host.removeAttribute('aria-busy');}};
     let networkBusy=false;
     const draftKey='qoopia-connection-draft:'+workspaceName;
-    let draft;try{draft=JSON.parse(sessionStorage.getItem(draftKey));}catch{}
+    let draft;try{draft=JSON.parse(sessionStorage.getItem(draftKey));}catch{/* No usable draft (storage unavailable or corrupt). */}
     if(draft&&names[draft.surface]&&['read','read_write'].includes(draft.access_mode)&&typeof draft.request_key==='string'){
       host.querySelector('#setupSurface').value=draft.surface;host.querySelector('#setupAccess').value=draft.access_mode;host.querySelector('#setupAgentName').value=draft.agent_name||'';
     }else draft=null;
@@ -1278,7 +1387,7 @@
       const surface=host.querySelector('#setupSurface').value,access_mode=host.querySelector('#setupAccess').value,agent_name=host.querySelector('#setupAgentName').value.trim();
       if(agent_name&&!/^[a-zA-Z0-9_\-\s]{1,64}$/.test(agent_name))throw Error(QI.resolve(t('Use up to 64 letters, digits, spaces, underscores or hyphens.','Используйте до 64 букв латиницы, цифр, пробелов, подчёркиваний или дефисов.')));
       if(!draft||draft.surface!==surface||draft.access_mode!==access_mode||(draft.agent_name||'')!==agent_name)draft={surface,access_mode,...(agent_name?{agent_name}:{}),request_key:crypto.randomUUID()};
-      try{sessionStorage.setItem(draftKey,JSON.stringify(draft));}catch{}return draft;
+      try{sessionStorage.setItem(draftKey,JSON.stringify(draft));}catch{/* Storage unavailable; the draft lives only in this page. */}return draft;
     }
     const showResult=(r,target=feedback)=>{
       const messages={ACTION_IN_PROGRESS:t('Working. You can use other pages.','Выполняем. Можно пользоваться другими страницами.'),CLIENT_AUTH_STARTING:t('Preparing the secure sign-in page…','Подготавливаем защищённую страницу входа…'),CLIENT_AUTHORIZATION_REQUIRED:t('Open the consent page, review this connection’s permissions, and approve. Then restart Claude Desktop.','Откройте страницу подтверждения, проверьте права этого подключения и подтвердите доступ. Затем перезапустите Claude Desktop.'),CLIENT_CALL_REQUIRED:t('Access is saved. Restart the client and send the connection request.','Доступ сохранён. Перезапустите клиент и отправьте запрос подключения.'),CLIENT_AUTH_EXPIRED:t('The sign-in expired. Choose Approve access again.','Время входа истекло. Снова нажмите Подтвердить доступ.'),CLIENT_CONFIG_REQUIRED:t('Add the client on this computer first.','Сначала добавьте клиент на этом компьютере.'),SIGN_IN_REQUIRED:t('Account confirmation expired. Start sign-in again; the installation and memory are preserved.','Подтверждение аккаунта истекло. Начните вход заново; установка и память сохранены.'),ACCOUNT_CONFIRMATION_REQUIRED:t('Confirm the email sent to your Qoopia account, then choose Continue setup.','Подтвердите письмо на почте аккаунта Qoopia и нажмите Продолжить настройку.'),OWNER_ACCOUNT_REQUIRED:t('Finish signing in to your Qoopia account first.','Сначала завершите вход в аккаунт Qoopia.'),NETWORK_ONLINE:t('External connection is running.','Внешняя связь работает.'),NETWORK_CONNECTING:t('Reconnecting. Local memory is preserved.','Восстанавливаем связь. Локальная память сохранена.'),NETWORK_SERVICE_UNAVAILABLE:t('The connection service is unavailable. Keep this setup and try Continue setup later.','Сервис подключения недоступен. Сохраните настройку и позднее нажмите Продолжить настройку.'),NETWORK_DISABLED:t('External access is paused.','Внешний доступ приостановлен.'),DEVICE_REVOKED:t('This device was revoked.','Это устройство отозвано.')};
@@ -1350,11 +1459,12 @@
       host.querySelectorAll('[data-client-setup]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{
         const c=result.connections.find(c=>c.id===b.dataset.clientSetup);
         if(c.client_config==='on_this_computer'){
-          const plan=await call({action:'client-plan',id:c.id});
+          const plan=await call({action:'client-plan',id:c.id,language:QI.language});
           if(plan.can_apply===false){feedback.textContent=t('This client entry changed outside Qoopia. Review it in your client settings before continuing.','Запись клиента изменена вне Qoopia. Проверьте её в настройках клиента перед продолжением.');return;}
-          const applied=await call({action:'client-apply',id:c.id});
+          const applied=await call({action:'client-apply',id:c.id,language:QI.language});
           if(c.surface==='claude_desktop'){showResult(await call({action:'client-auth-start',id:c.id}));await refresh();return;}
-          feedback.textContent=applied.code==='CLIENT_AUTH_REQUIRED'?t('Address added. Open the client, authenticate its Qoopia connection, then send the connection request below.','Адрес добавлен. Откройте клиент, подтвердите его подключение к Qoopia и отправьте запрос подключения ниже.'):applied.next_action;
+          feedback.textContent=(applied.code==='CLIENT_AUTH_REQUIRED'?t('Address added. Open the client, authenticate its Qoopia connection, then send the connection request below.','Адрес добавлен. Откройте клиент, подтвердите его подключение к Qoopia и отправьте запрос подключения ниже.'):applied.next_action)+
+            (applied.protocol?.state==='refused'?' '+t('Local Qoopia instructions were not installed: ','Локальные инструкции Qoopia не установлены: ')+applied.protocol.code+(applied.protocol.file?' — '+applied.protocol.file:'')+'. '+t('The agent reads qoopia_protocol over this connection.','Агент прочитает qoopia_protocol через это подключение.'):'');
         }else{
           const r=await call({action:'client-export',id:c.id});
           const url=URL.createObjectURL(new Blob([JSON.stringify(r.binding)],{type:'application/json'})),a=document.createElement('a');
@@ -1373,7 +1483,7 @@
       host.querySelectorAll('[data-revoke-connection]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await call({action:'disconnect',id:b.dataset.revokeConnection});await refresh();}catch(e){feedback.textContent=e.message;b.disabled=false;}});
     }
     host.querySelector('#setupApply').onclick=async e=>{e.target.disabled=true;try{
-      const created=await call({action:'apply',...selection()});draft=null;try{sessionStorage.removeItem(draftKey);}catch{}
+      const created=await call({action:'apply',...selection()});draft=null;try{sessionStorage.removeItem(draftKey);}catch{/* Storage unavailable; nothing was stored. */}
       await refresh();host.querySelector('#setupNew').open=false;
       const detail=host.querySelector('[data-connection="'+created.connection.id+'"]');if(detail){const group=detail.closest('[data-connection-drafts]');if(group)group.open=true;detail.open=true;detail.querySelector('summary').focus();}
       feedback.textContent=t('Connection prepared. Finish setup in the selected application.','Подключение подготовлено. Завершите настройку в выбранном приложении.');
@@ -1457,7 +1567,7 @@
     if(document.hidden)return;
     try {const r=await fetch(BASE+'/dashboard',{method:'HEAD',cache:'no-store'}),version=r.headers.get('x-qoopia-dashboard-version');
       if(version&&version!==document.querySelector('meta[name="qoopia-dashboard-version"]').content)$('#uiUpdate').hidden=false;
-    }catch{}
+    }catch{/* Version check is best-effort; retried every 60 s and on visibility change. */}
   }
   setInterval(checkInterfaceVersion,60000);
   document.addEventListener('visibilitychange',checkInterfaceVersion);
@@ -1477,16 +1587,17 @@
     try{
       if(setupCode)await identityPost('setup',{code:setupCode});
       const r=await fetch(BASE+'/api/dashboard/identity',{credentials:'same-origin',signal:AbortSignal.timeout(15000)});
-      if(r.ok){identity=await r.json();$('#emailLogin').hidden=false;}
+      if(r.ok){identity=await r.json();$('#emailLogin').hidden=false;}else r.body?.cancel().catch(()=>{});
     }catch(e){loginError(e);}
     const r=await fetch(BASE+'/api/dashboard/agents',{credentials:'same-origin',signal:AbortSignal.timeout(15000)});
+    r.body?.cancel().catch(()=>{}); // Only r.ok is read; an unread body held the request open until the timeout (F-331).
     // An authenticated dashboard session is valid without an email binding (local owner login).
     if(r.ok){finishAccountSignIn();if(consumeSafeNext())return;showApp();boot();}
     else{
       showLogin();$('#accountLoginBtn').hidden=!identity?.linked||!accountSignIn;
       if(accountSignIn==='complete'&&accountCode){$('#loginView').classList.add('account-connecting');await awaitEmailConfirmation(null,false,accountCode);}
       else if(['account','complete'].includes(accountSignIn)&&identity?.linked)await startAccountLogin();
-      else if(identity?.pending)await awaitEmailConfirmation();
+      else if(identity?.pending)await awaitEmailConfirmation(null,false,null,identity.code);
     }
   })().catch(e=>{showLogin();loginError(e);});
 })();

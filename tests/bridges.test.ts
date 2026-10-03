@@ -5,6 +5,7 @@ import {bridgeRelay} from '../src/bridges/relay.ts';
 import {BRIDGE_RELAY,newIdentity,peerId,signRPC,sealPacket,openPacket,secret,sha,publicIdentity} from '../src/bridges/protocol.ts';
 import {ownerFixture} from './helpers/p1-fixtures.ts';
 import {bridgeService} from '../src/bridges/service.ts';
+import {fakeFetch,requestOf} from './helpers/fake-fetch.ts';
 
 test('Three independent peers: invite consent, scoped encrypted delivery, replay and removal',async()=>{
   const db=new Database(':memory:'),relay=bridgeRelay(db);
@@ -48,7 +49,7 @@ test('Three independent peers: invite consent, scoped encrypted delivery, replay
 test('External folders remain local: three catalogues, exact approval, received quarantine and offline retry',async()=>{
   const relayDb=new Database(':memory:'),fixtures=[ownerFixture(39),ownerFixture(39),ownerFixture(39)];
   let online=true,relay=bridgeRelay(relayDb);
-  const transport=(async (url:string|URL|Request,init?:RequestInit)=>{if(!online)throw new Error('Fixture offline');return relay(new Request(url,init),'fixture-folder');}) as typeof fetch;
+  const transport=fakeFetch(async (url,init)=>{if(!online)throw new Error('Fixture offline');return relay(requestOf(url,init),'fixture-folder');});
   const [a,b,c]=fixtures.map(f=>({ ...f,service:bridgeService(f.database,BRIDGE_RELAY,transport)}));
   try {
     const group=randomUUID();await a!.service.create(a!.auth,{id:group,name:'Small group'});

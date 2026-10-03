@@ -32,14 +32,14 @@ interface MutableProposal {
   existing: boolean;
 }
 
-export interface BackfillIssue {
+interface BackfillIssue {
   code: string;
   workspace_id?: string;
   note_ids: string[];
   field?: LegacyField;
 }
 
-export interface RelationProposal {
+interface RelationProposal {
   id: string;
   workspace_id: string;
   source_note_id: string;
@@ -51,7 +51,7 @@ export interface RelationProposal {
   block_reasons: string[];
 }
 
-export interface RelationBackfillPlan {
+interface RelationBackfillPlan {
   schema_version: 32;
   counts: {
     notes_scanned: number;
@@ -67,7 +67,7 @@ export interface RelationBackfillPlan {
   proposals: RelationProposal[];
 }
 
-export interface BackfillExecutionOptions {
+interface BackfillExecutionOptions {
   dryRun?: boolean;
   resumeAfter?: string | null;
   batchSize?: number;
@@ -429,7 +429,7 @@ export function planRelationBackfill(db: Database): RelationBackfillPlan {
   }
 
   // Evaluate heads after cycle candidates have been excluded.
-  for (const [workspaceId, initialAdjacency] of adjacencyByWorkspace) {
+  for (const workspaceId of adjacencyByWorkspace.keys()) {
     const adjacency = new Map<string, Set<string>>();
     const undirected = new Map<string, Set<string>>();
     const connect = (sourceId: string, targetId: string) => {

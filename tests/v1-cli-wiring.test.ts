@@ -23,7 +23,7 @@ test('install preview and commit share verified read-only requirements before re
  expect(block.indexOf('inspectInstallationRequirements(')).toBeGreaterThan(block.indexOf('verifyBundle('));
  expect(block.indexOf("if(!flag('commit'))")).toBeGreaterThan(block.indexOf('inspectInstallationRequirements('));
  expect(block.indexOf('reservePort(')).toBeGreaterThan(block.indexOf("if(!flag('commit'))"));
- expect(entry.indexOf("if(!['start','open','owner-login','parser-smoke','steward'].includes(cmd)&&!flag('commit'))")).toBeGreaterThan(install);
+ // The generic --commit gate after install is exercised behaviorally in entry-dispatch.test.ts.
 });
 
 test('retained bundles without measurements stay installable while workload qualification is explicit unknown',()=>{

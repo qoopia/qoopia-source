@@ -144,6 +144,16 @@ describe("redactQuery — idempotency", () => {
   });
 });
 
+describe("redactQuery — bare token shapes (F-105)", () => {
+  test("a token with no keyword is redacted by the shared secret guard, idempotently", () => {
+    const fake = "ghp_" + "0123456789abcdef0123456789abcdef"; // synthetic
+    const once = redactQuery(`find ${fake} please`);
+    expect(once).not.toContain(fake);
+    expect(once).toStartWith("find ");
+    expect(redactQuery(once)).toBe(once);
+  });
+});
+
 describe("redactQuery — combined patterns", () => {
   test("multiple kinds in one string all collapsed", () => {
     const input = "apikey=k1 token=t2 password=p3";

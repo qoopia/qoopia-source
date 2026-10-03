@@ -11,6 +11,7 @@ import type {
 import { getNote } from "../notes.ts";
 import { getSupersedeChain } from "../note-relations.ts";
 import { bitemporalEnabled } from "../../utils/temporal.ts";
+import { archivedRowHidden } from "./temporal-filter.ts";
 import { computeLifecycleFactor, queueAccessReinforcement } from "../memory-lifecycle.ts";
 import {
   createRecallTrace,
@@ -19,7 +20,7 @@ import {
   type TraceResultKind,
   type TraceSourceChannel,
 } from "../recall-traces.ts";
-import { ADMIN_TYPES } from "../../auth/principal.ts";
+import { seesWholeWorkspace } from "../../auth/principal.ts";
 
 const RRF_K = 60;
 
@@ -38,6 +39,13 @@ type BaselineResponse = {
 };
 
 type BaselineRecall = (params: RecallParams) => Promise<BaselineResponse>;
+
+/** The flag-gated path adds these; without the annotation the union collapses to BaselineResponse. */
+export type V4RecallResponse = BaselineResponse & {
+  trace_id?: string;
+  pipeline_version?: string;
+  effective_options?: Record<string, boolean>;
+};
 
 interface Candidate {
   row: ResultRow;
@@ -147,7 +155,7 @@ function hydrateVisibleHead(
   noteId: string,
 ): ResultRow | null {
   try {
-    const note = getNote(auth.workspace_id, noteId, auth.agent_id, ADMIN_TYPES.has(auth.type));
+    const note = getNote(auth.workspace_id, noteId, auth.agent_id, seesWholeWorkspace(auth));
     if (p.type && note.type !== p.type) return null;
     if (p.project_id && note.project_id !== p.project_id) return null;
     const temporal = bitemporalEnabled() && "valid_from" in note
@@ -168,6 +176,7 @@ function hydrateVisibleHead(
       project_id: note.project_id,
       created_at: note.created_at,
       workspace_id: note.workspace_id,
+      agent_id: note.agent_id,
       rank: 0,
       source: "notes",
       ...temporal,
@@ -199,7 +208,7 @@ function noteUpdatedMs(row: ResultRow): number {
 function governanceFactor(auth: AuthContext, row: ResultRow): number {
   if (sourceOf(row) !== "notes" || !row.project_id) return 1;
   try {
-    const project = getNote(auth.workspace_id, row.project_id, auth.agent_id, ADMIN_TYPES.has(auth.type));
+    const project = getNote(auth.workspace_id, row.project_id, auth.agent_id, seesWholeWorkspace(auth));
     return (project.metadata as Record<string, unknown>)?.status === "active" ? 1.05 : 1;
   } catch {
     return 1;
@@ -230,7 +239,10 @@ function normalizeOptions(p: RecallParams) {
   if (includeHistory && p.latest_only === true) {
     invalidArgument("include_history=true is incompatible with latest_only=true");
   }
-  const latestOnly = includeHistory ? false : (p.latest_only ?? (relations && latestFlag));
+  // An as-of query asks for the revision true or known at T; collapsing it to today's
+  // head would hide exactly that history, so there latest_only is opt-in only.
+  const asOf = !!p._temporal && !p._temporal.current_only;
+  const latestOnly = includeHistory ? false : (p.latest_only ?? (relations && latestFlag && !asOf));
   if (p.latest_only === true && (!relations || !latestFlag)) {
     featureDisabled("QOOPIA_V4_RELATIONS/QOOPIA_V4_LATEST_ONLY");
   }
@@ -269,7 +281,7 @@ function plainResult(candidate: Candidate, explain: boolean) {
   return row;
 }
 
-export async function runV4Recall(p: RecallParams, baselineRecall: BaselineRecall) {
+export async function runV4Recall(p: RecallParams, baselineRecall: BaselineRecall): Promise<V4RecallResponse> {
   const started = performance.now();
   const options = normalizeOptions(p);
   if (!options.relation_aware && !options.explain && !options.trace && !options.lifecycle) {
@@ -287,7 +299,7 @@ export async function runV4Recall(p: RecallParams, baselineRecall: BaselineRecal
   const baselineDiagnostics: { value?: RecallBaselineDiagnostics } = {};
   const baseline = await baselineRecall({
     ...p,
-    is_admin: ADMIN_TYPES.has(auth.type),
+    is_admin: seesWholeWorkspace(auth),
     limit: 50,
     include_archived: options.relation_aware ? true : p.include_archived,
     _v4_diagnostics: (diagnostics) => {
@@ -323,7 +335,8 @@ export async function runV4Recall(p: RecallParams, baselineRecall: BaselineRecal
   }
 
   if (options.relation_aware) {
-    for (const candidate of [...candidates.values()]) {
+    // Snapshot: the loop adds head candidates to this map; live iteration would revisit them.
+    for (const candidate of Array.from(candidates.values())) {
       if (candidate.source !== "notes" || candidate.row.workspace_id !== auth.workspace_id) continue;
       const chain = getSupersedeChain({ auth, note_id: candidate.row.id });
       if (chain.note_ids.length > 1000 || relationEdgeCount(auth.workspace_id, chain.note_ids) > 1000) {
@@ -400,7 +413,8 @@ export async function runV4Recall(p: RecallParams, baselineRecall: BaselineRecal
 
   let pool = [...candidates.values()];
   if (!p.include_archived) {
-    pool = pool.filter((candidate) => candidate.source !== "notes" || !archived(candidate.row));
+    const temporal = p._temporal ?? null;
+    pool = pool.filter((candidate) => candidate.source !== "notes" || !archivedRowHidden(candidate.row, temporal));
   }
   if (options.latest_only) {
     pool = pool.filter((candidate) =>

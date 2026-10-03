@@ -77,7 +77,8 @@ test("skill loop marks only compatible current assignments ready and explains bl
 
 test("global dashboard search reuses scoped message and note APIs", () => {
   has(dashboard, "/search?q=");
-  has(dashboard, "/notes?limit=500");
+  has(dashboard, "/api/dashboard/search?");
+  lacks(dashboard, "/notes?limit=500");
   has(dashboard, "Context note");
   has(dashboard, 'aria-live="polite"');
 });

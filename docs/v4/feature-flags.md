@@ -1,5 +1,7 @@
 # Feature flags and effective defaults
 
+> Historical V4 freeze table. The live flag set is `getV4FeatureFlags()` in `src/utils/health-metadata.ts`, reported as `/health.feature_flags`: it adds `QOOPIA_V4_BITEMPORAL` (V4.1) and no longer has `QOOPIA_V4_AGENTCOMM_RECEIPTS`.
+
 All V4 behavior flags default to `false`. Missing, empty, or any value other than the exact string `true` is false. Flags do not bypass OAuth scope, risk profile, instance-role, workspace, private visibility, or owner-GO gates.
 
 | Flag | Default | Effect when true | Rollback |
@@ -10,8 +12,8 @@ All V4 behavior flags default to `false`. Missing, empty, or any value other tha
 | `QOOPIA_V4_LIFECYCLE` | false | bounded lifecycle factor and deferred reinforcement | disable; state remains unused |
 | `QOOPIA_V4_EXTRACTION` | false | proposal runs and review tools | disable; pending reviews remain durable |
 | `QOOPIA_V4_FEEDBACK` | false | feedback writes and subsequent-call lifecycle effects | disable; recorded feedback remains audit data |
-| `QOOPIA_V4_EVENT_OUTBOX` | false | post-commit metadata-only outbox delivery | disable; canonical transactions remain committed |
-| `QOOPIA_V4_AGENTCOMM_RECEIPTS` | false | optional receipt/lease consumer evidence | disable; existing ledger remains authoritative |
+| `QOOPIA_V4_EVENT_OUTBOX` | false | reserved: no runtime producer reads it (the rollout gate still refuses it); ops alerts use the signed delivery transport directly | disable; canonical transactions remain committed |
+| ~~`QOOPIA_V4_AGENTCOMM_RECEIPTS`~~ | — | removed with the receipt ledger in `40b123a`; nothing reads it | — |
 | `QOOPIA_V4_DASHBOARD` | false | additive V4 dashboard routes/views | disable; existing dashboard remains unchanged |
 
 Existing `QOOPIA_ENTITY_PAGES` and `QOOPIA_SKILLS` retain their V3 behavior and are not redefined by V4.

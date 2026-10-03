@@ -4,7 +4,7 @@
  * tests/setup.ts).  Each test file gets its own workspace+agent so suites
  * don't collide.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
@@ -17,6 +17,9 @@ import {
 } from "../src/services/notes.ts";
 import { QoopiaError } from "../src/utils/errors.ts";
 import { db } from "../src/db/connection.ts";
+import { saveMessage, sessionSearch } from "../src/services/sessions.ts";
+import { listActivity } from "../src/services/activity.ts";
+import { logger } from "../src/utils/logger.ts";
 
 let WORKSPACE_ID = "";
 let AGENT_ID = "";
@@ -258,6 +261,30 @@ describe("updated_at_ms invariant", () => {
     }
   });
 
+  test("a wall clock that falls behind the high-water mark keeps order and is logged", () => {
+    const realDateNow = Date.now;
+    const warn = spyOn(logger, "warn");
+    const ahead = realDateNow() + 2 * 3_600_000;
+    const ids: string[] = [];
+    const write = (text: string) => {
+      const note = createNote({ workspace_id: WORKSPACE_ID, agent_id: AGENT_ID, text });
+      ids.push(note.id);
+      return note.updated_at_ms;
+    };
+    try {
+      Date.now = () => ahead;
+      const before = write("clock-skew-ahead");
+      Date.now = () => ahead - 3_600_000; // the clock is corrected back an hour
+      expect(write("clock-skew-corrected")).toBe(before + 1);
+      expect(warn).toHaveBeenCalledWith("note clock skew", expect.objectContaining({ lead_ms: expect.any(Number) }));
+    } finally {
+      Date.now = realDateNow;
+      warn.mockRestore();
+      // Do not leave a future high-water mark for later suites in this process.
+      for (const id of ids) db.prepare(`DELETE FROM notes WHERE id = ?`).run(id);
+    }
+  });
+
   test("migration trigger prevents a direct insert from creating another zero row", () => {
     const id = "01WS3DIRECTINSERT00000000001";
     const updatedAt = "2026-07-16T18:20:30.456Z";
@@ -270,5 +297,75 @@ describe("updated_at_ms invariant", () => {
       .prepare(`SELECT updated_at_ms FROM notes WHERE id = ?`)
       .get(id) as { updated_at_ms: number };
     expect(row.updated_at_ms).toBe(Date.parse(updatedAt));
+  });
+});
+
+describe("since/until bounds are moments, not text", () => {
+  const code = (run: () => unknown) => {
+    try {
+      run();
+    } catch (error) {
+      return (error as QoopiaError).code;
+    }
+    return "accepted";
+  };
+  const second = (iso: string) => `${iso.slice(0, 19)}Z`;
+  const ms = (iso: string) => new Date(Date.parse(iso)).toISOString();
+
+  test("note_list, session_search and activity_list share one parser", () => {
+    const note = createNote({ workspace_id: WORKSPACE_ID, agent_id: AGENT_ID, text: "windowed qestrel note" });
+    const noteAt = getNote(WORKSPACE_ID, note.id, AGENT_ID, false).created_at;
+    saveMessage({ workspace_id: WORKSPACE_ID, agent_id: AGENT_ID, session_id: "since-until", role: "user", content: "windowed qestrel message" });
+    const messageAt = (db.query("SELECT created_at FROM session_messages WHERE session_id = 'since-until'").get() as { created_at: string }).created_at;
+    const activityAt = (db.query("SELECT created_at FROM activity WHERE entity_id = ?").get(note.id) as { created_at: string }).created_at;
+
+    const notes = (since?: string, until?: string) =>
+      listNotes({ workspace_id: WORKSPACE_ID, caller_agent_id: AGENT_ID, is_admin: false, since, until }).items.map((n) => n.id);
+    const messages = (since?: string, until?: string) =>
+      sessionSearch({ workspace_id: WORKSPACE_ID, agent_id: AGENT_ID, query: "qestrel", since, until }).results.length;
+    const activity = (since?: string, until?: string) =>
+      listActivity({ workspace_id: WORKSPACE_ID, caller_agent_id: AGENT_ID, is_admin: false, since, until }).items.some((a) => a.entity_id === note.id);
+
+    // A second-precision bound covers the whole second, whatever precision the row was stored with.
+    expect(notes(second(noteAt), ms(noteAt))).toContain(note.id);
+    expect(messages(second(messageAt), ms(messageAt))).toBe(1);
+    expect(activity(second(activityAt), ms(activityAt))).toBe(true);
+    // A date is midnight UTC.
+    const day = noteAt.slice(0, 10);
+    expect(notes(day)).toContain(note.id);
+    for (const bad of ["yesterday", "2026-10-02T10:00:00+05:00", "2026-10-02 10:00:00", "2026-02-30"]) {
+      expect(code(() => notes(bad))).toBe("INVALID_INPUT");
+      expect(code(() => messages(undefined, bad))).toBe("INVALID_INPUT");
+      expect(code(() => activity(bad))).toBe("INVALID_INPUT");
+    }
+  });
+
+  test("F-281: windows stay on the created_at index range and still match any stored form", () => {
+    const insert = db.prepare("INSERT INTO notes (id, workspace_id, agent_id, type, text, created_at) VALUES (?, ?, ?, 'note', ?, ?)");
+    insert.run("f281_space", WORKSPACE_ID, AGENT_ID, "legacy space form", "2026-03-01 10:00:00");
+    insert.run("f281_offset", WORKSPACE_ID, AGENT_ID, "offset form", "2026-03-02T01:00:00+05:00");
+    const ids = (since: string, until: string) =>
+      listNotes({ workspace_id: WORKSPACE_ID, caller_agent_id: AGENT_ID, is_admin: true, since, until }).items.map((n) => n.id);
+    expect(ids("2026-03-01T09:00:00Z", "2026-03-01T11:00:00Z")).toEqual(["f281_space"]);
+    expect(ids("2026-03-01T19:00:00Z", "2026-03-01T21:00:00Z")).toEqual(["f281_offset"]);
+
+    const seen: string[] = [];
+    const prepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => (seen.push(sql), prepare(sql))) as typeof db.prepare;
+    try {
+      ids("2026-03-01T00:00:00Z", "2026-03-31T00:00:00Z");
+      listActivity({ workspace_id: WORKSPACE_ID, caller_agent_id: AGENT_ID, is_admin: true, since: "2026-03-01", until: "2026-03-31" });
+    } finally {
+      db.prepare = prepare;
+    }
+    const plan = (pick: RegExp) => {
+      const sql = seen.find((s) => pick.test(s))!;
+      const holes = (sql.match(/\?/g) ?? []).length;
+      return (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(Array(holes).fill("2026-03-01T00:00:00.000Z") as never[])) as Array<{ detail: string }>)
+        .map((r) => r.detail).join(" ; ");
+    };
+    expect(plan(/SELECT \* FROM notes/)).toContain("created_at>? AND created_at<?");
+    expect(plan(/SELECT COUNT\(\*\) as c FROM notes/)).toContain("created_at>? AND created_at<?");
+    expect(plan(/FROM activity a/)).toContain("created_at>? AND created_at<?");
   });
 });

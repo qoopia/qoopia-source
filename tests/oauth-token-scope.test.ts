@@ -3,7 +3,7 @@
  *
  * End-to-end:
  *   - registerClient under steward A → consent ticket → approve by A's
- *     cookie/Bearer → finalize → exchangeCodeForTokens → access token has
+ *     cookie/Bearer (redeems, 302 to callback) → exchangeCodeForTokens → access token has
  *     agent_id of A and workspace_id of A
  *
  * Cross-workspace negative:
@@ -119,13 +119,6 @@ async function approve(
   });
 }
 
-async function finalize(ticketId: string): Promise<Response> {
-  return fetch(
-    `${baseUrl}/oauth/authorize/finalize?ticket=${encodeURIComponent(ticketId)}`,
-    { redirect: "manual" },
-  );
-}
-
 async function exchange(
   clientId: string,
   code: string,
@@ -202,9 +195,8 @@ describe("ADR-017 e2e: register → ticket → approve → finalize → exchange
     const approveResp = await approve(ticketId, nonce, STEWARD_A_KEY);
     expect(approveResp.status).toBe(302);
 
-    const finResp = await finalize(ticketId);
-    expect(finResp.status).toBe(302);
-    const code = new URL(finResp.headers.get("location")!).searchParams.get(
+    // F-076: approve redeems the ticket and redirects straight to the callback.
+    const code = new URL(approveResp.headers.get("location")!).searchParams.get(
       "code",
     )!;
     expect(code).toMatch(/^qc_/);

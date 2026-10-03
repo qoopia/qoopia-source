@@ -20,5 +20,7 @@ export function brandAsset(path:string){
   // A packaging slip must degrade to a plain 404, not a 500 on the page's own stylesheet.
   try{return {body:readFileSync(assetPath('src/public/brand/'+name)),type};}catch{return;}
 }
-export const brandHead='<link rel="icon" type="image/svg+xml" href="/brand/graphite/favicon.svg"><link rel="stylesheet" href="/brand/base.css">';
+// Same touch icon and theme colour as the dashboard (dashboard.html). No manifest link: these pages are
+// also served by the account broker, which has no /manifest.webmanifest and no /dashboard start URL.
+export const brandHead='<link rel="icon" type="image/svg+xml" href="/brand/graphite/favicon.svg"><link rel="apple-touch-icon" href="/brand/graphite/icon-180.png"><meta name="theme-color" content="#111110"><link rel="stylesheet" href="/brand/base.css">';
 export const brandLockup="<span class=\"q-brand\"><img src=\"/brand/graphite/qoopia-mark-ivory.svg\" width=\"28\" height=\"28\" alt=\"\"><img class=\"q-wordmark\" src=\"/brand/graphite/qoopia-wordmark-ivory.svg\" width=\"105\" height=\"28\" alt=\"qoopia\"></span>";

@@ -43,9 +43,9 @@ test('recovery streams snapshot files and BLOB scans while preserving legacy dig
       if(typeof file==='string'&&path.basename(file)==='snapshot.db')throw new Error('FULL_SNAPSHOT_READ_FORBIDDEN');
       return (originalRead as (...values:unknown[])=>unknown)(file,...args);
     }) as typeof fs.readFileSync;
-    Database.prototype.query=function(sql:string){
+    Database.prototype.query=function(this:Database,sql:string){
       const statement=originalQuery.call(this,sql),normalized=sql.replace(/\s+/g,' ').trim().toUpperCase();
-      if(/^SELECT \* FROM /.test(normalized)||(/^SELECT /.test(normalized)&&/\bCONTENT\b/.test(normalized))){
+      if(normalized.startsWith('SELECT * FROM ')||(normalized.startsWith('SELECT ')&&/\bCONTENT\b/.test(normalized))){
         statement.all=()=>{throw new Error('BULK_BLOB_ALL_FORBIDDEN');};
       }
       return statement;

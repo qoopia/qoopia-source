@@ -21,7 +21,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Database } from "bun:sqlite";
-import { DEFAULT_MAX_COMPONENT_SIZE } from "../src/services/temporal-migration.ts";
+import { DEFAULT_MAX_COMPONENT_SIZE } from "../src/db/temporal-migration.ts";
 import {
   buildStagingPlan,
   runPhaseA,

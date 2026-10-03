@@ -5,15 +5,15 @@ import {brandHead,brandLockup} from '../brand.ts';
 import {loginEmail} from './broker.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {connectionOrigin,publicConnection,resourceConnection} from '../services/connection-identity.ts';
-import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket,replayFinalizeRedirect} from '../auth/oauth.ts';
+import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket,finalizeConsentTicket,replayFinalizeRedirect} from '../auth/oauth.ts';
 
-export const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
+const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
 const loginCookie=CONSENT_COOKIE_PREFIX+'login';
 const random=()=>randomBytes(32).toString('base64url');
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const escape=(value:unknown)=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 type Flow={ticket:string;nonce:string;expires:number;owner:string;version:number;verified:boolean;busy:boolean;
-  approvalNonce?:string;binding?:string;login?:{id:string;verifier:string;method:'email'|'google'};language:'en'|'ru'};
+  approvalNonce?:string;binding?:string;login?:{id:string;verifier:string;method:'email'|'google';code:string};language:'en'|'ru'};
 class ConsentError extends Error {constructor(readonly code:string,readonly status=400){super(code);}}
 
 /** A separate, browser-bound consent session can authorize only one prepared client agent. */
@@ -91,7 +91,8 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
         if(!flow.verified||ticket.approved_by_agent_id!==connection.agent_id)throw new ConsentError('CONSENT_EXPIRED',410);
         if(req.method==='POST'&&(route!=='/oauth/consent/approve'||req.headers.get('origin')!==origin||form.get('nonce')!==flow.approvalNonce))
           throw new ConsentError('ORIGIN_OR_SESSION_REFUSED',403);
-        const location=ticket.redeemed?replayFinalizeRedirect(ticket.id):origin+'/oauth/authorize/finalize?'+new URLSearchParams({ticket:ticket.id});
+        // F-076: the code goes straight to the registered callback, only to this verified browser flow.
+        const location=ticket.redeemed?replayFinalizeRedirect(ticket.id,owner.agent_id):finalizeConsentTicket(ticket.id,owner.agent_id);
         if(!location)throw new ConsentError('CONSENT_EXPIRED',410);
         return new Response(null,{status:303,headers:{...headers,location}});
       }
@@ -103,9 +104,11 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
           if(route==='/oauth/consent/start'){
             if(flow.verified)throw new ConsentError('ALREADY_SIGNED_IN',409);
             const method=form.get('method');if(method!=='email'&&method!=='google')throw new ConsentError('INVALID_REQUEST');
-            const verifier=random(),data=await post('/requests',{method,language:flow.language,...(method==='email'?{email:loginEmail(form.get('email'))}:{}),challenge:hash(verifier)});
-            if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new ConsentError('SIGN_IN_UNAVAILABLE',503);
-            flow.login={id:data.id,verifier,method};
+            // F-125: the e-mail confirmation needs the code this page shows, so the mailbox owner's
+            // click cannot verify a consent flow somebody else started.
+            const verifier=random(),data=await post('/requests',{method,language:flow.language,...(method==='email'?{email:loginEmail(form.get('email'))}:{}),bind:true,challenge:hash(verifier)});
+            if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id)||!/^\d{6}$/.test(String(data.confirm_code)))throw new ConsentError('SIGN_IN_UNAVAILABLE',503);
+            flow.login={id:data.id,verifier,method,code:String(data.confirm_code)};
           }else if(route==='/oauth/consent/check'){
             if(!flow.login)throw new ConsentError('SIGN_IN_REQUIRED',403);
             const data=await post('/redeem',{id:flow.login.id,verifier:flow.login.verifier});
@@ -125,7 +128,8 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
               throw new ConsentError('AUTHORITY_CHANGED',403);
             if(!approveConsentTicket(ticket.id,active.agent_id))throw new ConsentError('CONSENT_EXPIRED',410);
             flow.approvalNonce=form.get('nonce')!;
-            return new Response(null,{status:303,headers:{...headers,location:origin+'/oauth/authorize/finalize?'+new URLSearchParams({ticket:ticket.id})}});
+            const location=finalizeConsentTicket(ticket.id,owner.agent_id);if(!location)throw new ConsentError('CONSENT_EXPIRED',410);
+            return new Response(null,{status:303,headers:{...headers,location}});
           }else if(route==='/oauth/consent/deny'){
             if(!denyConsentTicket(ticket.id))throw new ConsentError('CONSENT_EXPIRED',410);
             flows.delete(hash(token));const target=new URL(ticket.redirect_uri);target.searchParams.set('error','access_denied');
@@ -138,10 +142,10 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
       let content=`<h1>${t('Connect your memory','Подключение памяти')}</h1>`;
       if(flow.verified){
         const space=database.query('SELECT name FROM workspaces WHERE id=?').get(connection.workspace_id) as {name:string};
-        content+=`<p>${t('Review this client’s access before continuing.','Проверьте права клиента перед продолжением.')}</p><dl><dt>${t('Workspace','Пространство')}</dt><dd>${escape(space.name)}</dd><dt>${t('Client','Клиент')}</dt><dd>${escape(client.name)}</dd><dt>${t('Permissions','Права')}</dt><dd>${ticket.scope.split(' ').includes('mcp:write')?t('Read and write memory','Чтение и запись памяти'):t('Read memory only','Только чтение памяти')}</dd></dl><p>${t('Your memory stays on the selected installation. Authorized results pass through Cloudflare to this client. This does not connect a background model or capture your entire chat.','Память остаётся на выбранной установке. Разрешённые результаты проходят через Cloudflare к этому клиенту. Это не подключает фоновую модель и не сохраняет всю переписку.')}</p>`;
+        content+=`<p>${t('Review this client’s access before continuing.','Проверьте права клиента перед продолжением.')}</p><dl><dt>${t('Workspace','Пространство')}</dt><dd>${escape(space.name)}</dd><dt>${t('Client','Клиент')}</dt><dd>${escape(client.name)}</dd><dt>${t('Permissions','Права')}</dt><dd>${ticket.scope.split(' ').includes('mcp:write')?t('Read and add memory','Чтение и добавление памяти'):t('Read memory only','Только чтение памяти')}</dd><dt>${t('Access is sent to','Доступ получит')}</dt><dd>${escape(callback.host)}</dd></dl><p>${t('Your memory stays on the selected installation. Authorized results pass through Cloudflare to this client. This does not connect a background model or capture your entire chat.','Память остаётся на выбранной установке. Разрешённые результаты проходят через Cloudflare к этому клиенту. Это не подключает фоновую модель и не сохраняет всю переписку.')}</p>`;
         content+=action('approve',t('Allow this client','Разрешить этому клиенту'));
       }else if(flow.login){
-        content+=`<p>${t('Finish account confirmation, then return here.','Завершите подтверждение аккаунта и вернитесь сюда.')}</p>`;
+        content+=`<p>${t('Finish account confirmation, then return here.','Завершите подтверждение аккаунта и вернитесь сюда.')}</p><p>${t('When the confirmation page asks, enter this code:','Когда страница подтверждения попросит, введите этот код:')} <strong>${flow.login.code}</strong></p>`;
         if(flow.login.method==='google')content+=`<p><a target="_blank" rel="noopener noreferrer" href="${loginOrigin}/google?request=${flow.login.id}">${t('Continue with Google','Продолжить через Google')} ↗</a></p>`;
         else content+=`<p>${t('Open the link in your email to confirm.','Для подтверждения откройте ссылку из письма.')}</p>`;
         content+=action('check',t('I confirmed — continue','Я подтвердил — продолжить'));
