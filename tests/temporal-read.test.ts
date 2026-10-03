@@ -568,7 +568,9 @@ describe("as-of history includes legacy-archived predecessors", () => {
     archive(skipped.id, { status: "archived", superseded_by: head.id });
     archive(manual.id, { status: "archived" });
     enableFlag();
-    const at = isoFromEpochMs(Date.now() + 1000);
+    // "Now" on the note-write clock: earlier test files can push its high-water past the wall clock (F-339).
+    const stamps = temporalRow(head.id);
+    const at = isoFromEpochMs(Math.max(Date.now(), stamps.created_at_ms!, stamps.valid_from_ms!) + 1000);
     for (const mode of [{ valid_as_of: at }, { known_as_of: at }]) {
       expect(await ids({ query: term, ...mode })).toEqual([head.id]);
     }

@@ -1,6 +1,6 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "d655d94e5aca6b77cb65ad0e324ae0e2fab1e894",
+  "source_snapshot": "9c4bff923d599281a72c21b9767bfa412ee07994",
   "product_version": "5.0.15",
   "runtime_files_identical": true,
   "files": [
@@ -90,7 +90,7 @@
     },
     {
       "path": "RELEASE.json",
-      "sha256": "c9053b10c33e2cffc68a5d2105716422e9136f60d84da8a968ff9e2d0ed075fb",
+      "sha256": "bc277676591fc09308711812a7ad736ed9acbe2ba087086a5cc7922241284216",
       "bytes": 179,
       "source_snapshot_identical": false
     },
@@ -5262,8 +5262,8 @@
     },
     {
       "path": "tests/temporal-read.test.ts",
-      "sha256": "25fde36a0db73f9da93e1caecaa36d0964b18e593c85c09c25f619d952d88cd1",
-      "bytes": 27427,
+      "sha256": "a8cb3c9e30c12f284b680e234501501cabc5f4c80cf6cf97efe2c43bfbaa025f",
+      "bytes": 27634,
       "source_snapshot_identical": true
     },
     {
