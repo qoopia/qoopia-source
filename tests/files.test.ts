@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
-import { fileUpload, fileGet, fileList, fileListByFolder, fileListFolders, fileGetForDownload, fileDelete, parseFileText } from "../src/services/files.ts";
+import { fileUpload, fileGet, fileList, fileListByFolder, fileListFolders, fileGetForDownload, fileDelete, filePut, parseFileText } from "../src/services/files.ts";
 import JSZip from "jszip";
 
 let WS = "";
@@ -46,6 +46,29 @@ function pdf(pages: number, line: string, lines = 1): Buffer {
     `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, "latin1");
 }
+
+describe("agents save files with file_put", () => {
+  test("own folder by default, sub-folders on first use, parts appended, another author's file never replaced", async () => {
+    const ws = createWorkspace({ name: "files-put" });
+    const kiri = createAgent({ name: "file-put-kiri", workspaceSlug: ws.slug }).id, leo = createAgent({ name: "file-put-leo", workspaceSlug: ws.slug }).id;
+    const put = (agent_id: string, agent_name: string, p: Record<string, unknown>) => filePut({ workspace_id: ws.id, agent_id, agent_name, filename: "report.md", content: "", ...p } as any);
+    expect(await put(kiri, "Kiri", { content: "# Report" })).toMatchObject({ folder: "Kiri", filename: "report.md" });
+    await put(kiri, "Kiri", { folder: "Kiri/2026", content: "part one, " });
+    await put(kiri, "Kiri", { folder: "Kiri/2026", content: "part two", append: true });
+    expect(fileGet({ workspace_id: ws.id, folder: "Kiri/2026", filename: "report.md" }).content).toBe("part one, part two");
+    await put(kiri, "Kiri", { filename: "pixel.bin", encoding: "base64", content: Buffer.from([0, 1, 2]).toString("base64") });
+    expect(fileGetForDownload({ workspace_id: ws.id, id: fileGet({ workspace_id: ws.id, folder: "Kiri", filename: "pixel.bin" }).id })!.content).toEqual(Buffer.from([0, 1, 2]));
+    // Leo may write into Kiri's folder, but not over Kiri's file; Kiri's text stays.
+    await expect(put(leo, "Leo", { folder: "Kiri", content: "overwritten" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(put(leo, "Leo", { folder: "Kiri", content: "more", append: true })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(fileGet({ workspace_id: ws.id, folder: "Kiri", filename: "report.md" }).content).toBe("# Report");
+    await expect(put(kiri, "Kiri", { content: "" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(put(kiri, "Kiri", { encoding: "base64", content: "not base64!" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    const listed = fileList({ workspace_id: ws.id });
+    expect(listed.folders.map((f: any) => f.folder)).toEqual(["Kiri", "Kiri/2026"]);
+    expect(listed.files.every((f: any) => f.uploaded_by === "file-put-kiri")).toBe(true);
+  });
+});
 
 describe("files service", () => {
   test("DOCX extraction preserves normal text", async () => {

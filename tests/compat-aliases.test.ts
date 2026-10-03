@@ -3,11 +3,12 @@
  * rollback switch. Every alias is called here through registerTools with the
  * flag on, so the rollback path is not untested code.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
-import { registerTools } from "../src/mcp/tools.ts";
+import { fail, registerTools } from "../src/mcp/tools.ts";
+import { logger } from "../src/utils/logger.ts";
 import { createNote, getNote } from "../src/services/notes.ts";
 import type { AuthContext } from "../src/auth/middleware.ts";
 
@@ -73,6 +74,7 @@ describe("V2 compat aliases through registerTools", () => {
 
     const got = await call(alice, "get", { entity: "tasks", id: created.id });
     expect(got.text).toBe("Compat task\n\ndetails");
+    expect(got.untrusted_content).toBeUndefined(); // aliases return results unlabelled
 
     const listed = await call(alice, "list", { entity: "tasks" });
     expect(JSON.stringify(listed)).toContain(created.id);
@@ -116,5 +118,27 @@ describe("V2 compat aliases through registerTools", () => {
     }
     expect(JSON.stringify(await call(alice, "list", { entity: "tasks" }))).not.toContain(secret.id);
     expect(getNote(bob.workspace_id, secret.id, bob.agent_id, false).text).toBe("bob private task");
+  });
+
+  test("a scope refusal names the alias's risk; a canonical tool names itself", async () => {
+    const readOnly: AuthContext = { ...alice, granted_scope: ["mcp:read"] };
+    expect((await call(readOnly, "create", { entity: "tasks", title: "x" })).error)
+      .toBe("FORBIDDEN: OAuth token scope forbids MCP tool risk='write-low'");
+    expect((await call(readOnly, "note_create", { text: "x" })).error)
+      .toBe("FORBIDDEN: OAuth token scope forbids MCP tool 'note_create'");
+  });
+
+  test("internal errors log under the compat prefix only when asked", () => {
+    const spy = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      fail(new Error("boom"));
+      fail(new Error("boom"), "MCP compat tool");
+      fail("boom", "MCP compat tool");
+      expect(spy.mock.calls.map((c) => c[0])).toEqual([
+        "MCP tool internal error", "MCP compat tool internal error", "MCP compat tool unknown error",
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

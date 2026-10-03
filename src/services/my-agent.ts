@@ -11,7 +11,7 @@ import {authorize} from '../auth/policy.ts';
 import {createAgent} from '../admin/agents.ts';
 import {sha256Hex} from '../auth/api-keys.ts';
 import {stewardCommand} from '../delivery/steward.ts';
-import {durableWrite,hash,privateDirectory,readJsonBytes,safePath} from '../utils/fs.ts';
+import {durableWrite,hash,privateDirectory,safePath,readJson} from '../utils/fs.ts';
 import {nativeRuntimeEnvironment} from '../delivery/native-provision.ts';
 import {RUNTIMES} from '../delivery/runtime-versions.ts';
 import {memoryRoot} from './memory-model.ts';
@@ -113,7 +113,7 @@ function adoptableConnection(ownerId:string,provider:AgentProvider='codex'):{id:
   const auth=agentOwner(ownerId),file=path.join(memoryRoot(),'config','memory-clients',hash(auth.workspace_id),provider+'.json');
   if(!fs.existsSync(file))return null;
   try {
-    const input=JSON.parse(readJsonBytes(file).toString());
+    const input=readJson<any>(file);
     if(input.runtime!==provider||typeof input.key!=='string'||typeof input.agent_id!=='string')return null;
     const agent=db.query("SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND type='steward' AND api_key_hash=? AND tool_profile IN ('full','no-destructive')").get(input.agent_id,auth.workspace_id,sha256Hex(input.key));
     return agent?{id:input.agent_id,key:input.key}:null;
@@ -121,7 +121,7 @@ function adoptableConnection(ownerId:string,provider:AgentProvider='codex'):{id:
 }
 function credentials(ownerId:string) {
   const settings=agentSettings(ownerId);if(!settings?.enabled)throw new QoopiaError('NOT_READY','Set up My Qoopia agent first');
-  const secrets=JSON.parse(readJsonBytes(path.join(agentDirectory(ownerId),'credentials.json')).toString()) as {key:string};
+  const secrets=readJson(path.join(agentDirectory(ownerId),'credentials.json')) as {key:string};
   if(!db.query("SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND type='steward' AND api_key_hash=?").get(settings.agent_id,settings.workspace_id,sha256Hex(secrets.key))) {
     live.get(ownerId)?.rpc.stop();throw new QoopiaError('FORBIDDEN','Agent access was revoked. Review your agents.');
   }

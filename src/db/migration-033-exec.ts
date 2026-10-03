@@ -19,6 +19,7 @@
  * записать версию схемы.
  */
 import type { Database } from "bun:sqlite";
+import { tableExists } from "./introspect.ts";
 
 /** Признак «оператор — тело триггера», у которого `;` не терминатор. */
 const TRIGGER_HEAD = /\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
@@ -103,14 +104,6 @@ interface Migration033Snapshot {
   skipped_count: number;
   linear_target_ids: string[];
   skipped_ids: string[];
-}
-
-function tableExists(db: Database, name: string): boolean {
-  return (
-    db
-      .query(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
-      .get(name) != null
-  );
 }
 
 /**

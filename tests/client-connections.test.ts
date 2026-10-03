@@ -66,6 +66,9 @@ async function call(connection:any,token:string,name:string,args:any) {
 }
 test('selection is idempotent, isolated and never reports configuration as a client call',()=>{
   const first=apply(owner,'read','repeat');expect(first.last_seen).toBeNull();expect(first.state).toBe('requires_user_action');expect(apply(owner,'read','repeat').id).toBe(first.id);
+  // Without an installed layout the client file is offered for another computer.
+  expect(first.client_config).toBe('download_file');
+  expect((connectionAction(owner.agent_id,{action:'client-plan',id:first.id}) as any).code).toBe('CLIENT_COMPUTER_REQUIRED');
   expect(()=>apply(owner,'read_write','repeat')).toThrow('Request key');
   expect(()=>connectionAction(other.agent_id,{action:'resume',id:first.id})).toThrow('Connection unavailable');
   expect(JSON.stringify(connectionAction(owner.agent_id,{action:'status'}))).not.toMatch(/q_[A-Za-z0-9_-]{20}/);

@@ -1,4 +1,4 @@
-import {escapeHtml as e} from './newsletter.ts';
+import {escapeHtml as e} from '../utils/html.ts';
 
 type Row=Record<string,unknown>;
 type Dataset={status:string;observed_at?:string;error?:string;items?:Row[];data?:Row;truncated?:boolean;total_count?:number;window?:string};

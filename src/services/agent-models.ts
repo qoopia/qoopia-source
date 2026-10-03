@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {durableWrite,readJsonBytes} from '../utils/fs.ts';
+import {durableWrite,readJson} from '../utils/fs.ts';
 import {QoopiaError} from '../utils/errors.ts';
 
 type Provider='codex'|'claude_code';
@@ -11,7 +11,7 @@ const file=(folder:string,provider:Provider)=>path.join(folder,provider+'-model.
 /** A non-secret preference in the existing private owner directory; no database migration. */
 export function modelPreference(folder:string,provider:Provider):{model:string|null}|undefined {
   const name=file(folder,provider);if(!fs.existsSync(name))return;
-  const data=JSON.parse(readJsonBytes(name).toString());
+  const data=readJson<any>(name);
   if(data.model!==null&&!valid(data.model))throw new QoopiaError('INVALID_INPUT','Invalid saved model selection');
   return {model:data.model};
 }

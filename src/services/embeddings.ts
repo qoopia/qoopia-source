@@ -21,10 +21,10 @@ import {envFlag} from "../utils/env.ts";
  *   catch and degrade — the note still saves, recall still returns
  *   FTS-only results. No write blocks on the embedder.
  */
-import { createHash } from "node:crypto";
 import { QoopiaError } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
 import { readBoundedText } from "../utils/http-json.ts";
+import { hash } from "../utils/fs.ts";
 
 export const EMBED_PROVIDER = process.env.QOOPIA_EMBED_PROVIDER || (process.env.QOOPIA_EMBED_ENDPOINT ? 'ollama' : 'builtin');
 export const EMBED_MODEL = EMBED_PROVIDER==='builtin' ? 'multilingual-e5-small:761b726dd34f:q8:chunks-v1' : process.env.QOOPIA_EMBED_MODEL || 'bge-m3';
@@ -236,9 +236,7 @@ export function cosineSim(a: Float32Array, b: Float32Array): number {
 }
 
 /** Hex sha256 of the text — used to skip re-embedding unchanged notes. */
-export function textHash(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
+export const textHash = (text: string): string => hash(text);
 
 /**
  * Probe Ollama once at startup / cron — used by recall.ts to decide

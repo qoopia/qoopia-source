@@ -23,6 +23,17 @@ export function requireOpsJournalV3(bundle: ReturnType<typeof verifyBundle>) {
     throw new Error('OPS_BUNDLE_INCOMPATIBLE: bundle must declare qoopia-ops-reader/3; old binaries cannot be retrofitted');
   }
 }
+/** What `qoopia version` may say about the running build: only a verified manifest is publisher trust [F-338]. */
+export function bundleTrust(root: string, publicKey: string): string {
+  try {
+    return verifyBundle(root, publicKey, true).manifest.signing === 'publisher'
+      ? 'publisher signature verified'
+      : 'test fixture builds do not establish publisher trust';
+  } catch (error) {
+    return 'not verified: ' + (error as Error).message;
+  }
+}
+
 export function verifyBundle(root: string, publicKey: string, allowTest = false, target = `${process.platform}-${process.arch}`) {
   // One bounded read: the signature and the trusted member table come from the same bytes.
   const raw = readJsonBytes(path.join(root, 'manifest.json'));

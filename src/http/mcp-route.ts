@@ -4,6 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createMcpServer } from "../mcp/server.ts";
 import { normalizeAgentProfile, riskOf } from "../mcp/tools.ts";
 import { authenticate, type AuthContext } from "../auth/middleware.ts";
+import { isAdmin } from "../auth/principal.ts";
 import { connectionOrigin, publicConnection } from "../services/connection-identity.ts";
 import { env } from "../utils/env.ts";
 import { logger } from "../utils/logger.ts";
@@ -12,7 +13,7 @@ import { getAllowedOrigin, json, nodeReqToFetchRequest, readBody } from "./respo
 // --- Auth context per-request (no module-level variable, no race condition) ---
 const authStorage = new AsyncLocalStorage<AuthContext>();
 
-export function getCurrentAuth(): AuthContext | null {
+function getCurrentAuth(): AuthContext | null {
   return authStorage.getStore() ?? null;
 }
 
@@ -93,7 +94,7 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
 
   await authStorage.run(auth, async () => {
     const server = createMcpServer(() => getCurrentAuth(), "full", {
-      isSteward: auth.type === "steward" || auth.type === "owner",
+      isSteward: isAdmin(auth),
       bootstrapProfile,
       agentToolProfile: agentProfile,
       grantedScope: auth.granted_scope,

@@ -78,6 +78,12 @@ describe("archive-stale: previous_status preservation", () => {
     expect(md.previous_status).toBe("done");
     expect(typeof md.archived_at).toBe("string");
     expect(md.archived_by).toBe("archive-stale.ts");
+    const row = db.prepare(`SELECT updated_at, updated_at_ms FROM notes WHERE id = ?`).get(n.id) as {
+      updated_at: string;
+      updated_at_ms: number;
+    };
+    expect(row.updated_at_ms).toBeGreaterThan(n.updated_at_ms);
+    expect(Date.parse(row.updated_at)).toBe(row.updated_at_ms);
   });
 
   test("note with no $.status → previous_status absent (no JSON-null pollution)", () => {

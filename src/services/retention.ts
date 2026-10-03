@@ -11,9 +11,10 @@ import { db } from "../db/connection.ts";
 import { env } from "../utils/env.ts";
 import { logger } from "../utils/logger.ts";
 import { nowIso } from "../utils/errors.ts";
-import { nextNoteWriteTimestamp } from "./notes.ts";
+import { nextNoteWriteTimestamp } from "./note-temporal.ts";
 import { ensureSafeDir } from "../utils/fs-perms.ts";
 import { AGENT_WAKE_MAX_ATTEMPTS } from "./agent-wake.ts";
+import { tableExists } from "../db/introspect.ts";
 
 /**
  * Daily maintenance job:
@@ -66,10 +67,9 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     let sessionsPurged = 0;
     let sessionsTombstoned = 0;
     let messagesPurged = 0;
-    const hasTable = (name: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
-    const hasDraftRefs = hasTable('skill_draft_revisions');
-    const hasCaptures = hasTable('skill_captures');
-    const hasLoadouts = hasTable('session_loadouts');
+    const hasDraftRefs = tableExists(db, 'skill_draft_revisions');
+    const hasCaptures = tableExists(db, 'skill_captures');
+    const hasLoadouts = tableExists(db, 'session_loadouts');
     const deletedUnlessReferenced = (sql: string, id: string) => {
       try { db.transaction(() => db.prepare(sql).run(id))(); return true; }
       catch (error) { if (String((error as Error)?.message).includes('FOREIGN KEY constraint failed')) return false; throw error; }
@@ -85,7 +85,7 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
               WHERE r.workspace_id=n.workspace_id AND json_extract(ref.value,'$.kind')='note'
                 AND json_extract(ref.value,'$.id')=n.id)`
           : '0';
-        const notes = db.prepare(`SELECT n.id, n.updated_at_ms, ${noteRefs} AS held FROM notes n WHERE n.task_bound_id=?`).all(t.id) as Array<{ id: string; updated_at_ms: number; held: number }>;
+        const notes = db.prepare(`SELECT n.id, n.workspace_id, n.updated_at_ms, ${noteRefs} AS held FROM notes n WHERE n.task_bound_id=?`).all(t.id) as Array<{ id: string; workspace_id: string; updated_at_ms: number; held: number }>;
         for (const note of notes) {
           // F-106: deleteNote already dropped a soft-deleted note from notes_fts, and the
           // notes_ad/notes_au triggers below send an FTS 'delete' regardless. Re-index the row
@@ -97,7 +97,7 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
           // failing the whole job. The SAVEPOINT keeps the failed DELETE from leaking.
           if (!note.held && deletedUnlessReferenced('DELETE FROM notes WHERE id=?', note.id)) { notesPurged++; continue; }
           // A note write like any other: the shared allocator keeps updated_at_ms with updated_at.
-          const ts = nextNoteWriteTimestamp(note.updated_at_ms);
+          const ts = nextNoteWriteTimestamp(note.workspace_id, note.updated_at_ms);
           db.prepare(`UPDATE notes SET text='',metadata='{"source_deleted":true}',tags='[]',project_id=NULL,
             session_id=NULL,task_bound_id=NULL,deleted_at=?,updated_at=?,updated_at_ms=? WHERE id=?`).run(ts.iso, ts.iso, ts.ms, note.id);
           notesTombstoned++;

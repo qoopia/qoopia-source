@@ -3,8 +3,8 @@ import {db} from '../db/connection.ts';
 import {authFromSessionCookie,DASHBOARD_COOKIE,parseCookies,verifySession} from '../dashboard-session.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {ownerIdentity} from '../identity/local.ts';
-import {env} from '../utils/env.ts';
 import {isReadOnlyInstance} from '../utils/instance-role.ts';
+import {ownerIdentityRoot} from '../utils/standalone.ts';
 import {json} from './respond.ts';
 
 /** The signed dashboard cookie must belong to the explicitly configured human service owner. */
@@ -18,8 +18,7 @@ export function serviceOwnerEmail(req:IncomingMessage):string|null{
   if(!auth||auth.type!=='owner'||auth.agent_id!==expected)return null;
   try{
     localOwner(db,auth.agent_id);
-    const root=process.env.QOOPIA_STANDALONE==='true'?JSON.parse(process.env.QOOPIA_STANDALONE_LAYOUT!).root:env.ROOT_DIR;
-    const binding=ownerIdentity(root);
+    const root=ownerIdentityRoot(),binding=root===undefined?null:ownerIdentity(root);
     return binding?.ownerId===auth.agent_id?binding.email:null;
   }catch{return null;}
 }

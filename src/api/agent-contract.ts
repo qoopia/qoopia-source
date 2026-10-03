@@ -2,6 +2,7 @@ import type {Database} from 'bun:sqlite';
 import type {AuthContext} from '../auth/middleware.ts';
 import {authorize,bootstrapToolAllowed,currentToolAuth,type AuthorityAction} from '../auth/policy.ts';
 import {grantedScopeAllowsRisk} from '../auth/oauth.ts';
+import {isAdmin} from '../auth/principal.ts';
 import {isToolAllowedForProfile,normalizeAgentProfile,ownerAllowed,toolCatalog,toolNames,type RiskClass} from '../mcp/tools.ts';
 import {assertInstanceWriteAllowed} from '../utils/instance-role.ts';
 import {BRIDGE_READ_TOOLS,BRIDGE_TOOL_NAMES,bridgeRefusal} from '../bridges/api.ts';
@@ -34,7 +35,7 @@ export function grantedTools(database:Database,auth:AuthContext,operations:reado
   // What this connection really got, when the transport recorded it; otherwise the default rule.
   const bootstrap=auth.bootstrap_profile!==undefined?(auth.bootstrap_profile??undefined)
     :auth.legacy_skill_access===1?undefined:auth.authority_profile;
-  const steward=auth.type==='steward'||auth.type==='owner';
+  const steward=isAdmin(auth);
   // The same four predicates MCP registration applies, plus the instance gate the handler
   // enforces: on a follower or with storage exhausted a write tool exists but always refuses,
   // and reporting it as available would be a promise the server cannot keep.

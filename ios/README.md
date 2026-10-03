@@ -7,8 +7,9 @@ This is a hybrid client, not an independent on-device agent runtime.
 
 ## Account and data
 
-- First launch opens `https://auth.qoopia.ai/profile?app=ios`: a compact email sign-in.
-  Confirm the email in Mail/Safari and return to the app. The existing saved HTTPS
+- First launch opens `https://auth.qoopia.ai/profile?app=ios`: a compact Google or email sign-in.
+  Google opens in a Safari sheet and the app continues by itself; an email link opened on the
+  same network confirms by itself. The existing saved HTTPS
   workspace opens automatically; its linked owner is checked without a second email.
 - Account continuation uses a one-use browser-delivered code and a server-held
   verifier. Both are required; the confirmed account can authorize only its saved

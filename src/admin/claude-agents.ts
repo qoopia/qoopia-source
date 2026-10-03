@@ -11,6 +11,7 @@
 import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
+import { workspaceIdBySlug } from "./workspaces.ts";
 
 interface ClaudeAgentRecord {
   id: string;
@@ -31,14 +32,11 @@ export function registerClaudeAgent(opts: {
   cwdPrefix: string;
   autosessionEnabled?: boolean;
 }): ClaudeAgentRecord {
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(opts.workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace '${opts.workspaceSlug}' not found`);
+  const workspaceId = workspaceIdBySlug(opts.workspaceSlug);
 
   const agent = db
     .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
-    .get(opts.agentName, ws.id) as { id: string } | undefined;
+    .get(opts.agentName, workspaceId) as { id: string } | undefined;
   if (!agent)
     throw new QoopiaError("NOT_FOUND", `active agent '${opts.agentName}' not found in workspace '${opts.workspaceSlug}'`);
 
@@ -48,7 +46,7 @@ export function registerClaudeAgent(opts: {
     db.prepare(
       `INSERT INTO claude_code_agents (id, workspace_id, agent_id, cwd_prefix, autosession_enabled, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(id, ws.id, agent.id, opts.cwdPrefix, enabled, nowIso());
+    ).run(id, workspaceId, agent.id, opts.cwdPrefix, enabled, nowIso());
   } catch (err) {
     const msg = (err as Error).message || "";
     if (msg.includes("UNIQUE constraint failed")) {
@@ -72,17 +70,14 @@ export function enableAutosession(opts: {
   workspaceSlug: string;
   cwdPrefix: string;
 }): { cwd_prefix: string; autosession_enabled: true } {
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(opts.workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace '${opts.workspaceSlug}' not found`);
+  const workspaceId = workspaceIdBySlug(opts.workspaceSlug);
 
   const info = db
     .prepare(
       `UPDATE claude_code_agents SET autosession_enabled = 1
        WHERE workspace_id = ? AND cwd_prefix = ?`,
     )
-    .run(ws.id, opts.cwdPrefix);
+    .run(workspaceId, opts.cwdPrefix);
   if (info.changes === 0)
     throw new QoopiaError("NOT_FOUND", `cwd_prefix '${opts.cwdPrefix}' not registered`);
   return { cwd_prefix: opts.cwdPrefix, autosession_enabled: true };
@@ -95,17 +90,14 @@ export function disableAutosession(opts: {
   workspaceSlug: string;
   cwdPrefix: string;
 }): { cwd_prefix: string; autosession_enabled: false } {
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(opts.workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace '${opts.workspaceSlug}' not found`);
+  const workspaceId = workspaceIdBySlug(opts.workspaceSlug);
 
   const info = db
     .prepare(
       `UPDATE claude_code_agents SET autosession_enabled = 0
        WHERE workspace_id = ? AND cwd_prefix = ?`,
     )
-    .run(ws.id, opts.cwdPrefix);
+    .run(workspaceId, opts.cwdPrefix);
   if (info.changes === 0)
     throw new QoopiaError("NOT_FOUND", `cwd_prefix '${opts.cwdPrefix}' not registered`);
   return { cwd_prefix: opts.cwdPrefix, autosession_enabled: false };
@@ -121,10 +113,7 @@ export function listClaudeAgents(workspaceSlug: string): Array<{
   autosession_enabled: number;
   created_at: string;
 }> {
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace '${workspaceSlug}' not found`);
+  const workspaceId = workspaceIdBySlug(workspaceSlug);
 
   return db
     .prepare(
@@ -134,7 +123,7 @@ export function listClaudeAgents(workspaceSlug: string): Array<{
        WHERE c.workspace_id = ?
        ORDER BY c.cwd_prefix`,
     )
-    .all(ws.id) as Array<{
+    .all(workspaceId) as Array<{
       id: string;
       agent_name: string;
       cwd_prefix: string;

@@ -1,16 +1,13 @@
-import { createHash } from "node:crypto";
 import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { getNote } from "./notes.ts";
-import { levelOf, seesWholeWorkspace, visibleRowSql, visibleTranscriptSql } from "../auth/principal.ts";
+import { levelOf, seesWholeWorkspace, visibleRowSql, visibleTranscriptSql, ADMIN_TYPES } from "../auth/principal.ts";
+import { hash } from "../utils/fs.ts";
 
 export const RECALL_PIPELINE_VERSION = "v4.0.0-p04.1";
 const TRACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-// Other agents' traces are for the steward and the owner only (ADR-020: the two
-// principals that read the whole workspace); shared context does not reach them.
-const TRACE_ADMIN_TYPES = new Set(["owner", "steward"]);
 
 export type TraceResultKind = "note" | "entity" | "activity" | "session_message";
 export type TraceSourceChannel = "fts5" | "vector" | "both" | "activity_fts" | "session_fts";
@@ -52,8 +49,10 @@ interface TraceItemRow extends Omit<RecallDiagnosticItem, "reason_codes"> {
   reason_codes: string;
 }
 
+// Other agents' traces are for the steward and the owner only (ADR-020: the two
+// principals that read the whole workspace); shared context does not reach them.
 function isTraceAdmin(auth: AuthContext): boolean {
-  return TRACE_ADMIN_TYPES.has(auth.type);
+  return ADMIN_TYPES.has(auth.type);
 }
 
 
@@ -134,7 +133,7 @@ export function createRecallTrace(input: {
   items: RecallDiagnosticItem[];
 }): string {
   const id = ulid();
-  const queryHash = createHash("sha256").update(input.query.normalize("NFKC")).digest("hex");
+  const queryHash = hash(input.query.normalize("NFKC"));
   const options = JSON.stringify(input.options);
   if (options.length > 4096) throw new QoopiaError("SIZE_LIMIT", "recall trace options exceed 4096 bytes");
   if (input.items.length > 100) throw new QoopiaError("SIZE_LIMIT", "recall trace exceeds 100 items");

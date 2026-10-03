@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 export const hash = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+/** 32 random bytes, base64url: the one shape of bearer secret, nonce and state token. */
+export const randomToken = () => randomBytes(32).toString('base64url');
 /** NUL/CR/LF are refused in paths and values written into unit files, plists and client configs. */
 export const hasNulOrNewline = (value: string) => value.includes('\0') || value.includes('\r') || value.includes('\n');
 export function safePath(input: string): string {

@@ -4,7 +4,7 @@ import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { recordLifecycleChange } from "../utils/observability.ts";
 import { getNote } from "./notes.ts";
 import { resolveNoteProvenance } from "./provenance.ts";
-import { assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
+import { assertWriteScope, seesWholeWorkspace, ADMIN_TYPES, liveActor } from "../auth/principal.ts";
 
 interface LifecycleRow {
   workspace_id: string;
@@ -16,9 +16,6 @@ interface LifecycleRow {
   owner_pinned: number;
   updated_at: string;
 }
-const PIN_TYPES = new Set(["owner", "steward"]);
-
-
 
 function rowOrDefault(workspaceId: string, noteId: string): LifecycleRow {
   const row = db.prepare(
@@ -175,18 +172,14 @@ export function setMemoryPin(input: {
   pinned: boolean;
 }) {
   assertWriteScope(input.auth);
-  if (!PIN_TYPES.has(input.auth.type)) {
+  if (!ADMIN_TYPES.has(input.auth.type)) {
     throw new QoopiaError("FORBIDDEN", "pin and unpin require owner or steward capability");
   }
   getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));
   const result = db.transaction(() => {
     // Recheck live authorization and note visibility inside the transaction.
-    const actor = db.prepare(
-      `SELECT type, active FROM agents WHERE workspace_id = ? AND id = ?`,
-    ).get(input.auth.workspace_id, input.auth.agent_id) as
-      | { type: string; active: number }
-      | undefined;
-    if (!actor || actor.active !== 1 || !PIN_TYPES.has(actor.type)) {
+    const actor = liveActor(input.auth);
+    if (!actor || !ADMIN_TYPES.has(actor.type)) {
       throw new QoopiaError("FORBIDDEN", "pin authorization changed");
     }
     getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));

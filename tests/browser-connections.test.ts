@@ -88,6 +88,22 @@ test('connection overview includes native identities without duplicating managed
   expect(Object.keys(agents.find(a=>a.id===native.id)!)).toEqual(['id','name','last_seen']);
 });
 
+test('connected applications: every app that can reach the memory; disconnecting an OAuth client ends only its grants',()=>{
+  const oauth=createAgent({name:'Apps OAuth agent',workspaceSlug:'browser-onboarding'});
+  db.query("INSERT INTO oauth_clients(id,name,agent_id,client_secret_hash,workspace_id) VALUES('apps-client','ChatGPT',?,'x',?)").run(oauth.id,owner.workspace_id);
+  db.query("INSERT INTO oauth_tokens(token_hash,client_id,agent_id,workspace_id,token_type,expires_at) VALUES('apps-token','apps-client',?,?,'refresh','2099-01-01T00:00:00Z')").run(oauth.id,owner.workspace_id);
+  db.query('UPDATE agents SET last_seen=? WHERE id=?').run(new Date().toISOString(),oauth.id);
+  const draft=connectionAction(owner.agent_id,{action:'apply',surface:'codex',access_mode:'read',request_key:'apps-draft'}) as {connection:{id:string}};
+  const apps=browserConnectionState(owner.agent_id).apps;
+  expect(apps.find(a=>a.agent_id===oauth.id)).toMatchObject({kind:'oauth',client:'ChatGPT'});
+  // A setup nobody came to yet is listed without a request; the page shows it only while it is fresh.
+  expect(apps.find(a=>a.id===draft.connection.id)).toMatchObject({kind:'connection',surface:'codex',last_seen:null});
+  expect(()=>connectionAction(owner.agent_id,{action:'revoke-oauth',agent_id:(db.query('SELECT agent_id FROM client_connections WHERE id=?').get(draft.connection.id) as {agent_id:string}).agent_id})).toThrow();
+  expect(connectionAction(owner.agent_id,{action:'revoke-oauth',agent_id:oauth.id})).toMatchObject({code:'ACCESS_REVOKED',revoked:1});
+  expect(browserConnectionState(owner.agent_id).apps.some(a=>a.agent_id===oauth.id)).toBe(false);
+  expect((db.query('SELECT active FROM agents WHERE id=?').get(oauth.id) as {active:number}).active).toBe(1);
+});
+
 test('browser discovery does not reactivate a revoked identity or choose between owners',()=>{
   const agent=browserAgent('GPT')!;db.query('UPDATE agents SET active=0 WHERE id=?').run(agent.id);
   expect(browserAgent('GPT')).toBeNull();db.query('UPDATE agents SET active=1 WHERE id=?').run(agent.id);

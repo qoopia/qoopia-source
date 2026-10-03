@@ -1,9 +1,10 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { lookup } from "node:dns/promises";
 import https from "node:https";
 import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { hash } from "../utils/fs.ts";
 
 const FORBIDDEN_PAYLOAD_KEY = /(?:^|_)(?:body|content|text|query|authorization|cookie|password|secret|token|api_key|private_key)(?:$|_)/i;
 // Non-public destinations (RFC 6890 special-purpose ranges). BlockList also
@@ -152,7 +153,7 @@ export async function deliverMemoryEvent(input: {
     if (Buffer.byteLength(received.body) > 4096) throw new QoopiaError("SIZE_LIMIT", "receipt too large");
     let receipt;
     try { receipt = JSON.parse(received.body); } catch { throw new QoopiaError("CONFLICT", "receiver acceptance missing"); }
-    const digest = createHash("sha256").update(body).digest("hex");
+    const digest = hash(body);
     if (receipt?.accepted !== true || receipt.event_id !== input.row.id || receipt.payload_sha256 !== digest) {
       throw new QoopiaError("CONFLICT", "receiver acceptance does not match event and digest");
     }

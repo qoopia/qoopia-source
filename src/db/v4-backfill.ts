@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { assertV4Schema, computeLogicalDatabaseHash } from "./v4-migrations.ts";
+import { components, hasPath, relationGraph } from "./relation-graph.ts";
 
 const CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -135,23 +136,6 @@ function readReference(
     return { present: true, valid: false };
   }
   return { present: true, valid: true, value };
-}
-
-function hasPath(
-  start: string,
-  goal: string,
-  adjacency: Map<string, Set<string>>,
-): boolean {
-  const pending = [start];
-  const seen = new Set<string>();
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    if (current === goal) return true;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    for (const next of adjacency.get(current) ?? []) pending.push(next);
-  }
-  return false;
 }
 
 function addIssue(
@@ -430,20 +414,7 @@ export function planRelationBackfill(db: Database): RelationBackfillPlan {
 
   // Evaluate heads after cycle candidates have been excluded.
   for (const workspaceId of adjacencyByWorkspace.keys()) {
-    const adjacency = new Map<string, Set<string>>();
-    const undirected = new Map<string, Set<string>>();
-    const connect = (sourceId: string, targetId: string) => {
-      const targets = adjacency.get(sourceId) ?? new Set<string>();
-      targets.add(targetId);
-      adjacency.set(sourceId, targets);
-      if (!adjacency.has(targetId)) adjacency.set(targetId, new Set());
-      const sourceLinks = undirected.get(sourceId) ?? new Set<string>();
-      sourceLinks.add(targetId);
-      undirected.set(sourceId, sourceLinks);
-      const targetLinks = undirected.get(targetId) ?? new Set<string>();
-      targetLinks.add(sourceId);
-      undirected.set(targetId, targetLinks);
-    };
+    const { adjacency, undirected, connect } = relationGraph();
     for (const relation of existing) {
       if (relation.workspace_id === workspaceId) {
         connect(relation.source_note_id, relation.target_note_id);
@@ -455,18 +426,7 @@ export function planRelationBackfill(db: Database): RelationBackfillPlan {
         connect(proposal.source_note_id, proposal.target_note_id);
       }
     }
-    const visited = new Set<string>();
-    for (const start of undirected.keys()) {
-      if (visited.has(start)) continue;
-      const component = new Set<string>();
-      const pending = [start];
-      while (pending.length > 0) {
-        const current = pending.pop()!;
-        if (component.has(current)) continue;
-        component.add(current);
-        visited.add(current);
-        for (const next of undirected.get(current) ?? []) pending.push(next);
-      }
+    for (const component of components(undirected)) {
       const targets = new Set<string>();
       for (const node of component) {
         for (const target of adjacency.get(node) ?? []) targets.add(target);

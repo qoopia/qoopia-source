@@ -770,6 +770,35 @@ describe("ADR-017: deny path", () => {
   });
 });
 
+describe("approve and deny share one request prelude", () => {
+  test("forged Origin, bad form, missing nonce, no session and unknown ticket answer alike and touch nothing", async () => {
+    const { ticketId } = await startAuthorize({ clientId: CLIENT_A_ID, redirectUri: REDIRECT_URI_A });
+    const nonce = extractNonce(await (await getConsent(ticketId, STEWARD_A_KEY)).text());
+    const bearer = { authorization: `Bearer ${STEWARD_A_KEY}` };
+    for (const action of ["approve", "deny"]) {
+      const post = async (body: string, headers: Record<string, string> = bearer) => {
+        const r = await fetch(`${baseUrl}/api/dashboard/oauth-consent/${action}`, {
+          method: "POST",
+          redirect: "manual",
+          headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+          body,
+        });
+        return [r.status, ((await r.json()) as { error_description: string }).error_description];
+      };
+      const form = new URLSearchParams({ ticket: ticketId, nonce }).toString();
+      expect(await post(form, { ...bearer, origin: "https://evil.example.com" })).toEqual([403, "Origin not allowed."]);
+      expect(await post("ticket=%E0")).toEqual([400, "malformed form body"]);
+      expect(await post(new URLSearchParams({ ticket: ticketId }).toString())).toEqual([400, "ticket and nonce required"]);
+      expect(await post(form, {})).toEqual([401, "Dashboard session required."]);
+      expect(await post(new URLSearchParams({ ticket: "qct_missing", nonce }).toString())).toEqual([404, "ticket not found"]);
+    }
+    const row = db
+      .prepare(`SELECT approved_by_agent_id, denied, redeemed FROM consent_tickets WHERE id = ?`)
+      .get(ticketId) as { approved_by_agent_id: string | null; denied: number; redeemed: number };
+    expect(row).toEqual({ approved_by_agent_id: null, denied: 0, redeemed: 0 });
+  });
+});
+
 describe("F-076: only the approving browser receives the code", () => {
   async function approveAsStewardA(ticketId: string): Promise<Response> {
     const nonce = extractNonce(

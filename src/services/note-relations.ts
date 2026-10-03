@@ -4,7 +4,7 @@ import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
-import { supersedePathExists } from "./note-temporal.ts";
+import { nextNoteWriteTimestamp, supersedePathExists } from "./note-temporal.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict } from "../utils/observability.ts";
 import { assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
@@ -156,23 +156,6 @@ function visibleComponentState(auth: AuthContext, noteId: string) {
   };
 }
 
-function nextNoteTimestamp(
-  workspaceId: string,
-  noteIds: string[],
-): { iso: string; ms: number } {
-  const placeholders = noteIds.map(() => "?").join(",");
-  const row = db.prepare(
-    `SELECT COALESCE(MAX(updated_at_ms), 0) AS max_ms
-       FROM notes WHERE workspace_id = ? AND id IN (${placeholders})`,
-  ).get(workspaceId, ...noteIds) as { max_ms: number };
-  const global = db.prepare(
-    `SELECT COALESCE(MAX(updated_at_ms), 0) AS max_ms
-       FROM notes WHERE workspace_id = ?`,
-  ).get(workspaceId) as { max_ms: number };
-  const ms = Math.max(Date.now(), row.max_ms + 1, global.max_ms + 1);
-  return { iso: new Date(ms).toISOString(), ms };
-}
-
 /**
  * Create an immutable relation. Supersede mirror metadata, archive state and
  * audit activity are committed atomically with the relation row.
@@ -308,10 +291,7 @@ export function createNoteRelation(input: {
       };
       assertNoSecrets(JSON.stringify(sourceMetadata), "note.metadata");
       assertNoSecrets(JSON.stringify(targetMetadata), "note.metadata");
-      const timestamp = nextNoteTimestamp(
-        input.auth.workspace_id,
-        [sourceNoteId, targetNoteId],
-      );
+      const timestamp = nextNoteWriteTimestamp(input.auth.workspace_id);
       const targetMs = timestamp.ms + 1;
       db.prepare(
         `UPDATE notes SET metadata = ?, updated_at = ?, updated_at_ms = ?

@@ -5,6 +5,7 @@ import {EventEmitter} from 'node:events';
 import {stripVTControlCharacters} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {spawnAgentProcess,terminateAgentProcess} from './agent-process.ts';
+import { nativeSubscriptionStatus } from '../skills/adapter.ts';
 
 export function claudeLoginUrl(raw:string){const u=new URL(raw);if(u.protocol!=='https:'||u.username||u.password||!((u.hostname==='claude.ai'&&u.pathname==='/oauth/authorize')||(u.hostname==='claude.com'&&u.pathname==='/cai/oauth/authorize')))throw new Error('Unexpected Claude sign-in URL');return u.href;}
 type Options={binary:string;cwd:string;env:NodeJS.ProcessEnv;mcpConfig:string};
@@ -38,8 +39,9 @@ export class ClaudeAgentRuntime extends EventEmitter {
       const timer=setTimeout(()=>{this.kill(child);reject(new Error('Claude sign-in check timed out'));},15_000);
       child.stdout.setEncoding('utf8');child.stdout.on('data',(s:string)=>{output+=s;if(output.length>65536){this.kill(child);output='';}});child.stderr.on('data',()=>{});
       child.once('error',()=>{this.probes.delete(child);clearTimeout(timer);reject(new Error('Claude Code could not start'));});
-      child.once('close',(code)=>{this.probes.delete(child);clearTimeout(timer);let a:any;try{a=JSON.parse(output);}catch{return resolve({account:null});}
-        resolve({account:!this.stopped&&code===0&&a.loggedIn===true&&a.authMethod==='claude.ai'&&a.apiProvider==='firstParty'&&(!a.apiKeySource||a.apiKeySource==='none')&&['pro','max','team','enterprise'].includes(a.subscriptionType)?{type:'claude'}:null});});
+      // The same subscription-only rule as every other native launch (skills/adapter).
+      child.once('close',(code)=>{this.probes.delete(child);clearTimeout(timer);
+        resolve({account:!this.stopped&&nativeSubscriptionStatus('claude_code',code,output,'')?{type:'claude'}:null});});
     });
   }
   private async startLogin():Promise<any>{

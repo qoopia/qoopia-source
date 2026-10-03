@@ -14,7 +14,7 @@ import {runMigrations} from '../src/db/migrate.ts';
 import {checkDashboardAuth,handleDashboardApi} from '../src/dashboard-api.ts';
 import {env} from '../src/utils/env.ts';
 
-test('email and Google require the same one-use email proof; logout, restart and re-login preserve the owner',async()=>{
+test('email needs a one-use link, Google needs nothing more; logout, restart and re-login preserve the owner',async()=>{
  runMigrations();const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-identity-')),remote=new Database(':memory:');
  db.query("INSERT INTO workspaces(id,name,slug) VALUES ('identity-login','Identity login','identity-login')").run();
  const owner=bootstrapOwner(db,'Identity owner',undefined,'identity-login'),old=process.env.QOOPIA_STANDALONE;
@@ -38,17 +38,15 @@ test('email and Google require the same one-use email proof; logout, restart and
   const res={setHeader:(k:string,v:string)=>{out[k]=v;},writeHead:(s:number,h:Record<string,string>)=>{status=s;Object.assign(out,h);},end:(v:string)=>{body=v;}} as unknown as ServerResponse;
   return {res,result:()=>{if(out['set-cookie']){const value=out['set-cookie'].split(';')[0]!,i=value.indexOf('=');jar.set(value.slice(0,i),value.slice(i+1));}return {status,data:JSON.parse(body),headers:out};}};
  };
- // F-125: the code the started sign-in shows; the confirmation page asks for it.
- let code='';
  const call=async(route:string,body:Record<string,unknown>={})=>{const r=response();await local({method:route?'POST':'GET',headers:headers(),socket:{remoteAddress:'127.0.0.1'}} as IncomingMessage,r.res,route,body);
-  const result=r.result();if(route==='/start'&&typeof result.data.code==='string')code=result.data.code;return result;};
+  return r.result();};
  const confirm=async()=>{
   const link=mails.at(-1)!.text.match(/https:\/\/[^\s]+/)![0],token=new URL(link).hash.slice(1);
   expect((await handler(new Request(LOGIN_ORIGIN+'/confirm'),'mail-scanner')).status).toBe(200);
   expect((await call('/poll')).data.pending).toBe(true);
-  expect((await post('/confirm',{token,code},'https://hostile.example')).status).toBe(403);
-  expect((await post('/confirm',{token,code},LOGIN_ORIGIN)).status).toBe(200);
-  expect((await post('/confirm',{token,code},LOGIN_ORIGIN)).status).toBe(400);
+  expect((await post('/confirm',{token},'https://hostile.example')).status).toBe(403);
+  expect((await post('/confirm',{token},LOGIN_ORIGIN)).status).toBe(200);
+  expect((await post('/confirm',{token},LOGIN_ORIGIN)).status).toBe(400);
  };
  const google=async()=>{
   const start=await call('/start',{method:'google'});expect(start.status).toBe(200);
@@ -75,8 +73,9 @@ test('email and Google require the same one-use email proof; logout, restart and
   // F-126: another address is refused at /start, before any e-mail is sent.
   const sent=mails.length;expect((await call('/start',{method:'email',email:'stranger@example.com'})).status).toBe(400);expect(mails).toHaveLength(sent);
   expect(ownerIdentity(root)?.email).toBe('owner@example.com');
-  await google();await confirm();expect((await call('/poll')).status).toBe(200);expect(ownerIdentity(root)?.googleSub).toBe('stable-google-account');
-  googleEmail='renamed@example.com';await google();await confirm();expect((await call('/poll')).status).toBe(200);
+  // Google itself proves the account: no confirmation email, the dashboard is signed in at once.
+  const mailed=mails.length;await google();expect((await call('/poll')).status).toBe(200);expect(ownerIdentity(root)?.googleSub).toBe('stable-google-account');
+  googleEmail='renamed@example.com';await google();expect((await call('/poll')).status).toBe(200);expect(mails).toHaveLength(mailed);
   expect(ownerIdentity(root)).toEqual({ownerId:owner.agent_id,email:'renamed@example.com',googleSub:'stable-google-account'});
   const verifier=randomBytes(32).toString('base64url'),challenge=createHash('sha256').update(verifier).digest('hex');
   const fresh=await(await post('/requests',{method:'email',email:'expiry@example.com',challenge})).json() as {id:string};

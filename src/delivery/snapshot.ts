@@ -7,6 +7,7 @@ import { openReadonlyDatabase, openWritableDatabase, assertDatabaseIntegrity } f
 import { createVerifiedBackup, sha256File } from '../services/backup.ts';
 import { computeLogicalDatabaseHash } from '../db/v4-migrations.ts';
 import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJsonBytes, MAX_JSON_BYTES, safePath, preflightSpace } from '../utils/fs.ts';
+import { tableExists } from '../db/introspect.ts';
 
 /** Schemas a unified snapshot can carry. One list: backup, retention and restore read it from here. */
 const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48] as const;
@@ -129,11 +130,11 @@ export function invalidateRestoredAccess(file: string) {
       d.query('UPDATE oauth_tokens SET revoked=1').run();
       d.query('UPDATE agent_pairings SET revoked_at_ms=?').run(Date.now());
       d.query('UPDATE runtime_registrations SET managed_root=NULL,reporter_id=NULL,revision=revision+1').run();
-      if(d.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qoopia_agent_settings'").get()) {
+      if(tableExists(d,'qoopia_agent_settings')) {
         d.query("UPDATE qoopia_agent_settings SET enabled=0,channel='dashboard',telegram_user_id=NULL,telegram_chat_id=NULL,telegram_username=NULL,telegram_verified=0").run();
         d.query('UPDATE qoopia_agent_conversations SET native_thread_id=NULL').run();
       }
-      if(d.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qoopia_telegram_channels'").get()) {
+      if(tableExists(d,'qoopia_telegram_channels')) {
         d.query("UPDATE qoopia_telegram_channels SET generation=lower(hex(randomblob(16))),pairing_code=NULL,pairing_expires=NULL,candidate_id=NULL,candidate_chat=NULL,candidate_name=NULL,paused=1,conversation_id=NULL").run();
         d.query("UPDATE qoopia_telegram_inbox SET state='cancelled' WHERE state IN ('queued','starting','running')").run();
         d.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE state IN ('queued','sending')").run();

@@ -1,4 +1,3 @@
-import {randomBytes,createHash} from 'node:crypto';
 import type {Database} from 'bun:sqlite';
 import {LOGIN_ORIGIN,ownerIdentity} from './local.ts';
 import {brandHead,brandLockup} from '../brand.ts';
@@ -6,14 +5,13 @@ import {loginEmail} from './broker.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {connectionOrigin,publicConnection,resourceConnection} from '../services/connection-identity.ts';
 import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket,finalizeConsentTicket,replayFinalizeRedirect} from '../auth/oauth.ts';
+import { hash, randomToken } from '../utils/fs.ts';
+import { escapeHtml as escape } from '../utils/html.ts';
 
 const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
 const loginCookie=CONSENT_COOKIE_PREFIX+'login';
-const random=()=>randomBytes(32).toString('base64url');
-const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
-const escape=(value:unknown)=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 type Flow={ticket:string;nonce:string;expires:number;owner:string;version:number;verified:boolean;busy:boolean;
-  approvalNonce?:string;binding?:string;login?:{id:string;verifier:string;method:'email'|'google';code:string};language:'en'|'ru'};
+  approvalNonce?:string;binding?:string;login?:{id:string;verifier:string;method:'email'|'google'};language:'en'|'ru'};
 class ConsentError extends Error {constructor(readonly code:string,readonly status=400){super(code);}}
 
 /** A separate, browser-bound consent session can authorize only one prepared client agent. */
@@ -28,7 +26,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
     if(!response.ok)throw new ConsentError(response.status===410?'SIGN_IN_EXPIRED':'SIGN_IN_UNAVAILABLE',response.status===410?410:503);
     return data;
   };
-  return async(req:Request):Promise<Response>=>{
+  return async(req:Request,clientIp=''):Promise<Response>=>{
     const url=new URL(req.url),route=url.pathname;
     let form=new URLSearchParams(),ticketId=url.searchParams.get('ticket')??'',flow:Flow|undefined,issuedProof:string|undefined;
     const t=(en:string,ru:string)=>flow?.language==='ru'?ru:en;
@@ -72,7 +70,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
       if(req.method==='GET'){
         if(!flow&&!ticket.approved_by_agent_id){
           if(flows.size>=100||[...flows.values()].filter(f=>f.ticket===ticketId).length>=5)throw new ConsentError('TOO_MANY_ATTEMPTS',429);
-          token=random();flow={ticket:ticketId,nonce:random(),expires:Math.min(Date.parse(ticket.expires_at),Date.now()+600_000),
+          token=randomToken();flow={ticket:ticketId,nonce:randomToken(),expires:Math.min(Date.parse(ticket.expires_at),Date.now()+600_000),
             owner:owner.agent_id,version:owner.session_version!,verified:false,busy:false,language:url.searchParams.get('lang')==='ru'?'ru':'en'};
           const identityCookies=(req.headers.get('cookie')??'').split(';').map(s=>s.trim()).filter(s=>s.startsWith(loginCookie+'='));
           const proof=identityCookies.length===1?proofs.get(hash(identityCookies[0]!.slice(loginCookie.length+1))):undefined;
@@ -99,16 +97,16 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
       if(req.method==='POST'){
         if(req.headers.get('origin')!==origin||form.get('nonce')!==flow.nonce)throw new ConsentError('ORIGIN_OR_SESSION_REFUSED',403);
         if(flow.busy)throw new ConsentError('ACTION_IN_PROGRESS',409);
-        flow.nonce=random();flow.busy=true;
+        flow.nonce=randomToken();flow.busy=true;
         try{
           if(route==='/oauth/consent/start'){
             if(flow.verified)throw new ConsentError('ALREADY_SIGNED_IN',409);
             const method=form.get('method');if(method!=='email'&&method!=='google')throw new ConsentError('INVALID_REQUEST');
-            // F-125: the e-mail confirmation needs the code this page shows, so the mailbox owner's
-            // click cannot verify a consent flow somebody else started.
-            const verifier=random(),data=await post('/requests',{method,language:flow.language,...(method==='email'?{email:loginEmail(form.get('email'))}:{}),bind:true,challenge:hash(verifier)});
-            if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id)||!/^\d{6}$/.test(String(data.confirm_code)))throw new ConsentError('SIGN_IN_UNAVAILABLE',503);
-            flow.login={id:data.id,verifier,method,code:String(data.confirm_code)};
+            // F-125: the confirmation counts only from this browser's network, so the mailbox owner's
+            // click cannot verify a consent flow somebody else started elsewhere.
+            const verifier=randomToken(),data=await post('/requests',{method,language:flow.language,...(method==='email'?{email:loginEmail(form.get('email'))}:{}),bind:'network',starter_ip:clientIp,challenge:hash(verifier)});
+            if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new ConsentError('SIGN_IN_UNAVAILABLE',503);
+            flow.login={id:data.id,verifier,method};
           }else if(route==='/oauth/consent/check'){
             if(!flow.login)throw new ConsentError('SIGN_IN_REQUIRED',403);
             const data=await post('/redeem',{id:flow.login.id,verifier:flow.login.verifier});
@@ -118,7 +116,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
               flow.verified=true;flow.binding=hash(JSON.stringify(binding));
               // Reuse only the short-lived identity proof. Every new client still requires its own explicit consent.
               if(proofs.size>=100)proofs.delete(proofs.keys().next().value!);
-              issuedProof=random();proofs.set(hash(issuedProof),{owner:owner.agent_id,version:flow.version,binding:flow.binding,expires:Date.now()+600_000});
+              issuedProof=randomToken();proofs.set(hash(issuedProof),{owner:owner.agent_id,version:flow.version,binding:flow.binding,expires:Date.now()+600_000});
             }
           }else if(route==='/oauth/consent/approve'){
             if(!flow.verified)throw new ConsentError('SIGN_IN_REQUIRED',403);
@@ -145,9 +143,8 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
         content+=`<p>${t('Review this client’s access before continuing.','Проверьте права клиента перед продолжением.')}</p><dl><dt>${t('Workspace','Пространство')}</dt><dd>${escape(space.name)}</dd><dt>${t('Client','Клиент')}</dt><dd>${escape(client.name)}</dd><dt>${t('Permissions','Права')}</dt><dd>${ticket.scope.split(' ').includes('mcp:write')?t('Read and add memory','Чтение и добавление памяти'):t('Read memory only','Только чтение памяти')}</dd><dt>${t('Access is sent to','Доступ получит')}</dt><dd>${escape(callback.host)}</dd></dl><p>${t('Your memory stays on the selected installation. Authorized results pass through Cloudflare to this client. This does not connect a background model or capture your entire chat.','Память остаётся на выбранной установке. Разрешённые результаты проходят через Cloudflare к этому клиенту. Это не подключает фоновую модель и не сохраняет всю переписку.')}</p>`;
         content+=action('approve',t('Allow this client','Разрешить этому клиенту'));
       }else if(flow.login){
-        content+=`<p>${t('Finish account confirmation, then return here.','Завершите подтверждение аккаунта и вернитесь сюда.')}</p><p>${t('When the confirmation page asks, enter this code:','Когда страница подтверждения попросит, введите этот код:')} <strong>${flow.login.code}</strong></p>`;
+        content+=`<p>${t(flow.login.method==='google'?'Choose your Google account, then return here.':'Open the link from the email on this device, then return here.',flow.login.method==='google'?'Выберите аккаунт Google и вернитесь сюда.':'Откройте ссылку из письма на этом устройстве и вернитесь сюда.')}</p>`;
         if(flow.login.method==='google')content+=`<p><a target="_blank" rel="noopener noreferrer" href="${loginOrigin}/google?request=${flow.login.id}">${t('Continue with Google','Продолжить через Google')} ↗</a></p>`;
-        else content+=`<p>${t('Open the link in your email to confirm.','Для подтверждения откройте ссылку из письма.')}</p>`;
         content+=action('check',t('I confirmed — continue','Я подтвердил — продолжить'));
       }else{
         content+=`<p>${t('Sign in to the Qoopia account linked to this installation. You will review the permissions next.','Войдите в аккаунт Qoopia, связанный с этой установкой. Затем вы сможете проверить права клиента.')}</p>`;

@@ -27,7 +27,7 @@ import { env } from "../utils/env.ts";
 import { logActivity } from "../services/activity.ts";
 import { getRolePreset, ROLE_PRESET_NAMES } from "../admin/templates.ts";
 import { createNote } from "../services/notes.ts";
-import type { RiskClass } from "./tools.ts";
+import type { ToolDef } from "./tools.ts";
 import {
   listMemoryPolicies,
   memoryPolicy,
@@ -37,16 +37,9 @@ import {
 } from "../services/memory-policy.ts";
 import { decideSaveRequest, listSaveRequests } from "../services/memory-save-requests.ts";
 
-interface AdminToolDef {
-  name: string;
-  description: string;
-  // QSA-F / ADR-016: every admin tool is at least 'admin' risk; the field
-  // is required so the per-agent profile filter has a value to read.
-  risk: RiskClass;
+interface AdminToolDef extends ToolDef {
   /** Only the workspace owner (canManagePolicy) can use it: not offered to a steward. */
   ownerOnly?: true;
-  rawSchema: z.ZodRawShape;
-  handler: (args: Record<string, unknown>, auth: AuthContext) => unknown;
 }
 
 function assertSteward(auth: AuthContext) {

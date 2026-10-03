@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {assetPath} from '../utils/assets.ts';
 import {newsletter,newsMessage} from './newsletter.ts';
 import type {LoginLanguage} from './messages.ts';
+import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
 
 type Campaign={id:string;subject:string;body:string;language:LoginLanguage;created_at:number};
 export function prepareNews(db:Database,subject:string,body:string,language:LoginLanguage){
@@ -42,7 +43,7 @@ export async function sendNews(db:Database,id:string,config:{origin:string;from:
   let status:'accepted'|'failed'|'uncertain'='uncertain',providerId:string|null=null;
   try{
    const response=await request('https://api.resend.com/emails',{method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),headers:{authorization:'Bearer '+config.resendKey,'content-type':'application/json','idempotency-key':'qoopia-news-'+id+'-'+recipient.account_id},body:JSON.stringify({from:config.from,to:[recipient.email],...newsMessage(campaign,unsubscribe.href,config.postalAddress),attachments:[attachment]})});
-   if(response.ok){const data=await response.json() as {id?:unknown};if(typeof data.id==='string'&&data.id.length<200){status='accepted';providerId=data.id;}}
+   if(response.ok){const data=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {id?:unknown};if(typeof data.id==='string'&&data.id.length<200){status='accepted';providerId=data.id;}}
    else if(response.status<500)status='failed';
   }catch{/* Do not retain provider errors, email addresses or URLs in command logs. */}
   db.query('UPDATE news_deliveries SET status=?,provider_id=? WHERE campaign_id=? AND account_id=?').run(status,providerId,id,recipient.account_id);

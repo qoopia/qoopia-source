@@ -1,5 +1,6 @@
 import { opsSummary } from "./delivery/ops-state.ts";
 import { inspectScheduledBackups } from "./delivery/doctor-checks.ts";
+import { HUMAN_OWNERS } from "./delivery/owner-onboarding.ts";
 /**
  * Dashboard HTTP API: the read models the dashboard renders, plus the owner
  * writes it makes (login/logout, memory policy and save requests, V4 review).
@@ -30,10 +31,11 @@ import { ADMIN_TYPES, levelOf, seesWholeWorkspace, sharesContext, visibleRowSql 
 import { attachmentDisposition, json, readRequestBody, RequestBodyError } from "./utils/http-json.ts";
 import { agentMemoryStatus, canManagePolicy, setMemoryPolicy, type MemoryMode } from "./services/memory-policy.ts";
 import { setSharedContext } from "./admin/agents.ts";
+import { connectedApps } from "./services/browser-connections.ts";
 import { decideSaveRequest, listSaveRequests } from "./services/memory-save-requests.ts";
 import { agentContractFor } from "./api/agent-contract.ts";
 import { authorityOperations } from "./api/authority.ts";
-import { QoopiaError } from "./utils/errors.ts";
+import { QoopiaError, safeJsonParse } from "./utils/errors.ts";
 import {
   ALLOWED_TYPES,
   DashboardAuth,
@@ -258,16 +260,29 @@ function denyIfNotOwn(
 // Re-export for any internal callers that imported the old AuthContext.
 export type { AuthContext };
 
+// Matched in this order (Claude Code before Claude); the dashboard lists them in its own order.
+const RUNTIMES: Array<[string, RegExp]> = [["claude_code", /claude[\s_-]*code|claude memory/i], ["codex", /codex/i],
+  ["chatgpt", /chat[\s_-]*gpt|\bgpt\b/i], ["claude", /claude/i], ["grok", /grok/i], ["muse", /muse/i], ["hermes", /hermes/i]];
+const SURFACE_RUNTIME: Record<string, string> = { claude_web: "claude", claude_desktop: "claude", claude_code: "claude_code",
+  chatgpt_web: "chatgpt", chatgpt_desktop: "chatgpt", codex: "codex", grok_bot: "grok", muse_code: "muse", muse_app: "muse" };
+/** ponytail: the runtime an agent most likely runs in, guessed from its name, connection, description
+ * and OAuth client names. A stored runtime per agent if the guess misplaces real agents. */
+export function agentRuntime(name: string, surface?: string, description?: unknown, clients?: string): string | null {
+  for (const text of [name, surface && SURFACE_RUNTIME[surface], typeof description === "string" ? description : "", clients])
+    for (const [runtime, re] of RUNTIMES) if (text && re.test(text)) return runtime;
+  return null;
+}
+
 // ---- /api/dashboard/agents ----
 function listAgents(res: ServerResponse, auth: DashboardAuth) {
   // ADR-020: without shared context an agent sees only itself.
   const all = levelOf(auth) > 0;
   const sql = all
-    ? `SELECT id, workspace_id, name, type, active, last_seen, created_at
+    ? `SELECT id, workspace_id, name, type, active, last_seen, created_at, metadata
        FROM agents
        WHERE active = 1 AND workspace_id = ?
        ORDER BY name ASC`
-    : `SELECT id, workspace_id, name, type, active, last_seen, created_at
+    : `SELECT id, workspace_id, name, type, active, last_seen, created_at, metadata
        FROM agents
        WHERE active = 1 AND workspace_id = ? AND id = ?
        ORDER BY name ASC`;
@@ -282,6 +297,7 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
     active: number;
     last_seen: string | null;
     created_at: string;
+    metadata: string | null;
   }>;
 
   const countSessions = db.prepare(
@@ -302,6 +318,10 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
   );
 
   const owner = canManagePolicy(auth.workspace_id, auth.agent_id);
+  const surfaces = new Map((db.prepare(`SELECT agent_id, surface FROM client_connections WHERE workspace_id = ?`).all(auth.workspace_id) as
+    Array<{ agent_id: string; surface: string }>).map((r) => [r.agent_id, r.surface]));
+  const clients = new Map((db.prepare(`SELECT agent_id, group_concat(name, ' ') AS names FROM oauth_clients WHERE workspace_id = ? GROUP BY agent_id`)
+    .all(auth.workspace_id) as Array<{ agent_id: string; names: string }>).map((r) => [r.agent_id, r.names]));
   const items = rows.map((a) => {
     const memory = agentMemoryStatus(auth.workspace_id, a.id);
     const sharedContext = seesWholeWorkspace(a) ? null : sharesContext(a.id);
@@ -327,6 +347,9 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
       // ADR-020: null for the steward and the owner, who always read the whole workspace.
       shared_context: sharedContext,
       can_switch_shared_context: owner && sharedContext !== null,
+      // Lets the list render the autosave switch as the owner's control instead of failing on click.
+      can_manage_memory: owner,
+      runtime: agentRuntime(a.name, surfaces.get(a.id), safeJsonParse<{ description?: unknown } | null>(a.metadata, {})?.description, clients.get(a.id)),
     };
   });
 
@@ -366,7 +389,7 @@ function listSessions(
   const items = rows.map((r) => ({
     id: r.id,
     title: r.title,
-    metadata: safeJson(r.metadata),
+    metadata: safeJsonParse<unknown>(r.metadata, null),
     created_at: r.created_at,
     last_active: r.last_active,
     message_count: r.message_count,
@@ -431,7 +454,7 @@ function sessionMessages(
     session: sess,
     messages: rows.map((r) => ({
       ...r,
-      metadata: safeJson(r.metadata),
+      metadata: safeJsonParse<unknown>(r.metadata, null),
     })),
     summaries,
     total: rows.length,
@@ -508,8 +531,8 @@ function listNotesByAgent(
   return json(res, 200, {
     items: rows.map((r) => ({
       ...r,
-      metadata: safeJson(r.metadata),
-      tags: safeJson(r.tags) ?? [],
+      metadata: safeJsonParse<unknown>(r.metadata, null),
+      tags: safeJsonParse<unknown>(r.tags, null) ?? [],
     })),
     total: rows.length,
     next_before: last ? `${last.created_at}|${last.id}` : null,
@@ -629,7 +652,7 @@ function dashboardSearch(
         `SELECT 'note' AS kind, n.id, n.agent_id, ag.name AS agent_name, n.type,
                 substr(n.text, 1, 8000) AS text, n.created_at
          FROM notes_fts f
-         JOIN notes n ON n.rowid = f.rowid
+         CROSS JOIN notes n ON n.rowid = f.rowid
          JOIN agents ag ON ag.id = n.agent_id AND ag.workspace_id = n.workspace_id AND ag.active = 1
          WHERE notes_fts MATCH ? AND n.workspace_id = ? AND n.deleted_at IS NULL
            AND ${visibleRowSql("n")}${own}${nc ? ` AND ${nc.sql}` : ""}
@@ -656,14 +679,6 @@ function dashboardSearch(
   } catch (e) {
     logger.error("dashboard search failed", { error: (e as Error).message });
     return json(res, 500, { error: "search_failed" });
-  }
-}
-
-function safeJson(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
   }
 }
 
@@ -709,10 +724,7 @@ function ccCount(table: string, where: string, params: any[]): number {
 export function dashboardJourney(auth: DashboardAuth, database = db) {
   if (auth.type !== "owner") return null;
   const workspace = auth.workspace_id;
-  const ownerBound = Boolean(database.prepare(
-    `SELECT 1 FROM workspace_owners o JOIN agents a ON a.id=o.actor_id AND a.workspace_id=o.workspace_id
-      WHERE o.workspace_id=? AND a.active=1 AND a.principal_kind='human' AND a.authority_profile='owner' LIMIT 1`,
-  ).get(workspace));
+  const ownerBound = Boolean(database.prepare(`SELECT 1 FROM ${HUMAN_OWNERS} WHERE o.workspace_id=? AND a.active=1 LIMIT 1`).get(workspace));
   const connectedAgents = (database.prepare(
     `SELECT COUNT(*) AS count FROM agents WHERE workspace_id=? AND active=1 AND principal_kind='agent'`,
   ).get(workspace) as { count:number }).count;
@@ -863,8 +875,17 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
     };
   })();
 
+  // The owner's overview tiles: files, live bridges to other people's Qoopia, connected MCP clients.
+  const files = ccTry(() => ({ total: ccCount("files", "workspace_id = ?", [ws]) }), null as any);
+  const bridges = ccTry(() => ({ total: ccCount("bridges", "workspace_id = ? AND state NOT IN ('left','removed')", [ws]) }), null as any);
+  // An application that never made a request is an unfinished setup, not a connection.
+  const connections = auth.type === "owner" ? ccTry(() => connectedApps(ws).filter((app) => app.last_seen), null as any) : null;
+
   return json(res, 200, {
     agents,
+    files,
+    bridges,
+    connections,
     sessions,
     messages,
     notes,
@@ -904,7 +925,7 @@ function ccActivity(
   before: string | null,
 ) {
   const ws = auth.workspace_id;
-  const lim = Math.min(Math.max(limit || 100, 1), 500);
+  const lim = clampLimit(limit, 100, 500);
   // ADR-020: siblings' rows with shared context, never the rows of their private notes.
   const where: string[] = ["a.workspace_id = ?", visibleRowSql("a")];
   const params: any[] = [ws, auth.agent_id, levelOf(auth)];
@@ -1185,7 +1206,7 @@ function ccEntities(
   limit: number,
 ) {
   const ws = auth.workspace_id;
-  const lim = Math.min(Math.max(limit || 100, 1), 500);
+  const lim = clampLimit(limit, 100, 500);
   const where: string[] = ["e.workspace_id = ?", "e.status != 'archived'", VISIBLE_PAGE];
   const params: any[] = [ws, ...visiblePageParams(auth)];
   if (type) {
@@ -1210,7 +1231,7 @@ function ccEntities(
            LIMIT ?`,
         )
         .all(...params, lim)
-        .map((r: any) => ({ ...r, metadata: safeJson(r.metadata) })),
+        .map((r: any) => ({ ...r, metadata: safeJsonParse<unknown>(r.metadata, null) })),
     [] as any[],
   );
   const type_breakdown = ccTry(
@@ -1228,7 +1249,7 @@ function ccEntities(
 // ---- /api/dashboard/skills — skill entity pages ----
 function ccSkills(res: ServerResponse, auth: DashboardAuth, limit: number) {
   const ws = auth.workspace_id;
-  const lim = Math.min(Math.max(limit || 100, 1), 500);
+  const lim = clampLimit(limit, 100, 500);
   try {
     const rows = db
       .prepare(
@@ -1240,7 +1261,7 @@ function ccSkills(res: ServerResponse, auth: DashboardAuth, limit: number) {
       )
       .all(ws, ...visiblePageParams(auth), lim) as any[];
     return json(res, 200, {
-      items: rows.map((r) => ({ ...r, metadata: safeJson(r.metadata) })),
+      items: rows.map((r) => ({ ...r, metadata: safeJsonParse<unknown>(r.metadata, null) })),
       total: rows.length,
     });
   } catch (e) {
@@ -1289,7 +1310,7 @@ function v4Auth(auth: DashboardAuth): AuthContext {
 
 function requireV4Admin(res: ServerResponse, auth: DashboardAuth): boolean {
   // F-169: owner/steward only, as the P07 route matrix and trace contract say.
-  if (auth.type === "owner" || auth.type === "steward") return true;
+  if (auth.isAdmin) return true;
   json(res, 403, { error: "forbidden", error_description: "V4 review dashboard requires owner/steward capability" });
   return false;
 }

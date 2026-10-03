@@ -99,3 +99,12 @@ describe("ingest tailer endpoint", () => {
     }
   });
 });
+
+describe("provider responses (identity, Cloudflare, Telegram) are read with a size bound", () => {
+  test("an oversized Cloudflare answer is refused instead of buffered", async () => {
+    const { cloudflareTunnels } = await import("../src/identity/cloudflare.ts");
+    const huge = new Response("x".repeat(2 * 1024 * 1024), { headers: { "content-type": "application/json" } });
+    const provider = cloudflareTunnels({ account: "a".repeat(32), zone: "b".repeat(32), token: "synthetic" }, (async () => huge) as unknown as typeof fetch);
+    await expect(provider.ensure("00000000-0000-4000-8000-000000000001", "device.example.test", "c2VjcmV0")).rejects.toThrow(/exceeds/);
+  });
+});

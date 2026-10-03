@@ -12,10 +12,17 @@ function agentDetail(api:(path:string)=>Promise<unknown>){
   const ctx:any={QI:{msg:(x:string)=>x},esc:(x:unknown)=>String(x??''),fmtTime:String,fmtNum:String,renderNav(){},api,
     state:{page:'agents',drill:{kind:'agent',agent:card(0),tab:'memory'}},agentsCache:[card(0)],pollFn:null,
     renderOverview:()=>rendered.push('overview')};
-  ctx.renderAgentDetail=()=>rendered.push(ctx.memoryPanel(ctx.state.drill.agent));
+  ctx.renderAgentDetail=()=>rendered.push(ctx.savesPanel(ctx.state.drill.agent));
   runInNewContext(panels+router,ctx);
   return {ctx,rendered};
 }
+
+test('an agent that signed in but sends no conversations reads as connected, not as waiting',()=>{
+  const ctx:any={QI:{msg:(x:string)=>x},esc:(x:unknown)=>String(x??'')};runInNewContext(panels,ctx);
+  const agent=(last_seen:string|null)=>({memory:{mode:'auto',state:'waiting'},last_seen});
+  expect(ctx.coverageLine(agent('2026-10-03T09:07:00Z'))).toContain('Connected · conversations are not saved automatically');
+  expect(ctx.coverageLine(agent(null))).toContain('Waiting for this agent to connect');
+});
 
 test('Refresh re-reads the open agent, so a save prepared after the page opened is shown',async()=>{
   const {ctx,rendered}=agentDetail(async path=>{expect(path).toBe('/api/dashboard/agents');return {items:[card(1)]};});
@@ -43,7 +50,7 @@ test('a failed Refresh keeps the snapshot and still renders the page',async()=>{
 const write=between('  async function apiWrite(path, body) {','  // ---------- Auth / boot ----------');
 const binders=between('  // The agent prepared these notes','  function renderAgentDetail() {');
 function memoryWrites(status:number,description:string){
-  const elements:Record<string,any>={'#memoryToggle':{disabled:false},'#memoryResult':{textContent:''}};
+  const elements:Record<string,any>={'#memoryResult':{textContent:''}};
   const decide:any={dataset:{accept:'1'},disabled:false},saved:any={dataset:{save:'s1'},querySelectorAll:()=>[decide],remove(){}};decide.closest=()=>saved;
   elements['#memorySaves']={insertAdjacentHTML(){},querySelectorAll:(s:string)=>s==='button'?[decide]:[]};
   const refreshed:unknown[]=[];
@@ -52,14 +59,8 @@ function memoryWrites(status:number,description:string){
     fetch:async()=>({ok:false,status,json:async()=>({error:'x',error_description:description})})};
   runInNewContext(write+binders,ctx);
   const agent={id:'a1',memory:{mode:'auto',revision:0,pending_saves:1}};
-  return {ctx,agent,decide,refreshed,result:elements['#memoryResult'],toggle:elements['#memoryToggle']};
+  return {ctx,agent,decide,refreshed,result:elements['#memoryResult']};
 }
-
-test('a stale memory-mode change reports the server reason and re-reads the agent, not "owner only"',async()=>{
-  const h=memoryWrites(409,'Policy revision is 3');h.ctx.bindMemoryPanel(h.agent);await h.toggle.onclick();
-  expect(h.result.textContent).not.toContain('Only the workspace owner');expect(h.result.textContent).toContain('Policy revision is 3');
-  expect(h.refreshed).toEqual([true]);
-});
 
 test('a save request that is no longer held reports why and re-reads the agent',async()=>{
   const h=memoryWrites(404,'This save request is no longer held. Ask the agent to prepare it again.');await h.ctx.bindMemorySaves(h.agent);await h.decide.onclick();
@@ -68,11 +69,9 @@ test('a save request that is no longer held reports why and re-reads the agent',
 });
 
 test('only a 403 keeps the owner-only explanation',async()=>{
-  const toggle=memoryWrites(403,'Changing a memory policy requires an owner dashboard session');toggle.ctx.bindMemoryPanel(toggle.agent);await toggle.toggle.onclick();
-  expect(toggle.result.textContent).toBe('Could not change the setting. Only the workspace owner can do this.');expect(toggle.toggle.disabled).toBe(false);
   const save=memoryWrites(403,'Only the workspace owner reviews what a manual agent asked to save');await save.ctx.bindMemorySaves(save.agent);await save.decide.onclick();
   expect(save.result.textContent).toBe('Could not complete this. Only the workspace owner can confirm a save.');expect(save.decide.disabled).toBe(false);
-  expect([...toggle.refreshed,...save.refreshed]).toEqual([]);
+  expect(save.refreshed).toEqual([]);
 });
 
 const search=between('  // ================= GLOBAL SEARCH =================','  async function doGlobalSearch(q) {');

@@ -84,7 +84,8 @@ test("global dashboard search reuses scoped message and note APIs", () => {
 });
 
 test("overview and skill UI render readiness returned by the server", () => {
-  for (const field of ["ov.agents?.total_active", "ov.sessions?.last_24h", "ov.messages?.last_24h", "ov.skills?.total"])
+  // The owner's Overview tiles: agents, connected MCP clients, bridges and files.
+  for (const field of ["ov.connections", "ov.bridges?.total", "ov.files?.total", "/api/dashboard/agents"])
     has(dashboard, field);
   has(dashboard, "a.readiness?.ready");
   has(dashboard, "a.readiness?.blockers");

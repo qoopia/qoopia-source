@@ -1,6 +1,6 @@
 import { db } from "../../db/connection.ts";
 import type { AuthContext } from "../../auth/middleware.ts";
-import { QoopiaError } from "../../utils/errors.ts";
+import { QoopiaError, featureDisabled, throwCoded } from "../../utils/errors.ts";
 import { recordRecallMetrics } from "../../utils/observability.ts";
 import type {
   RecallBaselineDiagnosticItem,
@@ -71,22 +71,12 @@ function flag(name: string): boolean {
   return process.env[name] === "true";
 }
 
-function featureDisabled(name: string): never {
-  const error = new QoopiaError("INVALID_INPUT", name);
-  (error as { code: string }).code = "FEATURE_DISABLED";
-  throw error;
-}
-
 function invalidArgument(message: string): never {
-  const error = new QoopiaError("INVALID_INPUT", message);
-  (error as { code: string }).code = "INVALID_ARGUMENT";
-  throw error;
+  return throwCoded("INVALID_INPUT", "INVALID_ARGUMENT", message);
 }
 
 function relationGraphLimit(): never {
-  const error = new QoopiaError("SIZE_LIMIT", "supersede component exceeds 1000 nodes or edges");
-  (error as { code: string }).code = "RELATION_GRAPH_LIMIT";
-  throw error;
+  return throwCoded("SIZE_LIMIT", "RELATION_GRAPH_LIMIT", "supersede component exceeds 1000 nodes or edges");
 }
 
 export function v4RecallRequested(p: RecallParams): boolean {

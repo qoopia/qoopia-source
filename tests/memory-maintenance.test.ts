@@ -9,8 +9,9 @@ import {createWorkspace} from '../src/admin/workspaces.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {continuityEvent,memoryMaintenanceTick,processMemoryMaintenance} from '../src/services/continuity.ts';
 import {logger} from '../src/utils/logger.ts';
-import {enableMemoryRoot,memoryModelBusy,memoryModelStatus,memoryProfilePath,memoryRoot,memoryText,selectMemoryProfile} from '../src/services/memory-model.ts';
+import {enableMemoryRoot,memoryModelBusy,memoryModelStatus,memoryProfilePath,memoryRoot,memoryText,memoryTimeouts,selectMemoryProfile} from '../src/services/memory-model.ts';
 import {createNote} from '../src/services/notes.ts';
+import {agentMemoryStatus} from '../src/services/memory-policy.ts';
 import {embeddingHealth} from '../src/services/embedding-store.ts';
 import {recall} from '../src/services/recall.ts';
 
@@ -26,7 +27,8 @@ dir=$(dirname "$0")
 [ "$1" = --version ] && { echo 'codex-cli ${RUNTIMES.codex.version}'; exit 0; }
 case " $* " in *' login status '*) echo 'Logged in using ChatGPT'; exit 0;; esac
 printf . >> "$dir/runs"; cat >/dev/null
-[ -e "$dir/running" ] && printf x >> "$dir/overlaps"; : > "$dir/running"; trap 'rm -f "$dir/running"' EXIT
+# A killed run cannot clean up, so the marker holds its pid and only a live one counts.
+[ -e "$dir/running" ] && kill -0 "$(cat "$dir/running")" 2>/dev/null && printf x >> "$dir/overlaps"; echo $$ > "$dir/running"; trap 'rm -f "$dir/running"' EXIT
 case $(cat "$dir/mode") in quota) echo 'usage limit reached' >&2; exit 1;; sleep) sleep 1;;
   crash) cat "$dir/crash"; exit 1;; esac
 cat "$dir/response"
@@ -58,6 +60,21 @@ test('an unreadable profile marks only its own workspace; every other workspace 
   expect(meta('codex:broken-profile').continuity_error).toBe('INVALID_PROFILE');
 });
 
+test('a finished conversation is not caught up: only one active in the last two hours is summarised',async()=>{
+  const ws=createWorkspace({name:'Finished conversations',slug:'maintenance-finished'}),agent=createAgent({name:'finished-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');
+  pending(ws.id,agent,'codex:finished','progress');
+  db.query('UPDATE sessions SET last_active=? WHERE id=?').run(new Date(Date.now()-3*3600_000).toISOString(),'codex:finished');
+  const launched=runs();
+  for(let tick=0;tick<3;tick++)await processMemoryMaintenance();
+  // Its messages stay stored and searchable; no model call is spent and the agent does not read as behind.
+  expect(runs()).toBe(launched);expect(notes(ws.id)).toBe(0);
+  expect(agentMemoryStatus(ws.id,agent).pending_sessions).toBe(0);
+  pending(ws.id,agent,'codex:live','progress');
+  for(let tick=0;tick<5&&!notes(ws.id);tick++)await processMemoryMaintenance();
+  expect(notes(ws.id)).toBe(1);
+});
+
 test('a quota failure pauses the whole workspace: pending sessions cost one model launch, not one each',async()=>{
   const ws=createWorkspace({name:'Quota',slug:'maintenance-quota'}),agent=createAgent({name:'quota-agent',workspaceSlug:ws.slug}).id;
   selectMemoryProfile(ws.id,'codex');mode('quota');
@@ -86,6 +103,46 @@ test('interactive recall does not queue behind a background model call; it ranks
     await background;
   } finally {mode('ok');}
 });
+
+test('an interactive call stops a background checkpoint; the checkpoint retries next tick without an error [F-341]',async()=>{
+  const ws=createWorkspace({name:'Yield',slug:'maintenance-yield'}),agent=createAgent({name:'yield-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');pending(ws.id,agent,'codex:yield');
+  mode('sleep');
+  try {
+    const background=processMemoryMaintenance();
+    while(!fs.existsSync(path.join(bin,'running')))await Bun.sleep(10);
+    await Bun.sleep(200);mode('ok');
+    const started=Date.now();
+    expect((await memoryText(ws.id,'Interactive.',{},{wait_ms:500})).text).toBe('Working state.');
+    expect(Date.now()-started).toBeLessThan(900);
+    await background;
+    expect(notes(ws.id)).toBe(0);
+    expect(meta('codex:yield')).not.toHaveProperty('continuity_error');
+    expect(meta('codex:yield')).not.toHaveProperty('continuity_retry_at');
+    await processMemoryMaintenance();
+    expect(notes(ws.id)).toBe(1);
+  } finally {mode('ok');}
+  expect(fs.existsSync(path.join(bin,'overlaps'))).toBe(false);
+},20_000);
+
+test('a single message that keeps timing out pauses its session longer each time [F-341]',async()=>{
+  const ws=createWorkspace({name:'Backoff',slug:'maintenance-backoff'}),agent=createAgent({name:'backoff-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');pending(ws.id,agent,'codex:backoff');
+  mode('sleep');memoryTimeouts.background_term_ms=300;
+  try {
+    const pauses:number[]=[];
+    for(let i=0;i<2;i++) {
+      const started=Date.now();await processMemoryMaintenance();
+      expect(meta('codex:backoff').continuity_error).toBe('MODEL_TIMEOUT');
+      pauses.push(Math.round((meta('codex:backoff').continuity_retry_at-started)/60_000));
+      db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',0) WHERE id=?").run('codex:backoff');
+    }
+    expect(pauses).toEqual([10,20]);
+    mode('ok');await processMemoryMaintenance();
+    expect(notes(ws.id)).toBe(1);
+    expect(meta('codex:backoff')).not.toHaveProperty('continuity_backoff');
+  } finally {mode('ok');memoryTimeouts.background_term_ms=150_000;}
+},20_000);
 
 test('a caller that stops waiting keeps its place in line: two model processes never overlap',async()=>{
   const ws=createWorkspace({name:'Impatient',slug:'maintenance-impatient'});selectMemoryProfile(ws.id,'codex');

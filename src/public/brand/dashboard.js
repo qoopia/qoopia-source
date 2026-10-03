@@ -65,11 +65,10 @@
     try{const data=await identityPost('start',{method:'account',language:QI.language});const url=new URL(data.accountUrl);if(url.origin!=='https://auth.qoopia.ai'||url.pathname!=='/profile')throw new Error(QI.msg('Sign-in is temporarily unavailable'));location.assign(url.href);}catch(e){loginError(e);}
   }
   $('#accountLoginBtn').onclick=startAccountLogin;
-  async function awaitEmailConfirmation(googleUrl,openGoogle=false,code=null,confirmCode=null){
+  // The sign-in finishes by itself once Google or the email link completes it on this device.
+  async function awaitEmailConfirmation(googleUrl,openGoogle=false,code=null){
     const poll=++loginPoll;
-    $('#emailLoginStatus').textContent=QI.msg(code?'Opening your dashboard…':googleUrl?"Choose your Google account in the browser, then confirm the email from Qoopia. Return here to finish signing in.":"Confirm the new email, then return here. This page will open your workspace automatically.");
-    // F-125: the confirmation page asks for this code, so only this screen can finish the sign-in.
-    if(confirmCode){const c=document.createElement('strong');c.textContent=confirmCode;$('#emailLoginStatus').append(' '+QI.msg("When the confirmation page asks, enter this code:")+' ',c);}
+    $('#emailLoginStatus').textContent=QI.msg(code?'Opening your dashboard…':googleUrl?"Choose your Google account — Qoopia opens here by itself.":"Open the email on this device and tap Sign in to Qoopia — this page opens your workspace by itself.");
     if(googleUrl){const a=document.createElement('a');a.href=googleUrl;a.target='_blank';a.rel='noopener';a.textContent=QI.msg("Choose your Google account");$('#emailLoginStatus').append(' ',a);if(openGoogle)a.click();}
     const cancel=document.createElement('button');cancel.type='button';cancel.textContent=QI.msg("Cancel sign-in");cancel.onclick=()=>{++loginPoll;loginAbort?.abort();$('#loginView').classList.remove('account-connecting');$('#emailLoginStatus').textContent=QI.msg("Sign-in cancelled. You can try again.");$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;};$('#emailLoginStatus').append(' ',cancel);
     for(let i=0;i<240&&poll===loginPoll;i++){
@@ -92,7 +91,7 @@
     try{
       const data=await identityPost('start',{method,language:QI.language,...(method==='email'?{email}:{})});
       if(data.googleUrl&&popup){popup.location.replace(data.googleUrl);popupNavigated=true;}
-      await awaitEmailConfirmation(data.googleUrl,!!data.googleUrl&&!popup,null,data.code);
+      await awaitEmailConfirmation(data.googleUrl,!!data.googleUrl&&!popup);
     }catch(e){if(popup&&!popupNavigated&&!popup.closed)popup.close();if(!controller.signal.aborted)loginError(e);}
     finally{if(loginAbort===controller){$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;}}
   }
@@ -340,81 +339,71 @@
     if (n < 1048576) return (n / 1024).toFixed(1) + (" " + QI.msg("KB"));
     return (n / 1048576).toFixed(1) + (" " + QI.msg("MB"));
   }
-  function filesCurrentFolder() {
-    const nf = $('#fNewFolder') && $('#fNewFolder').value.trim();
-    if (nf) return nf;
-    const s = $('#fFolder');
-    return (s && s.value) ? s.value : 'inbox';
-  }
+  // Folders are paths ('inbox', 'Aidan/reports'); one exists while it holds a file. Agents save into
+  // their own folder with file_put; the owner uploads anywhere and opens a new folder in place.
+  // The top level shows every folder and the latest files; an upload there goes to inbox.
+  let filesPath = '', filesFolders = [], filesNew = [];
   async function renderFilesPage() {
-    setCrumb(("<span style=\"color:var(--text)\">" + QI.msg("Files") + "</span>"));
+    setCrumb(("<span style=\"color:var(--text)\">" + QI.msg("Files") + "</span>")); filesPath = '';
     main.innerHTML =
-      '<div class="panel">' +
-        ("<div class=\"panel-h\"><h1>" + QI.msg("My Files") + "</h1><span class=\"meta\">" + QI.msg("upload from phone or mac · any agent can read them") + "</span></div>") +
-        '<div class="filter-bar">' +
-          '<select class="sel" id="fFolder" aria-label="Folder" data-i18n-aria-label="Folder"></select>' +
-          ("<input class=\"input-text\" id=\"fNewFolder\" maxlength=\"200\" aria-label=\"New folder\" data-i18n-aria-label=\"New folder\" placeholder=\"" + QI.msg("or type a new folder") + "\" style=\"max-width:180px\">") +
-        '</div>' +
-        '<label id="fDrop" style="display:block;text-align:center;padding:22px;margin:10px 0;border:1px dashed var(--border);border-radius:8px;cursor:pointer">' +
-          '<input type="file" id="fInput" multiple style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden">' +
-          ("<div>" + QI.msg("Tap to choose files — or drag & drop here") + "</div>") +
-          '<div id="fProg" class="meta" style="margin-top:6px"></div>' +
-        '</label>' +
+      '<div class="panel files" id="fPanel">' +
+        ("<div class=\"panel-h\"><h1>" + QI.msg("Files") + "</h1><span class=\"meta\">" + QI.msg("Yours and your agents’ files · any agent can read them") + "</span></div>") +
+        '<div class="files-bar"><nav class="files-path" id="fPath" aria-label="Folder" data-i18n-aria-label="Folder"></nav>' +
+          '<button type="button" class="btn" id="fNew">' + QI.msg("New folder") + '</button>' +
+          '<label class="btn primary" id="fDrop"><input type="file" id="fInput" multiple style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden">' + QI.msg("Upload") + '</label></div>' +
+        '<form class="files-new" id="fNewForm" hidden><input class="input-text" id="fNewName" maxlength="120" aria-label="Folder name" data-i18n-aria-label="Folder name" placeholder="' + esc(QI.msg("Folder name")) + '">' +
+          '<button class="btn primary">' + QI.msg("Create") + '</button><button type="button" class="btn" id="fNewCancel">' + QI.msg("Cancel") + '</button></form>' +
+        '<p id="fProg" class="meta" role="status" aria-live="polite"></p>' +
         ("<div id=\"fList\" class=\"loading\">" + QI.msg("Loading…") + "</div>") +
       '</div>';
-    const inp = $('#fInput'), drop = $('#fDrop');
-    // input is visually-hidden inside the <label>, so a tap on the box opens the
-    // native picker (reliable on iOS). Keep an explicit trigger for the inner divs.
-    drop.addEventListener('click', (e) => { if (e.target !== inp) { e.preventDefault(); inp.click(); } });
-    inp.onchange = () => filesUpload(inp.files);
-    drop.ondragover = (e) => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; };
-    drop.ondragleave = () => { drop.style.borderColor = ''; };
-    drop.ondrop = (e) => { e.preventDefault(); drop.style.borderColor = ''; if (e.dataTransfer.files.length) filesUpload(e.dataTransfer.files); };
-    $('#fFolder').onchange = () => filesLoadList();
+    const inp = $('#fInput'), panel = $('#fPanel'), form = $('#fNewForm');
+    inp.onchange = () => { filesUpload(inp.files); inp.value = ''; };
+    panel.ondragover = (e) => { e.preventDefault(); panel.classList.add('drop'); };
+    panel.ondragleave = () => panel.classList.remove('drop');
+    panel.ondrop = (e) => { e.preventDefault(); panel.classList.remove('drop'); if (e.dataTransfer.files.length) filesUpload(e.dataTransfer.files); };
+    $('#fNew').onclick = () => { form.hidden = false; $('#fNewName').focus(); };
+    $('#fNewCancel').onclick = () => { form.hidden = true; };
+    form.onsubmit = (e) => {
+      e.preventDefault(); const name = $('#fNewName').value.trim();
+      if (!name || /[/\\]|^\.\.?$/.test(name)) { $('#fProg').textContent = QI.msg("Use a folder name without slashes."); return; }
+      const path = (filesPath ? filesPath + '/' : '') + name;
+      filesNew.push(path); form.hidden = true; $('#fNewName').value = ''; $('#fProg').textContent = '';
+      filesPath = path; void filesLoadList();
+    };
+    $('#fPath').onclick = (e) => { const b = e.target.closest('[data-path]'); if (b) { filesPath = b.dataset.path; void filesLoadList(); } };
     await filesLoadFolders();
   }
   async function filesLoadFolders() {
     try {
-      const d = await api('/api/dashboard/files/folders');
-      const sel = $('#fFolder'); if (!sel) return;
-      const cur = sel.value;
-      const folders = d.folders || [];
-      const names = folders.map(f => f.folder);
-      if (!names.includes('inbox')) names.unshift('inbox');
-      sel.innerHTML = names.map(n => {
-        const c = (folders.find(f => f.folder === n) || {}).count || 0;
-        return '<option value="' + esc(n) + '">' + esc(n) + ' (' + c + ')</option>';
-      }).join('');
-      if (cur && names.includes(cur)) sel.value = cur;
+      filesFolders = (await api('/api/dashboard/files/folders')).folders || [];
       setConn(true);
     } catch (e) { if (e.message === 'unauthorized') return; }
     await filesLoadList();
   }
   async function filesLoadList() {
-    const sel = $('#fFolder');
-    const folder = sel ? sel.value : 'inbox';
     const list = $('#fList'); if (!list) return;
-    list.className = 'loading'; list.textContent = (QI.msg("Loading…"));
-    try {
-      const d = await api('/api/dashboard/files?folder=' + encodeURIComponent(folder));
-      const files = d.files || [];
-      if (!files.length) { list.className = 'empty'; list.textContent = (QI.msg("No files in this folder yet.")); return; }
-      list.className = '';
-      list.innerHTML = files.map(f =>
-        '<div class="panel" style="display:flex;align-items:center;gap:10px;justify-content:space-between">' +
-          '<div style="min-width:0">' +
-            '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(f.filename) + '</div>' +
-            '<div class="meta">' + humanSize(f.size) + ' · ' + fmtTime(f.created_at) + (f.readable ? (" " + QI.msg("· readable")) : '') + '</div>' +
-          '</div>' +
-          '<div style="display:flex;gap:8px;flex:0 0 auto">' +
-            '<a class="btn-more" href="' + BASE + '/api/dashboard/files/' + encodeURIComponent(f.id) + '/download">Download</a>' +
-            '<button class="btn-more" data-del="' + esc(f.id) + ("\">" + QI.msg("Delete") + "</button>") +
-          '</div>' +
-        '</div>'
-      ).join('');
-      list.querySelectorAll('[data-del]').forEach(b => b.onclick = () => filesDelete(b.getAttribute('data-del')));
-      setConn(true);
-    } catch (e) { errBox(list, QI.msg("Failed to load files."), filesLoadList, e); }
+    const here = filesPath, prefix = here ? here + '/' : '', kids = new Map();
+    // The next path part of every deeper folder, with the files under it.
+    for (const f of filesFolders.concat(filesNew.map(folder => ({ folder, count: 0 }))))
+      if (f.folder.startsWith(prefix) && f.folder !== here) { const name = f.folder.slice(prefix.length).split('/')[0]; kids.set(name, (kids.get(name) || 0) + f.count); }
+    const path = $('#fPath'), parts = here ? here.split('/') : [];
+    if (path) path.innerHTML = '<button type="button" data-path="">' + QI.msg("All files") + '</button>' + parts.map((part, i) =>
+      '<span aria-hidden="true">/</span>' + (i === parts.length - 1 ? '<strong aria-current="page">' + esc(part) + '</strong>' : '<button type="button" data-path="' + esc(parts.slice(0, i + 1).join('/')) + '">' + esc(part) + '</button>')).join('');
+    let files;
+    try { files = (await api('/api/dashboard/files' + (here ? '?folder=' + encodeURIComponent(here) : ''))).files || []; }
+    catch (e) { errBox(list, QI.msg("Failed to load files."), filesLoadList, e); return; }
+    if (filesPath !== here || !list.isConnected) return;
+    const folderIcon = lineIcon('<path d="M3 6h6l2 2h10v11H3z"/>');
+    const rows = [...kids].sort((a, b) => a[0].localeCompare(b[0])).map(([name, n]) =>
+      '<button type="button" class="f-row f-folder" data-path="' + esc(prefix + name) + '">' + folderIcon + '<span class="f-name">' + esc(name) + '</span><span class="meta">' + QI.count(n, 'file') + '</span></button>')
+      .concat(files.map(f => '<div class="f-row"><span class="f-name">' + esc(f.filename) + '</span><span class="meta">' + (here ? '' : esc(f.folder) + ' · ') + humanSize(f.size) + ' · ' + fmtTime(f.created_at) +
+        (f.uploaded_by ? ' · ' + esc(f.uploaded_by) : '') + '</span><a class="btn-more" href="' + BASE + '/api/dashboard/files/' + encodeURIComponent(f.id) + '/download">' + QI.msg("Download") + '</a>' +
+        '<button type="button" class="btn-more" data-del="' + esc(f.id) + '">' + QI.msg("Delete") + '</button></div>'));
+    list.className = rows.length ? 'files-list' : 'empty';
+    list.innerHTML = rows.length ? rows.join('') : here ? QI.msg("This folder is empty. It is kept once a file is added.") : QI.msg("No files yet. Upload one, or ask an agent to save one here.");
+    list.querySelectorAll('[data-path]').forEach(b => b.onclick = () => { filesPath = b.dataset.path; void filesLoadList(); });
+    list.querySelectorAll('[data-del]').forEach(b => b.onclick = () => filesDelete(b.getAttribute('data-del')));
+    setConn(true);
   }
   // A refused batch stores nothing: the server names the reason, the dashboard words it.
   function uploadRefusal(j) {
@@ -425,7 +414,7 @@
   }
   function filesUpload(fileList) {
     if (!fileList || !fileList.length) return;
-    const folder = filesCurrentFolder();
+    const folder = filesPath || 'inbox';
     const prog = $('#fProg'); if (prog) prog.textContent = (QI.msg("Uploading") + " ") + fileList.length + (" " + QI.msg("file(s)…"));
     // Bun's multipart parser drops an empty file's name, so name it here before sending.
     const empty = [].find.call(fileList, f => !f.size);
@@ -443,8 +432,7 @@
       if (xhr.status === 403) { if (prog) prog.textContent = (QI.msg("Only the owner can upload.")); return; }
       if (xhr.status >= 200 && xhr.status < 300) {
         if (prog) prog.textContent = (QI.msg("Uploaded ✓"));
-        const nf = $('#fNewFolder'); if (nf) nf.value = '';
-        filesLoadFolders().then(() => { const sel = $('#fFolder'); if (sel && [].some.call(sel.options, o => o.value === folder)) { sel.value = folder; } filesLoadList(); });
+        filesNew = filesNew.filter(f => f !== folder); filesPath = folder; void filesLoadFolders();
       } else if (xhr.status === 413) { if (prog) prog.textContent = QI.msg('File too large (maximum 100 MB).'); }
       else { var d = ''; try { var j = JSON.parse(xhr.responseText); d = ' — ' + (j.detail || j.error || ''); } catch { /* Non-JSON error body; the status code is shown alone. */ } if (prog) prog.textContent = uploadRefusal(j) || QI.msg('Could not load (') + xhr.status + ')' + d; }
     };
@@ -457,7 +445,7 @@
       const r = await fetch(BASE + '/api/dashboard/files/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin', headers: { 'X-Qoopia-CSRF': '1' } });
       if (r.status === 401) { showLogin(); return; }
       if (r.status === 403) { alert((QI.msg("Only the owner can delete."))); return; }
-      await filesLoadList();
+      await filesLoadFolders();
     } catch (e) { alert((QI.msg("Delete failed:") + " ") + e.message + (QI.msg(". The file list was not changed."))); }
   }
 
@@ -503,9 +491,13 @@
     if(state?.page==='owner')void renderOwner(ownerPage);
   });
 
+  // Four tiles that open their pages, then what the agents do, newest first, refreshed every 5 s.
   async function renderOverview() {
     setCrumb(QI.msg('Overview'));
-    main.innerHTML='<section class="overview"><header class="page-heading"><div><h1>'+esc(QI.msg('Overview'))+'</h1><p>'+esc(QI.msg('Your agents, memory and recent work.'))+'</p></div>'+(localWorkspace?'<button class="btn primary" id="overviewChat">'+esc(QI.msg('Open chat'))+'</button>':'')+'</header><div class="pulse-grid" id="ccCards"><p class="loading">'+esc(QI.msg('Loading…'))+'</p></div><div class="cols"><section><div class="section-title">'+esc(QI.msg('Agents'))+'<a href="#agents">'+esc(QI.msg('View all'))+'</a></div><div class="agent-grid overview-agents" id="ccAgents"></div></section><section><div class="section-title">'+esc(QI.msg('Recent activity'))+'<span class="sub" id="feedSub"></span></div><div class="feed" id="ccFeed"></div></section></div><details class="system-status"><summary>'+esc(QI.msg('System status'))+'</summary><div class="health" id="ccHealth"></div></details></section>';
+    main.innerHTML='<section class="overview"><header class="page-heading"><h1>'+esc(QI.msg('Overview'))+'</h1>'+(localWorkspace?'<button class="btn primary" id="overviewChat">'+esc(QI.msg('Open chat'))+'</button>':'')+'</header>'+
+      '<div class="ov-tiles" id="ccCards"><p class="loading">'+esc(QI.msg('Loading…'))+'</p></div>'+
+      '<section aria-labelledby="feedTitle"><h2 class="section-title" id="feedTitle">'+esc(QI.msg('Live activity'))+'</h2><div class="feed" id="ccFeed"></div></section>'+
+      '<details class="system-status"><summary>'+esc(QI.msg('System status'))+'</summary><div class="health" id="ccHealth"></div></details></section>';
     if($('#overviewChat'))$('#overviewChat').onclick=()=>chat?.open();
     const view=$('#ccCards');await fillOverview();if(view.isConnected)pollFn=fillOverview;
   }
@@ -515,23 +507,26 @@
     try {
       const [ov, act, agts] = await Promise.all([
         api('/api/dashboard/overview'),
-        api('/api/dashboard/activity?limit=12'),
+        api('/api/dashboard/activity?limit=100'),
         api('/api/dashboard/agents'),
       ]);
       if(!view.isConnected)return;
       setConn(true);
       agentsCache = agts.items;
-      paintCards(ov);
+      paintCards(ov, agentsCache || []);
       paintHealth(ov.health);
       paintFeed(act.items, $('#ccFeed'));
-      const sub = $('#feedSub'); if (sub) sub.textContent = (act.items || []).length + (" " + QI.msg("recent events"));
-      paintAgentsBoard($('#ccAgents'), agentsCache, true);
     } catch (e) { errBox($('#ccCards'), QI.msg("Could not load the overview."), fillOverview, e); }
   }
 
-  function paintCards(ov) {
-    const rows=[['Active agents',ov.agents?.total_active],['Sessions 24h',ov.sessions?.last_24h],['Messages 24h',ov.messages?.last_24h],['Skills',ov.skills?.total]];
-    $('#ccCards').innerHTML=rows.map(([label,value])=>'<div class="overview-stat"><span>'+esc(QI.msg(label))+'</span><strong>'+fmtNum(value)+'</strong></div>').join('');
+  function paintCards(ov, agents) {
+    const tile = (page, label, value, more = '') => '<a class="ov-tile' + (more ? ' ov-wide' : '') + '" href="#' + page + '" data-id="' + page + '"><span class="ov-label">' + esc(QI.msg(label)) + '</span>' +
+      '<strong>' + fmtNum(value) + '</strong>' + more + '</a>';
+    // The owner sees which MCP clients reach this workspace; an agent's own view has no Connections page.
+    const conns = ov.connections, chips = conns && '<span class="ov-chips">' + (conns.length ? conns.map(c => '<span class="chip" title="' + esc(c.name) + '">' + esc(c.client || SURFACE_NAMES[c.surface] || c.name) + '</span>').join('')
+      : '<span class="ov-none">' + esc(QI.msg("None connected")) + '</span>') + '</span>';
+    patch($('#ccCards'), tile('agents', 'Active agents', agents.filter(a => !isInfra(a) && a.type !== 'owner').length) +
+      (conns ? tile('connections', 'Connections', conns.length, chips) : '') + tile('bridges', 'Bridges', ov.bridges?.total) + tile('files', 'Files', ov.files?.total));
   }
   function paintHealth(h) {
     if (!h) { $('#ccHealth').innerHTML = ("<div class=\"hi\">" + QI.msg("Health unavailable") + "</div>"); return; }
@@ -556,26 +551,20 @@
       '<span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
   }
 
+  // One line per event: when, who, what. The agent's name opens the agent. The same event repeated
+  // in a row (a summary rewritten again and again) is one line with a count, at its latest time.
   function paintFeed(items, el) {
     if (!el) return;
     if (!items || !items.length) { patch(el, "<div class=\"empty\">" + QI.msg("No activity yet.") + "</div>"); return; }
-    patch(el, items.map(it => {
-      const st = actionStyle(it.action);
-      const who = it.agent_name || (it.agent_id ? it.agent_id.slice(0, 8) : 'system');
-      const summary = it.summary || (it.action + (it.entity_type ? ' · ' + it.entity_type : ''));
-      const agentChip = it.agent_id
-        ? '<button type="button" class="chip click" style="border:0;font-family:inherit" data-aid="' + esc(it.agent_id) + '">' + esc(who) + '</button>'
-        : '<span class="chip">' + esc(who) + '</span>';
-      return '<div class="frow">' +
-        '<div class="fic" style="color:' + st.color + '">' + st.icon + '</div>' +
-        '<div class="fbody">' +
-          '<div class="fline">' + esc(summary) + '</div>' +
-          '<div class="fmeta">' + agentChip +
-            '<span class="faction">' + esc(it.action || '') + (it.entity_type ? ' · ' + esc(it.entity_type) : '') + '</span>' +
-            '<span class="ftime">' + fmtTime(it.created_at) + '</span>' +
-            (it.origin_host ? '<span class="ftime" style="opacity:.6">@' + esc(it.origin_host) + '</span>' : '') +
-          '</div>' +
-        '</div></div>';
+    const today = new Date().toDateString(), rows = [];
+    for (const it of items) { const last = rows[rows.length - 1]; if (last && last.agent_id === it.agent_id && last.action === it.action && last.summary === it.summary) last.n++; else rows.push({ ...it, n: 1 }); }
+    patch(el, rows.map(it => {
+      const st = actionStyle(it.action), who = it.agent_name || (it.agent_id ? it.agent_id.slice(0, 8) : 'system');
+      const what = it.action + (it.entity_type ? ' · ' + it.entity_type : '');
+      return '<div class="frow" title="' + esc(fmtTimeFull(it.created_at) + ' · ' + what + (it.origin_host ? ' @' + it.origin_host : '')) + '">' +
+        '<span class="ftime">' + QI.date(it.created_at, { ...(new Date(it.created_at).toDateString() === today ? {} : { day: 'numeric', month: 'short' }), hour: '2-digit', minute: '2-digit' }) + '</span><span class="fic">' + st.icon + '</span>' +
+        (it.agent_id ? '<button type="button" class="chip click" data-aid="' + esc(it.agent_id) + '" data-id="' + esc(it.id || '') + '">' + esc(who) + '</button>' : '<span class="chip">' + esc(who) + '</span>') +
+        '<span class="fline">' + esc(it.summary || what) + (it.n > 1 ? ' <span class="fcount">×' + it.n + '</span>' : '') + '</span></div>';
     }).join(''));
     el.querySelectorAll('[data-aid]').forEach(c => {
       c.onclick = () => drillAgentById(c.getAttribute('data-aid'));
@@ -596,38 +585,72 @@
     return new Date(a.last_session_active || a.last_seen || 0).getTime() || 0;
   }
   function byRecent(a, b) { return lastActiveTs(b) - lastActiveTs(a); }
-  function agentCard(a) {
-    const lastIso = a.last_session_active || a.last_seen;
-    return '<button type="button" class="agent-card" data-id="' + esc(a.id) + '">' +
-      '<div class="agent-head">' +
-        '<div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
-        '<div style="min-width:0"><div class="agent-name">' + esc(a.name) + '</div>' +
-        '<div class="agent-meta">' + esc(a.type || 'agent') + ' · ' + fmtTime(lastIso) + liveStatus(lastIso) + '</div></div>' +
-      '</div>' + coverageLine(a) +
-      (a.shared_context === false ? '<div class="agent-meta coverage-line"><span aria-hidden="true">◐</span> ' + esc(QI.msg("Own context only")) + '</div>' : '') +
-      '<div class="agent-stats">' +
-        '<div class="stat"><div class="stat-val">' + fmtNum(a.sessions_count) + ("</div><div class=\"stat-lbl\">" + QI.msg("Sessions") + "</div></div>") +
-        '<div class="stat"><div class="stat-val">' + fmtNum(a.messages_count) + ("</div><div class=\"stat-lbl\">" + QI.msg("Messages") + "</div></div>") +
-        '<div class="stat"><div class="stat-val">' + fmtNum(a.notes_count) + ("</div><div class=\"stat-lbl\">" + QI.msg("Notes") + "</div></div>") +
-      '</div></button>';
+  // The owner first, the steward second, then the agents of each runtime in this order, then the rest.
+  const RUNTIMES = { claude: 'Claude', claude_code: 'Claude Code', chatgpt: 'ChatGPT', codex: 'Codex', grok: 'Grok', muse: 'Muse', hermes: 'Hermes' };
+  function agentRank(a) { const i = Object.keys(RUNTIMES).indexOf(a.runtime); return a.type === 'owner' ? 0 : a.type === 'steward' ? 1 : i < 0 ? 9 : 2 + i; }
+  function byRank(a, b) { return agentRank(a) - agentRank(b) || byRecent(a, b); }
+  function agentRole(a) { return a.type === 'owner' ? QI.msg("Owner") : a.type === 'steward' ? QI.msg("Steward") : RUNTIMES[a.runtime] || ''; }
+  // One flat row per agent: identity, memory state, the owner's two switches and the counts.
+  // A switch changes its setting in place; only the name opens the agent. The owner reads the whole
+  // workspace and needs no autosave, so its row has no switch; the steward has only autosave.
+  function agentSwitch(kind, a, on, enabled, label) {
+    return '<div class="ar-switch ar-' + kind + '"><span class="ar-label" aria-hidden="true">' + esc(label) + '</span>' +
+      '<button type="button" class="qswitch" role="switch" data-id="' + kind + ':' + esc(a.id) + '" data-switch="' + kind + '" data-agent="' + esc(a.id) + '"' +
+      ' aria-checked="' + on + '" aria-label="' + esc(label + ': ' + a.name) + '"' +
+      (enabled ? '' : ' disabled title="' + esc(QI.msg("Only the workspace owner can change this.")) + '"') + '><span class="qswitch-thumb"></span></button></div>';
   }
-  function paintAgentsBoard(el, items, compact) {
+  function agentCount(n, unit) {
+    return '<span class="ar-num"><b aria-hidden="true">' + fmtNum(n) + '</b><span class="ar-unit">' + QI.count(n || 0, unit) + '</span></span>';
+  }
+  function agentCard(a) {
+    const lastIso = a.last_session_active || a.last_seen, owner = a.type === 'owner', mem = !owner && a.memory, saves = mem?.pending_saves || 0, role = agentRole(a);
+    const shared = typeof a.shared_context === 'boolean' ? agentSwitch('shared', a, a.shared_context, a.can_switch_shared_context === true, QI.msg("Shared context"))
+      : a.shared_context === null ? '<div class="ar-switch ar-shared"><span class="ar-label" aria-hidden="true">' + esc(QI.msg("Shared context")) + '</span><span class="ar-always">' + esc(QI.msg("Whole workspace")) + '</span></div>' : '<div></div>';
+    return '<div class="agent-row' + (owner ? ' agent-row-owner' : '') + '">' +
+      '<button type="button" class="agent-card" data-id="' + esc(a.id) + '">' +
+        '<span class="agent-avatar ' + avatarClass(a.name) + '" aria-hidden="true">' + initial(a.name) + '</span>' +
+        '<span class="ar-id"><span class="agent-name">' + esc(a.name) + '</span>' +
+        '<span class="agent-meta">' + (role ? esc(role) + ' · ' : '') + fmtTime(lastIso) + liveStatus(lastIso) + '</span></span></button>' +
+      '<div class="ar-status">' + (mem ? coverageLine(a) : '') +
+        (saves ? '<button type="button" class="ar-saves" data-id="saves:' + esc(a.id) + '" data-open="' + esc(a.id) + '">' + esc(QI.msg("{n} to confirm", { n: saves })) + '</button>' : '') + '</div>' +
+      (mem ? agentSwitch('autosave', a, mem.mode === 'auto', a.can_manage_memory === true, QI.msg("Autosave")) : '<div></div>') + shared +
+      agentCount(a.sessions_count, 'session') + agentCount(a.messages_count, 'message') + agentCount(a.notes_count, 'note') + '</div>';
+  }
+  function agentTable(items) {
+    return '<div class="agent-table"><div class="agent-row agent-row-head" aria-hidden="true"><span>' + esc(QI.msg("Agent")) + '</span><span>' + esc(QI.msg("Memory")) +
+      '</span><span>' + esc(QI.msg("Autosave")) + '</span><span>' + esc(QI.msg("Shared context")) + '</span><span>' + esc(QI.msg("Sessions")) + '</span><span>' +
+      esc(QI.msg("Messages")) + '</span><span>' + esc(QI.msg("Notes")) + '</span></div>' + items.map(agentCard).join('') + '</div>';
+  }
+  function paintAgentsBoard(el, items) {
     if (!el) return;
-    if (!items || !items.length) { patch(el, "<div class=\"empty\" style=\"grid-column:1/-1\">" + QI.msg("No agents.") + "</div>"); return; }
-    const live = items.filter(a => !isInfra(a)).sort(byRecent);
+    if (!items || !items.length) { patch(el, "<div class=\"empty\">" + QI.msg("No agents.") + "</div>"); return; }
+    const live = items.filter(a => !isInfra(a)).sort(byRank);
     const sys = items.filter(a => isInfra(a)).sort(byRecent);
-    // Overview is a summary: the 8 most recent agents and a link to the rest (F-325).
-    const shown = compact ? live.slice(0, 8) : live;
-    let html = shown.map(agentCard).join('');
-    if (live.length > shown.length) html += '<a class="btn-more" href="#agents" style="grid-column:1/-1;text-align:center;text-decoration:none">' + QI.msg('+{n} more agents', { n: live.length - shown.length }) + '</a>';
-    if (!compact && sys.length) {
-      html += ("</div><div class=\"section-title\" style=\"margin-top:28px\">" + QI.msg("System & integration agents") + "</div><div class=\"agent-grid system-grid\">") + sys.map(agentCard).join('');
-    }
+    let html = agentTable(live);
+    if (sys.length) html += '<h2 class="section-title system-title">' + QI.msg("System & integration agents") + '</h2><div class="system-grid">' + agentTable(sys) + '</div>';
     patch(el, html);
-    el.querySelectorAll('.agent-card').forEach(c => {
-      c.onclick = () => drillAgentById(c.getAttribute('data-id'));
-    });
-    // wire system grid cards if appended into a sibling (handled below for full page)
+    el.querySelectorAll('.agent-card,[data-open]').forEach(c => { c.onclick = () => drillAgentById(c.getAttribute('data-open') || c.getAttribute('data-id')); });
+    el.querySelectorAll('[data-switch]').forEach(s => { s.onclick = () => switchAgentSetting(s); });
+  }
+  // Optimistic: the switch moves at once, returns on failure, and the row is re-read either way.
+  async function switchAgentSetting(button) {
+    const a = (agentsCache || []).find(x => x.id === button.dataset.agent), status = $('#uiFeedback');
+    if (!a || button.disabled || button.getAttribute('aria-busy') === 'true') return;
+    const on = button.getAttribute('aria-checked') === 'true', autosave = button.dataset.switch === 'autosave';
+    // aria-busy, not disabled: a disabled button drops keyboard focus, and the repaint restores it by data-id.
+    button.setAttribute('aria-busy', 'true'); button.setAttribute('aria-checked', String(!on));
+    try {
+      if (autosave) await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/memory-policy', { mode: on ? 'manual' : 'auto', expected_revision: a.memory.revision });
+      else await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/shared-context', { enabled: !on });
+      if (status) status.textContent = autosave ? (on ? QI.msg("{name} saves only on request.", { name: a.name }) : QI.msg("Automatic saving is on for {name}.", { name: a.name }))
+        : (on ? QI.msg("{name} now reads only its own context.", { name: a.name }) : QI.msg("{name} now reads the shared context.", { name: a.name }));
+    } catch (e) {
+      button.setAttribute('aria-checked', String(on));
+      if (status && e.message !== 'unauthorized') status.textContent = e.status === 403 ? QI.msg("Only the workspace owner can change this.") : QI.msg("Could not complete this.") + ' ' + e.message;
+    }
+    button.removeAttribute('aria-busy');
+    try { agentsCache = (await api('/api/dashboard/agents')).items; } catch { return; }
+    paintAgentsBoard($('#agentsWrap'), agentsCache);
   }
   async function renderAgentsPage() {
     setCrumb(("<span style=\"color:var(--text)\">" + QI.msg("Agents") + "</span>"));
@@ -635,19 +658,13 @@
     try {
       const d = await api('/api/dashboard/agents');
       setConn(true); agentsCache = d.items;
-      const items = d.items || [];
-      const live = items.filter(a => !isInfra(a)).sort(byRecent);
-      const sys = items.filter(a => isInfra(a)).sort(byRecent);
-      $('#agentsWrap').innerHTML =
-        '<div class="agent-grid">' + (live.map(agentCard).join('') || ("<div class=\"empty\" style=\"grid-column:1/-1\">" + QI.msg("None") + "</div>")) + '</div>' +
-        (sys.length ? ("<div class=\"section-title\" style=\"margin-top:30px; color:var(--text3)\">" + QI.msg("System & integration agents") + "</div><div class=\"agent-grid system-grid\">") + sys.map(agentCard).join('') + '</div>' : '');
-      $('#agentsWrap').querySelectorAll('.agent-card').forEach(c => c.onclick = () => drillAgentById(c.getAttribute('data-id')));
+      paintAgentsBoard($('#agentsWrap'), d.items || []);
     } catch (e) { errBox($('#agentsWrap'), QI.msg("Failed to load agents."), renderAgentsPage, e); }
   }
 
   function drillAgentById(id) {
     const a = (agentsCache || []).find(x => x.id === id);
-    if (a) { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'memory', noteType: null } }; route(); }
+    if (a) { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'sessions', noteType: null } }; route(); }
   }
 
   // ================= AGENT DETAIL (drill-down, preserved) =================
@@ -658,66 +675,25 @@
     waiting: ['◌', QI.msg("Waiting for this agent to connect")], behind: ['◐', QI.msg("Saving; the summary is catching up")],
     sign_in: ['!', QI.msg("The memory model needs sign-in or quota")], error: ['!', QI.msg("Saving needs attention")]
   })[state];
+  // "waiting" only says no conversation has arrived. An agent that has signed in is connected: it
+  // writes notes, but its client (Grok, ChatGPT, Claude web…) sends no conversations by itself.
+  const agentMemoryState = a => a.memory.state === 'waiting' && a.last_seen
+    ? ['○', QI.msg("Connected · conversations are not saved automatically")] : memoryState(a.memory.state);
   // One contract for every agent: the same rows the agent reads in qoopia_capabilities.
   const mechanismState = status => ({
     available: ['●', QI.msg("Available")], forbidden: ['○', QI.msg("Not permitted")], client_unsupported: ['◌', QI.msg("The client cannot do this")],
     needs_setup: ['◐', QI.msg("Needs setup")], faulty: ['!', QI.msg("Needs attention")]
   })[status] || ['!', QI.msg("Needs attention")];
   function coverageLine(a) {
-    const st = a.memory && memoryState(a.memory.state); if (!st) return '';
-    return '<div class="agent-meta coverage-line"><span aria-hidden="true">' + st[0] + '</span> ' + esc(st[1]) + '</div>';
+    const st = a.memory && agentMemoryState(a); if (!st) return '';
+    return '<div class="agent-meta coverage-line" title="' + esc(st[1]) + '"><span aria-hidden="true">' + st[0] + '</span> ' + esc(st[1]) + '</div>';
   }
-  // Fetched when the card opens: the list endpoint stays cheap for a workspace with many agents.
-  async function loadMechanisms(a) {
-    if ((a.mechanisms || []).length || !$('#mechanismsPanel')) return;
-    try { a.mechanisms = (await api('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/contract')).mechanisms || []; } catch { return; }
-    const host = $('#mechanismsPanel'); if (!host || !a.mechanisms.length) return;
-    const open = host.open; host.outerHTML = mechanismsPanel(a); if (open) $('#mechanismsPanel').open = true;
-  }
-  function mechanismsPanel(a) {
-    if (!(a.mechanisms || []).length) return '<details class="mechanisms-panel" id="mechanismsPanel"><summary>' + esc(QI.msg("What this agent can use")) + '</summary><p class="meta">' + esc(QI.msg("Loading…")) + '</p></details>';
-    return '<details class="mechanisms-panel" id="mechanismsPanel"><summary>' + esc(QI.msg("What this agent can use")) + '</summary><ul>' + a.mechanisms.map(m => { const st = mechanismState(m.status);
-      return '<li><span aria-hidden="true">' + st[0] + '</span> <strong>' + esc(QI.msg(m.title)) + '</strong> — ' + esc(st[1]) +
-        (m.reason ? '<br><span class="meta">' + esc(QI.msg(m.reason)) + ' ' + esc(QI.msg(m.action || '')) + '</span>' : '') + '</li>'; }).join('') + '</ul></details>';
-  }
-  // ADR-020: one switch per agent. The steward and the owner have none (shared_context null):
-  // they always read the whole workspace. Only the owner gets the button.
-  function contextPanel(a) {
-    if (typeof a.shared_context !== 'boolean') return '';
-    const on = a.shared_context;
-    return '<section class="memory-panel" aria-labelledby="contextPanelTitle"><div><h3 id="contextPanelTitle">' + esc(QI.msg("Shared context")) + '</h3>' +
-      '<p class="memory-state">' + esc(on ? QI.msg("Reads the notes and conversations of every agent in this workspace.") : QI.msg("Reads only its own notes and conversations.")) + '</p>' +
-      '<p class="memory-note">' + esc(QI.msg("Private notes stay with their author, the steward and the owner. No agent reads another workspace.")) + '</p></div>' +
-      (a.can_switch_shared_context ? '<div class="memory-action"><button type="button" id="contextToggle" role="switch" aria-checked="' + on + '" aria-labelledby="contextPanelTitle" aria-describedby="contextResult">' +
-        esc(on ? QI.msg("On") : QI.msg("Off")) + '</button><p id="contextResult" role="status" aria-live="polite"></p></div>' : '') + '</section>';
-  }
-  function bindContextPanel(a) {
-    const button = $('#contextToggle'); if (!button) return;
-    button.onclick = async () => {
-      button.disabled = true; $('#contextResult').textContent = QI.msg("Saving…");
-      try {
-        const next = await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/shared-context', { enabled: !a.shared_context });
-        agentsCache = null; state.drill.agent = { ...a, shared_context: next.shared_context };
-        renderAgentDetail(); const done = $('#contextResult');
-        if (done) done.textContent = next.shared_context ? QI.msg("Done. This agent now reads the context of its sibling agents.") : QI.msg("Done. This agent now reads only its own context.");
-      } catch (e) {
-        button.disabled = false; const result = $('#contextResult');
-        if (result && e.message !== 'unauthorized') result.textContent = e.status === 403 ? QI.msg("Only the workspace owner can change this.") : QI.msg("Could not complete this.") + ' ' + e.message;
-      }
-    };
-  }
-  function memoryPanel(a) {
-    const m = a.memory; if (!m) return '';
-    const st = memoryState(m.state) || memoryState('error'), auto = m.mode === 'auto';
-    return '<section class="memory-panel" aria-labelledby="memoryPanelTitle"><div><h2 id="memoryPanelTitle">' + esc(QI.msg("Session memory")) + '</h2>' +
-      '<p class="memory-state"><span aria-hidden="true">' + st[0] + '</span> ' + esc(st[1]) + '</p>' +
-      '<p class="memory-facts">' + esc(QI.msg("Last saved:")) + ' ' + (m.last_capture_at ? fmtTime(m.last_capture_at) : '—') + ' · ' +
-        esc(QI.msg("Last summary:")) + ' ' + (m.last_summary_at_ms ? fmtTime(new Date(m.last_summary_at_ms).toISOString()) : '—') +
-        (m.pending_sessions ? ' · ' + esc(QI.msg("Conversations awaiting a summary:")) + ' ' + fmtNum(m.pending_sessions) : '') + '</p>' +
-      '<p class="memory-note">' + esc(auto ? QI.msg("New conversations are saved to Qoopia automatically.") : QI.msg("Nothing new is saved unless you ask. Existing memory stays available. The history kept by Claude, ChatGPT or Telegram is separate.")) + '</p></div>' +
-      '<div class="memory-action"><button type="button" class="btn" id="memoryToggle" aria-describedby="memoryResult">' + esc(auto ? QI.msg("Switch to only on request") : QI.msg("Turn automatic saving on")) + '</button>' +
-      '<p id="memoryResult" role="status" aria-live="polite"></p></div>' +
-      (m.pending_saves ? '<div class="memory-saves" id="memorySaves"><h3>' + esc(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(m.pending_saves) + '</h3></div>' : '') + '</section>';
+  // The agent's page opens straight on its workspace; autosave and shared context are switched in its row.
+  // Saves an agent prepared while it saves only on request wait here for the owner.
+  function savesPanel(a) {
+    const n = a.type !== 'owner' && a.memory?.pending_saves; if (!n) return '';
+    return '<section class="memory-saves" id="memorySaves" aria-labelledby="memorySavesTitle"><h2 id="memorySavesTitle">' + esc(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(n) + '</h2>' +
+      '<p id="memoryResult" role="status" aria-live="polite"></p></section>';
   }
   // The agent prepared these notes while it saves only on request; nothing is memory until the owner confirms.
   async function bindMemorySaves(a) {
@@ -735,22 +711,10 @@
         card.remove(); result.textContent = accept ? QI.msg("Saved to memory.") : QI.msg("Declined. The prepared text was removed.");
         const left = host.querySelectorAll('article').length;
         if (a.memory) a.memory.pending_saves = left;
-        if (left) host.querySelector('h3').textContent = QI.resolve(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(left);
+        if (left) host.querySelector('h2').textContent = QI.resolve(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(left);
         else host.remove();
       } catch (e) { card.querySelectorAll('button').forEach(b => b.disabled = false); await memoryWriteFailed(e, QI.msg("Could not complete this. Only the workspace owner can confirm a save.")); }
     });
-  }
-  function bindMemoryPanel(a) {
-    const button = $('#memoryToggle'), result = $('#memoryResult'); if (!button) return;
-    button.onclick = async () => {
-      button.disabled = true; result.textContent = QI.msg("Saving…");
-      try {
-        const next = await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/memory-policy', { mode: a.memory.mode === 'auto' ? 'manual' : 'auto', expected_revision: a.memory.revision });
-        const fresh = ((await api('/api/dashboard/agents')).items || []).find(x => x.id === a.id);
-        agentsCache = null; state.drill.agent = fresh || { ...a, memory: { ...a.memory, mode: next.mode, revision: next.revision, state: next.mode === 'manual' ? 'manual' : a.memory.state } };
-        renderAgentDetail(); const done = $('#memoryResult'); if (done) done.textContent = next.mode === 'manual' ? QI.msg("Done. Only on request from now on.") : QI.msg("Done. Automatic saving is on from now on.");
-      } catch (e) { button.disabled = false; await memoryWriteFailed(e, QI.msg("Could not change the setting. Only the workspace owner can do this.")); }
-    };
   }
   // Only 403 means "not the owner". Stale, decided or expired state re-reads the card; anything else shows the server's reason.
   async function memoryWriteFailed(e, ownerOnly) {
@@ -759,25 +723,36 @@
     const result = $('#memoryResult'); if (result) result.textContent = e.status === 403 ? ownerOnly : QI.msg("Could not complete this.") + ' ' + e.message;
   }
   function renderAgentDetail() {
-    const a = state.drill.agent;
+    const a = state.drill.agent, tab = state.drill.tab, role = agentRole(a), st = a.memory && a.type !== 'owner' && agentMemoryState(a);
     setCrumb(("<a data-go=\"agents\">" + QI.msg("Agents") + "</a><span class=\"crumb-sep\">›</span><span style=\"color:var(--text)\">") + esc(a.name) + '</span>');
+    const tabs = [['sessions', QI.msg("Sessions"), a.sessions_count], ['memory', QI.msg("Notes"), a.notes_count], ['search', QI.msg("Search")], ['access', QI.msg("Access")]];
     main.innerHTML =
       '<div class="detail-head">' +
         '<div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
         '<div><h1 class="detail-title">' + esc(a.name) + '</h1>' +
-        '<div class="detail-sub">' + QI.count(a.sessions_count,'session') + ' · ' + QI.count(a.messages_count,'message') + ' · ' + QI.count(a.notes_count,'note') + '</div></div>' +
-      '</div>' + memoryPanel(a) + contextPanel(a) + mechanismsPanel(a) +
-      '<div class="tabs">' +
-        '<button class="tab ' + (state.drill.tab === 'sessions' ? 'active' : '') + ("\" data-tab=\"sessions\">" + QI.msg("Sessions") + " <span class=\"tab-badge\">") + fmtNum(a.sessions_count) + '</span></button>' +
-        '<button class="tab ' + (state.drill.tab === 'memory' ? 'active' : '') + ("\" data-tab=\"memory\">" + QI.msg("Notes") + " <span class=\"tab-badge\">") + fmtNum(a.notes_count) + '</span></button>' +
-        '<button class="tab ' + (state.drill.tab === 'search' ? 'active' : '') + ("\" data-tab=\"search\">" + QI.msg("Search") + "</button>") +
+        '<div class="detail-sub">' + (role ? esc(role) + ' · ' : '') + QI.count(a.sessions_count,'session') + ' · ' + QI.count(a.messages_count,'message') + ' · ' + QI.count(a.notes_count,'note') +
+          (st ? ' · <span aria-hidden="true">' + st[0] + '</span> ' + esc(st[1]) : '') + '</div></div>' +
+      '</div>' + savesPanel(a) +
+      '<div class="tabs">' + tabs.map(([id, label, n]) => '<button class="tab' + (tab === id ? ' active' : '') + '" data-tab="' + id + '">' + label +
+        (n == null ? '' : ' <span class="tab-badge">' + fmtNum(n) + '</span>') + '</button>').join('') +
       ("</div><div id=\"tabBody\"><div class=\"loading\">" + QI.msg("Loading…") + "</div></div>");
     main.querySelectorAll('.tab').forEach(el => el.onclick = () => { state.drill.tab = el.getAttribute('data-tab'); renderAgentDetail(); });
-    bindMemoryPanel(a); bindContextPanel(a); void bindMemorySaves(a); void loadMechanisms(a);
+    void bindMemorySaves(a);
 
-    if (state.drill.tab === 'sessions') return renderSessions();
-    if (state.drill.tab === 'memory') return renderMemory();
-    if (state.drill.tab === 'search') return renderAgentSearch();
+    if (tab === 'sessions') return renderSessions();
+    if (tab === 'memory') return renderMemory();
+    if (tab === 'search') return renderAgentSearch();
+    if (tab === 'access') return renderAgentAccess();
+  }
+  // One contract for every agent: the same rows the agent reads in qoopia_capabilities.
+  async function renderAgentAccess() {
+    const a = state.drill.agent, d = state.drill, body = $('#tabBody');
+    try { if (!(a.mechanisms || []).length) a.mechanisms = (await api('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/contract')).mechanisms || []; }
+    catch (e) { if (state.drill === d) errBox(body, QI.msg("Could not complete this."), renderAgentAccess, e); return; }
+    if (state.drill !== d || d.tab !== 'access' || !body.isConnected) return;
+    body.innerHTML = '<ul class="mechanisms">' + a.mechanisms.map(m => { const st = mechanismState(m.status);
+      return '<li><span aria-hidden="true">' + st[0] + '</span> <strong>' + esc(QI.msg(m.title)) + '</strong> — ' + esc(st[1]) +
+        (m.reason ? '<br><span class="meta">' + esc(QI.msg(m.reason)) + ' ' + esc(QI.msg(m.action || '')) + '</span>' : '') + '</li>'; }).join('') + '</ul>';
   }
   async function renderSessions() {
     const a = state.drill.agent; const body = $('#tabBody');
@@ -866,7 +841,7 @@
       '<div style="flex:1; min-width:0"><h1 class="detail-title">' + esc(s.title || QI.msg('(untitled session)')) + '</h1>' +
       ("<div class=\"detail-sub mono\"><span class=\"copyable\" id=\"sidCopy\" title=\"" + QI.msg("copy") + "\">") + esc(s.id) + '</span></div></div></div>' +
       ("<div id=\"tabBody\"><div class=\"loading\">" + QI.msg("Loading transcript…") + "</div></div>");
-    const bk = $('#bkAgent'); if (bk) bk.onclick = () => { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'memory', noteType: null } }; route(); };
+    const bk = $('#bkAgent'); if (bk) bk.onclick = () => { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'sessions', noteType: null } }; route(); };
     const sidEl = $('#sidCopy'); if (sidEl) sidEl.onclick = () => copyText(sidEl, s.id);
     const body = $('#tabBody');
     try {
@@ -953,7 +928,6 @@
       ("<div class=\"detail-sub\" id=\"acSub\">" + QI.msg("loading…") + "</div></div></div>") +
       ("<div class=\"panel tg-panel\"><div id=\"acBody\"><div class=\"loading\">" + QI.msg("Loading conversation…") + "</div></div></div>");
     acState = { messages: [], nextBefore: null, hasMore: false, busy: false };
-    main.insertAdjacentHTML('beforeend','<button id="acLatest" class="btn-more" hidden style="position:fixed;bottom:24px;right:24px;z-index:5">'+esc(QI.msg('New messages ↓'))+'</button>');$('#acLatest').onclick=()=>{window.scrollTo({top:document.documentElement.scrollHeight});$('#acLatest').hidden=true;};
     await loadAcPage(true);pollFn=refreshAcThread;
   }
 
@@ -984,18 +958,19 @@
     try {const d=await api('/api/dashboard/agentcomm/thread?a='+encodeURIComponent(pair.agent_a.id)+'&b='+encodeURIComponent(pair.agent_b.id)+'&limit=200');if(!body.isConnected||acState!==current)return;
       if(current.messages.length&&d.messages?.length&&!d.messages.some(m=>current.messages.some(old=>old.id===m.id))&&d.has_more){current.nextBefore=d.next_before;current.hasMore=true;}
       const next=[...new Map([...current.messages,...(d.messages||[])].map(m=>[m.id,m])).values()].sort((a,b)=>a.created_at.localeCompare(b.created_at)||String(a.id).localeCompare(String(b.id)));
-      if(JSON.stringify(next)!==JSON.stringify(current.messages)){const anchor=[...body.querySelectorAll('[data-message]')].find(el=>el.getBoundingClientRect().bottom>0),top=anchor?.getBoundingClientRect().top,id=anchor?.dataset.message,follow=window.scrollY+innerHeight>=document.documentElement.scrollHeight-100;current.messages=next;renderAcMessages(false);if(follow)window.scrollTo({top:document.documentElement.scrollHeight});else if(id){const kept=[...body.querySelectorAll('[data-message]')].find(el=>el.dataset.message===id);if(kept)window.scrollBy(0,kept.getBoundingClientRect().top-top);$('#acLatest').hidden=false;}}
+      if(JSON.stringify(next)!==JSON.stringify(current.messages)){const anchor=[...body.querySelectorAll('[data-message]')].find(el=>el.getBoundingClientRect().bottom>0),top=anchor?.getBoundingClientRect().top,id=anchor?.dataset.message,atTop=window.scrollY<100;current.messages=next;renderAcMessages(false);if(!atTop&&id){const kept=[...body.querySelectorAll('[data-message]')].find(el=>el.dataset.message===id);if(kept)window.scrollBy(0,kept.getBoundingClientRect().top-top);}}
       $('#acSub').textContent=QI.resolve(QI.msg('Updated automatically'))+' · '+QI.resolve(fmtNum(d.total));setConn(true);
     }catch{if(body.isConnected){$('#acSub').textContent=QI.resolve(QI.msg('Connection lost. Reconnecting…'));setConn(false);}}finally{current.busy=false;}
   }
 
+  // Newest message on top; scrolling down goes back in time and loads older history at the bottom.
+  // The page's to-top arrow returns to the latest message.
   function renderAcMessages(first) {
     const body = $('#acBody'); if (!body) return;
     const p = state.drill.pair;
     if (!acState.messages.length) { body.innerHTML = ("<div class=\"empty\">" + QI.msg("No messages.") + "</div>"); return; }
 
-    // Chronological conversation; open at the latest message and load older history above.
-    const msgs = acState.messages.slice();
+    const msgs = acState.messages.slice().reverse();
 
     let html = '<div class="tg-thread">';
     let day = '';
@@ -1020,16 +995,14 @@
         '</div></div>';
     }
     html += '</div>';
-    // Older history is prepended without moving the message being read.
     const historyControl = acState.hasMore
       ? ("<button class=\"btn-more\" id=\"acMore\" style=\"margin:10px auto 0\">" + QI.msg("Load older messages") + "</button>")
       : ("<div class=\"tg-day\">" + QI.msg("Beginning of conversation") + "</div>");
 
-    const oldHeight=body.scrollHeight,oldY=window.scrollY;body.innerHTML = historyControl+html;
-    if(!first&&acState.loadingOlder)window.scrollTo({top:oldY+body.scrollHeight-oldHeight});
+    body.innerHTML = html + historyControl;
     const more = $('#acMore');
-    if (more) more.onclick = () => { more.textContent = (QI.msg("Loading…")); acState.loadingOlder=true;loadAcPage(false).finally(()=>{acState.loadingOlder=false;}); };
-    if (first) window.scrollTo({ top:document.documentElement.scrollHeight });
+    if (more) more.onclick = () => { more.textContent = (QI.msg("Loading…")); loadAcPage(false); };
+    if (first) window.scrollTo({ top: 0 });
   }
 
   // ================= SKILL LOOP: same login and typed authority =================
@@ -1346,9 +1319,10 @@
   }
 
 
+  const SURFACE_NAMES={codex:'Codex CLI',claude_code:'Claude Code',muse_code:'Muse Code CLI',muse_app:'Muse.app',grok_bot:'Grok Bot',claude_desktop:'Claude Desktop',claude_web:'Claude Web',chatgpt_web:'ChatGPT Web',chatgpt_desktop:'ChatGPT Desktop'};
   async function renderConnectionWizard(host,workspaceName,workspaceId,onRefresh) {
     const t=(en,ru)=>QI.pair(en,ru);
-    const names={codex:'Codex CLI',claude_code:'Claude Code',muse_code:'Muse Code CLI',muse_app:'Muse.app',grok_bot:'Grok Bot',claude_desktop:'Claude Desktop',claude_web:'Claude Web',chatgpt_web:'ChatGPT Web',chatgpt_desktop:'ChatGPT Desktop'};
+    const names=SURFACE_NAMES;
     const guides={
       chatgpt_web:{url:'https://chatgpt.com/plugins',text:t('Open Plugins → + → New plugin. Choose OAuth and paste this address. Developer mode may be required in Settings → Security and login.','Откройте Плагины → + → Новый плагин. Выберите OAuth и вставьте адрес. При необходимости включите режим разработчика в Настройки → Безопасность и вход.'),limit:t('Last verified with ChatGPT Pro in the web client on 15 September 2026: OAuth, connection check, reading, adding and repeat requests. The current consent and automatic confirmation have not been re-verified with a real ChatGPT account. Availability depends on your ChatGPT plan and workspace settings. If a client check is blocked, stop and leave the connection unverified.','Последняя проверка с ChatGPT Pro в браузере — 15 сентября 2026 года: OAuth, проверка подключения, чтение, добавление и повторные запросы. Текущие согласие и автоматическое подтверждение с настоящим аккаунтом ChatGPT повторно не проверялись. Доступность зависит от плана ChatGPT и настроек пространства. Если клиент блокирует проверку, остановите её и оставьте подключение неподтверждённым.')},
       chatgpt_desktop:{url:'https://developers.openai.com/apps-sdk/deploy/connect-chatgpt',text:t('Open Plugins in the desktop client and add this address using OAuth. If the desktop app does not offer custom plugins, use another supported client.','Откройте Плагины в настольном клиенте и добавьте адрес с OAuth. Если приложение не позволяет добавлять свои плагины, используйте другой поддерживаемый клиент.'),limit:t('On 15 September 2026 OAuth, authenticated verification, reading, writing and retries without duplicates passed on Mac. The current consent and automatic confirmation have not been re-verified with a real ChatGPT account. Use New chat → Chat. Stop any client-blocked action.','15 сентября 2026 года на Mac проверены OAuth, подтверждение подключения, чтение, запись и повтор без дублей. Текущие согласие и автоматическое подтверждение с настоящим аккаунтом ChatGPT повторно не проверялись. Используйте Новый чат → Чат. Не повторяйте действие, заблокированное клиентом.')},
@@ -1373,7 +1347,7 @@
       const request=QI.resolve(t('Read qoopia_protocol and qoopia_capabilities from the Qoopia connection at '+c.mcp_url+'. Keep your role and instructions. Tell me what is available, or report the exact error.','Прочитай qoopia_protocol и qoopia_capabilities через подключение Qoopia '+c.mcp_url+'. Сохрани свою роль и инструкции. Сообщи, что доступно, или укажи точную ошибку.'));
       return ['muse_app','grok_bot'].includes(c.surface)?setupText(c)+'\n\n'+request:request;
     }
-    host.innerHTML='<p id="setupFeedback" role="status" aria-live="polite"></p><div id="setupConnections"></div><details id="setupNew" class="connection-add"><summary>'+t('Add an application','Добавить приложение')+'</summary><div class="work-controls"><div><label for="setupSurface">'+t('Application','Приложение')+'</label><select id="setupSurface">'+Object.entries(names).map(([id,name])=>'<option value="'+id+'">'+name+'</option>').join('')+'</select></div><div><label for="setupAccess">'+t('Access','Права')+'</label><select id="setupAccess"><option value="read">'+t('Read only','Только чтение')+'</option><option value="read_write">'+t('Read and add','Чтение и добавление')+'</option></select></div><div><label for="setupAgentName">'+t('Agent name (optional)','Имя агента (необязательно)')+'</label><input id="setupAgentName" maxlength="64" placeholder="FIBI" autocomplete="off"></div><button id="setupApply" class="primary">'+t('Continue','Продолжить')+'</button></div><p class="meta">'+t('A separate connection for this application. Existing agents keep their access.','Отдельное подключение для этого приложения. Доступ существующих агентов сохраняется.')+'</p><p class="meta">'+t('Read and add allows new notes, without editing or deleting existing ones.','Чтение и добавление разрешает создавать заметки, без изменения и удаления существующих.')+'</p></details><button id="setupRefresh">'+t('Refresh status','Обновить статусы')+'</button><details id="setupNetworkDetails" class="connection-options"><summary>'+t('External access settings','Настройки внешнего доступа')+'</summary><div id="setupNetwork"></div><p id="setupNetworkFeedback" role="status" aria-live="polite"></p></details>';
+    host.innerHTML='<p id="setupFeedback" role="status" aria-live="polite"></p><div id="setupConnections"></div><details id="setupNew" class="connection-add"><summary>'+t('Add an application','Добавить приложение')+'</summary><div class="work-controls"><div><label for="setupSurface">'+t('Application','Приложение')+'</label><select id="setupSurface">'+Object.entries(names).map(([id,name])=>'<option value="'+id+'">'+name+'</option>').join('')+'</select></div><div><label for="setupAccess">'+t('Access','Права')+'</label><select id="setupAccess"><option value="read">'+t('Read only','Только чтение')+'</option><option value="read_write">'+t('Read and add','Чтение и добавление')+'</option></select></div><div><label for="setupAgentName">'+t('Agent name (optional)','Имя агента (необязательно)')+'</label><input id="setupAgentName" maxlength="64" placeholder="FIBI" autocomplete="off"></div><button id="setupApply" class="primary">'+t('Continue','Продолжить')+'</button></div><p class="meta">'+t('A separate connection for this application. Existing agents keep their access.','Отдельное подключение для этого приложения. Доступ существующих агентов сохраняется.')+'</p><p class="meta">'+t('Read and add allows new notes, without editing or deleting existing ones.','Чтение и добавление разрешает создавать заметки, без изменения и удаления существующих.')+'</p></details><details id="setupNetworkDetails" class="connection-options"><summary>'+t('External access settings','Настройки внешнего доступа')+'</summary><div id="setupNetwork"></div><p id="setupNetworkFeedback" role="status" aria-live="polite"></p></details>';
     const feedback=host.querySelector('#setupFeedback'),networkFeedback=host.querySelector('#setupNetworkFeedback');
     let actionBusy=false,revision=0,refreshing=false,lastResult='',lastConnections='',lastNetwork='';
     const call=async body=>{if(actionBusy)throw Error(QI.resolve(QI.msg('Please wait for the current action')));actionBusy=true;revision++;feedback.textContent=QI.msg('Working…');host.setAttribute('aria-busy','true');try{return await apiWrite('/api/dashboard/connection-setup',body);}finally{actionBusy=false;if(host.isConnected)host.removeAttribute('aria-busy');}};
@@ -1437,11 +1411,11 @@
       const requestIds=new Set([...host.querySelectorAll('[data-request-details][open]')].map(el=>el.dataset.requestDetails));
       const reconnectIds=new Set([...host.querySelectorAll('[data-reconnect][open]')].map(el=>el.dataset.reconnect));
       const labels=new Map([...host.querySelectorAll('[data-label-name]')].map(el=>[el.dataset.labelName,{name:el.value,surface:host.querySelector('[data-label-surface="'+el.dataset.labelName+'"]')?.value,open:el.closest('details').open}]));
-      const active=result.connections.filter(c=>c.code!=='REVOKED'),revoked=result.connections.filter(c=>c.code==='REVOKED');
+      const active=result.connections.filter(c=>c.code!=='REVOKED');
       function connectionRow(c){
         const guide=guides[c.surface],revoked=c.code==='REVOKED',ready=c.state==='ready';
         const title=(c.agent_name?c.agent_name+' · ':'')+(names[c.surface]||c.surface);
-        const stateLabel=ready?t('Connected','Подключено'):revoked?t('Access revoked','Доступ отозван'):c.authorized?t('Access granted — send the request','Доступ разрешён — отправьте запрос'):t('Waiting for setup','Ждёт настройки');
+        const stateLabel=ready?t('Connected','Подключено'):revoked?t('Access revoked','Доступ отозван'):t('Waiting for the agent’s first request','Ждём первый запрос агента');
         const cloud=['muse_app','grok_bot'].includes(c.surface);
         const authHtml=c.surface==='claude_desktop'&&c.client_config==='on_this_computer'?'<div class="work-actions"><button data-client-auth="'+c.id+'">'+t('Approve access','Подтвердить доступ')+'</button>'+(c.client_auth?.open_url?link(c.client_auth.open_url,t('Open consent page','Открыть подтверждение')):'')+'</div>':'';
         const request='<button class="'+(cloud?'primary':'')+'" data-copy-request="'+c.id+'">'+(cloud?t('Copy setup request','Скопировать запрос подключения'):t('Copy request for your agent','Скопировать запрос агенту'))+'</button><details class="connection-help" data-request-details="'+c.id+'"><summary>'+t('View request','Посмотреть запрос')+'</summary><pre class="connection-request" data-request="'+c.id+'">'+esc(connectRequest(c))+'</pre></details>';
@@ -1453,7 +1427,10 @@
           (ready?'<p>'+t('Last verified call: ','Последний подтверждённый вызов: ')+esc(QI.date(c.verified_at))+'. '+t('This records a successful call, not continuous availability.','Это подтверждение успешного вызова, а не постоянного присутствия в сети.')+'</p><details data-reconnect="'+c.id+'"'+(reconnectIds.has(c.id)?' open':'')+'><summary>'+t('Connect again','Подключить снова')+'</summary>'+setup+'</details>':setup)+
           (revoked?'':'<details class="connection-options"><summary>'+t('Name and application','Имя и приложение')+'</summary><label for="label-'+c.id+'">'+t('Agent name','Имя агента')+'</label><input id="label-'+c.id+'" data-label-name="'+c.id+'" maxlength="64" value="'+esc(c.agent_name||'')+'">'+(['muse_code','muse_app'].includes(c.surface)?'<label for="surface-'+c.id+'">'+t('Application','Приложение')+'</label><select id="surface-'+c.id+'" data-label-surface="'+c.id+'"><option value="muse_app"'+(c.surface==='muse_app'?' selected':'')+'>Muse.app</option><option value="muse_code"'+(c.surface==='muse_code'?' selected':'')+'>Muse Code CLI</option></select>':'')+'<button data-label-connection="'+c.id+'">'+t('Save name','Сохранить имя')+'</button></details><details class="connection-options"><summary>'+t('Remove access','Отключить доступ')+'</summary><p>'+t('Only this connection will stop working. Notes and other agents are preserved.','Перестанет работать только это подключение. Заметки и другие агенты сохранятся.')+'</p><button data-revoke-connection="'+c.id+'">'+t('Revoke access','Отозвать доступ')+'</button></details>')+'</div></details>';
       }
-      host.querySelector('#setupConnections').innerHTML=active.map(connectionRow).join('')+(revoked.length?'<details class="connection-options"><summary>'+t('Disconnected applications','Отключённые приложения')+' ('+revoked.length+')</summary>'+revoked.map(connectionRow).join('')+'</details>':'');
+      // Only a setup in progress shows here: one created in the last day whose agent has not come yet.
+      // Once the agent makes a request it is in the connected list; an abandoned setup drops out.
+      const pending=active.filter(c=>c.state!=='ready'&&!c.last_seen&&Date.now()-new Date(c.created_at).getTime()<86400000);
+      host.querySelector('#setupConnections').innerHTML=(pending.length?'<h3>'+t('Being connected','Подключается')+'</h3>':'')+pending.map(connectionRow).join('');
       host.querySelectorAll('[data-request-details]').forEach(el=>el.open=requestIds.has(el.dataset.requestDetails));
       host.querySelectorAll('[data-label-name]').forEach(el=>{const edit=labels.get(el.dataset.labelName);if(edit){el.value=edit.name;el.closest('details').open=edit.open;const surface=host.querySelector('[data-label-surface="'+el.dataset.labelName+'"]');if(surface&&edit.surface)surface.value=edit.surface;}});
       host.querySelectorAll('[data-client-setup]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{
@@ -1488,7 +1465,7 @@
       const detail=host.querySelector('[data-connection="'+created.connection.id+'"]');if(detail){const group=detail.closest('[data-connection-drafts]');if(group)group.open=true;detail.open=true;detail.querySelector('summary').focus();}
       feedback.textContent=t('Connection prepared. Finish setup in the selected application.','Подключение подготовлено. Завершите настройку в выбранном приложении.');
     }catch(e){feedback.textContent=e.message;}finally{host.querySelector('#setupApply').disabled=false;}};
-    host.querySelector('#setupRefresh').onclick=async()=>{try{await refresh(true);}catch(e){feedback.textContent=e.message;}};await refresh();
+    await refresh();
     const proposal=new URL(location.href),params=proposal.searchParams;
     if(params.has('connect')){
       const surface=params.get('connect'),name=params.get('agent')||'',access=params.get('access'),id=params.get('connection');
@@ -1513,27 +1490,40 @@
     const date=value=>QI.date(value,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
     const lastSeen=value=>value?t('Last request: ','Последнее обращение: ')+date(value):t('No requests recorded','Обращений пока нет');
     const modelStates={ready:t('Responding','Отвечает'),not_connected:t('Not selected','Не выбрана'),selected:t('Sign-in or check needed','Нужен вход или проверка'),auth_required:t('Sign in again','Нужно войти снова'),quota:t('Subscription limit reached','Достигнут лимит подписки'),timeout:t('Response timed out','Время ответа истекло'),unavailable:t('Unavailable','Недоступна'),invalid_response:t('Response could not be used','Не удалось обработать ответ'),busy:t('Working','Работает')};
-    const clientRow=c=>'<div class="connection-line"><strong>'+esc(c.name)+'</strong><div><span>'+(c.active_grants?t('OAuth access granted','OAuth-доступ разрешён'):t('Agent requests received','Получены обращения агента'))+'</span><p class="meta">'+esc(lastSeen(c.last_seen))+'</p></div></div>';
-    main.innerHTML='<section class="work connections"><header><h1>'+t('Connections','Подключения')+'</h1><p>'+esc(data.workspace)+'. '+t('See existing access or add an application.','Посмотрите действующие подключения или добавьте приложение.')+'</p></header><p id="connectionsStatus" class="work-status" role="status" aria-live="polite"></p><section class="connection-summary"><div class="connection-line"><div><h2>'+t('My Qoopia agent','Мой Qoopia агент')+'</h2><p id="connectionsStewardName">'+esc(stewards||t('Not assigned','Не назначен'))+'</p></div><button id="connectionsSteward">'+t('Open agent','Открыть агента')+'</button></div><div class="connection-line"><div><h2>'+t('Memory model','Модель памяти')+'</h2><p id="connectionsModelSummary"></p><p id="connectionsModelChecked" class="meta"></p>'+'</div><button id="connectionsModel">'+t('Settings','Настройки')+'</button></div></section><section aria-labelledby="applicationTitle"><h2 id="applicationTitle">'+t('Applications','Приложения')+'</h2>'+'<p>'+t('Existing agents appear here under their own names. No new setup is needed for this access.','Здесь показаны существующие агенты под своими именами. Для этого доступа повторная настройка не нужна.')+'</p><div id="connectedApplications"></div><div id="connectionWizard"></div></section><details class="connection-options"><summary id="connectionsAgentCount">'+t('Agents with access','Агенты с доступом')+' ('+(data.agents||[]).length+')</summary><p>'+t('An agent already using this memory does not need a new connection.','Агенту, который уже работает с этой памятью, новое подключение не нужно.')+'</p>'+'<div id="connectionAgentList">'+(data.agents||[]).map(a=>'<div class="connection-line"><strong>'+esc(a.name)+'</strong><span class="meta">'+esc(lastSeen(a.last_seen))+'</span></div>').join('')+'</div><button id="connectionsAgents">'+t('Open agents and notes','Открыть агентов и заметки')+'</button></details><details class="connection-options"><summary>'+t('Session memory settings','Настройки памяти сессий')+'</summary><p>'+t('Configure automatic context for a local agent. This is separate from its access to notes.','Настройте автоматическое сохранение контекста локального агента. Это отдельно от его доступа к заметкам.')+'</p><div class="work-actions"><button data-memory-client="claude_code">Claude Code</button><button data-memory-client="codex">Codex</button></div></details>'+'<details id="connectionPrevious" class="connection-options"><summary>'+t('Previous authorizations','Прежние авторизации')+'</summary><p>'+t('No current OAuth authorization. These records do not determine API-key access.','Действующей OAuth-авторизации нет. Эти записи не определяют доступ по ключу агента.')+'</p><div id="connectionPreviousList"></div></details>'+'</section>';
+    // One row per application that came at least once: what it is, which agent, and in one word whether it is used.
+    const DAY=86400000,appName=a=>a.client||SURFACE_NAMES[a.surface]||a.name;
+    const appRow=a=>{const days=Math.floor((Date.now()-new Date(a.last_seen).getTime())/DAY);
+      return '<div class="connection-line"><div><strong>'+esc(appName(a))+'</strong>'+(appName(a)!==a.name?' <span class="meta">· '+esc(a.name)+'</span>':'')+'</div>'+
+        '<div class="connection-app"><span>'+(days<7?'● '+t('Working','Работает'):'○ '+t('Not used for '+days+' days','Не используется '+days+' дн.'))+'</span><p class="meta">'+esc(lastSeen(a.last_seen))+'</p></div>'+
+        '<button data-disconnect="'+esc(a.kind+':'+a.id)+'" data-name="'+esc(appName(a)+' · '+a.name)+'">'+t('Disconnect','Отключить')+'</button></div>';};
+    main.innerHTML='<section class="work connections"><header><h1>'+t('Connections','Подключения')+'</h1><p>'+esc(data.workspace)+'. '+t('MCP clients connected to this memory, and how it is processed.','MCP-клиенты, подключённые к этой памяти, и как она обрабатывается.')+'</p></header><p id="connectionsStatus" class="work-status" role="status" aria-live="polite"></p>'+
+      '<section aria-labelledby="connectedTitle"><h2 id="connectedTitle"></h2><div id="connectedApplications"></div><div id="connectionWizard"></div></section>'+
+      '<section class="connection-summary"><div class="connection-line"><div><h2>'+t('Memory model','Модель памяти')+'</h2><p id="connectionsModelSummary"></p><p id="connectionsModelChecked" class="meta"></p></div><button id="connectionsModel">'+t('Settings','Настройки')+'</button></div>'+
+      '<div class="connection-line"><div><h2>'+t('My Qoopia agent','Мой Qoopia агент')+'</h2><p id="connectionsStewardName">'+esc(stewards||t('Not assigned','Не назначен'))+'</p></div><button id="connectionsSteward">'+t('Open agent','Открыть агента')+'</button></div></section>'+
+      '<details class="connection-options"><summary>'+t('Session memory settings','Настройки памяти сессий')+'</summary><p>'+t('Configure automatic context for a local agent. This is separate from its access to notes.','Настройте автоматическое сохранение контекста локального агента. Это отдельно от его доступа к заметкам.')+'</p><div class="work-actions"><button data-memory-client="claude_code">Claude Code</button><button data-memory-client="codex">Codex</button></div></details></section>';
     function overview(next){
       $('#connectionsStewardName').textContent=next.stewards.map(a=>a.name).join(', ')||t('Not assigned','Не назначен');
       const model=next.memory_model||{state:'not_connected'};
       $('#connectionsModelSummary').textContent=(model.model==='claude-haiku-4-5'?'Claude · Haiku':model.model==='gpt-5.6-luna'?'ChatGPT · Luna':model.model||t('Optional','По желанию'))+' · '+(modelStates[model.state]||t('Check needed','Нужна проверка'));
-      $('#connectionsModelChecked').textContent=model.checked_at?t('Last response check: ','Последняя проверка ответа: ')+date(model.checked_at):'';
-      const existing=new Map(next.clients.filter(c=>c.active_grants>0).map(c=>[c.id,c]));
-      const oauthIds=new Set(next.clients.map(c=>c.id));
-      for(const agent of next.agents||[])if(agent.last_seen&&!oauthIds.has(agent.id))existing.set(agent.id,agent);
-      $('#connectedApplications').innerHTML=[...existing.values()].sort((a,b)=>(b.last_seen||'').localeCompare(a.last_seen||'')).map(clientRow).join('');
-      const inactive=next.clients.filter(c=>!c.active_grants);$('#connectionPrevious').hidden=!inactive.length;
-      $('#connectionPreviousList').innerHTML=inactive.map(c=>'<p>'+esc(c.name)+' · '+esc(lastSeen(c.last_seen))+'</p>').join('');
-      $('#connectionsAgentCount').textContent=t('Agents with access','Агенты с доступом')+' ('+(next.agents||[]).length+')';
-      $('#connectionAgentList').innerHTML=(next.agents||[]).map(a=>'<div class="connection-line"><strong>'+esc(a.name)+'</strong><span class="meta">'+esc(lastSeen(a.last_seen))+'</span></div>').join('');
+      $('#connectionsModelChecked').textContent=model.checked_at?t('Last response: ','Последний ответ: ')+date(model.checked_at):'';
+      const apps=(next.apps||[]).filter(a=>a.last_seen);
+      $('#connectedTitle').textContent=t('Connected applications','Подключённые приложения')+' · '+apps.length;
+      $('#connectedApplications').innerHTML=apps.map(appRow).join('')||'<p class="meta">'+t('No application has connected yet.','Пока ни одно приложение не подключилось.')+'</p>';
     }
     overview(data);
     void renderConnectionWizard($('#connectionWizard'),data.workspace,data.workspace_id,async()=>{const next=await api('/api/dashboard/connections');if(state.page==='connections')overview(next);}).catch(e=>{if(state.page==='connections')$('#connectionWizard').textContent=e.message;});
     if(state.page!=='connections')return;
     const status=$('#connectionsStatus');
-    $('#connectionsSteward').onclick=()=>go('my-agent');$('#connectionsAgents').onclick=()=>go('agents');$('#connectionsModel').onclick=()=>go('work');
+    $('#connectionsSteward').onclick=()=>go('my-agent');$('#connectionsModel').onclick=()=>go('work');
+    // Disconnecting ends the application's access; the agent's notes and conversations stay.
+    $('#connectedApplications').onclick=async e=>{
+      const b=e.target.closest('[data-disconnect]');if(!b)return;
+      if(!window.confirm(QI.resolve(t('Disconnect '+b.dataset.name+'? It loses access to this memory; its notes and conversations stay.','Отключить '+b.dataset.name+'? Доступ к памяти закроется, заметки и разговоры сохранятся.'))))return;
+      const [kind,id]=b.dataset.disconnect.split(/:(.*)/);b.disabled=true;
+      try{await apiWrite('/api/dashboard/connection-setup',kind==='oauth'?{action:'revoke-oauth',agent_id:id}:{action:'disconnect',id});
+        status.textContent=QI.resolve(t('Disconnected: ','Отключено: '))+b.dataset.name;const next=await api('/api/dashboard/connections');if(state.page==='connections')overview(next);}
+      catch(err){b.disabled=false;status.textContent=err.message;}
+    };
     main.querySelectorAll('[data-memory-client]').forEach(button=>button.onclick=async()=>{
       button.disabled=true;status.textContent=QI.msg('Preparing your connection…');
       try {
@@ -1576,7 +1566,7 @@
   (function () {
     var btn = document.getElementById('toTopBtn');
     if (!btn) return;
-    var sync = function () { btn.classList.toggle('show', window.scrollY > 500); };
+    var sync = function () { btn.classList.toggle('show', window.scrollY > 200); };
     window.addEventListener('scroll', sync, { passive: true });
     btn.onclick = function () { window.scrollTo({ top: 0, behavior: 'smooth' }); };
     sync();
@@ -1597,7 +1587,7 @@
       showLogin();$('#accountLoginBtn').hidden=!identity?.linked||!accountSignIn;
       if(accountSignIn==='complete'&&accountCode){$('#loginView').classList.add('account-connecting');await awaitEmailConfirmation(null,false,accountCode);}
       else if(['account','complete'].includes(accountSignIn)&&identity?.linked)await startAccountLogin();
-      else if(identity?.pending)await awaitEmailConfirmation(null,false,null,identity.code);
+      else if(identity?.pending)await awaitEmailConfirmation(null,false);
     }
   })().catch(e=>{showLogin();loginError(e);});
 })();

@@ -1,7 +1,7 @@
 import {githubPanel,type GitHubReport,type GitHubHistory} from './owner-github.ts';
 import type {Database} from 'bun:sqlite';
 import {readFileSync,statSync} from 'node:fs';
-import {escapeHtml as e} from './newsletter.ts';
+import {escapeHtml as e} from '../utils/html.ts';
 
 export type OwnerOptions={accountId?:string;analyticsFile?:string;releaseTag?:string;postalAddress?:string};
 type Page=(title:string,content:string,script?:string,status?:number,language?:'en'|'ru')=>Response;

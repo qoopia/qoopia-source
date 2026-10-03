@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
 import { db } from "../db/connection.ts";
@@ -8,6 +8,8 @@ import { command, digest } from "../skills/commands.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { assertInstanceWriteAllowed } from "../utils/instance-role.ts";
+import { randomToken } from "../utils/fs.ts";
+import { generateApiKey } from "./api-keys.ts";
 
 export const pairingSchema = z.object({
   name: z.string().min(1).max(120), runtime_id: z.string().min(1).max(200),
@@ -41,7 +43,7 @@ export function issuePairing(auth: AuthContext, input: unknown, database: Databa
         throw new QoopiaError("CONFLICT", "Principal name already exists");
       }
       const pairingId = randomUUID();
-      code = randomBytes(32).toString("base64url");
+      code = randomToken();
       database.query(`INSERT INTO agent_pairings
         (id,workspace_id,actor_id,origin_instance_id,created_at_ms,updated_at_ms,code_digest,name,profile,principal_kind,target_agent_id,runtime_id,expires_at_ms,policy_epoch)
         VALUES (?,?,?,(SELECT instance_id FROM authority_instance WHERE id='local'),?,?,?,?,?,?,?,?,?,?)`).run(pairingId, p.workspace_id, p.id, now, now, digest(code), a.name, a.profile,
@@ -71,7 +73,7 @@ export function redeemPairing(code: string, database: Database = db) {
     if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(pair.workspace_id, pair.name)) {
       throw new QoopiaError("CONFLICT", "Name was claimed after the pairing was issued");
     }
-    const agentId = randomUUID(), apiKey = `q_${randomBytes(32).toString("base64url")}`, now = Date.now();
+    const agentId = randomUUID(), apiKey = generateApiKey(), now = Date.now();
     database.query(`INSERT INTO agents(id,workspace_id,name,type,api_key_hash,principal_kind,authority_profile,tool_profile)
       VALUES (?,?,?,'standard',?,?,?,?)`).run(agentId, pair.workspace_id, pair.name, digest(apiKey), pair.principal_kind, pair.profile,
       pair.profile === "memory-reader" ? "read-only" : "no-destructive");
@@ -130,7 +132,7 @@ export function bootstrapOwner(database: Database, name: string, workspaceName?:
     } else if (database.query("SELECT 1 FROM workspaces LIMIT 1").get()) {
       throw new QoopiaError("CONFLICT", "Existing instance requires an explicit --workspace-id local owner decision");
     }
-    const workspace = workspaceId ?? randomUUID(), agent = randomUUID(), now = Date.now(), apiKey = `q_${randomBytes(32).toString("base64url")}`;
+    const workspace = workspaceId ?? randomUUID(), agent = randomUUID(), now = Date.now(), apiKey = generateApiKey();
     if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(workspace, name)) throw new QoopiaError("CONFLICT", "Principal name already exists; use a new human owner name");
     if (!workspaceId) database.query("INSERT INTO workspaces(id,name,slug) VALUES (?,?,?)").run(workspace, workspaceName!, `local-${workspace}`);
     database.query(`INSERT INTO agents(id,workspace_id,name,type,api_key_hash,principal_kind,authority_profile,tool_profile)

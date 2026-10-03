@@ -315,11 +315,13 @@ function ftsNoteCandidates(
   where.push(...temporalSql.where);
   params.push(...temporalSql.params);
   const withTemporalColumns = bitemporalEnabled();
+  // F-340: CROSS JOIN keeps FTS the outer loop; SQLite 3.51.2 otherwise walks every
+  // workspace note through idx_notes_known_ms and probes FTS per row.
   const sql = `
     SELECT n.id, n.type, n.text, n.metadata, n.project_id, n.created_at, n.workspace_id, n.agent_id, n.visibility, rank
     ${withTemporalColumns ? TEMPORAL_SELECT : ""}
     FROM notes_fts f
-    JOIN notes n ON n.rowid = f.rowid
+    CROSS JOIN notes n ON n.rowid = f.rowid
     ${withTemporalColumns ? TEMPORAL_JOIN : ""}
     WHERE ${where.join(" AND ")}
     ORDER BY rank
@@ -648,7 +650,7 @@ async function entityCandidates(
     SELECT e.id, e.workspace_id, e.type, e.slug, e.title, e.summary, e.status,
            e.metadata, e.created_at, e.updated_at, rank
       FROM entity_pages_fts f
-      JOIN entity_pages e ON e.rowid = f.rowid
+      CROSS JOIN entity_pages e ON e.rowid = f.rowid
      WHERE ${where.join(" AND ")}
      ORDER BY rank
      LIMIT ?
@@ -986,7 +988,7 @@ export async function recallBaseline(p: RecallParams) {
       SELECT a.id, 'activity' as type, a.summary as text, a.details as metadata,
              a.project_id, a.created_at, a.workspace_id, rank
       FROM activity_fts f
-      JOIN activity a ON a.rowid = f.rowid
+      CROSS JOIN activity a ON a.rowid = f.rowid
       WHERE ${where.join(" AND ")}
       ORDER BY rank
       LIMIT ?
@@ -1033,7 +1035,7 @@ export async function recallBaseline(p: RecallParams) {
       SELECT m.id, m.role as type, m.content as text, m.metadata, NULL as project_id,
              m.created_at, m.workspace_id, m.session_id, rank
       FROM session_messages_fts f
-      JOIN session_messages m ON m.id = f.rowid
+      CROSS JOIN session_messages m ON m.id = f.rowid
       WHERE ${where.join(" AND ")}
       ORDER BY rank
       LIMIT ?

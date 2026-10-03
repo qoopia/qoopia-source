@@ -108,7 +108,7 @@ cat "$dir/response"
     expect(memoryModelStatus('ws-output').state).toBe('invalid_response');
     expect(fs.existsSync(lastRequest())).toBe(false);
 
-    expect(memoryTimeouts).toEqual({term_ms:45_000,kill_ms:47_000});
+    expect(memoryTimeouts).toEqual({term_ms:45_000,kill_ms:47_000,background_term_ms:150_000});
     mode('sleep');Object.assign(memoryTimeouts,{term_ms:300,kill_ms:2_000});
     try {await expect(run('ws-time')).rejects.toMatchObject({code:'MODEL_TIMEOUT'});}
     finally {Object.assign(memoryTimeouts,{term_ms:45_000,kill_ms:47_000});}

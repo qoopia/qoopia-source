@@ -45,18 +45,14 @@ import { env } from "../utils/env.ts";
 import { logger } from "../utils/logger.ts";
 import { audit } from "../utils/audit.ts";
 import { isReadOnlyInstance } from "../utils/instance-role.ts";
+import { ownerIdentityRoot } from "../utils/standalone.ts";
+import { parseJsonObject } from "../utils/http-json.ts";
 import { escapeHtml, json, securityHeaders, sendHtml } from "./respond.ts";
-
-/** Where the owner identity lives: the standalone layout root, or the server root. */
-export function connectionIdentityRoot():string|undefined {
-  return process.env.QOOPIA_STANDALONE==='true'?
-    (process.env.QOOPIA_STANDALONE_LAYOUT?JSON.parse(process.env.QOOPIA_STANDALONE_LAYOUT).root:undefined):env.ROOT_DIR;
-}
 
 /** Account-bound consent reuses only the exact human owner's browser session. */
 function accountConsentOrigin(ticket: NonNullable<ReturnType<typeof getConsentTicket>>): string | undefined {
   const id=ticket.resource?resourceConnection(ticket.resource):undefined;
-  const root=connectionIdentityRoot(),binding=root?ownerIdentity(root):null;
+  const root=ownerIdentityRoot(),binding=root?ownerIdentity(root):null;
   if(!id||!binding)return undefined;
   const connection=publicConnection(id),origin=connectionOrigin(id);
   return connection.owner_id===binding.ownerId&&origin.startsWith('https://')?origin:undefined;
@@ -64,6 +60,7 @@ function accountConsentOrigin(ticket: NonNullable<ReturnType<typeof getConsentTi
 function accountConsentAllowed(ticket: NonNullable<ReturnType<typeof getConsentTicket>>,auth:DashboardAuth):boolean {
   if(!accountConsentOrigin(ticket))return true;
   const connection=publicConnection(resourceConnection(ticket.resource!)!);
+  // No workspace_owners join: owner_id was bound through localOwner, which required it, and an owner binding is never removed.
   return auth.source==='cookie'&&auth.agent_id===connection.owner_id&&auth.workspace_id===connection.workspace_id&&
     !!db.query("SELECT 1 FROM agents WHERE id=? AND active=1 AND principal_kind='human' AND authority_profile='owner'").get(auth.agent_id);
 }
@@ -168,17 +165,10 @@ function parseForm(body: Buffer): Record<string, string> {
  * → no access token (claude.ai connector stuck at code→token exchange).
  */
 function parseJsonForm(body: Buffer): Record<string, string> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body.toString("utf8"));
-  } catch {
-    throw Object.assign(new Error("invalid_request"), { statusCode: 400 });
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw Object.assign(new Error("invalid_request"), { statusCode: 400 });
-  }
+  const parsed = parseJsonObject(body);
+  if (!parsed) throw Object.assign(new Error("invalid_request"), { statusCode: 400 });
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [k, v] of Object.entries(parsed)) {
     if (v === undefined || v === null) continue;
     if (typeof v === "string") out[k] = v;
     else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
@@ -315,7 +305,7 @@ export function handleAuthorizeRedirect(
   // Every new authorization goes through consent, including trusted client callbacks.
   // Account-bound connections use the dedicated consent surface. The existing
   // local owner consent remains available for installations without an account binding.
-  const identityRoot=connectionIdentityRoot(),binding=identityRoot?ownerIdentity(identityRoot):null;
+  const identityRoot=ownerIdentityRoot(),binding=identityRoot?ownerIdentity(identityRoot):null;
   const remote=!!(resourceId&&binding&&connectionOrigin(resourceId).startsWith('https://')&&publicConnection(resourceId).owner_id===binding.ownerId);
   const consentOrigin=remote?connectionOrigin(resourceId!):process.env.QOOPIA_STANDALONE==='true'?`http://127.0.0.1:${env.PORT}`:resourceId?connectionOrigin(resourceId):env.PUBLIC_URL;
   const target = new URL('/api/dashboard/oauth-consent', consentOrigin);
@@ -396,13 +386,8 @@ function resolveChatGptUnauthenticatedDcrAuth(parsed: Record<string, unknown>): 
 type TrustedDcrAuth = { auth: AuthContext; detail: string };
 
 export function resolveTrustedUnauthenticatedDcrAuth(body: Buffer): TrustedDcrAuth | null {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(body.toString("utf8"));
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const parsed = parseJsonObject(body);
+  if (!parsed) return null;
 
   const claudeAiAuth = resolveClaudeAiUnauthenticatedDcrAuthParsed(parsed);
   if (claudeAiAuth) {
@@ -749,6 +734,93 @@ export function handleDashboardOAuthConsentGet(
   res.end(html);
 }
 
+/** The approve/deny prelude: Origin, form, ticket + nonce, dashboard auth, the QSA-H eligibility
+ * gate, the account owner and ticket existence. Returns null once it has answered the request. */
+function consentPrelude(
+  req: IncomingMessage,
+  body: Buffer,
+  res: ServerResponse,
+  clientIp: string,
+  action: "approve" | "deny",
+): {
+  ticketId: string;
+  nonce: string;
+  auth: DashboardAuth;
+  ticket: NonNullable<ReturnType<typeof getConsentTicket>>;
+  status: ReturnType<typeof consentTicketStatus>;
+} | null {
+  if (!dashboardOriginAllowed(req)) {
+    logger.warn(`Dashboard OAuth consent ${action} Origin guard denied`, dashboardOriginDiagnostics(req));
+    json(res, 403, {
+      error: "forbidden",
+      error_description: "Origin not allowed.",
+    });
+    return null;
+  }
+  let form: Record<string, string>;
+  try {
+    form = parseForm(body);
+  } catch {
+    json(res, 400, {
+      error: "invalid_request",
+      error_description: "malformed form body",
+    });
+    return null;
+  }
+  const ticketId = form.ticket || "";
+  const nonce = form.nonce || "";
+  if (!ticketId || !nonce) {
+    json(res, 400, {
+      error: "invalid_request",
+      error_description: "ticket and nonce required",
+    });
+    return null;
+  }
+  if (action === "approve") logger.info(`OAuth consent APPROVE received ticket_fp=${fingerprintIdentifier(ticketId, 12)}`);
+
+  const auth = checkDashboardAuth(req);
+  if (!auth) {
+    json(res, 401, {
+      error: "unauthorized",
+      error_description: "Dashboard session required.",
+    });
+    return null;
+  }
+  // QSA-H: reject OAuth bearers and standard agents BEFORE any state read. Deny too: a party that
+  // can't approve shouldn't deny either — denying still burns the ticket and signals intent into the
+  // audit log.
+  const reject = oauthConsentRejection(auth);
+  if (reject) {
+    audit({
+      event: "oauth_consent",
+      result: "deny",
+      ip: clientIp,
+      workspace_id: auth.workspace_id,
+      agent_id: auth.agent_id,
+      detail: `oauth-consent ${action} rejected reason=${reject} source=${auth.source} type=${auth.type}`,
+    });
+    json(res, 403, {
+      error: "forbidden",
+      error_description:
+        reject === "oauth_token_not_accepted"
+          ? "OAuth access tokens are not accepted on the consent surface."
+          : "OAuth client consent requires the steward or the workspace owner.",
+    });
+    return null;
+  }
+  const ticket = getConsentTicket(ticketId);
+  if(ticket&&!accountConsentAllowed(ticket,auth)){json(res,403,{error:'forbidden',error_description:'Use this installation’s human owner session.'});return null;}
+  const status = consentTicketStatus(ticket);
+  if (status === "not_found") {
+    json(res, 404, {
+      error: "not_found",
+      error_description: "ticket not found",
+    });
+    return null;
+  }
+  return { ticketId, nonce, auth, ticket: ticket!, status };
+}
+
 /**
  * POST /api/dashboard/oauth-consent/approve
  *
@@ -764,77 +836,19 @@ export function handleDashboardOAuthConsentApprove(
   res: ServerResponse,
   clientIp: string,
 ) {
-  if (!dashboardOriginAllowed(req)) {
-    logger.warn("Dashboard OAuth consent approve Origin guard denied", dashboardOriginDiagnostics(req));
-    return json(res, 403, {
-      error: "forbidden",
-      error_description: "Origin not allowed.",
-    });
-  }
-  let form: Record<string, string>;
-  try {
-    form = parseForm(body);
-  } catch {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "malformed form body",
-    });
-  }
-  const ticketId = form.ticket || "";
-  const nonce = form.nonce || "";
-  if (!ticketId || !nonce) {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "ticket and nonce required",
-    });
-  }
-  logger.info(`OAuth consent APPROVE received ticket_fp=${fingerprintIdentifier(ticketId, 12)}`);
-
-  const auth = checkDashboardAuth(req);
-  if (!auth) {
-    return json(res, 401, {
-      error: "unauthorized",
-      error_description: "Dashboard session required.",
-    });
-  }
-  // QSA-H: reject OAuth bearers and standard agents BEFORE any state read.
-  const reject = oauthConsentRejection(auth);
-  if (reject) {
-    audit({
-      event: "oauth_consent",
-      result: "deny",
-      ip: clientIp,
-      workspace_id: auth.workspace_id,
-      agent_id: auth.agent_id,
-      detail: `oauth-consent approve rejected reason=${reject} source=${auth.source} type=${auth.type}`,
-    });
-    return json(res, 403, {
-      error: "forbidden",
-      error_description:
-        reject === "oauth_token_not_accepted"
-          ? "OAuth access tokens are not accepted on the consent surface."
-          : "OAuth client consent requires the steward or the workspace owner.",
-    });
-  }
-  const ticket = getConsentTicket(ticketId);
-  if(ticket&&!accountConsentAllowed(ticket,auth))return json(res,403,{error:'forbidden',error_description:'Use this installation’s human owner session.'});
-  const status = consentTicketStatus(ticket);
-  if (status === "not_found") {
-    return json(res, 404, {
-      error: "not_found",
-      error_description: "ticket not found",
-    });
-  }
+  const ctx = consentPrelude(req, body, res, clientIp, "approve");
+  if (!ctx) return;
+  const { ticketId, nonce, auth, ticket, status } = ctx;
   // F-076: the workspace check precedes the redeemed-replay branch, so a
   // foreign-workspace caller holding the ticket id cannot collect the code.
-  if (auth.workspace_id !== ticket!.workspace_id) {
+  if (auth.workspace_id !== ticket.workspace_id) {
     audit({
       event: "workspace_mismatch",
       result: "deny",
       ip: clientIp,
       workspace_id: auth.workspace_id,
       agent_id: auth.agent_id,
-      detail: `oauth-consent approve cookie=${auth.workspace_id} ticket=${ticket!.workspace_id}`,
+      detail: `oauth-consent approve cookie=${auth.workspace_id} ticket=${ticket.workspace_id}`,
     });
     return json(res, 403, {
       error: "forbidden",
@@ -867,7 +881,7 @@ export function handleDashboardOAuthConsentApprove(
   }
 
   // Atomic single-use nonce consume.
-  if (!consumeConsentNonce(ticket!.id, nonce)) {
+  if (!consumeConsentNonce(ticket.id, nonce)) {
     return json(res, 403, {
       error: "forbidden",
       error_description: "Invalid or expired nonce.",
@@ -877,10 +891,10 @@ export function handleDashboardOAuthConsentApprove(
   // The owner or the steward authorizes the client's registered agent and never lends the
   // connector its own authority (ADR-020: a steward approving a legacy connector grant binds
   // that connector's ordinary agent, not the steward).
-  const client=getClient(ticket!.client_id);
+  const client=getClient(ticket.client_id);
   const agent=client&&db.query("SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND principal_kind='agent'").get(client.agent_id,auth.workspace_id) as {id:string}|null;
   if(!agent)return json(res,403,{error:'forbidden',error_description:'Connect with a separate active agent identity.'});
-  if (!approveConsentTicket(ticket!.id, agent.id)) {
+  if (!approveConsentTicket(ticket.id, agent.id)) {
     // Lost the race — ticket was approved/denied/redeemed/expired between
     // status check and approve.
     return json(res, 400, {
@@ -889,19 +903,19 @@ export function handleDashboardOAuthConsentApprove(
     });
   }
 
-  const ticketFp = fingerprintIdentifier(ticket!.id, 12);
+  const ticketFp = fingerprintIdentifier(ticket.id, 12);
   audit({
     event: "oauth_consent",
     result: "allow",
     ip: clientIp,
     workspace_id: auth.workspace_id,
     agent_id: auth.agent_id,
-    detail: `client=${ticket!.client_id} ticket_fp=${ticketFp} approved`,
+    detail: `client=${ticket.client_id} ticket_fp=${ticketFp} approved`,
   });
 
   // Redeem here and go straight to the registered callback; the consent page's
   // CSP form-action already allows that origin (securityHeaders(req, clientOrigin)).
-  const target = finalizeConsentTicket(ticket!.id, auth.agent_id, clientIp);
+  const target = finalizeConsentTicket(ticket.id, auth.agent_id, clientIp);
   if (!target) return sendHtml(res, 400, oauthAlreadyCompletedHtml(consentLanguage(req)), req);
   logger.info(`OAuth consent APPROVED → 302 client callback ticket_fp=${ticketFp}`);
   res.writeHead(302, {
@@ -924,74 +938,16 @@ export function handleDashboardOAuthConsentDeny(
   res: ServerResponse,
   clientIp: string,
 ) {
-  if (!dashboardOriginAllowed(req)) {
-    logger.warn("Dashboard OAuth consent deny Origin guard denied", dashboardOriginDiagnostics(req));
-    return json(res, 403, {
-      error: "forbidden",
-      error_description: "Origin not allowed.",
-    });
-  }
-  let form: Record<string, string>;
-  try {
-    form = parseForm(body);
-  } catch {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "malformed form body",
-    });
-  }
-  const ticketId = form.ticket || "";
-  const nonce = form.nonce || "";
-  if (!ticketId || !nonce) {
-    return json(res, 400, {
-      error: "invalid_request",
-      error_description: "ticket and nonce required",
-    });
-  }
-  const auth = checkDashboardAuth(req);
-  if (!auth) {
-    return json(res, 401, {
-      error: "unauthorized",
-      error_description: "Dashboard session required.",
-    });
-  }
-  // QSA-H: same eligibility gate as approve. A standard agent / OAuth bearer
-  // can't approve, so they shouldn't be able to deny either — denying still
-  // burns the ticket and signals intent into the audit log.
-  const reject = oauthConsentRejection(auth);
-  if (reject) {
-    audit({
-      event: "oauth_consent",
-      result: "deny",
-      ip: clientIp,
-      workspace_id: auth.workspace_id,
-      agent_id: auth.agent_id,
-      detail: `oauth-consent deny rejected reason=${reject} source=${auth.source} type=${auth.type}`,
-    });
-    return json(res, 403, {
-      error: "forbidden",
-      error_description:
-        reject === "oauth_token_not_accepted"
-          ? "OAuth access tokens are not accepted on the consent surface."
-          : "OAuth client consent requires the steward or the workspace owner.",
-    });
-  }
-  const ticket = getConsentTicket(ticketId);
-  if(ticket&&!accountConsentAllowed(ticket,auth))return json(res,403,{error:'forbidden',error_description:'Use this installation’s human owner session.'});
-  const status = consentTicketStatus(ticket);
-  if (status === "not_found") {
-    return json(res, 404, {
-      error: "not_found",
-      error_description: "ticket not found",
-    });
-  }
+  const ctx = consentPrelude(req, body, res, clientIp, "deny");
+  if (!ctx) return;
+  const { nonce, auth, ticket, status } = ctx;
   if (status !== "ok") {
     return json(res, 400, {
       error: "invalid_request",
       error_description: `ticket ${status}`,
     });
   }
-  if (auth.workspace_id !== ticket!.workspace_id) {
+  if (auth.workspace_id !== ticket.workspace_id) {
     // Codex MED #5 (2026-04-28): audit cross-workspace deny attempts the same
     // way GET/approve mismatches are audited. A wrong-workspace deny is
     // security-relevant — it could be reconnaissance or a confused agent.
@@ -1001,40 +957,40 @@ export function handleDashboardOAuthConsentDeny(
       ip: clientIp,
       workspace_id: auth.workspace_id,
       agent_id: auth.agent_id,
-      detail: `oauth-consent deny cookie=${auth.workspace_id} ticket=${ticket!.workspace_id}`,
+      detail: `oauth-consent deny cookie=${auth.workspace_id} ticket=${ticket.workspace_id}`,
     });
     return json(res, 403, {
       error: "forbidden",
       error_description: "Workspace mismatch.",
     });
   }
-  if (!consumeConsentNonce(ticket!.id, nonce)) {
+  if (!consumeConsentNonce(ticket.id, nonce)) {
     return json(res, 403, {
       error: "forbidden",
       error_description: "Invalid or expired nonce.",
     });
   }
-  if (!denyConsentTicket(ticket!.id)) {
+  if (!denyConsentTicket(ticket.id)) {
     return json(res, 400, {
       error: "invalid_request",
       error_description: "ticket no longer in-flight",
     });
   }
-  const ticketFp = fingerprintIdentifier(ticket!.id, 12);
+  const ticketFp = fingerprintIdentifier(ticket.id, 12);
   audit({
     event: "oauth_consent",
     result: "deny",
     ip: clientIp,
     workspace_id: auth.workspace_id,
     agent_id: auth.agent_id,
-    detail: `client=${ticket!.client_id} ticket_fp=${ticketFp} denied`,
+    detail: `client=${ticket.client_id} ticket_fp=${ticketFp} denied`,
   });
 
-  const url = new URL(ticket!.redirect_uri);
+  const url = new URL(ticket.redirect_uri);
   url.searchParams.set("error", "access_denied");
-  const deniedConnection=ticket!.resource?resourceConnection(ticket!.resource):undefined;
+  const deniedConnection=ticket.resource?resourceConnection(ticket.resource):undefined;
   url.searchParams.set('iss',deniedConnection?connectionIssuer(deniedConnection):env.OAUTH_ISSUER);
-  if (ticket!.state) url.searchParams.set("state", ticket!.state);
+  if (ticket.state) url.searchParams.set("state", ticket.state);
   res.writeHead(302, {
     location: url.toString(),
     "cache-control": "no-store",

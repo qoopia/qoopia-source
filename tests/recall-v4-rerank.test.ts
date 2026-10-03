@@ -199,8 +199,8 @@ describe("P04 rerank success/fallback before relation-head injection", () => {
       }
       const fixed = Date.now() + 10_000;
       // Future stamps make the heads the latest; restore them afterwards, because the note-write
-      // allocator takes MAX(updated_at_ms) over the shared test database and would otherwise push
-      // every later test's notes 10 s into the future.
+      // allocator takes MAX(updated_at_ms) over the workspace and would otherwise push every later
+      // note of this workspace 10 s into the future.
       for (const [head, ms] of [[headOld, fixed + 1], ...(headNew ? [[headNew, fixed + 2]] : [])] as Array<[{ id: string }, number]>) {
         const before = (db.prepare(`SELECT updated_at_ms FROM notes WHERE id = ?`).get(head.id) as { updated_at_ms: number }).updated_at_ms;
         db.prepare(`UPDATE notes SET updated_at_ms = ? WHERE workspace_id = ? AND id = ?`).run(ms, auth.workspace_id, head.id);

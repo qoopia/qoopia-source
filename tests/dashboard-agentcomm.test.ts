@@ -373,6 +373,13 @@ describe("dashboard pages keyset on (created_at, id)", () => {
       expect((await get(`${path}&before=${encodeURIComponent("2026-08-02T11:00:00Z|")}`, STEWARD_KEY)).status).toBe(400);
     }
   });
+
+  test("an activity limit clamps to at least one row and 0 means the default", async () => {
+    const count = async (limit: string) => ((await (await get(`/api/dashboard/activity?limit=${limit}`, STEWARD_KEY)).json()) as any).items.length;
+    expect(await count("-5")).toBe(1);
+    expect(await count("0")).toBeGreaterThan(1);
+    expect(await count("0")).toBe(await count("100"));
+  });
 });
 
 describe("F-272: pair queries probe the recipient index per direction", () => {

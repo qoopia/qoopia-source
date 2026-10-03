@@ -25,8 +25,6 @@ import type { AuthContext } from "../auth/middleware.ts";
 import type { OAuthScope } from "../auth/oauth.ts";
 import { grantedScopeAllowsRisk } from "../auth/oauth.ts";
 import { QoopiaError } from "../utils/errors.ts";
-import { logger } from "../utils/logger.ts";
-import { recordStorageWriteFailure } from "../utils/storage-degradation.ts";
 import { db } from "../db/connection.ts";
 import {
   createNote,
@@ -44,8 +42,7 @@ import {
   type AgentToolProfile,
   type RiskClass,
 } from "./profiles.ts";
-import { assertInstanceWriteAllowed } from "../utils/instance-role.ts";
-import { currentToolAuth } from "../auth/policy.ts";
+import type { ToolDef, toolCallback } from "./tools.ts";
 import { isAdmin, seesWholeWorkspace } from "../auth/principal.ts";
 
 // V2 plural entity → V3 singular type
@@ -56,63 +53,6 @@ const ENTITY_TO_TYPE: Record<string, string> = {
   finances: "finance",
   projects: "project",
 };
-
-function ok(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
-}
-
-function fail(err: unknown) {
-  let msg: string;
-  if (recordStorageWriteFailure(err)) {
-    msg = "STORAGE_FULL: SQLite storage capacity exhausted; writes are disabled. Free storage capacity, then restart Qoopia and verify /ready before resuming writes.";
-  } else
-  if (err instanceof QoopiaError) {
-    msg = `${err.code}: ${err.message}`;
-  } else if (err instanceof Error) {
-    // M4 fix: log internal errors server-side, return stable generic message
-    const raw = err.message;
-    // Translate SQLite busy/lock errors into retryable domain error
-    if (raw.includes("SQLITE_BUSY") || raw.includes("database is locked")) {
-      msg = "BUSY: Database busy, please retry";
-    } else if (raw.includes("UNIQUE constraint failed") && raw.includes("steward")) {
-      msg = "CONFLICT: active steward already exists";
-    } else if (raw.includes("UNIQUE constraint failed")) {
-      msg = "CONFLICT: a record with the same identifier already exists";
-    } else {
-      logger.error("MCP compat tool internal error", { error: raw, stack: err.stack });
-      msg = "INTERNAL: unexpected error — check server logs";
-    }
-  } else {
-    logger.error("MCP compat tool unknown error", { error: String(err) });
-    msg = "INTERNAL: unexpected error — check server logs";
-  }
-  return { isError: true, content: [{ type: "text" as const, text: msg }] };
-}
-
-function wrap(
-  fn: (args: Record<string, unknown>, auth: AuthContext) => unknown,
-  authProvider: () => AuthContext | null,
-  risk?: RiskClass,
-) {
-  return async (args: unknown) => {
-    try {
-      const auth = authProvider();
-      if (!auth) return fail(new QoopiaError("UNAUTHORIZED", "No auth context"));
-      if (risk) assertInstanceWriteAllowed(risk, "v2-compat");
-      if (risk && !grantedScopeAllowsRisk(auth.granted_scope, risk)) {
-        return fail(
-          new QoopiaError(
-            "FORBIDDEN",
-            `OAuth token scope forbids MCP tool risk='${risk}'`,
-          ),
-        );
-      }
-      return ok(fn((args as Record<string, unknown>) || {}, currentToolAuth(db, auth, risk ?? "read")));
-    } catch (err) {
-      return fail(err);
-    }
-  };
-}
 
 // ---- field composition helpers ----
 
@@ -525,9 +465,16 @@ function v2Note(args: Record<string, unknown>, auth: AuthContext) {
 export function registerCompatTools(
   server: McpServer,
   authProvider: () => AuthContext | null,
+  // Passed in by tools.ts: importing it here would be a runtime import cycle.
+  callback: typeof toolCallback,
   agentProfile: AgentToolProfile = "full",
   grantedScope?: OAuthScope[],
 ) {
+  // The V2 aliases keep their own write-guard label, scope wording and log
+  // prefix, return results unlabelled, and do not await the (sync) handlers.
+  const wrap = (fn: ToolDef["handler"], risk: RiskClass) =>
+    callback(authProvider, risk, fn, { writeLabel: "v2-compat", forbids: `risk='${risk}'`, await: false, log: "MCP compat tool" });
+
   // QSA-F / ADR-016: V2 alias risk classification. Each alias gates on
   // the same risk class as its V3 canonical handler — otherwise a
   // 'read-only' agent could bypass the profile by calling `create` /
@@ -576,7 +523,7 @@ export function registerCompatTools(
       notes: z.string().optional(),
       tags: boundedTags().optional(),
     },
-    wrap(v2Create, authProvider, "write-low"),
+    wrap(v2Create, "write-low"),
   );
 
   // QSA-F / Codex review #2: V2 'update' wraps note_update which can
@@ -618,7 +565,7 @@ export function registerCompatTools(
       notes: z.string().optional(),
       tags: boundedTags().optional(),
     },
-    wrap(v2Update, authProvider, "write-destructive"),
+    wrap(v2Update, "write-destructive"),
   );
 
   if (allow("write-destructive")) server.tool(
@@ -628,7 +575,7 @@ export function registerCompatTools(
       entity: z.enum(["tasks", "deals", "contacts", "finances", "projects"]),
       id: z.string(),
     },
-    wrap(v2Delete, authProvider, "write-destructive"),
+    wrap(v2Delete, "write-destructive"),
   );
 
   if (allow("read")) server.tool(
@@ -648,7 +595,7 @@ export function registerCompatTools(
       entity_type: z.string().optional(),
       limit: z.number().int().optional(),
     },
-    wrap(v2List, authProvider, "read"),
+    wrap(v2List, "read"),
   );
 
   if (allow("read")) server.tool(
@@ -658,7 +605,7 @@ export function registerCompatTools(
       entity: z.string(),
       id: z.string(),
     },
-    wrap(v2Get, authProvider, "read"),
+    wrap(v2Get, "read"),
   );
 
   if (allow("write-low")) server.tool(
@@ -672,7 +619,7 @@ export function registerCompatTools(
       entities_hint: z.array(z.string()).optional(),
       type: z.enum(["rule", "memory", "knowledge", "context"]).optional(),
     },
-    wrap(v2Note, authProvider, "write-low"),
+    wrap(v2Note, "write-low"),
   );
 
   // recall and brief already exist in V3 with the same name. We DON'T re-register

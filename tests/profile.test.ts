@@ -45,7 +45,9 @@ test('profile uses confirmed identity, binds redemption to the initiating browse
     expect(await(await call('/profile')).text()).toContain('https://memory.example.test/dashboard');
     const old={...jar};expect((await call('/profile/logout',{})).status).toBe(200);
     expect(await(await call('/profile',undefined,old)).text()).not.toContain('owner@example.test');
-    const clock=spyOn(Date,'now').mockReturnValue(Date.now()+8*86400000);
+    // One sign-in per device: a week later the profile is still open; a year without a visit ends it.
+    expect(await(await call('/profile',undefined,other)).text()).toContain('other@example.test');
+    const clock=spyOn(Date,'now').mockReturnValue(Date.now()+366*86400000);
     try{expect(await(await call('/profile',undefined,other)).text()).not.toContain('other@example.test');}finally{clock.mockRestore();}
     expect((await call('/profile?dashboard=javascript:alert(1)')).status).toBe(200);
     expect(await(await call('/profile?dashboard=javascript:alert(1)')).text()).not.toContain('javascript:alert');

@@ -6,6 +6,7 @@
  * Each `bun test` run gets a fresh temp dir that is removed on process exit,
  * so tests never touch the developer's real ~/.qoopia data.
  */
+import { beforeEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -40,3 +41,16 @@ process.on("exit", () => {
 process.env.QOOPIA_EMBED_PROVIDER="ollama";
 process.env.QOOPIA_AUTO_EMBED="false";
 process.env.QOOPIA_ROOT=tmpRoot;
+
+// Rate-limit buckets are process state: every file in one `bun test` process shares
+// 127.0.0.1's buckets, so earlier files could 429 a later one depending on file order.
+// Each test starts with empty route buckets; a test that exhausts a limit does it in itself.
+// Child processes also load this file as a plain --preload, where no test runner exists.
+try {
+  beforeEach(async () => {
+    const limits = await import("../src/utils/rate-limit.ts");
+    for (const limiter of [limits.globalLimiter, limits.mcpLimiter, limits.ingestLimiter, limits.dashboardLimiter, limits.authLimiter]) {
+      limiter.resetForTests();
+    }
+  });
+} catch { /* Not under `bun test`: nothing to reset. */ }

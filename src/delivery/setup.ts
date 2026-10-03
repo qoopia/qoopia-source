@@ -5,6 +5,8 @@ import {Database} from 'bun:sqlite';
 import {dataFile,readCurrent} from './operations.ts';
 import {readJson,safePath} from '../utils/fs.ts';
 import {nativePackageSchema} from './native-provision.ts';
+import { tableExists } from '../db/introspect.ts';
+import { selectedNativeDirectory } from './native-client-paths.ts';
 
 type SetupRuntime='codex'|'claude_code';
 type SetupStatus={
@@ -24,7 +26,7 @@ export function inspectSetup(root:string,requested?:string):SetupStatus{
  try{
   owners=(database.query('SELECT count(*) AS n FROM workspace_owners').get() as {n:number}).n;
   // OAuth client connections of the owner whose agent is still active (what connections status reports).
-  if(owners===1&&database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_connections'").get())
+  if(owners===1&&tableExists(database,'client_connections'))
    clients=(database.query(`SELECT c.state FROM client_connections c JOIN workspace_owners o ON o.actor_id=c.owner_id AND o.workspace_id=c.workspace_id
     JOIN agents a ON a.id=c.agent_id AND a.workspace_id=c.workspace_id AND a.active=1 WHERE c.state IN ('verified','awaiting_client')`).all() as {state:string}[]).map(row=>row.state);
  }finally{database.close();}
@@ -68,7 +70,10 @@ export function inspectSetup(root:string,requested?:string):SetupStatus{
  });
  if(connected)return {...base,stage:'LIVE_QUALIFICATION_REQUIRED',runtime,next_action:`qoopia start${commandRoot(root)}`,
   detail:'A current-generation connect receipt exists, but setup has not validated live auth, runtime login, model access, service health, or a useful task.'};
- const config=runtime==='codex'?path.join(os.homedir(),'.codex','config.toml'):path.join(os.homedir(),'.claude.json');
+ // The same file client-config writes: CODEX_HOME / CLAUDE_CONFIG_DIR first, then the home default.
+ // setup is read-only diagnosis: a malformed override is refused by connect itself, not here.
+ let custom:string|undefined;try{custom=selectedNativeDirectory(runtime);}catch{custom=undefined;}
+ const config=runtime==='codex'?path.join(custom??path.join(os.homedir(),'.codex'),'config.toml'):path.join(custom??os.homedir(),'.claude.json');
  const name=runtime==='codex'?'Codex memory worker':'Claude Code memory worker';
  return {...base,stage:'CONNECT_REQUIRED',runtime,next_action:`qoopia connect --runtime ${runtime} --name ${quote(name)} --config ${quote(config)}${commandRoot(root)}`,
   detail:'Run the existing connect preview while Qoopia is stopped; apply only with its exact preview digest. No owner ID is needed for the sole owner.'};

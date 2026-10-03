@@ -6,7 +6,7 @@ import {z} from 'zod';
 import {db} from '../db/connection.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {authorize} from '../auth/policy.ts';
-import {privateDirectory,durableWrite,readJsonBytes,hash,preflightSpace,hasNulOrNewline} from '../utils/fs.ts';
+import {privateDirectory,durableWrite,hash,preflightSpace,hasNulOrNewline,readJson} from '../utils/fs.ts';
 import {nativePackagePreview,nativeRuntimeEnvironment,unpackNativePackage,verifyInstalledNativeAsync,vendorDownload} from '../delivery/native-provision.ts';
 import {prepareNativeKeychain,nativeOwnerHome} from '../delivery/native-keychain.ts';
 import {RUNTIMES} from '../delivery/runtime-versions.ts';
@@ -94,14 +94,14 @@ export async function memorySetupAction(ownerId:string,raw:unknown) {
   try {
     if(input.action==='select'){await provision(input.runtime);selectMemoryProfile(workspace,input.runtime);
       // Sessions parked without a usable profile resume at once.
-      db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error') WHERE workspace_id=?").run(workspace);
+      db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);
       return memorySetupState(ownerId);}
     if(input.action==='connect-agent') {
       const name=input.runtime==='codex'?'Qoopia Codex memory':'Qoopia Claude memory';
       const folder=privateDirectory(path.join(memoryRoot(),'config','memory-clients',hash(workspace))),file=path.join(folder,input.runtime+'.json');
       let connection: {format:'qoopia-memory-connection/1';url:string;agent_id:string;key:string;runtime:'codex'|'claude_code'}|undefined;
       if(fs.existsSync(file)) {
-        const stored=JSON.parse(readJsonBytes(file).toString()) as NonNullable<typeof connection>;
+        const stored=readJson(file) as NonNullable<typeof connection>;
         const agent=db.query('SELECT active,api_key_hash FROM agents WHERE id=? AND workspace_id=?').get(stored.agent_id,workspace) as {active:number;api_key_hash:string}|null;
         if(agent?.active&&agent.api_key_hash===sha256Hex(stored.key))connection=stored;
         // A rotated key may now be held elsewhere: never replace that live agent from here.
@@ -124,7 +124,7 @@ export async function memorySetupAction(ownerId:string,raw:unknown) {
     const result=await memoryText(workspace,'Return exactly OK in result.',{purpose:'Qoopia subscription connection check'});
     if(result.text!=='OK')throw new QoopiaError('MODEL_INVALID_RESPONSE','Unexpected connection check response');
     // Owner fixed the dependency: pending checkpoints can now resume immediately.
-    db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error') WHERE workspace_id=?").run(workspace);
+    db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);
     return memorySetupState(ownerId);
   } finally {if(logins.get(workspace)?.state!=='waiting')busy.delete(workspace);}
 }

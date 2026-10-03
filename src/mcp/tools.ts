@@ -36,7 +36,7 @@ import { registerCompatTools } from "./compat.ts";
 import { adminTools } from "./admin-tools.ts";
 import { entityTools } from "./entity_tools.ts";
 import { skillTools } from "./skill_tools.ts";
-import { fileList, fileGet } from "../services/files.ts";
+import { fileList, fileGet, filePut } from "../services/files.ts";
 import { assertInstanceWriteAllowed } from "../utils/instance-role.ts";
 import { enabledV4Tools } from "./v4-tools.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
@@ -95,7 +95,7 @@ function ok(data: unknown, toolName?: string) {
   return { content: [{ type: "text" as const, text: JSON.stringify(toolName ? labelUntrustedContent(toolName, data) : data) }] };
 }
 
-export function fail(err: unknown) {
+export function fail(err: unknown, log = "MCP tool") {
   let msg: string;
   if (recordStorageWriteFailure(err)) {
     msg = "STORAGE_FULL: SQLite storage capacity exhausted; writes are disabled. Free storage capacity, then restart Qoopia and verify /ready before resuming writes.";
@@ -113,16 +113,40 @@ export function fail(err: unknown) {
     } else if (raw.includes("UNIQUE constraint failed")) {
       msg = "CONFLICT: a record with the same identifier already exists";
     } else {
-      logger.error("MCP tool internal error", { error: raw, stack: err.stack });
+      logger.error(`${log} internal error`, { error: raw, stack: err.stack });
       msg = "INTERNAL: unexpected error — check server logs";
     }
   } else {
-    logger.error("MCP tool unknown error", { error: String(err) });
+    logger.error(`${log} unknown error`, { error: String(err) });
     msg = "INTERNAL: unexpected error — check server logs";
   }
   return {
     isError: true,
     content: [{ type: "text" as const, text: msg }],
+  };
+}
+
+/** One MCP call: auth, instance write guard, OAuth scope, then the handler under the
+ * caller's current authority. The options spell out where the registrations differ. */
+export function toolCallback(
+  authProvider: () => AuthContext | null,
+  risk: RiskClass,
+  handler: ToolDef["handler"],
+  o: { writeLabel: string; forbids: string; await: boolean; untrusted?: string; log?: string },
+) {
+  return async (args: unknown) => {
+    try {
+      const auth = authProvider();
+      if (!auth) return fail(new QoopiaError("UNAUTHORIZED", "No auth context"), o.log);
+      assertInstanceWriteAllowed(risk, o.writeLabel);
+      if (!grantedScopeAllowsRisk(auth.granted_scope, risk)) {
+        return fail(new QoopiaError("FORBIDDEN", `OAuth token scope forbids MCP tool ${o.forbids}`), o.log);
+      }
+      const result = handler((args as Record<string, unknown>) || {}, currentToolAuth(db, auth, risk));
+      return ok(o.await ? await result : result, o.untrusted);
+    } catch (err) {
+      return fail(err, o.log);
+    }
   };
 }
 
@@ -716,6 +740,32 @@ const tools: ToolDef[] = [
         filename: args.filename as string | undefined,
       }),
   },
+  {
+    name: "file_put",
+    risk: "write-low",
+    description:
+      "Save a file to the owner's Qoopia Files, where the owner and other agents open it: use it for long results instead of pasting them into a chat. The folder defaults to your agent name; a path such as 'reports/2026' is created on first use. Others find it with file_list and file_get. Saving again under the same folder and filename replaces a file you wrote; a file someone else wrote is never replaced. content is UTF-8 text, or base64 with encoding 'base64'. One call carries about 900 KB: send a bigger file in parts with append: true, each base64 part a multiple of 4 characters. Deleting stays with the owner. Workspace-scoped.",
+    rawSchema: {
+      filename: z.string().min(1).max(180).describe("File name, for example report.md."),
+      content: z.string().max(900_000).describe("File content: UTF-8 text, or base64 with encoding 'base64'."),
+      folder: z.string().max(200).optional().describe("Folder path; defaults to your agent name."),
+      encoding: z.enum(["utf8", "base64"]).optional(),
+      mime: z.string().max(200).optional().describe("Media type; guessed from the file name when omitted."),
+      append: z.boolean().optional().describe("Add this part to the end of your file instead of replacing it."),
+    },
+    handler: (args, auth) =>
+      filePut({
+        workspace_id: auth.workspace_id,
+        agent_id: auth.agent_id,
+        agent_name: auth.agent_name,
+        folder: args.folder as string | undefined,
+        filename: String(args.filename),
+        content: String(args.content),
+        encoding: args.encoding as "utf8" | "base64" | undefined,
+        mime: args.mime as string | undefined,
+        append: args.append as boolean | undefined,
+      }),
+  },
 ];
 
 // Phase 2 Item C — entity page surface (5 tools). Gated behind
@@ -854,30 +904,9 @@ export function registerTools(
         },
         inputSchema: z.object({...effectiveToolSchema(tool),
         ...(tool.name==='note_create'&&authProvider()?.connection_id?{idempotency_key:z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).describe('Use a stable unique key for this write. Reuse it only to retry the exact same note after an interrupted request.')}:{})}).strict() },
-      async (args: unknown) => {
-        try {
-          const auth = authProvider();
-          if (!auth) {
-            return fail(new QoopiaError("UNAUTHORIZED", "No auth context"));
-          }
-          assertInstanceWriteAllowed(tool.risk, tool.name);
-          if (!grantedScopeAllowsRisk(auth.granted_scope, tool.risk)) {
-            return fail(
-              new QoopiaError(
-                "FORBIDDEN",
-                `OAuth token scope forbids MCP tool '${tool.name}'`,
-              ),
-            );
-          }
-          const result = await tool.handler(
-            (args as Record<string, unknown>) || {},
-            currentToolAuth(db, auth, tool.risk),
-          );
-          return ok(result, tool.name);
-        } catch (err) {
-          return fail(err);
-        }
-      },
+      toolCallback(authProvider, tool.risk, tool.handler, {
+        writeLabel: tool.name, forbids: `'${tool.name}'`, await: true, untrusted: tool.name,
+      }),
     );
   }
 
@@ -894,30 +923,8 @@ export function registerTools(
       server.registerTool(
         tool.name,
         { description: tool.description, annotations: annotationsFor(tool.risk), inputSchema: z.object(tool.rawSchema).strict() },
-        async (args: unknown) => {
-          try {
-            const auth = authProvider();
-            if (!auth) {
-              return fail(new QoopiaError("UNAUTHORIZED", "No auth context"));
-            }
-            assertInstanceWriteAllowed(tool.risk, tool.name);
-            if (!grantedScopeAllowsRisk(auth.granted_scope, tool.risk)) {
-              return fail(
-                new QoopiaError(
-                  "FORBIDDEN",
-                  `OAuth token scope forbids MCP tool '${tool.name}'`,
-                ),
-              );
-            }
-            const result = await tool.handler(
-              (args as Record<string, unknown>) || {},
-              currentToolAuth(db, auth, tool.risk),
-            );
-            return ok(result);
-          } catch (err) {
-            return fail(err);
-          }
-        },
+        // Admin results are not labelled as untrusted content.
+        toolCallback(authProvider, tool.risk, tool.handler, { writeLabel: tool.name, forbids: `'${tool.name}'`, await: true }),
       );
     }
   }
@@ -926,7 +933,7 @@ export function registerTools(
   // see/use canonical V3 Qoopia tools. Keep an explicit rollback switch for
   // legacy clients during migration.
   if (profile !== "memory" && process.env.QOOPIA_ENABLE_V2_COMPAT === "true") {
-    registerCompatTools(server, authProvider, agentProfile, grantedScope);
+    registerCompatTools(server, authProvider, toolCallback, agentProfile, grantedScope);
   }
 }
 

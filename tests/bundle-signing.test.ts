@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { hash, inventory } from '../src/utils/fs.ts';
-import { verifyBundle } from '../src/delivery/bundle.ts';
+import { bundleTrust, verifyBundle } from '../src/delivery/bundle.ts';
 import { assertCleanSource, collectBundleSource, copyBundleAssets, BUNDLE_ASSETS, PUBLIC_SOURCE_EXCLUSIONS, loadReleaseAuthorization, packageAndNotarizeDarwin, runPublisherSigner, signAndVerifyDarwin, type CommandRunner } from '../scripts/bundle-signing.ts';
 import { spawnSync } from 'node:child_process';
 
@@ -113,14 +113,24 @@ test('publisher clean-source gate refuses gitignored files under bundle roots, n
   expect(()=>assertCleanSource(repo)).toThrow('ignored files');
 });
 
+/** One test key; each call writes a minimal signed bundle with the given signing mode. */
+function signedBundle() {
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
+  const bundle=(signing:'publisher'|'test-fixture')=>{
+    const root=temp();
+    for(const file of ['qoopia','assets/src/public/dashboard.html','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
+      fs.mkdirSync(path.dirname(path.join(root,file)),{recursive:true,mode:0o700});fs.writeFileSync(path.join(root,file),file,{mode:0o644});
+    }
+    const manifest={format:'qoopia-bundle/1',version:'5.0.0-test',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash('fixture'),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:37,signing,publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(root)};
+    const raw=Buffer.from(JSON.stringify(manifest));
+    fs.writeFileSync(path.join(root,'manifest.json'),raw,{mode:0o644});fs.writeFileSync(path.join(root,'manifest.sig'),sign(null,raw,privateKey),{mode:0o644});
+    return {root,manifest};
+  };
+  return {trust,bundle};
+}
+
 test('F-237 verifyBundle trusts members only from the exact manifest bytes whose signature it checked',()=>{
-  const root=temp(),{publicKey,privateKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
-  for(const file of ['qoopia','assets/src/public/dashboard.html','assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
-    fs.mkdirSync(path.dirname(path.join(root,file)),{recursive:true,mode:0o700});fs.writeFileSync(path.join(root,file),file,{mode:0o644});
-  }
-  const manifest={format:'qoopia-bundle/1',version:'5.0.0-test',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash('fixture'),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:37,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(root)};
-  const manifestFile=path.join(root,'manifest.json'),signed=Buffer.from(JSON.stringify(manifest));
-  fs.writeFileSync(manifestFile,signed,{mode:0o644});fs.writeFileSync(path.join(root,'manifest.sig'),sign(null,signed,privateKey),{mode:0o644});
+  const {trust,bundle}=signedBundle(),{root,manifest}=bundle('test-fixture'),manifestFile=path.join(root,'manifest.json');
   expect(verifyBundle(root,trust,true).manifest.version).toBe('5.0.0-test');
   // Tamper a member and forge a manifest whose member table matches the tampered tree.
   fs.appendFileSync(path.join(root,'assets/src/public/dashboard.html'),'<script>injected</script>');
@@ -134,6 +144,15 @@ test('F-237 verifyBundle trusts members only from the exact manifest bytes whose
   try{expect(()=>verifyBundle(root,trust,true)).toThrow('Bundle member hashes, modes or file set changed');}
   finally{Object.assign(io,original);}
   expect(swapped).toBe(true);
+});
+
+test('F-338 version trust comes from the verified manifest, not from the build kind',()=>{
+  const {trust,bundle}=signedBundle(),publisher=bundle('publisher').root;
+  expect(bundleTrust(publisher,trust)).toBe('publisher signature verified');
+  expect(bundleTrust(bundle('test-fixture').root,trust)).toBe('test fixture builds do not establish publisher trust');
+  fs.appendFileSync(path.join(publisher,'qoopia'),'tamper');
+  expect(bundleTrust(publisher,trust)).toBe('not verified: Bundle member hashes, modes or file set changed');
+  expect(bundleTrust(temp(),trust)).toStartWith('not verified: ');
 });
 
 test('bundle assets leave out migrations/rollback, which the runtime never reads [F-303]',()=>{

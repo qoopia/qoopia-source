@@ -13,8 +13,7 @@ test('dashboard buttons and fields never fall back to browser-default chrome [F-
   // AgentComm toolbar fields use the shared compact field style.
   expect(dashboardScript).toMatch(/<input type="search" id="acSearch" class="sel"/);
   expect(dashboardScript).toMatch(/<select id="acRecent" class="sel"/);
-  // Memory-policy toggle and save-request actions use the shared button roles.
-  expect(dashboardScript).toContain('<button type="button" class="btn" id="memoryToggle"');
+  // Save-request actions use the shared button roles.
   expect(dashboardScript).toContain('<button type="button" class="btn primary" data-accept="1">');
   expect(dashboardScript).toContain('<button type="button" class="btn" data-accept="">');
   // Retry inside an error box is styled by the shared button rule.
@@ -26,7 +25,8 @@ test('long unbreakable names wrap inside chips, connection rows and folder picke
   expect(decls(dashboardStyles,'.chip')).toContain('max-width:100%');
   expect(decls(dashboardStyles,'.sel')).toContain('max-width:100%');
   expect(decls(dashboardStyles,'.msg-head')).toContain('flex-wrap:wrap');
-  expect(decls(dashboardStyles,'#fList>.panel')).toContain('flex-wrap:wrap');
+  expect(decls(dashboardStyles,'.f-row')).toContain('flex-wrap:wrap');
+  expect(decls(dashboardStyles,'.f-name')).toContain('overflow-wrap:anywhere');
 });
 
 test('skip link is the first keyboard stop of the signed-in app [F-315]',()=>{
@@ -133,7 +133,7 @@ test('every dashboard view has one h1 and the shell sits in landmarks [F-328]',(
   // The app (and its skip link) precedes the login's external links, so the skip link is a skip link to axe.
   expect(dashboardPage.indexOf('id="appView"')).toBeLessThan(dashboardPage.indexOf('id="loginView"'));
   // Sections under a view's h1 start at h2.
-  expect(dashboardScript).toContain('<h2 id="memoryPanelTitle">');
+  expect(dashboardScript).toContain('<h2 id="memorySavesTitle">');
   for(const fn of ['renderAgentsPage','renderAgentCommPage','renderFilesPage','renderAgentDetail','renderSession','renderAcThread','renderSearchPage']){
     const body=dashboardScript.slice(dashboardScript.indexOf('function '+fn+'('));
     expect(body.slice(0,body.indexOf('\n  }\n')),fn).toContain('<h1');

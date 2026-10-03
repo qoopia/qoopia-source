@@ -18,8 +18,7 @@
  * readers are `read`.
  */
 import { z } from "zod";
-import type { AuthContext } from "../auth/middleware.ts";
-import type { RiskClass } from "./tools.ts";
+import type { ToolDef } from "./tools.ts";
 import { boundedMetadata } from "./profiles.ts";
 import {
   upsertEntity,
@@ -31,21 +30,10 @@ import {
   ENTITY_STATUSES,
 } from "../services/entities.ts";
 
-interface EntityToolDef {
-  name: string;
-  description: string;
-  risk: RiskClass;
-  rawSchema: z.ZodRawShape;
-  handler: (
-    args: Record<string, unknown>,
-    auth: AuthContext,
-  ) => unknown | Promise<unknown>;
-}
-
 const entityTypeEnum = z.enum(ENTITY_TYPES);
 const entityStatusEnum = z.enum(ENTITY_STATUSES);
 
-export const entityTools: EntityToolDef[] = [
+export const entityTools: ToolDef[] = [
   {
     name: "entity_upsert",
     risk: "write-low",

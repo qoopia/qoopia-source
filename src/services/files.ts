@@ -1,10 +1,10 @@
 import { assetPath } from "../utils/assets.ts";
 import { ulid } from "ulid";
-import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
+import { hash } from "../utils/fs.ts";
 
 // Owner-uploaded files (via dashboard) that any fleet agent can read (via MCP).
 // Bytes live inline as a BLOB in the `files` table (migration 024).
@@ -116,6 +116,7 @@ function rowMeta(r: any) {
     mime: r.mime,
     size: r.size,
     created_at: r.created_at,
+    uploaded_by: r.uploaded_by ?? null,
     extraction_status:r.extraction_status??'unknown',
     readable: !!r.text_excerpt || isTextual(r.mime, r.filename),
   };
@@ -147,23 +148,28 @@ export async function fileUpload(p: {
   filename: string;
   mime?: string;
   bytes: Buffer;
+  /** An agent replaces only what it wrote itself; the owner's dashboard upload replaces anything. */
+  replace_own_only?: boolean;
 }) {
   const { folder, filename } = validateFileUpload(p);
   const buf = p.bytes;
   const size = buf.length;
-  const sha256 = createHash("sha256").update(buf).digest("hex");
+  const sha256 = hash(buf);
   const mime = p.mime || "application/octet-stream";
   const extracted = await parseFileText(mime, filename, buf);
   const text_excerpt = extracted.text ? extracted.text.slice(0, EXCERPT_MAX) : null;
   const ts = nowIso();
-  db.prepare(
+  const written = db.prepare(
     `INSERT INTO files (id, workspace_id, owner_agent_id, folder, filename, mime, size, sha256, content, text_excerpt, uploaded_by_agent_id, created_at, extraction_status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(workspace_id, folder, filename) DO UPDATE SET
        mime = excluded.mime, size = excluded.size, sha256 = excluded.sha256,
        content = excluded.content, text_excerpt = excluded.text_excerpt, extraction_status=excluded.extraction_status,
-       uploaded_by_agent_id = excluded.uploaded_by_agent_id, created_at = excluded.created_at`,
-  ).run(ulid(), p.workspace_id, p.owner_agent_id, folder, filename, mime, size, sha256, buf, text_excerpt, p.uploaded_by_agent_id, ts, extracted.status);
+       uploaded_by_agent_id = excluded.uploaded_by_agent_id, created_at = excluded.created_at
+     WHERE ? = 0 OR files.uploaded_by_agent_id = excluded.uploaded_by_agent_id`,
+  ).run(ulid(), p.workspace_id, p.owner_agent_id, folder, filename, mime, size, sha256, buf, text_excerpt, p.uploaded_by_agent_id, ts, extracted.status, p.replace_own_only ? 1 : 0);
+  // Checked by the write itself, so a file another author saves meanwhile is never replaced.
+  if (!written.changes) throw new QoopiaError("CONFLICT", `${folder}/${filename} was written by someone else; choose another name or folder`);
   const row = db.prepare(`SELECT * FROM files WHERE workspace_id = ? AND folder = ? AND filename = ?`).get(p.workspace_id, folder, filename) as any;
   logActivity({ workspace_id: p.workspace_id, agent_id: p.uploaded_by_agent_id, action: "file_upload", entity_type: "file", entity_id: row.id, project_id: null, summary: `Uploaded ${filename} to ${folder}`, details: { folder, filename, mime, size } });
   return rowMeta(row);
@@ -188,11 +194,12 @@ export function fileListFolders(p: { workspace_id: string }) {
 
 export function fileListByFolder(p: { workspace_id: string; folder?: string; limit?: number }) {
   const limit = Math.min(Math.max(p.limit || 200, 1), 1000);
-  const where = ["workspace_id = ?"];
+  const where = ["f.workspace_id = ?"];
   const params: any[] = [p.workspace_id];
-  if (p.folder) { where.push("folder = ?"); params.push(p.folder); }
+  if (p.folder) { where.push("f.folder = ?"); params.push(p.folder); }
   const rows = db.prepare(
-    `SELECT id, folder, filename, mime, size, created_at, text_excerpt, extraction_status FROM files WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`,
+    `SELECT f.id, f.folder, f.filename, f.mime, f.size, f.created_at, f.text_excerpt IS NOT NULL AS text_excerpt, f.extraction_status, u.name AS uploaded_by
+     FROM files f LEFT JOIN agents u ON u.id = f.uploaded_by_agent_id WHERE ${where.join(" AND ")} ORDER BY f.created_at DESC LIMIT ?`,
   ).all(...params, limit) as any[];
   return { files: rows.map(rowMeta) };
 }
@@ -201,6 +208,28 @@ export function fileGetForDownload(p: { workspace_id: string; id: string }): { f
   const row = db.prepare(`SELECT filename, mime, size, content FROM files WHERE workspace_id = ? AND id = ?`).get(p.workspace_id, p.id) as any;
   if (!row) return null;
   return { filename: row.filename, mime: row.mime, size: row.size, content: Buffer.from(row.content) };
+}
+
+// ---- MCP write (any agent with write access) ----
+
+const MAX_FILE_BYTES = 104_857_600; // the dashboard's per-upload limit
+
+/** An agent saves into Files: its own folder by default, any sub-folder it names. It replaces only
+ * a file it wrote itself, and deleting stays with the owner.
+ * ponytail: one MCP request is at most 1 MB, so a bigger file arrives in parts with `append`;
+ * each part re-reads the stored bytes. A streaming upload endpoint if agents send large files often. */
+export async function filePut(p: { workspace_id: string; agent_id: string; agent_name: string; folder?: string; filename: string;
+  content: string; encoding?: "utf8" | "base64"; mime?: string; append?: boolean }) {
+  if (p.encoding === "base64" && !/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(p.content)) throw new QoopiaError("INVALID_INPUT", "content is not base64");
+  const part = Buffer.from(p.content, p.encoding === "base64" ? "base64" : "utf8");
+  // A part may be empty; a whole new file may not.
+  const { folder, filename } = validateFileUpload({ folder: p.folder?.trim() || p.agent_name, filename: p.filename, bytes: p.append ? Buffer.alloc(1) : part });
+  const before = p.append ? db.prepare(`SELECT content FROM files WHERE workspace_id = ? AND folder = ? AND filename = ? AND uploaded_by_agent_id = ?`)
+    .get(p.workspace_id, folder, filename, p.agent_id) as { content: Uint8Array } | null : null;
+  const bytes = before ? Buffer.concat([Buffer.from(before.content), part]) : part;
+  if (bytes.length > MAX_FILE_BYTES) throw new QoopiaError("SIZE_LIMIT", "A file in Qoopia is at most 100 MB");
+  return fileUpload({ workspace_id: p.workspace_id, owner_agent_id: p.agent_id, uploaded_by_agent_id: p.agent_id, folder, filename,
+    mime: p.mime || Bun.file(filename).type, bytes, replace_own_only: true });
 }
 
 // ---- MCP read tools (any fleet agent) ----
@@ -213,11 +242,11 @@ export function fileList(p: { workspace_id: string; folder?: string; owner?: str
   if (p.owner) { where.push("o.name = ?"); params.push(p.owner); }
   // F-274: rowMeta only needs to know an excerpt exists; do not read up to 200k chars per row.
   const rows = db.prepare(
-    `SELECT f.id, f.folder, f.filename, f.mime, f.size, f.created_at, f.text_excerpt IS NOT NULL AS text_excerpt, f.extraction_status
-     FROM files f JOIN agents o ON o.id = f.owner_agent_id
+    `SELECT f.id, f.folder, f.filename, f.mime, f.size, f.created_at, f.text_excerpt IS NOT NULL AS text_excerpt, f.extraction_status, u.name AS uploaded_by
+     FROM files f JOIN agents o ON o.id = f.owner_agent_id LEFT JOIN agents u ON u.id = f.uploaded_by_agent_id
      WHERE ${where.join(" AND ")} ORDER BY f.created_at DESC LIMIT ?`,
   ).all(...params, limit) as any[];
-  return { files: rows.map(rowMeta), count: rows.length };
+  return { files: rows.map(rowMeta), count: rows.length, folders: fileListFolders(p).folders };
 }
 
 export function fileGet(p: { workspace_id: string; id?: string; folder?: string; filename?: string }) {

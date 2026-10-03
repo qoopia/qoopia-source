@@ -43,6 +43,7 @@ export type ConnectionRow = {
   challenge_expires_at: string;
   oauth_client_id: string | null;
   verified_at: string | null;
+  created_at: string;
 };
 
 export function connectionOrigin(id: string) {
