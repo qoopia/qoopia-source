@@ -1,10 +1,10 @@
 import type {Database} from 'bun:sqlite';
 import {createHmac,randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import type {LoginLanguage} from './messages.ts';
+import { escapeHtml } from '../utils/html.ts';
 
 export const NEWS_CONSENT_VERSION='2026-09-14-v1';
 export const newsConsent={en:'Receive Qoopia news, new releases and useful guides by email. Unsubscribe at any time.',ru:'Получать по email новости Qoopia, новые релизы и полезные инструкции. Отписаться можно в любой момент.'};
-export const escapeHtml=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 type NewsPreference={account_id:string;email:string;subscribed:number;language:LoginLanguage;revision:number;changed_at:number};
 
 /** Private account metadata. No email addresses or link credentials enter analytics. */

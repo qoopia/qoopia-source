@@ -296,7 +296,7 @@ export function sessionSearch(p: SessionSearchParams) {
   const sql = `
     SELECT sm.id, sm.session_id, sm.role, sm.content, sm.created_at, rank
     FROM session_messages_fts f
-    JOIN session_messages sm ON sm.id = f.rowid
+    CROSS JOIN session_messages sm ON sm.id = f.rowid
     WHERE ${where.join(" AND ")}
     ORDER BY rank
     LIMIT ?

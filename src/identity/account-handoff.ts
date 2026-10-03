@@ -1,8 +1,6 @@
 import type {Database} from 'bun:sqlite';
-import {createHash,randomBytes} from 'node:crypto';
+import { hash, randomToken } from '../utils/fs.ts';
 
-const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
-const secret=()=>randomBytes(32).toString('base64url');
 type Account={email:string;google_sub?:string|null;url:string|null};
 type Handoff={id:string;challenge:string;dashboard:string;expires:number;code_hash:string|null;email:string|null;google_sub:string|null};
 
@@ -30,14 +28,14 @@ export function accountHandoff(db:Database) {
     start(challenge:string,address:unknown) {
       const dashboard=mobileDashboard(address);
       if(!dashboard||!/^[a-f0-9]{64}$/.test(challenge))throw new Error('Invalid account sign-in request');
-      const id=secret();db.query('INSERT INTO account_handoffs(id,challenge,dashboard,expires) VALUES (?,?,?,?)').run(id,challenge,dashboard,Date.now()+600_000);
+      const id=randomToken();db.query('INSERT INTO account_handoffs(id,challenge,dashboard,expires) VALUES (?,?,?,?)').run(id,challenge,dashboard,Date.now()+600_000);
       return id;
     },
     authorize(id:string,account:Account) {
       const flow=get(id);
       // Only the address saved by this signed-in account is eligible for automatic continuation.
       if(!flow||mobileDashboard(account.url)!==flow.dashboard)throw new Error('WORKSPACE_MISMATCH');
-      const code=secret();
+      const code=randomToken();
       db.query('UPDATE account_handoffs SET code_hash=?,email=?,google_sub=? WHERE id=?').run(hash(code),account.email,account.google_sub??null,id);
       return flow.dashboard+'?signin=complete#account_code='+code;
     },

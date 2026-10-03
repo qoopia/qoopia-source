@@ -388,7 +388,7 @@ export function searchEntities(p: SearchParams): SearchHit[] {
     const sql = `
       SELECT e.id, e.workspace_id, e.type, e.slug, e.title, e.summary, e.status, rank
         FROM entity_pages_fts f
-        JOIN entity_pages e ON e.rowid = f.rowid
+        CROSS JOIN entity_pages e ON e.rowid = f.rowid
        WHERE ${where.join(" AND ")}
        ORDER BY rank
        LIMIT ?

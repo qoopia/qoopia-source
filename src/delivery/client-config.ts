@@ -5,7 +5,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import {safePath,privateDirectory,readJsonBytes,durableWrite,hash,hasNulOrNewline} from '../utils/fs.ts';
+import {safePath,privateDirectory,readJsonBytes,durableWrite,hash,hasNulOrNewline,readJson} from '../utils/fs.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
 import {nativeOwnerHome} from './native-keychain.ts';
 import {selectedNativeDirectory} from './native-client-paths.ts';
@@ -41,7 +41,7 @@ export function configureNativeClient(root:string,raw:unknown,action:'plan'|'app
   const binding=clientBindingSchema.parse(raw),codex=binding.surface==='codex',desktop=binding.surface==='claude_desktop';
   if(desktop&&process.platform!=='darwin')throw new Error('The local Claude Desktop adapter requires macOS; this Linux installation supports Claude Web and Claude Code');
   const folder=safePath(path.join(root,'client-configs',binding.connection_id)),receiptFile=path.join(folder,'receipt.json');
-  const receipt=fs.existsSync(receiptFile)?receiptSchema.parse(JSON.parse(readJsonBytes(receiptFile).toString())):null;
+  const receipt=fs.existsSync(receiptFile)?receiptSchema.parse(readJson(receiptFile)):null;
   const custom=directory??(home===undefined&&!desktop?selectedNativeDirectory(binding.surface as 'codex'|'claude_code'):undefined);
   if(custom!==undefined&&(!path.isAbsolute(custom)||hasNulOrNewline(custom)))throw new Error('Native client directory must be an absolute path');
   // Resume the exact previously selected file when a background service has no shell overrides.

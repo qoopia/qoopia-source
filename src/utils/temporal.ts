@@ -11,7 +11,7 @@
  * числовом epoch-ms; ISO для отображения производится из результата одним
  * форматтером. Строковый MAX/MIN смешанных ISO запрещён (R4).
  */
-import { QoopiaError } from "./errors.ts";
+import { QoopiaError, featureDisabled, throwCoded } from "./errors.ts";
 
 /** Feature flag. Default OFF — включение только по owner GO (Class B). */
 const BITEMPORAL_FLAG = "QOOPIA_V4_BITEMPORAL";
@@ -31,16 +31,12 @@ export function bitemporalEnabled(): boolean {
  * в `recall/v4-pipeline.ts`, чтобы клиентский разбор ошибок не расходился.
  */
 export function temporalFeatureDisabled(detail = BITEMPORAL_FLAG): never {
-  const error = new QoopiaError("INVALID_INPUT", detail);
-  (error as { code: string }).code = "FEATURE_DISABLED";
-  throw error;
+  return featureDisabled(detail);
 }
 
 /** Ошибка оптимистической блокировки предшественника (ТЗ §8). */
 export function staleVersion(message: string): never {
-  const error = new QoopiaError("CONFLICT", message);
-  (error as { code: string }).code = "STALE_VERSION";
-  throw error;
+  return throwCoded("CONFLICT", "STALE_VERSION", message);
 }
 
 /** Канонический (`…SSSZ`) и legacy (`…SZ`) UTC-формат. Только `Z`. */

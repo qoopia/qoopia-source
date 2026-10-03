@@ -71,8 +71,8 @@ describe("migration 048 read-path indexes", () => {
   test("F-274: file lists stop after LIMIT instead of sorting every BLOB row", () => {
     for (const [run, pick] of [
       [() => fileList({ workspace_id: WS }), /FROM files f JOIN agents o/],
-      [() => fileListByFolder({ workspace_id: WS }), /FROM files WHERE .* ORDER BY created_at DESC/],
-      [() => fileListByFolder({ workspace_id: WS, folder: "inbox" }), /FROM files WHERE .* ORDER BY created_at DESC/],
+      [() => fileListByFolder({ workspace_id: WS }), /FROM files f LEFT JOIN agents u .* ORDER BY f\.created_at DESC/s],
+      [() => fileListByFolder({ workspace_id: WS, folder: "inbox" }), /FROM files f LEFT JOIN agents u .* ORDER BY f\.created_at DESC/s],
       [() => fileListFolders({ workspace_id: WS }), /GROUP BY folder/],
     ] as const) {
       for (const plan of plansOf(run, pick)) {

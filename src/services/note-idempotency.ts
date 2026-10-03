@@ -18,7 +18,7 @@
  */
 import { createHash } from "node:crypto";
 import { db } from "../db/connection.ts";
-import { QoopiaError } from "../utils/errors.ts";
+import { QoopiaError, throwCoded } from "../utils/errors.ts";
 
 /** Тот же алфавит, что у AgentComm-ключей: буквы, цифры, `. _ : -`. */
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -97,12 +97,7 @@ export function lookupNoteIdempotency(
 
 /** Тот же ключ с иным payload (§8). Используется и ручной политикой памяти. */
 export function idempotencyMismatch(): never {
-  const error = new QoopiaError(
-    "CONFLICT",
-    "idempotency_key was already used for a different note_create payload",
-  );
-  (error as { code: string }).code = "IDEMPOTENCY_MISMATCH";
-  throw error;
+  return throwCoded("CONFLICT", "IDEMPOTENCY_MISMATCH", "idempotency_key was already used for a different note_create payload");
 }
 
 /** Записать ответ. Вызывается внутри транзакции создания ноты. */

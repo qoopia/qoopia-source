@@ -6,6 +6,8 @@ import { QoopiaError, nowIso } from "../utils/errors.ts";
 import { seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
 import { canManagePolicy } from "../services/memory-policy.ts";
 import { logActivity } from "../services/activity.ts";
+import { hasColumn } from "../db/introspect.ts";
+import { workspaceIdBySlug } from "./workspaces.ts";
 
 export type AgentType = "standard" | "steward" | "owner" | "ingest-daemon";
 
@@ -34,16 +36,13 @@ export function createAgent(opts: {
     );
   }
 
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(opts.workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace ${opts.workspaceSlug} not found`);
+  const workspaceId = workspaceIdBySlug(opts.workspaceSlug);
 
   // Case-insensitive: AgentComm addresses agents by name, and a case-only
   // variant would make that address ambiguous.
   const existing = db
     .prepare(`SELECT id FROM agents WHERE lower(name) = lower(?) AND workspace_id = ? AND active = 1`)
-    .get(opts.name, ws.id);
+    .get(opts.name, workspaceId);
   if (existing)
     throw new QoopiaError(
       "CONFLICT",
@@ -54,12 +53,12 @@ export function createAgent(opts: {
   const apiKey = generateApiKey();
   // This is the legacy onboarding entry point, also used before migration036.
   // Preserve its old skill API rights without granting new P1 author capabilities.
-  const legacySkills = !!db.query("SELECT 1 FROM pragma_table_info('agents') WHERE name='legacy_skill_access'").get();
+  const legacySkills = hasColumn(db, "agents", "legacy_skill_access");
   try {
     db.prepare(
       `INSERT INTO agents (id, workspace_id, name, type, api_key_hash, active, created_at${legacySkills ? ", legacy_skill_access" : ""})
        VALUES (?, ?, ?, ?, ?, 1, ?${legacySkills ? ", 1" : ""})`,
-    ).run(id, ws.id, opts.name, opts.type || "standard", sha256Hex(apiKey), nowIso());
+    ).run(id, workspaceId, opts.name, opts.type || "standard", sha256Hex(apiKey), nowIso());
   } catch (err) {
     const msg = (err as Error).message || "";
     if (msg.includes("UNIQUE constraint failed")) {
@@ -67,7 +66,7 @@ export function createAgent(opts: {
     }
     throw err;
   }
-  return { id, name: opts.name, api_key: apiKey, workspace_id: ws.id };
+  return { id, name: opts.name, api_key: apiKey, workspace_id: workspaceId };
 }
 
 export function listAgents() {
@@ -81,13 +80,10 @@ export function listAgents() {
 }
 
 export function rotateAgentKey(name: string, workspaceSlug: string): string {
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace ${workspaceSlug} not found`);
+  const workspaceId = workspaceIdBySlug(workspaceSlug);
   const a = db
     .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
-    .get(name, ws.id) as { id: string } | undefined;
+    .get(name, workspaceId) as { id: string } | undefined;
   if (!a) throw new QoopiaError("NOT_FOUND", `agent ${name} not found`);
   const newKey = generateApiKey();
   // QDASHCOOKIE-002: bump session_version so any outstanding dashboard
@@ -108,15 +104,12 @@ export function setAgentType(
   type: AgentType,
 ): { name: string; type: string } {
   refuseLegacyType(type);
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace ${workspaceSlug} not found`);
+  const workspaceId = workspaceIdBySlug(workspaceSlug);
   const info = db
     .prepare(
       `UPDATE agents SET type = ? WHERE name = ? AND workspace_id = ? AND active = 1`,
     )
-    .run(type, name, ws.id);
+    .run(type, name, workspaceId);
   if (info.changes === 0)
     throw new QoopiaError("NOT_FOUND", `active agent '${name}' not found in workspace ${workspaceSlug}`);
   return { name, type };
@@ -160,13 +153,10 @@ export function setSharedContext(input: { workspace_id: string; agent_id: string
 }
 
 export function deleteAgent(name: string, workspaceSlug: string) {
-  const ws = db
-    .prepare(`SELECT id FROM workspaces WHERE slug = ?`)
-    .get(workspaceSlug) as { id: string } | undefined;
-  if (!ws) throw new QoopiaError("NOT_FOUND", `workspace ${workspaceSlug} not found`);
+  const workspaceId = workspaceIdBySlug(workspaceSlug);
   const agent = db
     .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
-    .get(name, ws.id) as { id: string } | undefined;
+    .get(name, workspaceId) as { id: string } | undefined;
   if (!agent) throw new QoopiaError("NOT_FOUND", `agent ${name} not found`);
 
   // QDASHCOOKIE-002: bump session_version on deactivation as well, so the

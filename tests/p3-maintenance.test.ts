@@ -60,9 +60,9 @@ test('P3 task purge keeps only observable tombstones for immutable skill sources
  const revisionBefore=db.query("SELECT source_refs,source_digest FROM skill_draft_revisions WHERE source_digest IS NOT NULL AND workspace_id=?").get(owner.workspace_id);
  const captureBefore=db.query("SELECT source_refs,source_digest FROM skill_captures WHERE id='p3-session-capture'").get();
  const loadoutBefore=db.query("SELECT * FROM session_loadouts WHERE id='p3-loadout'").get();
- const highWater=(db.query('SELECT MAX(updated_at_ms) AS ms FROM notes').get() as {ms:number}).ms;
+ const highWater=(db.query('SELECT MAX(updated_at_ms) AS ms FROM notes WHERE workspace_id=?').get(owner.workspace_id) as {ms:number}).ms;
  const result=runMaintenance();expect(result.ok).toBe(true);
- // The tombstone is a note write: updated_at_ms moves with updated_at, past every earlier write.
+ // The tombstone is a note write: updated_at_ms moves with updated_at, past every earlier write of its workspace.
  const tomb=db.query("SELECT deleted_at,updated_at,updated_at_ms FROM notes WHERE id='p3-referenced-note'").get() as {deleted_at:string;updated_at:string;updated_at_ms:number};
  expect(tomb.updated_at_ms).toBe(Date.parse(tomb.updated_at));
  expect(tomb.updated_at_ms).toBeGreaterThan(highWater);

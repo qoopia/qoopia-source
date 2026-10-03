@@ -1,5 +1,6 @@
 import {z} from 'zod';
 import type {TunnelProvider} from './device-registry.ts';
+import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
 const id=z.string().uuid(),accountId=z.string().regex(/^[a-f0-9]{32}$/);
 /** Operator-only provider access. A device receives its own tunnel id; it never receives this token. */
 export function cloudflareTunnels(config:{account:string;zone:string;token:string},request:typeof fetch=fetch):TunnelProvider {
@@ -7,7 +8,7 @@ export function cloudflareTunnels(config:{account:string;zone:string;token:strin
   const call=async(route:string,method='GET',body?:unknown)=>{
     const response=await request('https://api.cloudflare.com/client/v4'+route,{method,headers:{authorization:'Bearer '+config.token,'content-type':'application/json'},
       ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(20_000),redirect:'error'});
-    const data=await response.json() as {success?:boolean;result?:unknown};
+    const data=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {success?:boolean;result?:unknown};
     // Provider errors can contain request values. Never propagate their response or URL into operational logs.
     if(!response.ok||data.success!==true)throw new Error('TUNNEL_PROVIDER_UNAVAILABLE');return data.result;
   };
@@ -26,7 +27,7 @@ export function cloudflareTunnels(config:{account:string;zone:string;token:strin
       const response=await request('https://cloudflare-dns.com/dns-query?'+new URLSearchParams({name:hostname,type:'A'}),
         {headers:{accept:'application/dns-json'},redirect:'error',signal:AbortSignal.timeout(5000)});
       if(response.ok){
-        const data=await response.json() as {Status?:number;Answer?:{name?:string;type?:number;data?:string}[]};
+        const data=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {Status?:number;Answer?:{name?:string;type?:number;data?:string}[]};
         if(data.Status===0&&data.Answer?.some(a=>a.name?.replace(/\.$/,'')===hostname&&a.type===1&&typeof a.data==='string'))return;
       }
       await new Promise(resolve=>setTimeout(resolve,1000));

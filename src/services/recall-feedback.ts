@@ -1,11 +1,11 @@
 import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
-import { QoopiaError } from "../utils/errors.ts";
+import { QoopiaError, featureDisabled } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
 import { confirmMemory, queueAccessReinforcement, setMemoryPin } from "./memory-lifecycle.ts";
-import { assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
+import { assertWriteScope, seesWholeWorkspace, ADMIN_TYPES } from "../auth/principal.ts";
 
 export const RECALL_FEEDBACK_TYPES = [
   "helpful",
@@ -17,16 +17,6 @@ export const RECALL_FEEDBACK_TYPES = [
   "unpin",
 ] as const;
 export type RecallFeedbackType = (typeof RECALL_FEEDBACK_TYPES)[number];
-
-const PIN_TYPES = new Set(["owner", "steward"]);
-
-function featureDisabled(name: string): never {
-  const error = new QoopiaError("INVALID_INPUT", name);
-  (error as { code: string }).code = "FEATURE_DISABLED";
-  throw error;
-}
-
-
 
 interface FeedbackRow {
   id: string;
@@ -64,7 +54,7 @@ export function recordRecallFeedback(input: {
   }
   if (input.reason_code) assertNoSecrets(input.reason_code, "recall_feedback.reason_code");
   if (input.reason_text) assertNoSecrets(input.reason_text, "recall_feedback.reason_text");
-  if ((input.feedback === "pin" || input.feedback === "unpin") && !PIN_TYPES.has(input.auth.type)) {
+  if ((input.feedback === "pin" || input.feedback === "unpin") && !ADMIN_TYPES.has(input.auth.type)) {
     throw new QoopiaError("FORBIDDEN", "pin and unpin require owner or steward capability");
   }
   getNote(input.auth.workspace_id, input.note_id, input.auth.agent_id, seesWholeWorkspace(input.auth));

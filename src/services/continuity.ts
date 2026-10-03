@@ -9,7 +9,7 @@ import {QoopiaError,safeJsonParse} from '../utils/errors.ts';
 import {redactSensitive} from '../utils/secret-guard.ts';
 import {backgroundFailure} from '../utils/logger.ts';
 import {scrubTelegramTransit} from './telegram-store.ts';
-import {duringManual,expireSaveRequests,hasManualHistory,memoryPolicy,memoryPolicyUnchanged} from './memory-policy.ts';
+import {duringManual,expireSaveRequests,hasManualHistory,LIVE_SESSION_MS,memoryPolicy,memoryPolicyUnchanged} from './memory-policy.ts';
 
 const FORMAT='qoopia-session-context/1';
 const dashboardSnapshot=z.object({
@@ -177,13 +177,13 @@ export async function checkpointSession(workspace:string,agent:string,session:st
   let result:Awaited<ReturnType<typeof summarize>>;
   try {result=await summarize(workspace,
     'Update a concise working-state note, in the user language, at most 6000 characters. Preserve the goal, latest constraints, decisions with reasons, completed work and evidence, paths/links, unresolved issues and next step. Clearly record superseded/cancelled decisions. Distinguish requested/planned work from verified results. Do not invent facts. Keep useful prior facts unless new source evidence changes them. Return the full updated note in result.',
-    {previous,previous_tail:previousTail,new_events:batch});
+    {previous,previous_tail:previousTail,new_events:batch},{background:true});
   } catch(error) {
-    // Retry a smaller source range after a timeout; never advance its cursor
-    // until the summary commits.
-    if(error instanceof QoopiaError&&error.code==='MODEL_TIMEOUT'&&batch.length>1)
-      db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_batch_limit',?) WHERE id=? AND workspace_id=? AND agent_id=?")
-        .run(Math.ceil(batch.length/2),session,workspace,agent);
+    // Retry a smaller source range after a timeout; never advance its cursor until the summary
+    // commits. A single message cannot shrink: each such timeout doubles its pause instead [F-341].
+    if(error instanceof QoopiaError&&error.code==='MODEL_TIMEOUT')
+      db.query("UPDATE sessions SET metadata=json_set(metadata,?,?) WHERE id=? AND workspace_id=? AND agent_id=?")
+        .run(...(batch.length>1?['$.continuity_batch_limit',Math.ceil(batch.length/2)]:['$.continuity_backoff',(meta.continuity_backoff??0)+1]),session,workspace,agent);
     throw error;
   }
   let text=redactSensitive(result.text).text;
@@ -202,7 +202,7 @@ export async function checkpointSession(workspace:string,agent:string,session:st
     const noteId=note?.id??createNote({workspace_id:workspace,agent_id:agent,type:'context',source:'qoopia-continuity',
       session_id:session,visibility:'private',text,metadata,tags:['session-context']}).id;
     if(note)updateNote({workspace_id:workspace,agent_id:agent,is_admin:false,id:note.id,text,metadata_replace:metadata});
-    db.query("UPDATE sessions SET metadata=json_remove(json_set(metadata,'$.continuity_priority',0),'$.continuity_error','$.continuity_retry_at') WHERE id=?").run(session);
+    db.query("UPDATE sessions SET metadata=json_remove(json_set(metadata,'$.continuity_priority',0),'$.continuity_error','$.continuity_retry_at','$.continuity_backoff') WHERE id=?").run(session);
     // A limit halved by earlier timeouts doubles back with each success.
     if(meta.continuity_batch_limit!==undefined)db.query(`UPDATE sessions SET metadata=CASE WHEN ?1>=100 THEN json_remove(metadata,'$.continuity_batch_limit')
       ELSE json_set(metadata,'$.continuity_batch_limit',?1) END WHERE id=?2`).run(batchLimit*2,session);
@@ -233,12 +233,12 @@ export async function processMemoryMaintenance() {
     }
     if(memoryModelBusy())return;
     const sessions=db.query(`SELECT s.id,s.workspace_id,s.agent_id FROM sessions s JOIN agents a ON a.id=s.agent_id AND a.active=1
-      WHERE a.memory_mode='auto' AND json_extract(s.metadata,'$.continuity_enabled')=1
+      WHERE a.memory_mode='auto' AND json_extract(s.metadata,'$.continuity_enabled')=1 AND s.last_active>=?
       AND COALESCE(json_extract(s.metadata,'$.continuity_retry_at'),0)<?
       AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
         FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0))
       ORDER BY COALESCE(json_extract(s.metadata,'$.continuity_priority'),0) DESC,s.last_active DESC LIMIT 16`)
-      .all(Date.now()) as Array<{id:string;workspace_id:string;agent_id:string}>;
+      .all(new Date(Date.now()-LIVE_SESSION_MS).toISOString(),Date.now()) as Array<{id:string;workspace_id:string;agent_id:string}>;
     for(const session of sessions) {
       // A workspace without a usable profile steps out of the window for a while instead of
       // aborting the tick or starving the sessions ranked after it, in any workspace.
@@ -252,13 +252,16 @@ export async function processMemoryMaintenance() {
       try {const result=await checkpointSession(session.workspace_id,session.agent_id,session.id);if(result.state==='saved')break;}
       catch(error){
         const code=error instanceof QoopiaError?error.code:'DEPENDENCY_UNAVAILABLE';
+        // Yielded to an interactive call: nothing failed, the next idle tick retries.
+        if(code==='MODEL_BUSY')break;
         // Sign-in, quota and an unusable runtime belong to the workspace's profile, so the cooldown
         // covers all its pending sessions: the next tick must not launch the same failing model
         // for the next session. Other errors stay with this session. The journal keeps everything.
         const profileWide=['UNAUTHENTICATED','MODEL_QUOTA','MODEL_UNAVAILABLE','UNSUPPORTED'].includes(code);
+        const backoff=profileWide?0:(db.query("SELECT json_extract(metadata,'$.continuity_backoff') AS n FROM sessions WHERE id=?").get(session.id) as {n:number|null}|null)?.n??0;
         db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?)
           WHERE ${profileWide?"workspace_id=? AND json_extract(metadata,'$.continuity_enabled')=1":'id=?'}`)
-          .run(code,Date.now()+300_000,profileWide?session.workspace_id:session.id);break;
+          .run(code,Date.now()+Math.min(6*3600_000,300_000*2**backoff),profileWide?session.workspace_id:session.id);break;
       }
     }
   } finally {running=false;}

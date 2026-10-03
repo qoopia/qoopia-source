@@ -74,7 +74,8 @@ test('steward deactivates a standard agent and revokes only its OAuth tokens',()
 });
 
 test('agent_onboard bootstrap notes carry the same temporal columns as any note_create',()=>{
-  const before=(db.query('SELECT COALESCE(MAX(updated_at_ms),0) AS ms FROM notes').get() as {ms:number}).ms;
+  // The note-write clock is per workspace (F-339): other files' notes do not move it.
+  const before=(db.query('SELECT COALESCE(MAX(updated_at_ms),0) AS ms FROM notes WHERE workspace_id=?').get(steward.workspace_id) as {ms:number}).ms;
   const created=tool('agent_onboard').handler({name:'guard-bootstrapped',role:'general'},as(steward,'steward')) as {agent_id:string;bootstrap_notes_created:number};
   const rows=db.query('SELECT created_at,created_at_ms,valid_from_ms,updated_at_ms FROM notes WHERE agent_id=?').all(created.agent_id) as
     {created_at:string;created_at_ms:number|null;valid_from_ms:number|null;updated_at_ms:number}[];

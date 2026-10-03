@@ -49,6 +49,18 @@ export class QoopiaError extends Error {
   }
 }
 
+/** Throw a `base` QoopiaError whose public code is the narrower `code` (FEATURE_DISABLED, STALE_VERSION, …). */
+export function throwCoded(base: QoopiaErrorCode, code: string, message: string): never {
+  const error = new QoopiaError(base, message);
+  (error as { code: string }).code = code;
+  throw error;
+}
+
+/** A V4 feature flag named `name` is off. */
+export function featureDisabled(name: string): never {
+  return throwCoded("INVALID_INPUT", "FEATURE_DISABLED", name);
+}
+
 export function nowIso(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }

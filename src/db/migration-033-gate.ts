@@ -36,6 +36,7 @@ import {
   recomputeStagingPlan,
   stagingPlanDigest,
 } from "./migration-033-plan.ts";
+import { tableExists } from "./introspect.ts";
 
 export const MIGRATION_033_FILENAME = "033-notes-bitemporal.sql";
 const STAGING_TABLES = [
@@ -57,14 +58,6 @@ interface Migration033GateState {
   recomputed_plan_digest: string | null;
   ok: boolean;
   reason: string | null;
-}
-
-function tableExists(db: Database, name: string): boolean {
-  return (
-    db
-      .query(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
-      .get(name) != null
-  );
 }
 
 /**

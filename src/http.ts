@@ -18,6 +18,7 @@ import {
   checkDashboardAuth,
   dashboardMutationAllowed,
   originAllowed as dashboardOriginAllowed,
+  type DashboardAuth,
 } from "./dashboard-api.ts";
 import { authenticate, type AuthContext } from "./auth/middleware.ts";
 import { getAllowlist } from "./admin/claude-agents.ts";
@@ -49,14 +50,13 @@ import { isReadOnlyInstance } from "./utils/instance-role.ts";
 import { getVerifiedReleaseBaseline } from "./utils/release-baseline.ts";
 import { PRODUCT_VERSION } from "./utils/product-version.ts";
 import { apiError, handleAuthorityRequest } from "./api/authority.ts";
-import { attachmentDisposition, CONTINUITY_MAX_BODY_BYTES, REQUEST_TIMEOUTS, RequestBodyError, repeatsSingletonHeader, unreadBody } from "./utils/http-json.ts";
+import { attachmentDisposition, CONTINUITY_MAX_BODY_BYTES, parseJsonObject, REQUEST_TIMEOUTS, RequestBodyError, repeatsSingletonHeader, unreadBody } from "./utils/http-json.ts";
 import { MAX_UPLOAD_BYTES, dropHeadBody, getAllowedOrigin, getClientIp, json, methodNotAllowed, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
 import { dashboardVersion, serveDashboard } from "./http/dashboard-static.ts";
 import { DASHBOARD_COOKIE, parseCookies } from "./dashboard-session.ts";
 import { handleServiceOwner, serviceOwnerEmail } from './http/service-owner.ts';
 import { handleMcp } from "./http/mcp-route.ts";
 import {
-  connectionIdentityRoot,
   handleAuthorizeFinalize,
   handleAuthorizeRedirect,
   handleDashboardOAuthConsentApprove,
@@ -70,7 +70,6 @@ import {
   startConsentTicketGc,
   stopConsentTicketGc,
 } from "./http/oauth-routes.ts";
-export { getCurrentAuth } from "./http/mcp-route.ts";
 import {
   createWriteProbe,
   evaluateReadiness,
@@ -78,6 +77,7 @@ import {
   readSchemaVersion,
 } from "./utils/health-metadata.ts";
 import { storageDegradation } from "./utils/storage-degradation.ts";
+import { ownerIdentityRoot } from "./utils/standalone.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./db/sqlite.ts";
 import { embeddingHealth } from "./services/embedding-store.ts";
 
@@ -108,10 +108,29 @@ interface NodeReqWithBody extends IncomingMessage {
 function fileMutationAuth(req: IncomingMessage, res: ServerResponse) {
   const auth = checkDashboardAuth(req);
   if (!auth) return void json(res, 401, { error: "unauthorized" }, req);
-  if (!(auth.type === "owner" || auth.type === "steward") || auth.source === "oauth")
+  if (!auth.isAdmin || auth.source === "oauth")
     return void json(res, 403, { error: "forbidden", detail: "owner only" }, req);
   if (!dashboardMutationAllowed(req, auth)) return void json(res, 403, { error: "forbidden_origin" }, req);
   return auth;
+}
+
+// ---------- Owner dashboard routes (my agent, bridges, memory, connections, workspace) ----------
+/** The owner's browser session on a canonical workspace; otherwise 401/403 is already sent. */
+function ownerSession(req: IncomingMessage, res: ServerResponse) {
+  const auth=checkDashboardAuth(req);
+  if(!auth||auth.source!=='cookie')return void json(res,401,{error_description:'Sign in as owner'},req);
+  if(isReadOnlyInstance())return void json(res,403,{error_description:'Canonical workspace required'},req);
+  return auth;
+}
+/** The JSON body of a same-origin owner POST; undefined once 403 `refused` is sent. */
+async function ownerPost(req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, maxBytes: number, refused: object = {error_description:'Same-origin action required'}) {
+  if(req.method?.toUpperCase()!=='POST'||!dashboardMutationAllowed(req,auth))return void json(res,403,refused,req);
+  return JSON.parse((await readBodyLimited(req,maxBytes)).toString());
+}
+/** An over-limit or stalled body keeps its 413/408 (the server answers it); FORBIDDEN is 403, any other failure 400. */
+function ownerFailure(req: IncomingMessage, res: ServerResponse, error: unknown, body: object) {
+  if(error instanceof RequestBodyError)throw error;
+  return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,body,req);
 }
 
 async function handleFileUpload(req: IncomingMessage, res: ServerResponse) {
@@ -389,7 +408,8 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     if(!auth||auth.source!=='cookie')return json(res,401,{error:'Sign in to your dashboard'},req);
     if(method!=='GET')return json(res,405,{error:'Read only'},req);
     try{
-      const root=process.env.QOOPIA_STANDALONE==='true'?JSON.parse(process.env.QOOPIA_STANDALONE_LAYOUT!).root:env.ROOT_DIR;
+      const root=ownerIdentityRoot();
+      if(root===undefined)return json(res,200,{email:null},req);
       const identity=ownerIdentity(root);
       return json(res,200,{email:identity?.ownerId===auth.agent_id?identity.email:null,service_owner:!!serviceOwnerEmail(req)},req);
     }catch{return json(res,200,{email:null},req);}
@@ -405,10 +425,9 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         if(method!=='POST'||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error:'Same-origin action required'},req);
       }
       try{
-        const standalone=process.env.QOOPIA_STANDALONE==='true';
-        if(standalone&&!process.env.QOOPIA_STANDALONE_LAYOUT)return json(res,503,{error:'Installed Qoopia is required'},req);
-        const identityRoot=standalone?JSON.parse(process.env.QOOPIA_STANDALONE_LAYOUT!).root:env.ROOT_DIR;
-        if(!standalone&&!ownerIdentity(identityRoot))return json(res,503,{error:'Server owner identity is not provisioned'},req);
+        const identityRoot=ownerIdentityRoot();
+        if(identityRoot===undefined)return json(res,503,{error:'Installed Qoopia is required'},req);
+        if(process.env.QOOPIA_STANDALONE!=='true'&&!ownerIdentity(identityRoot))return json(res,503,{error:'Server owner identity is not provisioned'},req);
         const body=method==='POST'?JSON.parse((await readBodyLimited(req,2048)).toString()):{};
         if(!body||typeof body!=='object'||Array.isArray(body))return json(res,400,{error:'Invalid request'},req);
         identityHandler??=localIdentityLogin(identityRoot,db);
@@ -416,10 +435,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       }catch{return json(res,400,{error:'Invalid sign-in request'},req);}
   }
   if(url==='/api/dashboard/my-agent'||url==='/api/dashboard/my-agent/file') {
-    res.setHeader('cache-control','no-store');
-    const auth=checkDashboardAuth(req);
-    if(!auth||auth.source!=='cookie')return json(res,401,{error_description:'Sign in as owner'},req);
-    if(isReadOnlyInstance())return json(res,403,{error_description:'Canonical workspace required'},req);
+    const auth=ownerSession(req,res);if(!auth)return;
     try {
       if(url.endsWith('/file')){
         if(method!=='GET')return methodNotAllowed(res,'GET',req,{error_description:'Read only'});
@@ -427,50 +443,40 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         res.writeHead(200,{'content-type':'application/octet-stream','content-length':String(artifact.bytes.length),'content-disposition':attachmentDisposition(artifact.name),'x-content-type-options':'nosniff','content-security-policy':"sandbox; default-src 'none'"});return res.end(artifact.bytes);
       }
       if(method==='GET'){const query=new URL(rawUrl,'http://local').searchParams;return json(res,200,{...myAgentState(auth.agent_id,query.get('conversation')??undefined,{runBefore:query.get('runBefore')??undefined,conversationOffset:Number(query.get('conversationOffset')??0),includeFiles:query.get('files')!=='0',runLimit:query.has('runs')?Number(query.get('runs')):undefined}),telegram_setup:telegramState(auth.agent_id)},req);}
-      if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
-      const body=JSON.parse((await readBodyLimited(req,32*1024)).toString());
+      const body=await ownerPost(req,res,auth,32*1024);if(body===undefined)return;
       const result=typeof body?.action==='string'&&body.action.startsWith('telegram-')?await telegramAction(auth.agent_id,body):await submitMyAgentAction(auth.agent_id,body);
       return json(res,'accepted' in result&&result.accepted?202:200,result,req);
-    }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,{error_description:error instanceof QoopiaError?error.message:'Agent action failed. Check your connection and try again.'},req);}
+    }catch(error){return ownerFailure(req,res,error,{error_description:error instanceof QoopiaError?error.message:'Agent action failed. Check your connection and try again.'});}
   }
   if(url==='/api/dashboard/bridges') {
-    res.setHeader('cache-control','no-store');
-    const auth=checkDashboardAuth(req);
-    if(!auth||auth.source!=='cookie')return json(res,401,{error_description:'Sign in as owner'},req);
-    if(isReadOnlyInstance())return json(res,403,{error_description:'Canonical workspace required'},req);
+    const auth=ownerSession(req,res);if(!auth)return;
     const {bridgeState,bridgeAction}=await import('./bridges/api.ts');
     try {
       if(method==='GET')return json(res,200,bridgeState(auth.agent_id),req);
-      if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
-      const body=JSON.parse((await readBodyLimited(req,2*1024*1024)).toString());
+      const body=await ownerPost(req,res,auth,2*1024*1024);if(body===undefined)return;
       return json(res,200,await bridgeAction(auth.agent_id,body),req);
-    } catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,
-      {error_description:error instanceof QoopiaError?error.message:'Bridge action failed. Keep your invitation or draft and try again.'},req);}
+    } catch(error){return ownerFailure(req,res,error,
+      {error_description:error instanceof QoopiaError?error.message:'Bridge action failed. Keep your invitation or draft and try again.'});}
   }
   if(url==='/api/dashboard/memory'||url==='/api/dashboard/connections'||url==='/api/dashboard/connection-setup') {
-    res.setHeader('cache-control','no-store');
-    const auth=checkDashboardAuth(req);
-    if(!auth||auth.source!=='cookie')return json(res,401,{error_description:'Sign in as owner'},req);
-    if(isReadOnlyInstance())return json(res,403,{error_description:'Canonical workspace required'},req);
+    const auth=ownerSession(req,res);if(!auth)return;
     const {memorySetupState,submitMemorySetupAction}=await import('./services/memory-setup.ts');
     try {
       if(url==='/api/dashboard/connection-setup'){
         const {managedNetworkAction,submitManagedNetworkAction}=await import('./delivery/managed-transport.ts');
         if(method==='GET')return json(res,200,{...connectionAction(auth.agent_id,{action:'status'}),network:await managedNetworkAction(auth.agent_id,{action:'network-status'})},req);
-        if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{code:'FORBIDDEN',state:'error'},req);
-        const input=JSON.parse((await readBodyLimited(req,4096)).toString());
+        const input=await ownerPost(req,res,auth,4096,{code:'FORBIDDEN',state:'error'});if(input===undefined)return;
         const result=typeof input?.action==='string'&&input.action.startsWith('network-')?await submitManagedNetworkAction(auth.agent_id,input):await connectionAction(auth.agent_id,input);
         return json(res,'accepted' in result&&result.accepted?202:200,result,req);
       }
       if(url==='/api/dashboard/connections')return method==='GET'?json(res,200,browserConnectionState(auth.agent_id),req):methodNotAllowed(res,'GET',req,{error_description:'Read only'});
       if(method==='GET')return json(res,200,memorySetupState(auth.agent_id),req);
-      if(method!=='POST'||!dashboardOriginAllowed(req)||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
-      const body=JSON.parse((await readBodyLimited(req,12*1024)).toString());
+      const body=await ownerPost(req,res,auth,12*1024);if(body===undefined)return;
       const result=await submitMemorySetupAction(auth.agent_id,body);
       return json(res,'accepted' in result&&result.accepted?202:200,result,req);
-    } catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,
+    } catch(error){return ownerFailure(req,res,error,
       {state:'error',code:error instanceof QoopiaError?error.code:'INVALID_INPUT',error_description:error instanceof QoopiaError?error.message:'Setup failed; check the selected action',
-        ...(error instanceof QoopiaError&&typeof error.details?.next_action==='string'?{next_action:error.details.next_action}:{})},req);}
+        ...(error instanceof QoopiaError&&typeof error.details?.next_action==='string'?{next_action:error.details.next_action}:{})});}
   }
 
   if (process.env.QOOPIA_STANDALONE === 'true') {
@@ -496,7 +502,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         if(method!=='POST'||req.headers.origin!==`http://${host}`||req.headers['x-qoopia-csrf']!=='1')return json(res,403,{error_description:'Same-origin action required'},req);
         const body=JSON.parse((await readBodyLimited(req,96*1024)).toString());
         return json(res,200,await workspaceAction(auth.agent_id,body),req);
-      }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='FORBIDDEN'?403:400,workspaceError(error),req);}
+      }catch(error){return ownerFailure(req,res,error,workspaceError(error));}
     }
   }
 
@@ -666,10 +672,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   if(/^\/oauth\/consent(?:\/(?:start|check|approve|deny))?$/.test(url)){
     if(rateLimit429(authLimiter,'auth',clientIp,res))return;
     if(isReadOnlyInstance())return json(res,403,{error:'Read-only installation'},req);
-    const root=connectionIdentityRoot();if(!root)return json(res,503,{error:'Owner account setup required'},req);
+    const root=ownerIdentityRoot();if(!root)return json(res,503,{error:'Owner account setup required'},req);
     if(connectionConsentHandler?.root!==root)connectionConsentHandler={root,handler:remoteConnectionConsent(root,db)};
     const body=method==='POST'?await readBodyLimited(req,2048):undefined;
-    const response=await connectionConsentHandler.handler(nodeReqToFetchRequest(req,body));
+    const response=await connectionConsentHandler.handler(nodeReqToFetchRequest(req,body),clientIp);
     res.writeHead(response.status,Object.fromEntries(response.headers));res.end(await response.text());return;
   }
   // ADR-017: /oauth/authorize is now a thin redirect target. It validates
@@ -715,8 +721,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       const selectedConnection=new URL(req.url!,env.PUBLIC_URL).searchParams.get("connection");
       let publicDcr: ReturnType<typeof resolveTrustedUnauthenticatedDcrAuth>;
       try {
-        let redirectUris: unknown;
-        try { redirectUris = JSON.parse(body.toString("utf8")).redirect_uris; } catch { /* handleRegister answers bad JSON */ }
+        const redirectUris = parseJsonObject(body)?.redirect_uris; // handleRegister answers bad JSON
         publicDcr = selectedConnection ? {auth:connectionRegistrationAuth(selectedConnection,redirectUris),detail:"owner-provisioned connection registration"} : resolveTrustedUnauthenticatedDcrAuth(body);
       } catch (err) {
         if (!(err instanceof QoopiaError)) throw err;

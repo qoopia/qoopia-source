@@ -35,9 +35,10 @@ export function createWorkspace(opts: { name: string; slug?: string }): {
 }
 
 /** Ops scripts name their workspace by slug (QOOPIA_WORKSPACE_SLUG, default "default"), never by a hard-coded ID. */
-export function workspaceIdBySlug(slug = process.env.QOOPIA_WORKSPACE_SLUG || "default"): string {
-  const row = db.prepare(`SELECT id FROM workspaces WHERE slug = ?`).get(slug) as { id: string } | null;
-  if (!row) throw new QoopiaError("NOT_FOUND", `workspace slug '${slug}' not found; set QOOPIA_WORKSPACE_SLUG`);
+export function workspaceIdBySlug(slug?: string): string {
+  const name = slug ?? (process.env.QOOPIA_WORKSPACE_SLUG || "default");
+  const row = db.prepare(`SELECT id FROM workspaces WHERE slug = ?`).get(name) as { id: string } | null;
+  if (!row) throw new QoopiaError("NOT_FOUND", slug === undefined ? `workspace slug '${name}' not found; set QOOPIA_WORKSPACE_SLUG` : `workspace '${name}' not found`);
   return row.id;
 }
 

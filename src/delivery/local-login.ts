@@ -1,7 +1,7 @@
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { privateDirectory, safePath, durableWrite } from '../utils/fs.ts';
+import { privateDirectory, safePath, durableWrite, hash } from '../utils/fs.ts';
 
 /** Installation lock is held by the caller. Keep login across process and bundle updates. */
 export function localSessionSecret(root: string): string {
@@ -18,14 +18,13 @@ export function localSessionSecret(root: string): string {
   } finally { fs.closeSync(fd); }
 }
 const pending = new Map<string,{ownerId:string;expires:number}>();
-const digest=(code:string)=>createHash('sha256').update(code).digest('hex');
 /** Capability issued only by the local OS launcher; never an HTTP owner-create endpoint. */
 export function issueLocalLogin(ownerId:string, now=Date.now()) {
-  const code=randomBytes(16).toString('hex');pending.clear();pending.set(digest(code),{ownerId,expires:now+300000});return code;
+  const code=randomBytes(16).toString('hex');pending.clear();pending.set(hash(code),{ownerId,expires:now+300000});return code;
 }
 export function consumeLocalLogin(code:string, now=Date.now()) {
   if(!/^[a-f0-9]{32}$/.test(code))return null;
-  const k=digest(code),entry=pending.get(k);pending.delete(k);
+  const k=hash(code),entry=pending.get(k);pending.delete(k);
   return entry&&entry.expires>now?entry.ownerId:null;
 }
 

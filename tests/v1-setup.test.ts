@@ -34,6 +34,10 @@ test('setup resumes from durable installation, owner, runtime and connection sta
   const pending=inspectSetup(f.root,'codex');
   expect(pending.stage).toBe('CONNECT_REQUIRED');
   expect(pending.next_action).toContain('--config '+JSON.stringify(path.join(os.homedir(),'.codex','config.toml')));
+  // A custom CODEX_HOME is where connect must write, as client-config does.
+  const codexHome=process.env.CODEX_HOME;process.env.CODEX_HOME=path.join(f.root,'codex-home');
+  try{expect(inspectSetup(f.root,'codex').next_action).toContain('--config '+JSON.stringify(path.join(fs.realpathSync(f.root),'codex-home','config.toml')));}
+  finally{if(codexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=codexHome;}
   fs.mkdirSync(path.join(f.root,'connections'),{mode:0o700});
   fs.writeFileSync(path.join(f.root,'connections','malformed.json'),JSON.stringify({format:'qoopia-native-connection/1',runtime_kind:'codex',installation:{instance:'instance-1',bundle:hex,generation:f.generation,port:3737}}),{mode:0o600});
   expect(inspectSetup(f.root,'codex').stage).toBe('CONNECT_REQUIRED');

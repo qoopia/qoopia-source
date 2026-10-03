@@ -3,7 +3,7 @@
   'use strict';
   const catalog = __CATALOG__;
   const countForms = {member:[['member','members','members'],['участник','участника','участников']],session:[['session','sessions','sessions'],['сессия','сессии','сессий']],
-    message:[['message','messages','messages'],['сообщение','сообщения','сообщений']],note:[['note','notes','notes'],['заметка','заметки','заметок']]};
+    message:[['message','messages','messages'],['сообщение','сообщения','сообщений']],note:[['note','notes','notes'],['заметка','заметки','заметок']],file:[['file','files','files'],['файл','файла','файлов']]};
   const key = 'qoopia.language';
   const valid = value => value === 'en' || value === 'ru';
   const read = () => { try { return localStorage.getItem(key); } catch { return null; } };

@@ -27,11 +27,17 @@ export function isAdmin(auth: AuthContext): boolean {
   return ADMIN_TYPES.has(auth.type);
 }
 
+/** The caller's agent row as it is now, null once deactivated: re-read inside a write transaction. */
+export function liveActor(auth: AuthContext): { type: string; tool_profile: string | null } | null {
+  return db.query("SELECT type, tool_profile FROM agents WHERE workspace_id = ? AND id = ? AND active = 1")
+    .get(auth.workspace_id, auth.agent_id) as { type: string; tool_profile: string | null } | null;
+}
+
 // ---- ADR-020: one visibility rule for notes, transcripts and activity ----
 
 /** The steward and the human owner read the whole workspace, private notes included. */
 export function seesWholeWorkspace(auth: { type: string }): boolean {
-  return auth.type === "steward" || auth.type === "owner";
+  return ADMIN_TYPES.has(auth.type);
 }
 
 /**

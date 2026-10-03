@@ -15,6 +15,7 @@ import { manifestHash, verifyJws } from "../skills/legacy/signing.ts";
 import { jcsBytes, parseJsonStrict, utf8Decode, type JcsValue } from "../skills/legacy/jcs.ts";
 import { readPackage, computeIntegrity } from "../skills/legacy/archive.ts";
 import { QoopiaError } from "../utils/errors.ts";
+import { tableExists } from "../db/introspect.ts";
 
 type Row = Record<string, SQLQueryBindings>;
 type Manifest = Record<string, string[]>;
@@ -164,7 +165,7 @@ export function importSource(target: Database, source: SourceSnapshot, input: { 
           if (!Number.isSafeInteger(shifted) || Number(o.id) < 1) throw new QoopiaError("QUARANTINED", "Source integer identity cannot be remapped safely");
           localId = String(shifted);
         }
-        else if (table !== "migration_origins" && target.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) &&
+        else if (table !== "migration_origins" && tableExists(target, table) &&
           (target.query(`PRAGMA table_info(${quoted(table)})`).all() as { name: string }[]).some((c) => c.name === "id") &&
           target.query(`SELECT 1 FROM ${quoted(table)} WHERE id=?`).get(localId)) {
           localId = randomUUID(); collisions.push({ table: o.table, reason: "ID collision preserved as a separate local identity" });

@@ -1,17 +1,19 @@
 import {noAnalytics,type RecordEvent} from '../analytics/events.ts';
 import type {Database} from 'bun:sqlite';
-import {createHash,randomBytes} from 'node:crypto';
 import {accounts} from './account.ts';
 import {profileView} from './profile-view.ts';
 import {newsletter} from './newsletter.ts';
 import {ownerPortal,type OwnerOptions} from './owner.ts';
 import {accountHandoff,mobileDashboard} from './account-handoff.ts';
 import {appProfileView} from './profile-app-view.ts';
+import { hash, randomToken } from '../utils/fs.ts';
+import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
+import { parseCookies } from '../utils/cookies.ts';
 
-const secret=()=>randomBytes(32).toString('base64url');
-const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const sessionName='__Host-qoopia_profile',pendingName='__Host-qoopia_profile_pending';
-const cookie=(req:Request,name:string)=>req.headers.get('cookie')?.split(';').map(v=>v.trim()).find(v=>v.startsWith(name+'='))?.slice(name.length+1)??'';
+/** One sign-in per device: a profile session lasts a year and every visit renews it. */
+const SESSION_DAYS=365;
+const cookie=(req:Request,name:string)=>parseCookies(req.headers.get('cookie')??undefined)[name]??'';
 const setCookie=(name:string,value:string,seconds:number)=>`${name}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${seconds}`;
 type Page=(title:string,content:string,script?:string,status?:number,language?:'en'|'ru')=>Response;
 type Call=(route:string,body:unknown,ip:string)=>Promise<Response>;
@@ -36,9 +38,8 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
     CREATE TABLE IF NOT EXISTS profile_pending(hash TEXT PRIMARY KEY,request_id TEXT NOT NULL,verifier TEXT NOT NULL,expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_news_pending(hash TEXT PRIMARY KEY,language TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_dashboards(account_id TEXT PRIMARY KEY,url TEXT NOT NULL);`);
-  if(!(db.query('PRAGMA table_info(profile_pending)').all() as {name:string}[]).some(c=>c.name==='code'))db.exec('ALTER TABLE profile_pending ADD COLUMN code TEXT');
-  // The pending cookie belongs to the browser that started; it sees its own confirmation code again after a reload.
-  const pendingCode=(req:Request)=>(db.query('SELECT code FROM profile_pending WHERE hash=?').get(hash(cookie(req,pendingName))) as {code:string|null}|null)?.code;
+  // A row for this browser's pending cookie means a sign-in it started is still open.
+  const pendingOpen=(req:Request)=>!!db.query('SELECT 1 FROM profile_pending WHERE hash=?').get(hash(cookie(req,pendingName)));
   const cleanup=()=>{
     db.query('DELETE FROM profile_sessions WHERE expires<=?').run(Date.now());
     db.query('DELETE FROM profile_pending WHERE expires<=?').run(Date.now());
@@ -48,7 +49,18 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
   const json=(status:number,body:unknown)=>Response.json(body,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
   const current=(req:Request)=>db.query(`SELECT a.id,a.email,a.google_sub,d.url FROM profile_sessions s JOIN connection_accounts a ON a.id=s.account_id
     LEFT JOIN profile_dashboards d ON d.account_id=a.id WHERE s.hash=? AND s.expires>?`).get(hash(cookie(req,sessionName)),Date.now()) as {id:string;email:string;google_sub:string|null;url:string|null}|null;
+  // A session in use never runs out: a visit more than a day after the last renewal starts the year again.
+  const renew=(req:Request,response:Response)=>{
+    const key=hash(cookie(req,sessionName)),until=Date.now()+SESSION_DAYS*86_400_000;
+    if(db.query('UPDATE profile_sessions SET expires=? WHERE hash=? AND expires>? AND expires<?').run(until,key,Date.now(),until-86_400_000).changes)
+      response.headers.append('set-cookie',setCookie(sessionName,cookie(req,sessionName),SESSION_DAYS*86400));
+    return response;
+  };
   return {cleanup,handler:async(req:Request,ip:string):Promise<Response>=>{
+    const response=await serve(req,ip);
+    return response.headers.getSetCookie().some(c=>c.startsWith(sessionName+'='))?response:renew(req,response);
+  }};
+  async function serve(req:Request,ip:string):Promise<Response> {
     cleanup();const url=new URL(req.url),account=current(req);
     if(url.pathname==='/owner'||url.pathname.startsWith('/owner/'))return owner(req,account);
     if(req.method==='GET'&&url.pathname==='/profile'){
@@ -56,13 +68,11 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       if(url.searchParams.get('app')==='ios'){
         const id=url.searchParams.get('request');
         if(id&&(!/^[A-Za-z0-9_-]{43}$/.test(id)||!handoff.get(id)))return page(ru?'Вход истёк':'Sign-in expired',`<a href="/profile?app=ios">${ru?'Вернуться в Qoopia':'Return to Qoopia'}</a>`,'',410,ru?'ru':'en');
-        const code=pendingCode(req);
-        return appProfileView(page,ru,account,code!==undefined,id,code);
+        return appProfileView(page,ru,account,pendingOpen(req),id);
       }
       let suggested='';try{suggested=dashboardAddress(url.searchParams.get('dashboard'));}catch{/* Untrusted URL is never reflected without validation. */}
       const preference=account?news.preference(account.id):null;
-      const code=pendingCode(req);
-      return profileView(page,ru,account,suggested,code!==undefined,{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id,code});
+      return profileView(page,ru,account,suggested,pendingOpen(req),{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id});
     }
     if(req.method!=='POST')return json(404,{error:'NOT_FOUND'});
     if(req.headers.get('origin')!==origin)return json(403,{error:'ORIGIN_REFUSED'});
@@ -72,16 +82,15 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       const body=JSON.parse(text);if(!body||typeof body!=='object'||Array.isArray(body))return json(400,{error:'INVALID_REQUEST'});
       if(url.pathname==='/profile/start'){
         if(body.news!==undefined&&typeof body.news!=='boolean')return json(400,{error:'INVALID_REQUEST'});
-        const verifier=secret(),pending=secret();
-        // F-125: the e-mail confirmation needs the code this browser shows.
-        const response=await call('/requests',{method:body.method,email:body.email,language:body.language==='ru'?'ru':'en',bind:true,challenge:hash(verifier)},ip);
-        const result=await response.json() as {id?:string;error?:string;email?:string;google_url?:string;confirm_code?:string};
+        const verifier=randomToken(),pending=randomToken();
+        // F-125: the sign-in finishes only from this browser's network; nothing to copy between screens.
+        const response=await call('/requests',{method:body.method,email:body.email,language:body.language==='ru'?'ru':'en',bind:'network',challenge:hash(verifier)},ip);
+        const result=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {id?:string;error?:string;email?:string;google_url?:string};
         if(!response.ok)return json(response.status,{error:result.error});
-        if(!/^\d{6}$/.test(String(result.confirm_code)))return json(503,{error:'SIGN_IN_UNAVAILABLE'});
         db.query('DELETE FROM profile_pending WHERE hash=?').run(hash(cookie(req,pendingName)));
-        db.query('INSERT INTO profile_pending(hash,request_id,verifier,expires,code) VALUES (?,?,?,?,?)').run(hash(pending),result.id!,verifier,Date.now()+600_000,result.confirm_code!);
+        db.query('INSERT INTO profile_pending(hash,request_id,verifier,expires) VALUES (?,?,?,?)').run(hash(pending),result.id!,verifier,Date.now()+600_000);
         if(body.news===true)db.query('INSERT INTO profile_news_pending VALUES (?,?)').run(hash(pending),body.language==='ru'?'ru':'en');
-        const out=json(200,{email:result.email,google_url:result.google_url,code:result.confirm_code});out.headers.set('set-cookie',setCookie(pendingName,pending,600));return out;
+        const out=json(200,{email:result.email,google_url:result.google_url});out.headers.set('set-cookie',setCookie(pendingName,pending,600));return out;
       }
       if(url.pathname==='/profile/poll'){
         const key=hash(cookie(req,pendingName));
@@ -91,19 +100,19 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
         busy.add(key);
         try{
           const response=await call('/redeem',{id:pending.request_id,verifier:pending.verifier},ip);
-          const data=await response.json() as {email?:string;googleSub?:string;pending?:boolean;error?:string};
+          const data=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {email?:string;googleSub?:string;pending?:boolean;error?:string};
           if(response.status===202)return json(202,{pending:true});
           db.query('DELETE FROM profile_pending WHERE hash=?').run(key);
           if(!response.ok||!data.email)return json(410,{error:'LOGIN_EXPIRED'});
-          const token=secret();
+          const token=randomToken();
           db.transaction(()=>{
             const id=identify({email:data.email!,googleSub:data.googleSub});
             if(pending.news)news.change({id,email:data.email!},true,pending.language,'signup');
             db.query('DELETE FROM profile_sessions WHERE hash=?').run(hash(cookie(req,sessionName)));
-            db.query('INSERT INTO profile_sessions VALUES (?,?,?)').run(hash(token),id,Date.now()+7*86_400_000);
+            db.query('INSERT INTO profile_sessions VALUES (?,?,?)').run(hash(token),id,Date.now()+SESSION_DAYS*86_400_000);
           })();
           record({kind:'profile_login',outcome:'ok'});
-          const out=json(200,{ok:true});out.headers.append('set-cookie',setCookie(sessionName,token,7*86400));out.headers.append('set-cookie',setCookie(pendingName,'',0));return out;
+          const out=json(200,{ok:true});out.headers.append('set-cookie',setCookie(sessionName,token,SESSION_DAYS*86400));out.headers.append('set-cookie',setCookie(pendingName,'',0));return out;
         }finally{busy.delete(key);}
       }
       if(!account)return json(401,{error:'SIGN_IN_REQUIRED'});
@@ -131,5 +140,5 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       }
       return json(404,{error:'NOT_FOUND'});
     }catch(error){return json(400,{error:error instanceof Error&&['INVALID_DASHBOARD','ACCOUNT_CONFLICT'].includes(error.message)?error.message:'INVALID_REQUEST'});}
-  }};
+  }
 }

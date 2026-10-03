@@ -1,10 +1,9 @@
 /**
- * F-125: whoever starts a sign-in with the owner's address used to get the owner's
- * session as soon as the owner clicked Confirm in the e-mail. A bound request now
- * returns a one-time code to the screen that started it, and the broker's /confirm
- * refuses to confirm without that code (five wrong codes end the request). The
- * dashboard owner sign-in and the auth.qoopia.ai profile both bind their requests;
- * an unbound request (older clients, owner-initiated device enrolment) is unchanged.
+ * F-125: whoever starts a sign-in with the owner's address used to get the owner's session as
+ * soon as the owner clicked the email. The first fix asked the owner to copy a six-digit code
+ * between screens. Now a request is bound to the network it started from: the email link or the
+ * Google sign-in completes it only from that network, with nothing to copy, and Google sends no
+ * confirmation email at all. Clients up to 5.0.15 still ask for and get a code.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -13,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { loginBroker } from "../src/identity/broker.ts";
+import { loginBroker, signInNetwork } from "../src/identity/broker.ts";
 import { localIdentityLogin, LOGIN_ORIGIN } from "../src/identity/local.ts";
 import { db } from "../src/db/connection.ts";
 import { runMigrations } from "../src/db/migrate.ts";
@@ -47,10 +46,12 @@ function brokerFixture() {
     (async (_input: string | URL | Request, init?: RequestInit) => { mails.push(JSON.parse(String(init?.body)).text); return Response.json({ id: "sent" }); }) as typeof fetch);
   const transport = (async (input: string | URL | Request, init?: RequestInit) => broker(new Request(String(input), init), "server")) as typeof fetch;
   const link = () => new URL(mails.at(-1)!.match(/https:\/\/[^\s]+/)![0]);
-  const confirm = async (body: Record<string, unknown>) => broker(new Request(LOGIN_ORIGIN + "/confirm", {
+  // The dashboard below runs on loopback, so its sign-ins belong to the network the broker sees it
+  // call from: "server". A confirmation from "server" is the same device; anything else is not.
+  const confirm = async (body: Record<string, unknown>, ip = "victim-browser") => broker(new Request(LOGIN_ORIGIN + "/confirm", {
     method: "POST", headers: { origin: LOGIN_ORIGIN, "content-type": "application/json" }, body: JSON.stringify(body),
-  }), "victim-browser");
-  return { broker, transport, link, confirm };
+  }), ip);
+  return { broker, transport, link, confirm, mails };
 }
 
 function dashboardClient(login: ReturnType<typeof localIdentityLogin>) {
@@ -68,39 +69,72 @@ function dashboardClient(login: ReturnType<typeof localIdentityLogin>) {
   };
 }
 
-describe("F-125: a sign-in confirmation is bound to the screen that started it", () => {
-  test("the owner's click without the initiator's code never signs the initiator in", async () => {
+function googleFixture() {
+  const mails: string[] = [];
+  const broker = loginBroker(new Database(":memory:"), { origin: LOGIN_ORIGIN, resendKey: "fixture", from: "Qoopia <login@mail.qoopia.ai>", googleClientId: "fixture", googleClientSecret: "fixture" },
+    (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: "fixture" });
+      if (url.includes("openidconnect.googleapis.com")) return Response.json({ email: "owner@example.com", email_verified: true, sub: "google-owner" });
+      mails.push(JSON.parse(String(init?.body)).subject); return Response.json({ id: "sent" });
+    }) as typeof fetch);
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => broker(new Request(String(input), init), "server")) as typeof fetch;
+  // The browser opens the Google link and comes back to the callback from the given network.
+  const google = async (googleUrl: string, ip: string) => {
+    const start = await broker(new Request(googleUrl), ip);
+    const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+    const cookie = start.headers.get("set-cookie")!.split(";")[0]!;
+    return broker(new Request(LOGIN_ORIGIN + "/google/callback?state=" + state + "&code=fixture", { headers: { cookie } }), ip);
+  };
+  return { transport, google, mails };
+}
+
+describe("F-125: a sign-in counts only from the network where it started", () => {
+  test("a link opened on another network signs nobody in, and there is no code to steal", async () => {
     const { transport, link, confirm } = brokerFixture();
     const attacker = dashboardClient(localIdentityLogin(root, db, transport));
     const started = await attacker("/start", { method: "email", email: "owner@example.com" });
     expect(started.status).toBe(200);
-    expect(started.data.code).toMatch(/^\d{6}$/);
-    expect(link().searchParams.get("code")).toBe("1");
-    const token = link().hash.slice(1);
-    const missing = await confirm({ token });
-    expect(missing.status).toBe(400);
-    expect(await missing.json()).toMatchObject({ code_required: true });
-    const wrong = String((Number(started.data.code) + 1) % 1_000_000).padStart(6, "0");
-    for (let i = 0; i < 3; i++) expect((await confirm({ token, code: wrong })).status).toBe(400);
-    expect((await attacker("/poll")).data).toEqual({ pending: true });
-    // The fifth failure ends the request: the right code no longer works and the initiator gets nothing.
-    expect((await confirm({ token, code: wrong })).status).toBe(400);
-    expect((await confirm({ token, code: started.data.code })).status).toBe(400);
+    expect(started.data).not.toHaveProperty("code");
+    expect(link().searchParams.get("auto")).toBe("1");
+    const refused = await confirm({ token: link().hash.slice(1) }, "victim-browser");
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ same_device: true });
     const poll = await attacker("/poll");
-    expect(poll.status).toBe(400);
+    expect(poll.data).toEqual({ pending: true });
     expect(poll.cookie).toBeUndefined();
   });
 
-  test("the owner who started it types the code shown on the dashboard and is signed in", async () => {
-    const { transport, link, confirm } = brokerFixture();
+  test("the owner opens the link on the device where they started and is in, with nothing to type", async () => {
+    const { transport, link, confirm, mails } = brokerFixture();
     const owner = dashboardClient(localIdentityLogin(root, db, transport));
-    const started = await owner("/start", { method: "email", email: "owner@example.com" });
-    // A reload of the dashboard still shows the code of the pending sign-in.
-    expect((await owner("")).data).toMatchObject({ pending: true, code: started.data.code });
-    expect((await confirm({ token: link().hash.slice(1), code: started.data.code })).status).toBe(200);
+    await owner("/start", { method: "email", email: "owner@example.com" });
+    expect((await owner("")).data).toMatchObject({ pending: true });
+    expect((await confirm({ token: link().hash.slice(1) }, "server")).status).toBe(200);
     const poll = await owner("/poll");
     expect(poll.status).toBe(200);
     expect(checkDashboardAuth({ headers: { cookie: "qoopia_dash=" + poll.cookie } } as IncomingMessage)?.agent_id).toBe(OWNER_ID);
+    // A first sign-in gets one welcome email, without a link to follow.
+    expect(mails.at(-1)).toContain("Welcome to Qoopia");
+    expect(mails.at(-1)).not.toContain("https://");
+  });
+
+  test("Google needs no email: on the starting network it signs in, from elsewhere it does not", async () => {
+    const { transport, google, mails } = googleFixture();
+    const owner = dashboardClient(localIdentityLogin(root, db, transport));
+    const away = await owner("/start", { method: "google" });
+    expect(away.data).not.toHaveProperty("code");
+    const elsewhere = await google(String(away.data.googleUrl), "victim-browser");
+    expect(elsewhere.status).toBe(403);
+    expect((await owner("/poll")).data).toEqual({ pending: true });
+    const here = await owner("/start", { method: "google" });
+    const finished = await google(String(here.data.googleUrl), "server");
+    expect(finished.status).toBe(200);
+    expect(await finished.text()).toContain("You are signed in");
+    const poll = await owner("/poll");
+    expect(checkDashboardAuth({ headers: { cookie: "qoopia_dash=" + poll.cookie } } as IncomingMessage)?.agent_id).toBe(OWNER_ID);
+    // No confirmation email at any point; only the first-sign-in welcome.
+    expect(mails).toEqual(["Welcome to Qoopia"]);
   });
 
   test("the profile portal binds its sign-in the same way", async () => {
@@ -111,24 +145,39 @@ describe("F-125: a sign-in confirmation is bound to the screen that started it",
       for (const value of response.headers.getSetCookie()) { const [key, ...rest] = value.split(";")[0]!.split("="); cookies[key!] = rest.join("="); }
       return response;
     };
-    const started = await (await call("/profile/start", { method: "email", email: "someone@example.com" })).json() as { code: string };
-    expect(started.code).toMatch(/^\d{6}$/);
+    const started = await (await call("/profile/start", { method: "email", email: "someone@example.com" })).json();
+    expect(started).not.toHaveProperty("code");
     const token = link().hash.slice(1);
-    expect((await confirm({ token })).status).toBe(400);
+    expect((await confirm({ token }, "elsewhere")).status).toBe(400);
     expect((await call("/profile/poll", {})).status).toBe(202);
-    expect((await confirm({ token, code: started.code })).status).toBe(200);
-    expect((await call("/profile/poll", {})).status).toBe(200);
+    expect((await confirm({ token }, "browser")).status).toBe(200);
+    const signedIn = await call("/profile/poll", {});
+    expect(signedIn.status).toBe(200);
+    // One sign-in per device: the profile session lasts a year.
+    expect(signedIn.headers.getSetCookie().find((c) => c.startsWith("__Host-qoopia_profile="))).toContain("Max-Age=31536000");
   });
 
-  test("an unbound request still confirms with the link alone, and its page asks for no code", async () => {
+  test("a client up to 5.0.15 still gets and needs its code; an unbound request still confirms with the link", async () => {
     const { broker, link, confirm } = brokerFixture();
-    const verifier = randomBytes(32).toString("base64url");
-    const created = await broker(new Request(LOGIN_ORIGIN + "/requests", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ method: "email", email: "device@example.com", challenge: createHash("sha256").update(verifier).digest("hex") }) }), "server");
-    expect(await created.json()).not.toHaveProperty("confirm_code");
+    const request = (body: Record<string, unknown>) => broker(new Request(LOGIN_ORIGIN + "/requests", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ method: "email", challenge: createHash("sha256").update(randomBytes(32).toString("base64url")).digest("hex"), ...body }) }), "server");
+    const legacy = await (await request({ email: "legacy@example.com", bind: true })).json() as { confirm_code: string };
+    expect(legacy.confirm_code).toMatch(/^\d{6}$/);
+    expect(link().searchParams.get("code")).toBe("1");
+    expect(await (await confirm({ token: link().hash.slice(1) })).json()).toMatchObject({ code_required: true });
+    expect((await confirm({ token: link().hash.slice(1), code: legacy.confirm_code })).status).toBe(200);
+    expect(await (await request({ email: "device@example.com" })).json()).not.toHaveProperty("confirm_code");
     expect(link().searchParams.has("code")).toBe(false);
     expect(await (await broker(new Request(LOGIN_ORIGIN + "/confirm" + link().search), "browser")).text()).not.toContain('id="code"');
     expect((await confirm({ token: link().hash.slice(1) })).status).toBe(200);
-    expect(await (await broker(new Request(LOGIN_ORIGIN + "/confirm?lang=en&code=1"), "browser")).text()).toContain('id="code"');
   });
+});
+
+test("a sign-in network is the public IPv4 address or the IPv6 /64; private addresses say nothing", () => {
+  expect(signInNetwork("203.0.113.7")).toBe("203.0.113.7");
+  expect(signInNetwork("::ffff:203.0.113.7")).toBe("203.0.113.7");
+  for (const local of ["127.0.0.1", "10.1.2.3", "192.168.1.5", "172.20.0.1", "::1", "fd00::1", "fe80::1"]) expect(signInNetwork(local), local).toBeNull();
+  // One device's rotating IPv6 privacy addresses share their /64.
+  expect(signInNetwork("2001:db8:abcd:12:1111::1")).toBe(signInNetwork("2001:0db8:abcd:0012:9999:8888:7777:6666"));
+  expect(signInNetwork("2001:db8:abcd:12::1")).not.toBe(signInNetwork("2001:db8:abcd:13::1"));
 });

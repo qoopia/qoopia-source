@@ -1,4 +1,4 @@
-import {createHash, randomBytes, randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {CompactEncrypt, CompactSign, compactDecrypt, compactVerify, exportJWK, generateKeyPair, importJWK, SignJWT, jwtVerify} from 'jose';
 import {z} from 'zod';
 
@@ -17,7 +17,7 @@ export type PublicIdentity = z.infer<typeof publicIdentity>;
 export type Identity = PublicIdentity & {signPrivate:ReturnType<typeof signingKey.parse>&{d:string};encryptPrivate:ReturnType<typeof encryptionKey.parse>&{d:string}};
 export const sha = (bytes:string|Uint8Array)=>createHash('sha256').update(bytes).digest('base64url');
 export const peerId = (keys:PublicIdentity)=>sha(JSON.stringify(publicIdentity.parse({sign:keys.sign,encrypt:keys.encrypt})));
-export const secret = ()=>randomBytes(32).toString('base64url');
+export {randomToken as secret} from '../utils/fs.ts';
 const encode = (value:unknown)=>new TextEncoder().encode(JSON.stringify(value));
 
 /** Standard JOSE primitives; private keys never leave their installation. */

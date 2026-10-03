@@ -50,4 +50,9 @@ test("Overview activity: the agent chip is a button", () => {
   runInNewContext(utils + between("  function paintFeed(items, el) {", "  // ================= AGENTS PAGE ================="), ctx);
   ctx.paintFeed([{ action: "created", agent_id: "a1", agent_name: "alpha", summary: "did a thing", created_at: "2026-01-01T00:00:00Z" }], el);
   expect(aidTags(String(el.innerHTML))).toEqual(["button"]);
+  // A summary rewritten again and again is one line with a count; another event breaks the run.
+  const update = { action: "updated", agent_id: "m1", agent_name: "memory", summary: "Updated context (private): text, metadata", created_at: "2026-01-01T00:00:00Z" };
+  ctx.paintFeed([update, update, update, { ...update, agent_id: "a1", agent_name: "alpha" }, update], el);
+  expect(aidTags(String(el.innerHTML))).toEqual(["button", "button", "button"]);
+  expect(String(el.innerHTML)).toContain("×3");
 });

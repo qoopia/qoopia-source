@@ -8,12 +8,11 @@ import { createNote, getNote, NOTE_TYPES, type NoteVisibility } from "./notes.ts
 import { createNoteProvenance, hashProvenanceFragment } from "./provenance.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict, recordExtractionOutcome } from "../utils/observability.ts";
-import { assertWriteScope, levelOf, seesWholeWorkspace, visibleRowSql } from "../auth/principal.ts";
+import { assertWriteScope, levelOf, seesWholeWorkspace, visibleRowSql, ADMIN_TYPES, liveActor } from "../auth/principal.ts";
 import { assertAutomaticMemoryAllowed } from "./memory-policy.ts";
 
 const MAX_CANDIDATES = 200;
 const MAX_CANDIDATE_TEXT = 16_384;
-const REVIEWER_TYPES = new Set(["owner", "steward"]);
 const PROMPT_INJECTION_PATTERNS = [
   /ignore\s+(?:all\s+)?(?:previous|prior|system)\s+instructions?/i,
   /reveal\s+(?:the\s+)?(?:system|developer)\s+prompt/i,
@@ -91,8 +90,6 @@ function metricRiskClass(row: Pick<CandidateRow, "risk_flags" | "conflict_note_i
   if (safeJsonParse(row.conflict_note_ids, [] as string[]).length > 0) return "conflict";
   return "normal";
 }
-
-
 
 function normalizeText(text: string): string {
   return text.normalize("NFKC").toLocaleLowerCase("en-US").trim().replace(/\s+/g, " ");
@@ -448,7 +445,7 @@ function authorizedRun(auth: AuthContext, runId: string): RunRow {
   const row = db.prepare(
     `SELECT * FROM extraction_runs WHERE workspace_id = ? AND id = ?`,
   ).get(auth.workspace_id, runId) as RunRow | undefined;
-  if (!row || (row.initiated_by_agent_id !== auth.agent_id && !REVIEWER_TYPES.has(auth.type))) {
+  if (!row || (row.initiated_by_agent_id !== auth.agent_id && !ADMIN_TYPES.has(auth.type))) {
     throw new QoopiaError("NOT_FOUND", "extraction run not found");
   }
   return row;
@@ -472,7 +469,7 @@ export function listExtractionRuns(input: {
 }) {
   const where = ["workspace_id = ?"];
   const params: any[] = [input.auth.workspace_id];
-  if (!REVIEWER_TYPES.has(input.auth.type)) {
+  if (!ADMIN_TYPES.has(input.auth.type)) {
     where.push("initiated_by_agent_id = ?");
     params.push(input.auth.agent_id);
   }
@@ -592,7 +589,7 @@ export function reviewExtractionCandidate(input: {
     | undefined;
   if (
     !initial ||
-    (initial.initiated_by_agent_id !== input.auth.agent_id && !REVIEWER_TYPES.has(input.auth.type))
+    (initial.initiated_by_agent_id !== input.auth.agent_id && !ADMIN_TYPES.has(input.auth.type))
   ) {
     throw new QoopiaError("NOT_FOUND", "extraction candidate not found");
   }
@@ -659,7 +656,7 @@ export function reviewExtractionCandidate(input: {
     input.action !== "reject" &&
     (protectedAcceptance(input.auth, initial.proposed_type, input.metadata ?? {}) ||
       protectedAcceptance(input.auth, finalType, input.metadata ?? {})) &&
-    !REVIEWER_TYPES.has(input.auth.type)
+    !ADMIN_TYPES.has(input.auth.type)
   ) {
     throw new QoopiaError("FORBIDDEN", "protected candidate acceptance requires owner or steward");
   }
@@ -677,15 +674,10 @@ export function reviewExtractionCandidate(input: {
     if (current.status !== "pending" || current.review_version !== input.expected_version) {
       throw new QoopiaError("CONFLICT", "candidate review lost optimistic concurrency race");
     }
-    const actor = db.prepare(
-      `SELECT type, active FROM agents WHERE workspace_id = ? AND id = ?`,
-    ).get(input.auth.workspace_id, input.auth.agent_id) as
-      | { type: string; active: number }
-      | undefined;
+    const actor = liveActor(input.auth);
     if (
       !actor ||
-      actor.active !== 1 ||
-      (current.initiated_by_agent_id !== input.auth.agent_id && !REVIEWER_TYPES.has(actor.type))
+      (current.initiated_by_agent_id !== input.auth.agent_id && !ADMIN_TYPES.has(actor.type))
     ) {
       throw new QoopiaError("FORBIDDEN", "review authorization changed");
     }
@@ -693,7 +685,7 @@ export function reviewExtractionCandidate(input: {
       input.action !== "reject" &&
       (protectedAcceptance(input.auth, current.proposed_type, input.metadata ?? {}) ||
         protectedAcceptance(input.auth, finalType, input.metadata ?? {})) &&
-      !REVIEWER_TYPES.has(actor.type)
+      !ADMIN_TYPES.has(actor.type)
     ) {
       throw new QoopiaError("FORBIDDEN", "protected candidate acceptance requires owner or steward");
     }

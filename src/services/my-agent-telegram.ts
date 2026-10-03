@@ -3,7 +3,7 @@ import path from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {db} from '../db/connection.ts';
-import {durableWrite,readJsonBytes,hash} from '../utils/fs.ts';
+import {durableWrite,hash,readJson} from '../utils/fs.ts';
 import {agentDirectory,agentOwner,agentSettings,myAgentAction,telegramAgentState,unsavedTurn,type AgentSettings} from './my-agent.ts';
 import {assertNoSecrets} from '../utils/secret-guard.ts';
 import {canManagePolicy,pendingSave} from './memory-policy.ts';
@@ -11,6 +11,7 @@ import {decideSaveRequest,listSaveRequests} from './memory-save-requests.ts';
 import {QoopiaError} from '../utils/errors.ts';
 import {backgroundFailure} from '../utils/logger.ts';
 import {channel,ensureChannel,queueTelegram,acknowledgeTelegram,recoverTelegram,telegramChunks,TELEGRAM_WAITING_LOGIN,TELEGRAM_LOGIN_REQUIRED,TELEGRAM_LOGIN_ERRORS,resumeTelegramAfterLogin,scrubTelegramTransit} from './telegram-store.ts';
+import { readBoundedText } from '../utils/http-json.ts';
 
 type Pending={digest:string;code:string;expires:number;user?:{id:string;chat:string;name:string}};
 // Pairing survives process/page restarts. Tokens remain in the private token file.
@@ -26,18 +27,20 @@ const errors={get:(owner:string)=>channel(owner)?.error,set:(owner:string,error:
 const setupBusy=new Set<string>();
 let timer:ReturnType<typeof setInterval>|undefined;
 const tokenFile=(owner:string)=>path.join(agentDirectory(owner),'telegram.json');
-const token=(owner:string)=>(JSON.parse(readJsonBytes(tokenFile(owner)).toString()) as {token:string}).token;
+const token=(owner:string)=>(readJson(tokenFile(owner)) as {token:string}).token;
 /** Never include Telegram URLs or descriptions: they may contain the bot token. */
 class TelegramError extends QoopiaError {
   constructor(readonly status:number,readonly retryAfter:number=0){
     super('NOT_READY',status===409?'Telegram polling conflict: another host is using this bot.':status===401?'Telegram token was refused. Reconnect the bot.':status===429?'Telegram rate limit. Retrying after its cooldown.':'Telegram did not accept the request. Check the token, network and other bot connections.');
   }
 }
+/** ponytail: getUpdates returns at most 100 updates; raise only if Telegram answers grow. */
+const TELEGRAM_MAX_BYTES=4*1024*1024;
 export async function telegramCall(secret:string,method:string,body:unknown,signal?:AbortSignal):Promise<any> {
   try {
     const timeout=AbortSignal.timeout(method==='getUpdates'?30_000:15_000);
     const response=await fetch('https://api.telegram.org/bot'+secret+'/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:signal?AbortSignal.any([timeout,signal]):timeout,redirect:'error'});
-    const result=await response.json() as any;
+    const result=JSON.parse(await readBoundedText(response,TELEGRAM_MAX_BYTES)) as any;
     if(!response.ok||!result.ok)throw new TelegramError(Number(result.error_code)||response.status,Math.min(86400,Math.max(1,Number(result.parameters?.retry_after)||1))*1000);
     return result.result;
   }catch(error){if(error instanceof TelegramError)throw error;throw new TelegramError(0);}

@@ -32,23 +32,23 @@ function list(doc: any) {
 function context(extra: Record<string, unknown>) {
   const doc: any = { activeElement: null };
   const ctx: any = { document: doc, window: {}, CSS: { escape: String }, setConn() {}, $: () => null,
-    QI: { msg: String, relative: (n: number, u: string) => `${n} ${u}`, date: String, number: String, code: String, resolve: String },
+    QI: { msg: String, relative: (n: number, u: string) => `${n} ${u}`, count: (n: number, u: string) => `${n} ${u}`, date: String, number: String, code: String, resolve: String },
     coverageLine: () => "", drillAgentById() {}, route() {}, state: {}, ...extra };
   return { ctx, doc };
 }
 
-test("Overview agents: an unchanged refresh keeps focus; a reorder follows the focused agent", () => {
+test("Agents list: an unchanged refresh keeps focus; a reorder follows the focused agent", () => {
   const { ctx, doc } = context({});
   runInNewContext(utils + agents, ctx);
   const el = list(doc), old = "2026-01-01T00:00:00Z";
   const items = ["a", "b", "c"].map((id, i) => ({ id, name: id, type: "standard", last_seen: `2026-01-0${3 - i}T00:00:00Z` }));
-  ctx.paintAgentsBoard(el, items, true);
+  ctx.paintAgentsBoard(el, items);
   el.rows[2].focus();
   const writes = el.writes;
-  ctx.paintAgentsBoard(el, items, true);
+  ctx.paintAgentsBoard(el, items);
   expect(el.writes).toBe(writes);
   expect(el.contains(doc.activeElement)).toBe(true);
-  ctx.paintAgentsBoard(el, [{ ...items[2], last_seen: "2026-01-09T00:00:00Z" }, items[0], { ...items[1], last_seen: old }], true);
+  ctx.paintAgentsBoard(el, [{ ...items[2], last_seen: "2026-01-09T00:00:00Z" }, items[0], { ...items[1], last_seen: old }]);
   expect(el.contains(doc.activeElement)).toBe(true);
   expect(doc.activeElement.dataset.id).toBe("c");
 });

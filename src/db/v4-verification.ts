@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { Database } from "bun:sqlite";
 import { openReadonlyDatabase } from "./sqlite.ts";
@@ -7,6 +6,8 @@ import {
   computeLogicalDatabaseHash,
   readSchemaVersion,
 } from "./v4-migrations.ts";
+import { hash } from "../utils/fs.ts";
+import { components, hasPath, relationGraph } from "./relation-graph.ts";
 
 const ACCEPTED_LEGACY_SOURCE_SHA256 =
   "5f1fac7c121c6cb05eb563617f021cd9df33351fb5cddac5fc531aa7f2cae206";
@@ -84,7 +85,7 @@ interface V4VerificationReport {
 }
 
 function sha256File(filename: string): string {
-  return createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
+  return hash(fs.readFileSync(filename));
 }
 
 function parseValueFreeManifest(filename: string): Record<string, string> {
@@ -141,23 +142,6 @@ function parseReconciliationManifest(filename: string): ReconciliationRow[] {
   return rows;
 }
 
-function hasPath(
-  start: string,
-  goal: string,
-  adjacency: Map<string, Set<string>>,
-): boolean {
-  const pending = [start];
-  const seen = new Set<string>();
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    if (current === goal) return true;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    for (const next of adjacency.get(current) ?? []) pending.push(next);
-  }
-  return false;
-}
-
 function inspectRelationGraph(db: Database): {
   total: number;
   cycles: number;
@@ -185,39 +169,16 @@ function inspectRelationGraph(db: Database): {
   let cycles = 0;
   let multipleHeadComponents = 0;
   for (const workspaceRows of byWorkspace.values()) {
-    const adjacency = new Map<string, Set<string>>();
-    const undirected = new Map<string, Set<string>>();
+    const { adjacency, undirected, connect } = relationGraph();
     const targets = new Set<string>();
     for (const row of workspaceRows) {
-      const outgoing = adjacency.get(row.source_note_id) ?? new Set<string>();
-      outgoing.add(row.target_note_id);
-      adjacency.set(row.source_note_id, outgoing);
-      if (!adjacency.has(row.target_note_id)) {
-        adjacency.set(row.target_note_id, new Set());
-      }
-      const left = undirected.get(row.source_note_id) ?? new Set<string>();
-      left.add(row.target_note_id);
-      undirected.set(row.source_note_id, left);
-      const right = undirected.get(row.target_note_id) ?? new Set<string>();
-      right.add(row.source_note_id);
-      undirected.set(row.target_note_id, right);
+      connect(row.source_note_id, row.target_note_id);
       targets.add(row.target_note_id);
     }
     for (const row of workspaceRows) {
       if (hasPath(row.target_note_id, row.source_note_id, adjacency)) cycles += 1;
     }
-    const visited = new Set<string>();
-    for (const start of undirected.keys()) {
-      if (visited.has(start)) continue;
-      const component = new Set<string>();
-      const pending = [start];
-      while (pending.length > 0) {
-        const current = pending.pop()!;
-        if (component.has(current)) continue;
-        component.add(current);
-        visited.add(current);
-        for (const next of undirected.get(current) ?? []) pending.push(next);
-      }
+    for (const component of components(undirected)) {
       const heads = [...component].filter((noteId) => !targets.has(noteId));
       if (heads.length > 1) multipleHeadComponents += 1;
     }

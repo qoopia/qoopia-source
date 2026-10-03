@@ -50,7 +50,10 @@ test('managed wizard resumes email confirmation after restart, saves only privat
     expect((await act({action:'network-resume'})).code).toBe('ACCOUNT_CONFIRMATION_REQUIRED');
     service.stop();service=managedTransport(root,db,helper,network,origin);
     const token=new URL(mail.match(/https:\/\/[^\s]+/)![0]).hash.slice(1);
-    expect((await handler(new Request(origin+'/confirm',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify({token})}),'browser')).status).toBe(200);
+    // The enrollment is bound to this installation's network: a browser elsewhere cannot confirm it.
+    const send=(ip:string)=>handler(new Request(origin+'/confirm',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify({token})}),ip);
+    expect((await send('browser')).status).toBe(400);
+    expect((await send('synthetic')).status).toBe(200);
     const ready=await act({action:'network-resume'});expect(ready.code).toBe('NETWORK_ONLINE');
     const saved=readTransport(root)!;expect(saved.installation_id).toBe(initial.installation_id);expect(saved.identity).toEqual(initial.identity);
     expect(saved.flow).toBeUndefined();expect(saved.grant).toBeUndefined();expect(saved.device?.workspace_id).toBe(workspace);

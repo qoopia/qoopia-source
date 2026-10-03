@@ -28,6 +28,7 @@
  */
 import { db } from "../src/db/connection.ts";
 import { logger } from "../src/utils/logger.ts";
+import { nextNoteWriteTimestamp } from "../src/services/note-temporal.ts";
 
 export interface SweepRule {
   label: string;
@@ -83,6 +84,13 @@ export interface SweepReport {
   ids: string[];
 }
 
+interface Candidate {
+  id: string;
+  workspace_id: string;
+  updated_at_ms: number;
+  status: string | null;
+}
+
 export function sweep(rule: SweepRule, dryRun: boolean): SweepReport {
   // Common guards: not already archived, not soft-deleted.
   const where = `
@@ -101,12 +109,9 @@ export function sweep(rule: SweepRule, dryRun: boolean): SweepReport {
   // notes that originally had no status.
   const candidates = db
     .prepare(
-      `SELECT id, json_extract(metadata, '$.status') AS status FROM notes WHERE ${where}`,
+      `SELECT id, workspace_id, updated_at_ms, json_extract(metadata, '$.status') AS status FROM notes WHERE ${where}`,
     )
-    .all(...rule.candidateParams) as Array<{
-    id: string;
-    status: string | null;
-  }>;
+    .all(...rule.candidateParams) as Candidate[];
 
   if (dryRun || candidates.length === 0) {
     return {
@@ -129,7 +134,7 @@ export function sweep(rule: SweepRule, dryRun: boolean): SweepReport {
              '$.archived_at', ?,
              '$.archived_by', 'archive-stale.ts'
            ),
-           updated_at = ?
+           updated_at = ?, updated_at_ms = ?
      WHERE id = ?`,
   );
   // Variant B — note had no $.status at all: do NOT introduce a
@@ -142,18 +147,20 @@ export function sweep(rule: SweepRule, dryRun: boolean): SweepReport {
              '$.archived_at', ?,
              '$.archived_by', 'archive-stale.ts'
            ),
-           updated_at = ?
+           updated_at = ?, updated_at_ms = ?
      WHERE id = ?`,
   );
 
   const now = NOW.toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  const tx = db.transaction((cs: Array<{ id: string; status: string | null }>) => {
+  const tx = db.transaction((cs: Candidate[]) => {
     for (const c of cs) {
+      // A note write like any other: the shared allocator keeps updated_at_ms with updated_at.
+      const ts = nextNoteWriteTimestamp(c.workspace_id, c.updated_at_ms);
       if (c.status != null) {
-        updateStmtWithPrev.run(c.status, now, now, c.id);
+        updateStmtWithPrev.run(c.status, now, ts.iso, ts.ms, c.id);
       } else {
-        updateStmtNoPrev.run(now, now, c.id);
+        updateStmtNoPrev.run(now, ts.iso, ts.ms, c.id);
       }
       archivedIds.push(c.id);
     }

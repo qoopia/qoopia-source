@@ -14,6 +14,7 @@ import { ensureSafeDir, ensureSafeFile } from "../utils/fs-perms.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { detectSecretLabels } from "../utils/secret-guard.ts";
 import { recordConflict, v4Metrics } from "../utils/observability.ts";
+import { hash } from "../utils/fs.ts";
 
 const EXPORT_FORMAT = "qoopia-v4-export/1" as const;
 const EXPORT_SCHEMA_VERSION = 32 as const;
@@ -138,9 +139,6 @@ function cachePlan(plan: InternalPlan, now: Date): void {
   planCache.set(plan.plan_hash, plan);
 }
 
-function sha256(value: string | Buffer | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
 
 function canonicalValue(value: unknown): unknown {
   if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
@@ -173,7 +171,7 @@ function loadPolicy(): { document: PolicyDocument; raw: string; sha: string } {
   }
   const names = new Set(document.tables.map((table) => table.name));
   if (names.size !== document.tables.length) throw new QoopiaError("UNSUPPORTED_SCHEMA", "duplicate export table policy");
-  return { document, raw, sha: sha256(raw) };
+  return { document, raw, sha: hash(raw) };
 }
 
 function quoteIdentifier(value: string): string {
@@ -237,7 +235,7 @@ function signerIdentity(signer: ExportSigner): { privateKey: KeyObject; publicKe
   const der = publicKey.export({ format: "der", type: "spki" });
   const raw = Buffer.from(der).subarray(-32);
   if (raw.length !== 32) throw new QoopiaError("INVALID_INPUT", "invalid Ed25519 public key");
-  return { privateKey: key, publicKey, keyId: sha256(raw) };
+  return { privateKey: key, publicKey, keyId: hash(raw) };
 }
 
 function assertJsonMetadata(value: unknown, label: string, bodyKeys = false, depth = 0): void {
@@ -375,7 +373,7 @@ export function createExportPlan(input: {
       policies,
       estimated_bytes: estimatedBytes,
     };
-    const planHash = sha256(canonicalJson(planPreimage(base)));
+    const planHash = hash(canonicalJson(planPreimage(base)));
     const expiresAt = new Date((input.now ?? new Date()).getTime() + PLAN_TTL_MS).toISOString();
     const internal: InternalPlan = {
       ...base,
@@ -485,7 +483,7 @@ function readExistingBundle(input: {
   for (const table of manifest.tables) {
     if (!table.path) continue;
     const content = readRegularFile(path.join(input.outputDir, table.path), input.outputDir, TABLE_FILE_MAX_BYTES);
-    if (content.byteLength !== table.byte_count || sha256(content) !== table.sha256) {
+    if (content.byteLength !== table.byte_count || hash(content) !== table.sha256) {
       throw new QoopiaError("CHECKSUM_MISMATCH", `existing export table checksum mismatch: ${table.name}`);
     }
   }
@@ -499,7 +497,7 @@ function readExistingBundle(input: {
     format: EXPORT_FORMAT,
     schema_version: EXPORT_SCHEMA_VERSION,
     manifest_sha256: digest.toString("hex"),
-    archive_sha256: sha256(fs.readFileSync(archivePath)),
+    archive_sha256: hash(fs.readFileSync(archivePath)),
     signature_key_id: input.identity.keyId,
     created_at: manifest.created_at,
     output_dir: input.outputDir,
@@ -533,7 +531,7 @@ export function materializeExportBundle(input: {
   if (identity.keyId !== cached.signature_key_id || policy.sha !== cached.policy_sha256) {
     throw new QoopiaError("CONFLICT", "export policy or signing identity changed since plan");
   }
-  const artifactId = `v4-${sha256(`${input.workspace_id}\n${input.idempotency_key}`).slice(0, 32)}`;
+  const artifactId = `v4-${hash(`${input.workspace_id}\n${input.idempotency_key}`).slice(0, 32)}`;
   if (!SAFE_ARTIFACT.test(artifactId)) throw new QoopiaError("INVALID_INPUT", "invalid export artifact ID");
   ensureSafeDir(input.export_root);
   const outputDir = path.resolve(input.output_dir ?? path.join(input.export_root, artifactId));
@@ -580,7 +578,7 @@ export function materializeExportBundle(input: {
       const bytes = Buffer.byteLength(content);
       rederivedCounts[table.name] = rows.length;
       rederivedBytes += bytes;
-      tables.push({ ordinal: table.ordinal, name: table.name, policy: table.policy, projection_id: table.projection_id ?? "identity_v1", order_key: table.order_by, path: relative, sha256: sha256(content), row_count: rows.length, byte_count: bytes });
+      tables.push({ ordinal: table.ordinal, name: table.name, policy: table.policy, projection_id: table.projection_id ?? "identity_v1", order_key: table.order_by, path: relative, sha256: hash(content), row_count: rows.length, byte_count: bytes });
     }
     const rederivedBase = {
       workspace_id: input.workspace_id, actor_id: input.actor_id,
@@ -589,7 +587,7 @@ export function materializeExportBundle(input: {
       data_version: snapshotDataVersion(database), counts: rederivedCounts,
       policies: cached.policies, estimated_bytes: rederivedBytes,
     };
-    if (sha256(canonicalJson(planPreimage(rederivedBase))) !== input.plan_hash) {
+    if (hash(canonicalJson(planPreimage(rederivedBase))) !== input.plan_hash) {
       throw new QoopiaError("CONFLICT", "export plan no longer matches the read snapshot");
     }
     const manifest: ExportManifest = {
@@ -620,7 +618,7 @@ export function materializeExportBundle(input: {
       format: EXPORT_FORMAT,
       schema_version: EXPORT_SCHEMA_VERSION,
       manifest_sha256: manifestDigest.toString("hex"),
-      archive_sha256: sha256(fs.readFileSync(archivePath)),
+      archive_sha256: hash(fs.readFileSync(archivePath)),
       signature_key_id: identity.keyId,
       created_at: manifest.created_at,
       output_dir: outputDir,
@@ -646,7 +644,7 @@ function publicKeyId(key: KeyObject): string {
   const der = Buffer.from(key.export({ format: "der", type: "spki" }));
   const raw = der.subarray(-32);
   if (raw.length !== 32) throw new QoopiaError("UNTRUSTED_SIGNING_KEY", "trusted key is not Ed25519");
-  return sha256(raw);
+  return hash(raw);
 }
 
 function readRegularFile(filename: string, root: string, maxBytes: number): Buffer {
@@ -807,7 +805,7 @@ export function validateImportPlan(input: {
     const filename = path.resolve(bundle, table.path);
     if (!filename.startsWith(`${bundle}${path.sep}`)) throw new QoopiaError("CHECKSUM_MISMATCH", "bundle path traversal refused");
     const content = readRegularFile(filename, bundle, TABLE_FILE_MAX_BYTES).toString("utf8");
-    if (sha256(content) !== table.sha256 || Buffer.byteLength(content) !== table.byte_count) {
+    if (hash(content) !== table.sha256 || Buffer.byteLength(content) !== table.byte_count) {
       throw new QoopiaError("CHECKSUM_MISMATCH", `table checksum mismatch: ${table.name}`);
     }
     const lines = content ? content.split("\n").slice(0, -1) : [];
@@ -830,18 +828,18 @@ export function validateImportPlan(input: {
     rowsByTable.set(table.name, rows);
     for (const row of rows) {
       if ("workspace_id" in row && row.workspace_id !== input.target_workspace_id) {
-        conflicts.push({ table: table.name, row_id: rowId(table, row), code: "WORKSPACE_MISMATCH", source_hash: sha256(canonicalJson(row)), target_hash: null });
+        conflicts.push({ table: table.name, row_id: rowId(table, row), code: "WORKSPACE_MISMATCH", source_hash: hash(canonicalJson(row)), target_hash: null });
         continue;
       }
       if (table.name === "workspaces" && row.id !== input.target_workspace_id) {
-        conflicts.push({ table: table.name, row_id: rowId(table, row), code: "WORKSPACE_MISMATCH", source_hash: sha256(canonicalJson(row)), target_hash: null });
+        conflicts.push({ table: table.name, row_id: rowId(table, row), code: "WORKSPACE_MISMATCH", source_hash: hash(canonicalJson(row)), target_hash: null });
         continue;
       }
       const target = targetRow(database, table, row);
       if (!target) { inserts += 1; continue; }
       const projected = projectRow(declared, target, manifest.include_ephemeral);
-      const sourceHash = sha256(canonicalJson(row));
-      const targetHash = sha256(canonicalJson(projected));
+      const sourceHash = hash(canonicalJson(row));
+      const targetHash = hash(canonicalJson(projected));
       if (sourceHash === targetHash) noops += 1;
       else conflicts.push({
         table: table.name,

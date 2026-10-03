@@ -192,6 +192,10 @@ export function resolveAgentByName(workspace:string,name:string):MemoryPolicy {
   throw new QoopiaError('CONFLICT',`Several agents are named ${name}. Use the agent id: ${matches.map(m=>m.id).join(', ')}`);
 }
 
+/** Only a conversation active this recently is summarised. A finished one is already stored whole
+ * and searchable, so catching up its backlog would spend subscription calls on nothing. */
+export const LIVE_SESSION_MS=2*3600_000;
+
 type MemoryChannelState='working'|'manual'|'waiting'|'behind'|'sign_in'|'error';
 interface AgentMemoryStatus {mode:MemoryMode;revision:number;state:MemoryChannelState;last_capture_at:string|null;last_summary_at_ms:number|null;pending_sessions:number;pending_saves:number;error_code:string|null}
 
@@ -204,10 +208,10 @@ export function agentMemoryStatus(workspace:string,agent:string,database:Databas
   const backlog=database.query(`SELECT COUNT(*) AS pending,
       (SELECT json_extract(e.metadata,'$.continuity_error') FROM sessions e WHERE e.workspace_id=?1 AND e.agent_id=?2
         AND json_extract(e.metadata,'$.continuity_error') IS NOT NULL ORDER BY e.last_active DESC LIMIT 1) AS error
-    FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1
+    FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1 AND s.last_active>=?3
       AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
         FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0))`)
-    .get(workspace,agent) as {pending:number;error:string|null};
+    .get(workspace,agent,new Date(Date.now()-LIVE_SESSION_MS).toISOString()) as {pending:number;error:string|null};
   const signIn=['MODEL_NOT_CONNECTED','SIGN_IN_REQUIRED','MODEL_QUOTA','UNAUTHENTICATED'];
   const state:MemoryChannelState=policy.mode==='manual'?'manual':backlog.error?(signIn.includes(backlog.error)?'sign_in':'error')
     :!capture.at?'waiting':backlog.pending>1?'behind':'working';

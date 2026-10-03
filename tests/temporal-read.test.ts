@@ -60,6 +60,11 @@ function note(text: string, extra: Record<string, unknown> = {}) {
   });
 }
 
+/** A moment not behind the wall clock reads as "now" (F-339): wait until `ms` is in the past. */
+function waitPast(ms: number): void {
+  while (Date.now() <= ms) Bun.sleepSync(1);
+}
+
 function temporalRow(id: string) {
   return db
     .prepare(
@@ -532,6 +537,7 @@ describe("as-of history includes legacy-archived predecessors", () => {
     createNoteRelation({ auth: legacyAuth(), source_note_id: b.id, target_note_id: a.id, relation_type: "supersedes" });
     expect(getNote(WORKSPACE_ID, a.id, AGENT_ID, false).metadata.status).toBe("archived");
     const row = temporalRow(a.id);
+    waitPast(getNote(WORKSPACE_ID, b.id, AGENT_ID, false).updated_at_ms);
     enableFlag();
     // Also with the production relation flags: latest_only must not collapse T to today's head.
     for (const relations of [false, true]) {
@@ -568,11 +574,34 @@ describe("as-of history includes legacy-archived predecessors", () => {
     archive(skipped.id, { status: "archived", superseded_by: head.id });
     archive(manual.id, { status: "archived" });
     enableFlag();
-    // "Now" on the note-write clock: earlier test files can push its high-water past the wall clock (F-339).
-    const stamps = temporalRow(head.id);
-    const at = isoFromEpochMs(Math.max(Date.now(), stamps.created_at_ms!, stamps.valid_from_ms!) + 1000);
+    const at = isoFromEpochMs(Date.now() + 1000);
     for (const mode of [{ valid_as_of: at }, { known_as_of: at }]) {
       expect(await ids({ query: term, ...mode })).toEqual([head.id]);
+    }
+  });
+});
+
+describe("as of now on the note-write clock (F-339)", () => {
+  test("a burst stamped ahead of the wall clock is known and valid as of now", async () => {
+    const term = "vornelt";
+    const realNow = Date.now;
+    const frozen = realNow();
+    Date.now = () => frozen;
+    try {
+      enableFlag();
+      const burst = [1, 2, 3].map((n) => note(`${term} burst ${n}`).id);
+      // Three writes inside one wall-clock millisecond: the last leads the clock.
+      const first = temporalRow(burst[0]!).created_at_ms!;
+      expect(first).toBeGreaterThanOrEqual(frozen);
+      expect(temporalRow(burst[2]!).created_at_ms).toBe(first + 2);
+      const now = isoFromEpochMs(frozen);
+      for (const mode of [{ valid_as_of: now }, { known_as_of: now }]) {
+        expect((await ids({ query: term, ...mode })).sort()).toEqual([...burst].sort());
+      }
+      // A moment already in the past keeps its exact meaning.
+      expect(await ids({ query: term, known_as_of: isoFromEpochMs(frozen - 1) })).toEqual([]);
+    } finally {
+      Date.now = realNow;
     }
   });
 });

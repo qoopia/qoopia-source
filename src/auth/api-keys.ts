@@ -1,18 +1,12 @@
-import crypto from "node:crypto";
 import { db } from "../db/connection.ts";
 import { nowIso } from "../utils/errors.ts";
 import { isReadOnlyInstance } from "../utils/instance-role.ts";
+import { hash as sha256Hex, randomToken } from "../utils/fs.ts";
 
-export function sha256Hex(input: string): string {
-  return crypto.createHash("sha256").update(input).digest("hex");
-}
+export { sha256Hex };
 
-export function generateApiKey(): string {
-  // 32 random bytes, base64url, prefixed with "q_"
-  const raw = crypto.randomBytes(32);
-  const b64 = raw.toString("base64url");
-  return `q_${b64}`;
-}
+/** 32 random bytes, base64url, prefixed with "q_". */
+export const generateApiKey = (): string => `q_${randomToken()}`;
 
 export interface AgentRecord {
   id: string;

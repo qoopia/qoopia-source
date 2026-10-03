@@ -100,7 +100,8 @@ export function managedTransport(root:string,database:Database,binary:string,req
         c??={format:'qoopia-transport/1',owner_id:ownerId,workspace_id:owner.workspace_id,installation_id:randomUUID(),identity:await newIdentity(),tunnel_secret:randomBytes(32).toString('base64'),enabled:false};
         // Save the installation key before contacting any provider, so a lost response cannot change its identity.
         writeTransport(root,c);
-        const verifier=secret(),data=await post('/requests',{method:input.method,language:input.language,...(input.method==='email'?{email:binding.email}:{}),
+        // Bound to this installation's network: the browser on this computer finishes it, with no email after Google.
+        const verifier=secret(),data=await post('/requests',{method:input.method,language:input.language,bind:'network',...(input.method==='email'?{email:binding.email}:{}),
           challenge:createHash('sha256').update(verifier).digest('hex'),device_peer:peerId(c.identity)});
         const id=z.string().regex(/^[A-Za-z0-9_-]{43}$/).parse(data.id);
         c.flow={id,verifier,expires:Date.now()+600_000};delete c.grant;delete c.grant_expires;writeTransport(root,c);

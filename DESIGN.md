@@ -13,28 +13,28 @@ colors:
 typography:
   headline:
     fontFamily: "Manrope, sans-serif"
-    fontSize: "26px"
+    fontSize: "20px"
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: "-0.02em"
   title:
     fontFamily: "Manrope, sans-serif"
-    fontSize: "18px"
+    fontSize: "14px"
     fontWeight: 600
     lineHeight: 1.4
   body:
     fontFamily: "Manrope, sans-serif"
-    fontSize: "13px"
+    fontSize: "12px"
     fontWeight: 400
     lineHeight: 1.6
   navigation:
     fontFamily: "Manrope, sans-serif"
-    fontSize: "13px"
+    fontSize: "12px"
     fontWeight: 500
     lineHeight: 1.4
   label:
     fontFamily: "Manrope, sans-serif"
-    fontSize: "12px"
+    fontSize: "11px"
     fontWeight: 400
     lineHeight: 1.6
   metadata:
@@ -86,6 +86,7 @@ rounded:
   field: "7px"
   panel: "12px"
   floating: "16px"
+  pill: "999px"
   product-example: "14px"
 spacing:
   tight: "4px"
@@ -170,7 +171,7 @@ components:
 
 **Creative North Star: "Graphite Focus"**
 
-Graphite Focus joins warm dark neutrals, bundled Manrope, exact vector identity, flat records and fine separators. The accepted website and account extension uses this same visual system with larger type and more open spacing for reading and decisions. The approved dashboard desktop density remains approximately 75% of the former dashboard, implemented through actual type and spacing values rather than CSS zoom. Its compact type and controls remain dashboard-specific; mobile and coarse-pointer controls retain larger targets.
+Graphite Focus joins warm dark neutrals, bundled Manrope, exact vector identity, flat records and fine separators. The accepted website and account extension uses this same visual system with larger type and more open spacing for reading and decisions. The dashboard desktop density was raised again on 2026-10-03 at the owner's request: about 1.5 times more records fit one screen than in the 2026-09 shell, through actual type and spacing values rather than CSS zoom. Its compact type and controls remain dashboard-specific; mobile and coarse-pointer controls retain larger targets.
 
 The accepted web scope covers the dashboard in `src/public/dashboard.html` and `src/public/brand/dashboard.css`, `agent-chat.css`, `dashboard.js` and `agent-chat.js`; all pages in `marketing-site/`; shared account and consent styling in `src/public/brand/base.css` and `tokens.css`; and the dashboard PWA shell and offline page. Shared base styles and tokens now carry Graphite Focus and Manrope. Identity comes from the approved Graphite Focus 2.0.1 assets under `src/public/brand/graphite/`, copied unchanged from the owner's private Graphite design package (outside this repository). Product scope lives in `PRODUCT.md`; route composition and purpose remain in `.impeccable/briefs/dashboard.md` and `website.md`.
 
@@ -209,7 +210,7 @@ Warm graphite and ivory carry the accepted web surfaces; the palette has no chro
 
 **Web display and body font:** bundled Manrope, with sans-serif fallback. The lowercase wordmark is a supplied SVG, never typeset text. Technical identifiers, code and transcript content may use the existing `ui-monospace, monospace` stack.
 
-The unprefixed frontmatter type roles record the reused compact dashboard desktop hierarchy: headline, section title, body/navigation, labels and metadata. Page headings reduce to 24px at the compact shell breakpoint. Chat titles use 14px semibold; message text inherits the body size with 1.65 line height. Working prose is capped at 75 characters where the workflow layout permits. Counts use tabular numerals. Mobile form text is 16px. Mobile statistic captions use 11px type and wrap within their row.
+The unprefixed frontmatter type roles record the compact dashboard hierarchy: headline, section title, body/navigation, labels and metadata. 11px is the floor for any text, and for every label of a control. Chat titles use 14px semibold; message text inherits the body size with 1.65 line height. Working prose is capped at 75 characters where the workflow layout permits. Counts use tabular numerals. Mobile form text is 16px. Mobile statistic captions use 11px type and wrap within their row.
 
 The `website-*` roles describe the larger marketing hierarchy. Website reading paragraphs use 16px text, reducing to 15px below 700px, with a 68-character prose cap where the layout permits. The homepage display reduces to 42px with 1.14 line height below 700px. The `account-*` roles describe account and consent surfaces; account fields use 16px text. The offline reconnect page also loads bundled Manrope. These roles do not replace the compact dashboard hierarchy. Native chrome uses Dynamic Type and system typography; embedded web content retains Manrope.
 
@@ -217,11 +218,11 @@ The `website-*` roles describe the larger marketing hierarchy. Website reading p
 
 ## Layout
 
-The dashboard desktop uses a sticky sidebar (196px), a flexible main column, a thin top bar and a content container capped at 1600px. Main content padding is 24px 28px with 80px below for floating controls. Repeated records use full-width rows; Overview combines a four-column metric strip with two equal content columns and a 36px gap.
+The dashboard desktop uses a sticky sidebar (180px), a flexible main column, a thin top bar (32px) and a content container capped at 1600px. Main content padding is 12px 18px with 64px below for floating controls. Repeated records use full-width rows; Overview is a strip of four outlined tiles (Active agents, Connections at double width with its clients on one line, Bridges, Files), each opening its page, above one-line Live activity rows: time, the agent's name, what happened. Spacing tokens are shared with account pages and keep their values; the dashboard's compact intervals are set in its own stylesheet.
 
 At 1100px, metric spacing and column gaps tighten. At 900px, the sidebar becomes a sticky top shell with a collapsible single-column menu, the clock hides, content columns stack and content padding becomes 20px 18px. Workflow grids collapse at 760px; connection grids at 700px. At 600px, metrics use two columns and each agent's name, memory status and wrapping statistics occupy separate rows. Long names and content wrap instead of extending the canvas.
 
-Desktop navigation has a 34px minimum height; common action buttons have a 32px minimum. At 600px or with a coarse pointer, shared buttons and fields use 44px minimum targets and form text uses 16px. Language buttons explicitly become 44px square. Narrow navigation rows are also at least 44px high. Do not shrink mobile targets to achieve desktop density.
+Desktop navigation rows have a 26px minimum height and 14px icons; common action buttons have a 24px minimum. At 600px or with a coarse pointer, shared buttons and fields use 44px minimum targets and form text uses 16px. Language buttons explicitly become 44px square. Narrow navigation rows are also at least 44px high. Do not shrink mobile targets to achieve desktop density.
 
 The website uses a centered container capped at 1200px with the website gutter; reading surfaces cap at 860px. Two-column sections tighten at 1050px and stack at 700px, with the website mobile gutter. Website buttons and selects retain a 44px minimum height; at 600px or with a coarse pointer, language and navigation controls also use larger targets and fields use 16px text. Header navigation simplifies on narrow screens while preserving account, download and language access.
 
@@ -251,11 +252,19 @@ Website buttons use the `website-button-*` roles, a 44px minimum height and 180m
 
 ### Chips
 
-Metadata chips use quiet neutral fills and compact text. Note filters are outlined, rounded controls; selection adds an ivory border and text. Overview metadata remains plain text, without chip backgrounds. A filter is an action and must retain its keyboard and touch target behavior.
+Metadata chips use quiet neutral fills and compact text. Note filters are outlined, rounded controls; selection adds an ivory border and text. Overview tile counts are plain numerals; client and agent names there are chips. A filter is an action and must retain its keyboard and touch target behavior.
 
 ### Cards / Containers
 
-Panels use the frontmatter surface, padding and radius with a divider border. Nested panels reduce to a separator instead of accumulating boxes. Agent rows remain flat; status text sits beside the identity on desktop and beneath it on mobile.
+Panels use the frontmatter surface, padding and radius with a divider border. Nested panels reduce to a separator instead of accumulating boxes. Notes, sessions and entries are separated rows, not boxes.
+
+### Agent rows
+
+Agents uses one flat agent row, ordered owner, steward, then Claude, Claude Code, ChatGPT, Codex, Grok, Muse and Hermes agents, then the rest by activity: a 22px initial and the name with its role or runtime and last activity; the memory state in words; the Autosave and Shared context switches; and session, message and note counts in tabular numerals. Columns are labelled once in a header. The owner changes both settings in the row; the row never has to be opened for that, and a name opens the agent. A steward or owner reads the whole workspace, so its Shared context cell says so in words instead of offering a switch; the owner's row has no autosave either, sits on the surface fill and sets its name in bold. An agent's own page opens straight on Sessions, Notes, Search and Access. Saves waiting for the owner show as a count that opens them. In a container narrower than 640px the row wraps into two lines and each switch names itself; below 440px (a phone) the switches take a line of their own so the name stays whole.
+
+### Switches
+
+A switch is a native button with `role="switch"` and `aria-checked`, named by its column and the agent. The thumb's position carries the state; the ivory fill only reinforces it. It is 26 × 15px on desktop with a larger invisible hit area and 34 × 20px on coarse pointers. A change applies at once, returns on failure, announces the result in words, and keeps keyboard focus on the switch. Without the owner's authority the switch is disabled and says why. The track uses the pill radius.
 
 ### Inputs / Fields
 

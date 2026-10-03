@@ -15,7 +15,7 @@ const views = {
   agents: between("  async function renderAgentsPage() {", "  function drillAgentById(id) {"),
   conversations: between("  async function fillAcThreads(cached=false) {", "  async function renderAcThread() {"),
   files: between("  async function filesLoadList() {", "  function filesUpload(fileList) {"),
-  saves: between("  // The agent prepared these notes", "  function bindMemoryPanel(a) {"),
+  saves: between("  // The agent prepared these notes", "  // Only 403 means \"not the owner\"."),
 };
 
 function node(): any {
@@ -42,7 +42,7 @@ async function fail(view: keyof typeof views, error: Error) {
   runInNewContext(errors + views[view], ctx);
   if (view === "agents") await ctx.renderAgentsPage();
   if (view === "conversations") { $("#acChats"); await ctx.fillAcThreads(); }
-  if (view === "files") { $("#fFolder").value = "inbox"; $("#fList"); await ctx.filesLoadList(); }
+  if (view === "files") { ctx.filesPath = "inbox"; ctx.filesFolders = []; ctx.filesNew = []; $("#fList"); await ctx.filesLoadList(); }
   if (view === "saves") { $("#memorySaves"); await ctx.bindMemorySaves({ id: "a1" }); }
   const host = { agents: "#agentsWrap", conversations: "#acChats", files: "#fList", saves: "#memorySaves" }[view];
   const box = view === "saves" ? elements[host]!.lastElementChild : elements[host];

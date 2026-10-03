@@ -279,6 +279,9 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   // ADR-020 adds the steward's shared-context switch: a new admin-risk tool beside the frozen ones.
   if (projected.canonical_tools.find((t) => t.name === "agent_set_shared_context")?.risk !== "admin") throw new Error("ADR-020 agent_set_shared_context missing or wrong risk");
   memoryPolicyTools.push("agent_set_shared_context");
+  // 5.0.16: agents save files into the owner's Files. A new write-low tool beside the frozen ones.
+  if (projected.canonical_tools.find((t) => t.name === "file_put")?.risk !== "write-low") throw new Error("file_put missing or wrong risk");
+  memoryPolicyTools.push("file_put");
   const prepare = projected.canonical_tools.find((t) => t.name === "connection_prepare");
 
   if (!prepare || prepare.risk !== "read" || !prepare.description.includes("creates no agent, credential or grant")) throw new Error("Connection preparation must remain read-only");

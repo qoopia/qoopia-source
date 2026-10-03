@@ -9,6 +9,7 @@
  * невалидированные строки вытесняли бы актуальные из пула кандидатов.
  */
 import { QoopiaError } from "../../utils/errors.ts";
+import { noteWriteHighWaterMs } from "../note-temporal.ts";
 import {
   bitemporalEnabled,
   temporalFeatureDisabled,
@@ -31,6 +32,7 @@ export interface TemporalFilter {
 }
 
 export interface TemporalRequest {
+  workspace_id?: string;
   valid_as_of?: string | null;
   known_as_of?: string | null;
   include_history?: boolean;
@@ -44,6 +46,10 @@ export interface TemporalRequest {
  * Флаг включён: `include_history=true` снимает темпоральные предикаты и
  * несовместим с `valid_as_of`/`known_as_of`; отсутствие обоих `as_of` даёт
  * режим current belief.
+ *
+ * Момент не раньше часов означает «сейчас»: метки записи нот уходят вперёд
+ * часов при пачке быстрее 1/мс (F-339), но всё уже записанное известно сейчас,
+ * поэтому такой момент поднимается до high-water пространства.
  */
 export function resolveTemporalFilter(p: TemporalRequest): TemporalFilter | null {
   const hasValid = p.valid_as_of !== undefined && p.valid_as_of !== null;
@@ -64,10 +70,15 @@ export function resolveTemporalFilter(p: TemporalRequest): TemporalFilter | null
   if (!hasValid && !hasKnown) {
     return { current_only: true, valid_as_of_ms: null, known_as_of_ms: null };
   }
+  const now = Date.now();
+  const asOf = (iso: string | null | undefined, field: string) => {
+    const ms = toEpochMs(iso, field);
+    return ms >= now && p.workspace_id ? Math.max(ms, noteWriteHighWaterMs(p.workspace_id, now)) : ms;
+  };
   return {
     current_only: false,
-    valid_as_of_ms: hasValid ? toEpochMs(p.valid_as_of, "valid_as_of") : null,
-    known_as_of_ms: hasKnown ? toEpochMs(p.known_as_of, "known_as_of") : null,
+    valid_as_of_ms: hasValid ? asOf(p.valid_as_of, "valid_as_of") : null,
+    known_as_of_ms: hasKnown ? asOf(p.known_as_of, "known_as_of") : null,
   };
 }
 

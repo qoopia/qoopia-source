@@ -1,10 +1,10 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
 import type { AuthContext } from "../auth/middleware.ts";
 import { db } from "../db/connection.ts";
-import { QoopiaError } from "../utils/errors.ts";
+import { QoopiaError, throwCoded } from "../utils/errors.ts";
 import { getNote } from "../services/notes.ts";
 import {
   NOTE_RELATION_TYPES,
@@ -35,22 +35,20 @@ import {
   materializeExportBundle,
   validateImportPlan,
 } from "../services/export.ts";
-import { seesWholeWorkspace } from "../auth/principal.ts";
+import { seesWholeWorkspace, ADMIN_TYPES, liveActor } from "../auth/principal.ts";
+import { hash } from "../utils/fs.ts";
 
 const CURSOR_KEY = randomBytes(32);
-const REVIEWER_TYPES = new Set(["owner", "steward"]);
 
 function requireExportAdmin(auth: AuthContext): void {
-  if (!REVIEWER_TYPES.has(auth.type) || auth.tool_profile !== "full") {
+  if (!ADMIN_TYPES.has(auth.type) || auth.tool_profile !== "full") {
     throw new QoopiaError("FORBIDDEN", "export/import requires owner or steward with full profile");
   }
   if (auth.source === "oauth" && !auth.granted_scope?.includes("mcp:admin")) {
     throw new QoopiaError("FORBIDDEN", "export/import requires mcp:admin OAuth scope");
   }
-  const current = db.query(
-    `SELECT type, tool_profile, active FROM agents WHERE id = ? AND workspace_id = ?`,
-  ).get(auth.agent_id, auth.workspace_id) as { type: string; tool_profile: string | null; active: number } | null;
-  if (!current || current.active !== 1 || !REVIEWER_TYPES.has(current.type) || current.tool_profile !== "full") {
+  const current = liveActor(auth);
+  if (!current || !ADMIN_TYPES.has(current.type) || current.tool_profile !== "full") {
     throw new QoopiaError("FORBIDDEN", "export/import authorization changed before transaction");
   }
 }
@@ -90,13 +88,11 @@ type CursorPayload = {
 };
 
 function invalidCursor(): never {
-  const error = new QoopiaError("INVALID_INPUT", "invalid or out-of-scope cursor");
-  (error as { code: string }).code = "INVALID_ARGUMENT";
-  throw error;
+  return throwCoded("INVALID_INPUT", "INVALID_ARGUMENT", "invalid or out-of-scope cursor");
 }
 
 function scopeHash(scope: unknown): string {
-  return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
+  return hash(JSON.stringify(scope));
 }
 
 function encodeCursor(
@@ -541,7 +537,7 @@ const recallTools: ToolDef[] = [
       idempotency_key: z.string().min(8).max(200),
     },
     handler: (args, auth) => {
-      if ((args.feedback === "pin" || args.feedback === "unpin") && !REVIEWER_TYPES.has(auth.type)) {
+      if ((args.feedback === "pin" || args.feedback === "unpin") && !ADMIN_TYPES.has(auth.type)) {
         throw new QoopiaError("FORBIDDEN", "pin and unpin require owner or steward capability");
       }
       return recordRecallFeedback({

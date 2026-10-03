@@ -10,6 +10,7 @@ import { backfill036 } from "./migration-036-backfill.ts";
 import { backfill041 } from "./migration-041-backfill.ts";
 import { readSchemaVersion } from "../utils/health-metadata.ts";
 import { listMigrationFiles } from "./v4-migrations.ts";
+import { tableExists } from "./introspect.ts";
 
 const MIGRATIONS_DIR = assetPath("migrations");
 
@@ -26,12 +27,7 @@ const MIGRATIONS_DIR = assetPath("migrations");
  * it without weakening the DB-level invariant.
  */
 export function getPendingMigrations(): string[] {
-  const schemaVersionsExists = db
-    .prepare(
-      `SELECT 1 FROM sqlite_master
-        WHERE type = 'table' AND name = 'schema_versions'`,
-    )
-    .get() != null;
+  const schemaVersionsExists = tableExists(db, "schema_versions");
 
   const pending: string[] = [];
   // F-266: listMigrationFiles refuses two files with one version; applied state is keyed by it.

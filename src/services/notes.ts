@@ -11,7 +11,7 @@ import { bitemporalEnabled, temporalFeatureDisabled, timeBoundSql } from "../uti
 import {
   assertTemporalWriteAllowed,
   closePredecessor,
-  nextNoteWriteMs,
+  nextNoteWriteTimestamp,
   resolveTemporalWrite,
   temporalProvenanceInferred,
   type TemporalWriteFields,
@@ -209,20 +209,6 @@ function toNote(r: NoteRow, inferred: number | null = null): NoteView {
   return bitemporalEnabled() ? { ...base, ...temporalFields(r, inferred) } : base;
 }
 
-/**
- * Allocate a strictly increasing note-write timestamp from the database-backed
- * high-water mark. The caller must invoke this inside the same transaction as
- * the note mutation. That keeps same-millisecond writes deterministically
- * ordered and prevents a wall-clock rollback from moving a row backwards.
- */
-export function nextNoteWriteTimestamp(previousMs = 0): {
-  iso: string;
-  ms: number;
-} {
-  const ms = nextNoteWriteMs(previousMs);
-  return { iso: new Date(ms).toISOString(), ms };
-}
-
 export interface NoteCreateResult {
   created: boolean;
   id: string;
@@ -354,7 +340,7 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
     }
     // The owner may have switched the agent to manual since the check above.
     assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id, origin);
-    const timestamp = nextNoteWriteTimestamp();
+    const timestamp = nextNoteWriteTimestamp(input.workspace_id);
     // §3.1: created_at_ms / valid_from[_ms] заполняются всегда — это
     // структурные колонки, а не поведение. Они не сериализуются при
     // выключенном флаге, поэтому Flag-OFF вывод не меняется, но инвариант
@@ -798,7 +784,7 @@ export function updateNote(input: NoteUpdateInput) {
   // H6 fix: wrap update + logActivity atomically
   const result = db.transaction(() => {
     assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id, origin);
-    const timestamp = nextNoteWriteTimestamp(existing.updated_at_ms);
+    const timestamp = nextNoteWriteTimestamp(input.workspace_id, existing.updated_at_ms);
     const writeFields = [...fields, `updated_at = ?`, `updated_at_ms = ?`];
     const writeValues = [...values, timestamp.iso, timestamp.ms];
     db.prepare(
@@ -884,7 +870,7 @@ export function deleteNote(
   // H6 fix: wrap soft-delete + logActivity atomically
   // M12 fix: remove from FTS index on soft-delete to prevent monotonic index growth
   const result = db.transaction(() => {
-    const timestamp = nextNoteWriteTimestamp(existing.updated_at_ms);
+    const timestamp = nextNoteWriteTimestamp(workspace_id, existing.updated_at_ms);
     db.prepare(
       `UPDATE notes
           SET deleted_at = ?, updated_at = ?, updated_at_ms = ?

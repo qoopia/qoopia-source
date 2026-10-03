@@ -30,24 +30,48 @@ const CLOCK_SKEW_WARN_MS = 60_000;
 let lastSkewWarnMs = 0;
 
 /**
- * Следующий строго возрастающий epoch-ms записи ноты — общий для notes.ts и
- * note_supersede: max(часы, каждый floor + 1, глобальный high-water + 1).
- * (note-relations.ts намеренно берёт high-water своего workspace.) Монотонность намеренная: откат часов не сдвигает строку
- * назад и не меняет known_as_of задним числом. Но одна строка из будущего
- * (откат часов, импорт со сбитыми часами) уводит вперёд все новые ноты, поэтому
- * опережение больше CLOCK_SKEW_WARN_MS пишется в лог, не чаще раза в минуту.
+ * Самая поздняя метка записи ноты в пространстве (F-339) — с точностью, нужной
+ * только для `max(часы, …)`: пока глобальный максимум (по индексу) позади часов,
+ * он и отвечает — значение ниже `now` ни на что не влияет. Только метка не
+ * позади часов (пачка записей быстрее 1/мс, строка из будущего) требует
+ * подсчёта по самому пространству, чтобы чужая строка его не сдвигала.
+ * ponytail: подсчёт по пространству — скан его строк (~3 мс на 50k);
+ * индекс (workspace_id, updated_at_ms) — миграцией, если станет горячим путём.
  */
-export function nextNoteWriteMs(...floors: number[]): number {
-  const row = db
+export function noteWriteHighWaterMs(workspaceId: string, now = Date.now()): number {
+  const global = db
     .prepare(`SELECT COALESCE(MAX(updated_at_ms), 0) AS max_ms FROM notes`)
     .get() as { max_ms: number };
+  if (global.max_ms < now) return global.max_ms;
+  const own = db
+    .prepare(`SELECT COALESCE(MAX(updated_at_ms), 0) AS max_ms FROM notes WHERE workspace_id = ?`)
+    .get(workspaceId) as { max_ms: number };
+  return own.max_ms;
+}
+
+/**
+ * Следующий строго возрастающий epoch-ms записи ноты в пространстве — общий
+ * для notes, supersede, связей и retention: max(часы, каждый floor + 1,
+ * high-water пространства + 1). Монотонность намеренная: откат часов не
+ * сдвигает строку назад и не меняет known_as_of задним числом. Но одна строка
+ * из будущего (откат часов, импорт со сбитыми часами) уводит вперёд все новые
+ * ноты своего пространства, поэтому опережение больше CLOCK_SKEW_WARN_MS
+ * пишется в лог, не чаще раза в минуту.
+ */
+export function nextNoteWriteMs(workspaceId: string, ...floors: number[]): number {
   const now = Date.now();
-  const ms = Math.max(now, row.max_ms + 1, ...floors.map((floor) => floor + 1));
+  const ms = Math.max(now, noteWriteHighWaterMs(workspaceId, now) + 1, ...floors.map((floor) => floor + 1));
   if (ms - now > CLOCK_SKEW_WARN_MS && Math.abs(now - lastSkewWarnMs) > 60_000) {
     lastSkewWarnMs = now;
     logger.warn("note clock skew", { lead_ms: ms - now });
   }
   return ms;
+}
+
+/** `nextNoteWriteMs` вместе с ISO той же миллисекунды. Вызывать внутри транзакции записи. */
+export function nextNoteWriteTimestamp(workspaceId: string, previousMs = 0): { iso: string; ms: number } {
+  const ms = nextNoteWriteMs(workspaceId, previousMs);
+  return { iso: new Date(ms).toISOString(), ms };
 }
 
 export interface TemporalWriteFields {
@@ -439,9 +463,9 @@ export function supersedeExistingNote(input: {
         `note ${successor.id} already supersedes ${successorLink.supersedes_id}`,
       );
     }
-    // Тот же инвариант строго возрастающего updated_at_ms, что и в
-    // notes.nextNoteWriteTimestamp: high-water mark из БД, а не только часы.
-    const closeMs = nextNoteWriteMs(successor.updated_at_ms, predecessor.updated_at_ms);
+    // Тот же инвариант строго возрастающего updated_at_ms, что и у любой
+    // записи ноты: high-water mark пространства из БД, а не только часы.
+    const closeMs = nextNoteWriteMs(input.workspace_id, successor.updated_at_ms, predecessor.updated_at_ms);
     // Как в resolveTemporalWrite: замена не вступает в силу в будущем (§6.1).
     if (successorValidFromMs > closeMs) {
       throw new QoopiaError("INVALID_INPUT", "successor valid_from must not be in the future");

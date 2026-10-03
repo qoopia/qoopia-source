@@ -14,7 +14,7 @@ const agents = between("  // ================= AGENTS PAGE =================", "
 function board() {
   const el: any = { classList: { remove() {} }, contains: () => false, querySelectorAll: () => [], querySelector: () => null };
   const ctx: any = { document: {}, window: {}, CSS: { escape: String }, setConn() {}, $: () => null, coverageLine: () => "", drillAgentById() {},
-    QI: { msg: (s: string, p?: Record<string, unknown>) => s.replace(/\{(\w+)\}/g, (_, k) => String(p?.[k])), relative: (n: number, u: string) => `${n} ${u}`, date: String, number: String, code: String, resolve: String } };
+    QI: { msg: (s: string, p?: Record<string, unknown>) => s.replace(/\{(\w+)\}/g, (_, k) => String(p?.[k])), relative: (n: number, u: string) => `${n} ${u}`, count: (n: number, u: string) => `${n} ${u}`, date: String, number: String, code: String, resolve: String } };
   runInNewContext(utils + agents, ctx);
   return { ctx, el };
 }
@@ -30,15 +30,37 @@ test("an agent active 30 s ago says so in its visible text", () => {
   expect(idle).not.toContain("active recently");
 });
 
-// F-325: Overview previews the 8 most recent agents; the Agents page lists all of them.
-test("Overview shows the 8 most recent agents and links to the rest; the Agents page shows all", () => {
-  const items = Array.from({ length: 41 }, (_, i) => ({ id: "w" + i, name: "worker-" + i, type: "standard", last_seen: ago(100 + i) }));
+test("an agent row carries both owner switches; a steward reads the whole workspace instead", () => {
+  const { ctx } = board();
+  const agent = (extra: Record<string, unknown>) => ({ id: "a", name: "alpha", type: "standard", last_seen: ago(30), memory: { mode: "auto", state: "working", revision: 0 }, ...extra });
+  const owned = ctx.agentCard(agent({ shared_context: false, can_switch_shared_context: true, can_manage_memory: true }));
+  expect(owned).toContain('data-switch="autosave"');
+  expect(owned).toMatch(/data-switch="autosave"[^>]*aria-checked="true"/);
+  expect(owned).toMatch(/data-switch="shared"[^>]*aria-checked="false"/);
+  expect(owned).not.toContain(" disabled");
+  // Without the owner's authority the switches stay visible but say why they cannot change.
+  expect(ctx.agentCard(agent({ shared_context: true, can_switch_shared_context: false, can_manage_memory: false }))).toContain("disabled title=");
+  const steward = ctx.agentCard(agent({ type: "steward", shared_context: null, can_manage_memory: true }));
+  expect(steward).not.toContain('data-switch="shared"');
+  expect(steward).toContain('data-switch="autosave"');
+  expect(visibleText(steward)).toContain("Whole workspace");
+  // The owner reads the whole workspace and needs no autosave: no switch, no memory state, a marked row.
+  const owner = ctx.agentCard(agent({ type: "owner", shared_context: null, can_manage_memory: true }));
+  expect(owner).not.toContain("data-switch");
+  expect(owner).toContain("agent-row-owner");
+  expect(visibleText(owner)).toContain("Whole workspace");
+  // Saves waiting for the owner open the agent directly.
+  expect(ctx.agentCard(agent({ memory: { mode: "manual", state: "manual", revision: 1, pending_saves: 2 } }))).toContain('data-open="a"');
+});
+
+test("the owner leads the list, then the steward, then each runtime in order, then the rest by activity", () => {
+  const a = (id: string, extra: Record<string, unknown>, seen = 100) => ({ id, name: id, type: "standard", last_seen: ago(seen), ...extra });
+  const items = [a("other-old", {}, 900), a("hermes", { runtime: "hermes" }), a("codex", { runtime: "codex" }), a("other-new", {}, 10),
+    a("claude", { runtime: "claude" }), a("steward", { type: "steward" }), a("grok", { runtime: "grok" }), a("owner", { type: "owner" }, 5000),
+    a("muse", { runtime: "muse" }), a("chatgpt", { runtime: "chatgpt" }), a("claude-code", { runtime: "claude_code" }), a("tailer", { type: "ingest-daemon" }, 1)];
   const { ctx, el } = board();
-  ctx.paintAgentsBoard(el, items, true);
+  ctx.paintAgentsBoard(el, items);
   const cards = [...el.html.matchAll(/class="agent-card" data-id="([^"]+)"/g)].map((m) => m[1]);
-  expect(cards).toEqual(items.slice(0, 8).map((a) => a.id));
-  expect(el.html).toContain('href="#agents"');
-  expect(visibleText(el.html)).toContain("+33 more agents");
-  ctx.paintAgentsBoard(el, items, false);
-  expect([...el.html.matchAll(/class="agent-card"/g)].length).toBe(41);
+  expect(cards).toEqual(["owner", "steward", "claude", "claude-code", "chatgpt", "codex", "grok", "muse", "hermes", "other-new", "other-old", "tailer"]);
+  expect(visibleText(el.html)).toContain("System & integration agents");
 });

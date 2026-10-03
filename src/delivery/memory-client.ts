@@ -6,7 +6,7 @@ import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import {hash,privateDirectory,durableWrite,readJsonBytes,safePath,hasNulOrNewline} from '../utils/fs.ts';
+import {hash,privateDirectory,durableWrite,readJsonBytes,safePath,hasNulOrNewline,readJson} from '../utils/fs.ts';
 import {redactSensitive} from '../utils/secret-guard.ts';
 import {CONTINUITY_MAX_BODY_BYTES,readBoundedText} from '../utils/http-json.ts';
 // Leaves room for the request envelope (project path, ids, timestamps) under the server limit.
@@ -37,7 +37,7 @@ export function installMemoryClient(input:unknown,root:string,binary:string,home
   const folder=privateDirectory(path.join(root,'memory-clients',connection.runtime)),file=path.join(folder,'connection.json');
   let previous:LocalConnection|undefined;
   if(fs.existsSync(file)){
-    previous=localConnectionSchema.parse(JSON.parse(readJsonBytes(file).toString()));
+    previous=localConnectionSchema.parse(readJson(file));
     // The same server may reissue the agent after a revoke or rotate its key: that replaces this client's own binding.
     if(previous.url!==connection.url)throw new Error('A different memory connection is already installed; preserve it and choose an explicit separate root');
   }
@@ -107,7 +107,7 @@ function applyMcp(plan:ReturnType<typeof planMcp>,backups:string) {
 export function removeMemoryClient(root:string,runtime:Connection['runtime'],commit=false,home?:string) {
   const folder=path.join(root,'memory-clients',runtime),file=path.join(folder,'connection.json');
   if(!fs.existsSync(file))return {state:'absent',runtime};
-  const connection=localConnectionSchema.parse(JSON.parse(readJsonBytes(file).toString()));
+  const connection=localConnectionSchema.parse(readJson(file));
   if(connection.runtime!==runtime)throw new Error('Memory connection record belongs to another runtime');
   const native=safePath(connection.native_root),settings=path.join(native,runtime==='codex'?'hooks.json':'settings.json');
   const original=fs.existsSync(settings)?readJsonBytes(settings):null,config=original?JSON.parse(original.toString()):{};
@@ -262,7 +262,7 @@ function installedKitRevision(nativeRoot:string):number|null{
 }
 /** Invoked by vendor lifecycle hooks; no model is launched in the agent's turn. */
 export async function runMemoryHook(file:string,input:unknown) {
-  const connection=localConnectionSchema.parse(JSON.parse(readJsonBytes(file).toString())),hook=input as Record<string,any>;
+  const connection=localConnectionSchema.parse(readJson(file)),hook=input as Record<string,any>;
   if(!hook||typeof hook.session_id!=='string'||typeof hook.cwd!=='string'||typeof hook.transcript_path!=='string')return;
   if(hook.session_id.length>160)return;
   const folder=privateDirectory(path.join(path.dirname(file),'cursors')),stateFile=path.join(folder,hash(hook.transcript_path)+'.json');
@@ -293,7 +293,7 @@ export async function runMemoryHook(file:string,input:unknown) {
     :'The local Qoopia protocol is not installed at '+JSON.stringify(protocolFile)+'. Before Qoopia work, read it with the qoopia_protocol tool of this connection; reconnecting this client in Qoopia reinstalls the local copy.')
     +refreshNotice+' Compare the installed kit revision with qoopia_capabilities protocol.revision; read qoopia_protocol when the server is newer. Use only this selected connection; document presence does not prove model or memory access. Current user instructions take precedence.\n';
   const session=connection.runtime+':'+hook.session_id;
-  let state:ClientState=fs.existsSync(stateFile)?JSON.parse(readJsonBytes(stateFile).toString()):
+  let state:ClientState=fs.existsSync(stateFile)?readJson(stateFile):
     {file:hook.transcript_path,session,project:hook.cwd,cursor:0,part:0};
   if(state.file!==hook.transcript_path||state.session!==session||!Number.isSafeInteger(state.cursor)||state.cursor<0||!Number.isSafeInteger(state.part)||state.part<0)throw new Error('Invalid transcript cursor');
   // Hooks can overlap. A bounded OS-process lock prevents an older delivery
@@ -308,7 +308,7 @@ export async function runMemoryHook(file:string,input:unknown) {
       const files=fs.readdirSync(folder).filter(f=>f.endsWith('.json')&&path.join(folder,f)!==stateFile)
         .map(f=>({file:path.join(folder,f),mtime:fs.statSync(path.join(folder,f)).mtimeMs})).sort((a,b)=>b.mtime-a.mtime);
       // An unreadable cursor is skipped: it must not stop capture for every later session.
-      const read=(f:string)=>{try{return JSON.parse(readJsonBytes(f).toString()) as ClientState;}catch{return undefined;}};
+      const read=(f:string)=>{try{return readJson(f) as ClientState;}catch{return undefined;}};
       const pending=(s:ClientState)=>{try{const {st}=readSource(s.file,connection);return s.part>0||st.size>s.cursor||!!s.inode&&s.inode!==st.dev+':'+st.ino&&st.size>0;}catch{return false;}};
       // ponytail: reads every cursor in the profile on each SessionStart; prune old cursors if a profile grows to thousands.
       // Catch-up follows unsent bytes, not recency, so a tail that failed to send stays in line however many

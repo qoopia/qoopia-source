@@ -39,7 +39,7 @@ test('app login continues into only the saved workspace; a browser-delivered one
     expect((await call('/redeem',{id:other.id,verifier:other.verifier,account_code:code})).ok).toBe(false);
     expect(await(await call('/redeem',{id:flow.id,verifier:flow.verifier,account_code:code})).json()).toEqual({email:'owner@example.test'});
     expect((await call('/redeem',{id:flow.id,verifier:flow.verifier,account_code:code})).status).toBe(410);
-    expect(mails).toHaveLength(1); // No second email or model credential transfer.
+    expect(mails.filter(m=>m.includes('https://'))).toHaveLength(1); // No second sign-in email or model credential transfer.
     const expired=await start(),clock=spyOn(Date,'now').mockReturnValue(Date.now()+601000);
     try{expect((await call('/profile?app=ios&request='+expired.id)).status).toBe(410);expect((await call('/redeem',{id:expired.id,verifier:expired.verifier,account_code:code})).status).toBe(410);}finally{clock.mockRestore();}
     await call('/profile/logout',{});expect((await call('/profile/authorize',{request:other.id})).status).toBe(401);

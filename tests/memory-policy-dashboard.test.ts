@@ -46,3 +46,9 @@ test('only the owner switches the mode; forged, stale and malformed requests cha
   expect(await (await write(ownerKey,{mode:'manual'})).json()).toMatchObject({mode:'manual',revision:1});
   expect((await fetch(`${base}/api/dashboard/agents/${target}/memory-policy`,{headers:{authorization:`Bearer ${ownerKey}`}})).status).toBe(404);
 });
+
+test('the agents list tells the dashboard whether this viewer may switch autosave',async()=>{
+  const item=async(key:string)=>((await (await fetch(`${base}/api/dashboard/agents`,{headers:{authorization:`Bearer ${key}`}})).json()) as any).items.find((a:any)=>a.id===target);
+  expect((await item(ownerKey)).can_manage_memory).toBe(true);
+  expect((await item(stewardKey)).can_manage_memory).toBe(false);
+});

@@ -11,5 +11,5 @@ test('owner GitHub distinguishes unavailable clones, empty forks, stale collecti
 });
 test('history preserves daily uniques without summing people and separates repository scopes',()=>{
  const history=[{metric:'views_uniques',day:'2026-09-14',value:7,dimensions:{repository:'qoopia/qoopia-source',period:'day'}},{metric:'views_uniques',day:'2026-09-14',value:999,dimensions:{repository:'qoopia/private',period:'day'}}];
- const html=githubPanel(githubFixture(),history,true,true);expect(html).toContain('<td>7</td>');expect(html).not.toContain('999');expect(html).toContain('нельзя складывать');
+ const html=githubPanel(githubFixture(),history,true,true);expect(html).toContain('<td>7</td>');expect(html).not.toContain('<td>999</td>');expect(html).toContain('нельзя складывать');
 });

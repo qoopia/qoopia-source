@@ -65,6 +65,16 @@ export function readRequestBody(req: IncomingMessage, max: number, deadlineMs?: 
   });
 }
 
+/** A body that is a JSON object; null for invalid JSON, an array or any other value. Each caller keeps its own refusal. */
+export function parseJsonObject(body: Buffer): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(body.toString("utf8"));
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function json(res: ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {

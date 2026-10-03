@@ -30,6 +30,8 @@ import {
   openWritableDatabase,
   SQLITE_BUSY_TIMEOUT_MS,
 } from "../db/sqlite.ts";
+import { hash } from "../utils/fs.ts";
+import { hasColumn } from "../db/introspect.ts";
 
 // Q1 decision — per-type tie-break (plan note Item A, Leo R1 OK on Q-P2-1).
 export const SOT_RULES: Record<string, "M" | "C"> = {
@@ -297,19 +299,8 @@ function safeObjectKeys(s: string | null): string[] {
  * Detect whether a DB has the updated_at_ms column (post-017) or not
  * (pre-017, e.g. Mac mini at v13 or Corsair before deploy).
  */
-function hasUpdatedAtMs(db: Database): boolean {
-  const cols = db
-    .query("PRAGMA table_info(notes)")
-    .all() as Array<{ name: string }>;
-  return cols.some((c) => c.name === "updated_at_ms");
-}
-
-function hasOriginHost(db: Database): boolean {
-  const cols = db
-    .query("PRAGMA table_info(activity)")
-    .all() as Array<{ name: string }>;
-  return cols.some((c) => c.name === "origin_host");
-}
+const hasUpdatedAtMs = (db: Database) => hasColumn(db, "notes", "updated_at_ms");
+const hasOriginHost = (db: Database) => hasColumn(db, "activity", "origin_host");
 
 function readNotes(db: Database): NoteRow[] {
   const cols = [
@@ -715,7 +706,7 @@ export function writeReport(report: string, outPath: string): void {
  */
 export function reportBodyHash(report: string): string {
   const body = report.replace(/^# Shadow sync dry-run — .*\n/, "# Shadow sync dry-run\n");
-  return createHash("sha256").update(body).digest("hex");
+  return hash(body);
 }
 
 // ============================================================================
@@ -1072,7 +1063,7 @@ export function planFingerprint(plan: SyncPlan): string {
   const stable = JSON.parse(
     JSON.stringify({ notes: plan.notes, activity: plan.activity }),
   );
-  return createHash("sha256").update(canonicalJson(stable)).digest("hex");
+  return hash(canonicalJson(stable));
 }
 
 function manifestPayload(

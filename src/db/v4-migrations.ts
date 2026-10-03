@@ -5,6 +5,7 @@ import type { Database } from "bun:sqlite";
 import { recordMigrationStatus } from "../utils/observability.ts";
 import { assertMigration033Gate, MIGRATION_033_FILENAME } from "./migration-033-gate.ts";
 import { applyMigration033Sql, splitSqlStatements } from "./migration-033-exec.ts";
+import { tableExists } from "./introspect.ts";
 
 const V4_TARGET_SCHEMA = 32;
 
@@ -28,17 +29,8 @@ interface ApplyMigrationOptions {
   targetVersion?: number;
 }
 
-function schemaVersionsExists(db: Database): boolean {
-  return db
-    .query(
-      `SELECT 1 FROM sqlite_master
-       WHERE type = 'table' AND name = 'schema_versions'`,
-    )
-    .get() != null;
-}
-
 export function readSchemaVersion(db: Database): number {
-  if (!schemaVersionsExists(db)) return 0;
+  if (!tableExists(db, "schema_versions")) return 0;
   const row = db
     .query("SELECT COALESCE(MAX(version), 0) AS version FROM schema_versions")
     .get() as { version: number };
@@ -172,13 +164,7 @@ export function assertV4Schema(db: Database, expected = V4_TARGET_SCHEMA): void 
     "recall_feedback",
     "memory_event_outbox",
   ]) {
-    const exists = db
-      .query(
-        `SELECT 1 FROM sqlite_master
-         WHERE type = 'table' AND name = ?`,
-      )
-      .get(table);
-    if (!exists) throw new Error(`Schema ${expected} is missing table ${table}`);
+    if (!tableExists(db, table)) throw new Error(`Schema ${expected} is missing table ${table}`);
   }
 }
 

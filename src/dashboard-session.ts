@@ -57,6 +57,10 @@ import { authenticate, type AuthContext } from "./auth/middleware.ts";
 import { env } from "./utils/env.ts";
 import { ADMIN_TYPES } from "./auth/principal.ts";
 import { json } from "./utils/http-json.ts";
+import { HUMAN_OWNERS } from "./delivery/owner-onboarding.ts";
+import { parseCookies } from "./utils/cookies.ts";
+
+export { parseCookies };
 
 /** ingest-daemon and unknown types must NOT see dashboard data. */
 // A legacy "claude-privileged" row signs in as the ordinary agent it is (ADR-020).
@@ -81,34 +85,6 @@ export interface DashboardAuth {
   granted_scope?: AuthContext["granted_scope"];
 }
 
-/**
- * Parse a Cookie header into a name→value map. Empty/missing → {}. A name sent
- * more than once is ambiguous (a sibling origin can toss a second qoopia_dash
- * next to the real one) and is left out, so every reader fails closed.
- */
-export function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  const seen = new Set<string>();
-  for (const part of header.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq < 0) continue;
-    const name = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
-    if (!name) continue;
-    if (seen.has(name)) {
-      delete out[name];
-      continue;
-    }
-    seen.add(name);
-    try {
-      out[name] = decodeURIComponent(value);
-    } catch {
-      out[name] = value;
-    }
-  }
-  return out;
-}
 
 /** Cookie name for the dashboard session token. */
 export const DASHBOARD_COOKIE = "qoopia_dash";
@@ -355,8 +331,8 @@ export function authFromSessionCookie(req: IncomingMessage): DashboardAuth | nul
   // the live row. rotateAgentKey() and deleteAgent() bump this, so
   // outstanding cookies fail closed on the next request.
   if (row.session_version !== verified.sv) return null;
-  if (verified.exp === null && !db.query(`SELECT 1 FROM workspace_owners o JOIN agents a ON a.id=o.actor_id AND a.workspace_id=o.workspace_id
-    WHERE a.id=? AND a.principal_kind='human' AND a.authority_profile='owner'`).get(row.id)) return null;
+  // An owner session also needs the owner binding; row.active was checked above.
+  if (verified.exp === null && !db.query(`SELECT 1 FROM ${HUMAN_OWNERS} WHERE a.id=?`).get(row.id)) return null;
   return {
     workspace_id: row.workspace_id,
     agent_id: row.id,
@@ -557,8 +533,7 @@ export function localOwnerLoginHandler(req: IncomingMessage, res: ServerResponse
   if (!ownerIdentityRequestAllowed(req) || !originAllowed(req)) {
     json(res,403,{error:'forbidden'});return;
   }
-  const owner = db.query(`SELECT a.id,a.session_version FROM workspace_owners o JOIN agents a ON a.id=o.actor_id AND a.workspace_id=o.workspace_id
-    WHERE a.id=? AND a.principal_kind='human' AND a.authority_profile='owner' AND a.active=1`).get(ownerId) as {id:string;session_version:number}|null;
+  const owner = db.query(`SELECT a.id,a.session_version FROM ${HUMAN_OWNERS} WHERE a.id=? AND a.active=1`).get(ownerId) as {id:string;session_version:number}|null;
   if(!owner){json(res,401,{error:'owner_unavailable'});return;}
   const cookie=buildSessionCookie(req,signSession(owner.id,owner.session_version,null));
   if(redirect){res.writeHead(303,{location:redirect,'cache-control':'no-store','set-cookie':cookie});res.end();return;}

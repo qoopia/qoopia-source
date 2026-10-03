@@ -12,11 +12,11 @@
 
   /* typography: bundled Manrope; dashboard roles, then account roles */
   --qoopia-font-ui: 'Manrope', system-ui, sans-serif;
-  --qoopia-type-headline: 26px;
-  --qoopia-type-title: 18px;
-  --qoopia-type-body: 13px;
-  --qoopia-type-navigation: 13px;
-  --qoopia-type-label: 12px;
+  --qoopia-type-headline: 20px;
+  --qoopia-type-title: 14px;
+  --qoopia-type-body: 12px;
+  --qoopia-type-navigation: 12px;
+  --qoopia-type-label: 11px;
   --qoopia-type-metadata: 11px;
   --qoopia-type-account-headline: 32px;
   --qoopia-type-account-body: 15px;
@@ -28,6 +28,7 @@
   --qoopia-radius-field: 7px;
   --qoopia-radius-panel: 12px;
   --qoopia-radius-floating: 16px;
+  --qoopia-radius-pill: 999px;
 
   /* spacing */
   --qoopia-space-tight: 4px;

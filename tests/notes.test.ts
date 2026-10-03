@@ -214,7 +214,7 @@ describe("updated_at_ms invariant", () => {
         agent_id: AGENT_ID,
         text: "same-second-second",
       });
-      // nextNoteWriteTimestamp() takes max(Date.now(), previous+1, MAX(updated_at_ms)+1),
+      // nextNoteWriteTimestamp() takes max(Date.now(), previous+1, workspace MAX(updated_at_ms)+1),
       // so an earlier row already at or past fixedMs legitimately pushes this one
       // higher. The invariant under test is strict ordering, not the absolute value —
       // asserting equality here coupled the test to whatever else had written to the
@@ -282,6 +282,26 @@ describe("updated_at_ms invariant", () => {
       warn.mockRestore();
       // Do not leave a future high-water mark for later suites in this process.
       for (const id of ids) db.prepare(`DELETE FROM notes WHERE id = ?`).run(id);
+    }
+  });
+
+  test("a note from the future moves only its own workspace clock (F-339)", () => {
+    const other = createWorkspace({ name: "Notes Clock B", slug: "notes-clock-b" });
+    const otherAgent = createAgent({ name: "notes-clock-b", workspaceSlug: other.slug }).id;
+    const future = Date.now() + 3_600_000;
+    const id = "01F339FUTURENOTE0000000001";
+    db.prepare(
+      `INSERT INTO notes (id, workspace_id, agent_id, type, text, updated_at, updated_at_ms)
+       VALUES (?, ?, ?, 'note', 'imported with a skewed clock', ?, ?)`,
+    ).run(id, WORKSPACE_ID, AGENT_ID, new Date(future).toISOString(), future);
+    try {
+      const b = createNote({ workspace_id: other.id, agent_id: otherAgent, text: "clock b" });
+      expect(b.updated_at_ms).toBeLessThan(future);
+      const a = createNote({ workspace_id: WORKSPACE_ID, agent_id: AGENT_ID, text: "clock a" });
+      expect(a.updated_at_ms).toBe(future + 1);
+      db.prepare(`DELETE FROM notes WHERE id = ?`).run(a.id);
+    } finally {
+      db.prepare(`DELETE FROM notes WHERE id = ?`).run(id);
     }
   });
 

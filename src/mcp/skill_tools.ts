@@ -18,8 +18,7 @@
  * a credential into a public-ish surface.
  */
 import { z } from "zod";
-import type { AuthContext } from "../auth/middleware.ts";
-import type { RiskClass } from "./tools.ts";
+import type { ToolDef } from "./tools.ts";
 import {
   skillUpsert,
   skillGet,
@@ -29,17 +28,6 @@ import {
   type SkillMetadata,
 } from "../services/skills.ts";
 import { ENTITY_STATUSES } from "../services/entities.ts";
-
-interface SkillToolDef {
-  name: string;
-  description: string;
-  risk: RiskClass;
-  rawSchema: z.ZodRawShape;
-  handler: (
-    args: Record<string, unknown>,
-    auth: AuthContext,
-  ) => unknown | Promise<unknown>;
-}
 
 const entityStatusEnum = z.enum(ENTITY_STATUSES);
 
@@ -67,7 +55,7 @@ const skillMetadataSchema = z
   })
   .strict();
 
-export const skillTools: SkillToolDef[] = [
+export const skillTools: ToolDef[] = [
   {
     name: "skill_upsert",
     risk: "write-low",

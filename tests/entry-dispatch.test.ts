@@ -31,6 +31,12 @@ const tree = (directory: string): string[] => fs.existsSync(directory)
     return fs.statSync(file).isFile() ? name + ':' + fs.readFileSync(file, 'utf8') : name + '/';
   }) : [];
 
+test('version run from source claims no publisher trust [F-338]', () => {
+  const result = entry('version');
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout).publisher_trust).toStartWith('not verified: ');
+});
+
 test('uninstall without --commit is preview-only', () => {
   for (const command of ['uninstall', 'rollback', 'backup', 'restore', 'migrate-source', 'maintenance']) {
     const result = entry(command, '--root', root);

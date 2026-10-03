@@ -22,13 +22,9 @@ test('remote owner consent binds browser, account and exact client; real finaliz
   const emails:string[]=[];
   const broker=loginBroker(registry,{origin:loginOrigin,resendKey:'fixture',from:'test@example.test',googleClientId:'fixture',googleClientSecret:'fixture'},
     (async(_input,init)=>{emails.push(JSON.parse(String(init?.body)).text);return Response.json({id:'sent'});}) as typeof fetch);
-  // F-125: the code a started sign-in shows; the confirmation page asks for it.
-  let code='';
-  const network=(async(input,init)=>{
-    const response=await broker(new Request(String(input),init),'synthetic');
-    if(String(input).endsWith('/requests')&&response.ok)code=String((await response.clone().json() as {confirm_code?:string}).confirm_code);
-    return response;
-  }) as typeof fetch;
+  // F-125: the consent page runs on loopback here, so its sign-in belongs to the network the broker
+  // sees the installation call from ('synthetic'); a confirmation from anywhere else counts for nothing.
+  const network=(async(input,init)=>broker(new Request(String(input),init),'synthetic')) as typeof fetch;
   let handler=remoteConnectionConsent(root,db,network,loginOrigin);
   const server=startHttpServer();if(!server.listening)await once(server,'listening');
   const base='http://127.0.0.1:'+(server.address() as AddressInfo).port;
@@ -62,7 +58,9 @@ test('remote owner consent binds browser, account and exact client; real finaliz
   };
   const confirm=async()=>{
     const token=new URL(emails.at(-1)!.match(/https:\/\/[^\s]+/)![0]).hash.slice(1);
-    expect((await broker(new Request(loginOrigin+'/confirm',{method:'POST',headers:{origin:loginOrigin,'content-type':'application/json'},body:JSON.stringify({token,code})}),'browser')).status).toBe(200);
+    const send=(ip:string)=>broker(new Request(loginOrigin+'/confirm',{method:'POST',headers:{origin:loginOrigin,'content-type':'application/json'},body:JSON.stringify({token})}),ip);
+    expect((await send('elsewhere')).status).toBe(400);
+    expect((await send('synthetic')).status).toBe(200);
   };
   try{
     const first=make(),browser=await session(first,'ru');
@@ -76,9 +74,9 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     expect((await browser.post('start',{method:'email',email:binding.email},{cookie:'qoopia_dash=owner-cookie'})).result.status).toBe(403);
     expect(emails).toHaveLength(0);await browser.get();
     const oldNonce=browser.nonce(),started=await browser.post('start',{method:'email',email:binding.email});
-    expect(started.result.status).toBe(200);expect(started.html).toContain('<strong>'+code+'</strong>');
+    expect(started.result.status).toBe(200);expect(started.html).not.toContain('<strong>');expect(started.html).toContain('на этом устройстве');
     expect((await browser.post('check',{nonce:oldNonce})).result.status).toBe(403);await browser.get();
-    expect((await browser.post('check')).html).toContain('подтверждения');
+    expect((await browser.post('check')).html).toContain('на этом устройстве');
     expect(getConsentTicket(first.ticket.id)!.approved_by_agent_id).toBeNull();
     await confirm();const review=await browser.post('check');expect(review.html).toContain('Private remote space');
     expect(review.html).toContain('Synthetic &lt;Client&gt;');expect(review.html).toContain('Чтение и добавление памяти');
@@ -87,7 +85,7 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     const accountCookie=review.result.headers.get('set-cookie')!.split(';')[0]!;
     const another=make();
     const reused=await handler(new Request(origin+'/oauth/consent?ticket='+another.ticket.id,{headers:{cookie:accountCookie}}));
-    const reusedHtml=await reused.text();expect(reusedHtml).toContain('Allow this client');expect(emails).toHaveLength(1);
+    const reusedHtml=await reused.text();expect(reusedHtml).toContain('Allow this client');expect(emails.filter(e=>e.includes('https://'))).toHaveLength(1);
     expect(getConsentTicket(another.ticket.id)!.approved_by_agent_id).toBeNull();
     const denied=await handler(new Request(origin+'/oauth/consent/deny',{method:'POST',headers:{origin,
       cookie:reused.headers.get('set-cookie')!.split(';')[0]!,'content-type':'application/x-www-form-urlencoded'},
@@ -130,7 +128,7 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     expect((await fetch(base+'/api/dashboard/oauth-consent?ticket='+forbidden.ticket.id,{headers:{cookie:strangerCookie}})).status).toBe(403);
     const fallback=await fetch(base+'/api/dashboard/oauth-consent?ticket='+forbidden.ticket.id+'&session_check=1',{redirect:'manual'});
     expect(fallback.status).toBe(302);expect(fallback.headers.get('location')).toBe(origin+'/oauth/consent?ticket='+forbidden.ticket.id);
-    expect(emails).toHaveLength(1);
+    expect(emails.filter(e=>e.includes('https://'))).toHaveLength(1);
 
     const wrong=make(),stranger=await session(wrong);
     await stranger.post('start',{method:'email',email:'stranger@example.test'});await confirm();

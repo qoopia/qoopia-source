@@ -262,6 +262,46 @@ function revokeReplayedGrant(row: OAuthTokenRecord): void {
   });
 }
 
+/** A confidential client must present its secret; a public or unknown client is not checked here. */
+function assertClientSecret(client: { client_secret_hash: string } | null, secret?: string): void {
+  if (!client?.client_secret_hash) return;
+  if (!secret || !constantTimeHexEqual(sha256Hex(secret), client.client_secret_hash)) throw new Error("invalid_client");
+}
+
+/** Atomically revoke an active, unexpired grant of this client whose agent is active and whose agent
+ * and client share its workspace. True only for the one caller that wins. */
+function consumeGrant(hash: string, type: "code" | "refresh", clientId: string): boolean {
+  return db.prepare(
+    `UPDATE oauth_tokens SET revoked = 1
+     WHERE token_hash = ? AND revoked = 0 AND token_type = ?
+       AND expires_at > ? AND client_id = ?
+       AND EXISTS (
+         SELECT 1
+           FROM agents a
+           JOIN oauth_clients c ON c.id = oauth_tokens.client_id
+          WHERE a.id = oauth_tokens.agent_id
+            AND a.active = 1
+            AND a.workspace_id = oauth_tokens.workspace_id
+            AND c.workspace_id = oauth_tokens.workspace_id
+       )`,
+  ).run(hash, type, nowIso(), clientId).changes === 1;
+}
+
+/** Mint the access + refresh pair for the grant `row` carried. */
+function issueTokenPair(row: OAuthTokenRecord, resource: string) {
+  const access = genOpaque("qa");
+  const refresh = genOpaque("qr");
+  const now = nowIso();
+  const stmt = db.prepare(
+    `INSERT INTO oauth_tokens
+      (token_hash, client_id, agent_id, workspace_id, token_type, granted_scope, expires_at, revoked, created_at, resource)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+  );
+  stmt.run(sha256Hex(access), row.client_id, row.agent_id, row.workspace_id, "access", row.granted_scope, plusSec(ACCESS_TTL_SEC), now, resource);
+  stmt.run(sha256Hex(refresh), row.client_id, row.agent_id, row.workspace_id, "refresh", row.granted_scope, plusSec(REFRESH_TTL_SEC), now, resource);
+  return { access, refresh, expiresInSec: ACCESS_TTL_SEC, grantedScope: row.granted_scope || "" };
+}
+
 export function exchangeCodeForTokens(opts: {
   code: string;
   codeVerifier: string;
@@ -272,35 +312,12 @@ export function exchangeCodeForTokens(opts: {
 }): { access: string; refresh: string; expiresInSec: number; grantedScope: string } {
   const resource = validateOAuthResource(opts.resource);
   assertValidPkceVerifier(opts.codeVerifier);
-
   // Validate client_secret before entering the transaction (read-only check)
-  const clientRow = getClient(opts.clientId);
-  if (clientRow && clientRow.client_secret_hash) {
-    if (!opts.clientSecret) throw new Error("invalid_client");
-    if (!constantTimeHexEqual(sha256Hex(opts.clientSecret), clientRow.client_secret_hash)) {
-      throw new Error("invalid_client");
-    }
-  }
+  assertClientSecret(getClient(opts.clientId), opts.clientSecret);
 
   const out = db.transaction(() => {
     const codeHash = sha256Hex(opts.code);
-    // Atomically revoke the code — only succeeds if it exists and is still active
-    const revokeInfo = db.prepare(
-      `UPDATE oauth_tokens SET revoked = 1
-       WHERE token_hash = ? AND revoked = 0 AND token_type = 'code'
-         AND expires_at > ? AND client_id = ?
-         AND EXISTS (
-           SELECT 1
-             FROM agents a
-             JOIN oauth_clients c ON c.id = oauth_tokens.client_id
-            WHERE a.id = oauth_tokens.agent_id
-              AND a.active = 1
-              AND a.workspace_id = oauth_tokens.workspace_id
-              AND c.workspace_id = oauth_tokens.workspace_id
-         )`,
-    ).run(codeHash, nowIso(), opts.clientId);
-
-    if (revokeInfo.changes !== 1) {
+    if (!consumeGrant(codeHash, "code", opts.clientId)) {
       const used = usedRow(codeHash, "code", opts.clientId);
       // Only the verifier holder proves a replay: a code leaked from a URL alone revokes nothing.
       if (used && used.redirect_uri === opts.redirectUri && pkceMatches(used, opts.codeVerifier)) revokeReplayedGrant(used);
@@ -317,44 +334,7 @@ export function exchangeCodeForTokens(opts: {
 
     if (!pkceMatches(codeRow, opts.codeVerifier)) throw new Error("invalid_grant");
     markRedeemed(codeHash);
-
-    // Issue tokens
-    const access = genOpaque("qa");
-    const refresh = genOpaque("qr");
-    const now = nowIso();
-    const stmt = db.prepare(
-      `INSERT INTO oauth_tokens
-        (token_hash, client_id, agent_id, workspace_id, token_type, granted_scope, expires_at, revoked, created_at, resource)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-    );
-    stmt.run(
-      sha256Hex(access),
-      codeRow.client_id,
-      codeRow.agent_id,
-      codeRow.workspace_id,
-      "access",
-      codeRow.granted_scope,
-      plusSec(ACCESS_TTL_SEC),
-      now,
-      resource,
-    );
-    stmt.run(
-      sha256Hex(refresh),
-      codeRow.client_id,
-      codeRow.agent_id,
-      codeRow.workspace_id,
-      "refresh",
-      codeRow.granted_scope,
-      plusSec(REFRESH_TTL_SEC),
-      now,
-      resource,
-    );
-    return {
-      access,
-      refresh,
-      expiresInSec: ACCESS_TTL_SEC,
-      grantedScope: codeRow.granted_scope || "",
-    };
+    return issueTokenPair(codeRow, resource);
   })();
   if (!out) throw new Error("invalid_grant");
   return out;
@@ -368,33 +348,11 @@ export function refreshTokens(opts: {
 }): { access: string; refresh: string; expiresInSec: number; grantedScope: string } {
   const resource = validateOAuthResource(opts.resource);
   // Validate client_secret before entering the transaction (read-only check)
-  const clientRow = getClient(opts.clientId);
-  if (clientRow && clientRow.client_secret_hash) {
-    if (!opts.clientSecret) throw new Error("invalid_client");
-    if (!constantTimeHexEqual(sha256Hex(opts.clientSecret), clientRow.client_secret_hash)) {
-      throw new Error("invalid_client");
-    }
-  }
+  assertClientSecret(getClient(opts.clientId), opts.clientSecret);
 
   const out = db.transaction(() => {
     const refreshHash = sha256Hex(opts.refreshToken);
-    // Atomically revoke the refresh token — only succeeds once
-    const revokeInfo = db.prepare(
-      `UPDATE oauth_tokens SET revoked = 1
-       WHERE token_hash = ? AND revoked = 0 AND token_type = 'refresh'
-         AND expires_at > ? AND client_id = ?
-         AND EXISTS (
-           SELECT 1
-             FROM agents a
-             JOIN oauth_clients c ON c.id = oauth_tokens.client_id
-            WHERE a.id = oauth_tokens.agent_id
-              AND a.active = 1
-              AND a.workspace_id = oauth_tokens.workspace_id
-              AND c.workspace_id = oauth_tokens.workspace_id
-         )`,
-    ).run(refreshHash, nowIso(), opts.clientId);
-
-    if (revokeInfo.changes !== 1) {
+    if (!consumeGrant(refreshHash, "refresh", opts.clientId)) {
       const used = usedRow(refreshHash, "refresh", opts.clientId);
       if (used) revokeReplayedGrant(used);
       return null; // a throw here would roll the revocation back; invalid_grant follows the commit
@@ -407,43 +365,7 @@ export function refreshTokens(opts: {
     ).get(refreshHash) as OAuthTokenRecord | undefined;
     if (!row) throw new Error("invalid_grant");
     if (row.resource && row.resource !== resource) throw new Error("invalid_target");
-
-    const access = genOpaque("qa");
-    const refresh = genOpaque("qr");
-    const now = nowIso();
-    const stmt = db.prepare(
-      `INSERT INTO oauth_tokens
-        (token_hash, client_id, agent_id, workspace_id, token_type, granted_scope, expires_at, revoked, created_at, resource)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-    );
-    stmt.run(
-      sha256Hex(access),
-      row.client_id,
-      row.agent_id,
-      row.workspace_id,
-      "access",
-      row.granted_scope,
-      plusSec(ACCESS_TTL_SEC),
-      now,
-      resource,
-    );
-    stmt.run(
-      sha256Hex(refresh),
-      row.client_id,
-      row.agent_id,
-      row.workspace_id,
-      "refresh",
-      row.granted_scope,
-      plusSec(REFRESH_TTL_SEC),
-      now,
-      resource,
-    );
-    return {
-      access,
-      refresh,
-      expiresInSec: ACCESS_TTL_SEC,
-      grantedScope: row.granted_scope || "",
-    };
+    return issueTokenPair(row, resource);
   })();
   if (!out) throw new Error("invalid_grant");
   return out;
@@ -465,15 +387,7 @@ export function revokeTokenForClient(
     // Unknown client — return false (RFC 7009: don't reveal token existence)
     return false;
   }
-  // Confidential client: require and verify client_secret
-  if (client.client_secret_hash) {
-    if (!clientSecret) {
-      throw new Error("invalid_client");
-    }
-    if (!constantTimeHexEqual(sha256Hex(clientSecret), client.client_secret_hash)) {
-      throw new Error("invalid_client");
-    }
-  }
+  assertClientSecret(client, clientSecret);
   const hash = sha256Hex(token);
   const row = db
     .prepare(`UPDATE oauth_tokens SET revoked = 1 WHERE token_hash = ? AND client_id = ? RETURNING *`)
@@ -686,7 +600,7 @@ export function wellKnownAuthorizationServer(connection?:string) {
 
 export function wellKnownProtectedResource(connection?:string) {
   return {
-    resource: connection ? connectionResource(connection) : `${env.PUBLIC_URL}/mcp`,
+    resource: connection ? connectionResource(connection) : oauthResource(),
     authorization_servers: [connection ? connectionIssuer(connection) : env.OAUTH_ISSUER],
     bearer_methods_supported: ["header"],
   };
