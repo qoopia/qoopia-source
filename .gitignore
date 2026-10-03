@@ -14,13 +14,14 @@ deploy/*.env
 !deploy/*.env.example
 .release/
 .worktrees/
+# Generated V4 benchmark/CI output
+/artifacts/v4/
 
 # V4.1: evidence bundles must keep their .log artifacts (§12).
 !release-evidence/**/*.log
 
 # Isolated P1 execution cache, never an artifact
 .p1-tmp/
-!artifacts/p1/**/*.log
 
 # Verified build inputs, fetched by prepare-memory-model.ts
 /models/
@@ -35,6 +36,10 @@ deploy/*.env
 *.sqlite3
 *.db-wal
 *.db-shm
+*.sqlite-wal
+*.sqlite-shm
+# Local wrangler D1/KV/cache state
+.wrangler/
 
 # Local Python test caches
 __pycache__/

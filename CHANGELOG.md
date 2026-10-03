@@ -1,5 +1,57 @@
 # Changelog
 
+## 5.0.15 — 2026-10-02
+
+- Access (OWNER DECISION, ADR-020): every agent has one shared-context toggle. On (the default for every
+  agent, including existing ones) it reads the notes, session transcripts and agent-to-agent threads of its
+  workspace's sibling agents; off, only its own. The owner switches it on the agent page in the dashboard, the
+  steward with `agent_set_shared_context`. No agent reads outside its workspace (`session_search` scope `all`
+  and recall `cross_workspace` stay in the workspace). `claude-privileged` is no longer a category: existing
+  rows act as ordinary agents, management rights (OAuth client registration and consent) belong to the
+  steward and the human owner, and new agents cannot be created with that type.
+- Security hardening from the 2026-10-02 audit: session ids held by another agent or workspace answer like
+  missing ones; AgentComm resolves foreign agents only inside the owner boundary and requires thread
+  participation; outbound webhooks, embedder, reranker and tailer refuse redirects and bound response bodies;
+  dashboard cookie mutations require `X-Qoopia-CSRF`; duplicate session cookies are refused; forwarded host
+  headers count only from a trusted proxy; HSTS on public HTTPS surfaces; authenticated JSON is `no-store`;
+  file downloads are served as octet-stream with a CSP sandbox; a URL parameter can no longer widen an MCP
+  connection's access profile; uploads from OAuth connections are refused.
+- HTTP: request bodies get a delivered 413/408 and idle keep-alive sockets close after 30 s; client-input
+  errors keep their 4xx; wrong methods get 405 with `Allow`; HEAD answers like GET without a body; a
+  read-only database is refused before the port is bound; a newer schema than the build is refused at start,
+  migrate and `/ready`; `/ready` reports write capability and free space (`QOOPIA_MIN_FREE_BYTES`, default
+  64 MiB).
+- Sign-in: hosted e-mail owner sign-in is bound to the browser that started it with a six-digit code (deploy
+  the account service before the servers); owner sign-in start is rate limited per client so it cannot be
+  locked out.
+- Memory and recall: recall shares its 4 KB budget across rows, drops stop words, keeps one-character CJK
+  terms and control-free FTS queries; `session_save` accepts an optional `message_id` for retries; note
+  writes take the write lock up front; maintenance survives referenced task-bound rows; built-in embeddings
+  run in a worker (no first-recall stall) and load in the standalone build.
+- Dashboard: one server-side search request per query with paging, notes paging, polling keeps focus,
+  localized error states with Retry, design tokens from DESIGN.md, accessibility fixes (axe: 0 violations).
+- Install and delivery: `qoopia open` keeps serving without a browser and prints an SSH tunnel hint; clear
+  messages for not installed, already running and port in use; interrupted installs and uninstall leave a
+  root that installs again; updates refuse downgrades, show versions in the plan and prune old bundles; a
+  rolled-back desktop update stays rolled back; the agent kit ships in English beside Russian (kit revision
+  9); new `memory-unlink` and `instructions remove` commands.
+- Release and operations: both images run a verify stage and carry Qoopia OCI labels; the sign-in image is
+  stamped and reports `release_sha`; `release-health` sends OK/ALERT transitions to the owner's alert
+  channels (`QOOPIA_OPS_CHANNELS_FILE`); CI runs once per commit, advisories run as a separate daily job;
+  lint denies warnings and typecheck covers tests, benchmarks and the SDK.
+- Database schema 48: migration 048 adds read-path indexes (agent list, AgentComm inbox, files, note deletes) and
+  corrects legacy `updated_at_ms` values left 1 ms early. Startup stays schema-read-only: take a backup and run
+  `bun run migrate` before starting the new release.
+- Website: download button clicks are counted anonymously for everyone (as before); docs#privacy now says so.
+  Page views and other site statistics stay opt-in.
+- Data, log, backup and export directories, and exported files, are refused when they stay group/other
+  accessible after Qoopia tightens them to 0700/0600. This used to be a warning; now startup, install,
+  scheduled backups and exports stop. Before upgrading, check that `data`, `logs` and `backups` under
+  `QOOPIA_ROOT` are owned by the server user or already 0700.
+- Without `QOOPIA_INSTANCE_ID`, the instance identity in `/health` and `/ready` is `<role>:<port>` and no
+  longer contains the machine hostname. A legacy `export_bundle` replay that spans this upgrade on such an
+  instance is refused as a conflict; set `QOOPIA_INSTANCE_ID` to the previous value to keep it stable.
+
 ## 5.0.14 — 2026-09-30
 
 - Agent onboarding confirms the first successful qoopia_protocol call on the exact OAuth connection. No temporary verification prompt is needed in the dashboard; older clients retain compatibility.

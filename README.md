@@ -84,6 +84,17 @@ For a disposable development installation, choose an unused directory:
 ```sh
 export QOOPIA_ROOT="$(mktemp -d)"
 export QOOPIA_SERVER_ROLE=canonical
+# The default port 3737 is also used by an installed local server.
+export QOOPIA_PORT=3790
+# Required: the server refuses to start without an admin secret, and the
+# dashboard cookie-signing secret (QOOPIA_SESSION_SECRET if set, else this one)
+# must be at least 32 bytes, in development too.
+export QOOPIA_ADMIN_SECRET="$(openssl rand -base64 32)"
+# The built-in embedding model lives in the gitignored models/ folder. Without it
+# recall falls back to FTS and /health reports "embeddings": "unavailable".
+# Once loaded the model stays resident in a worker thread: plan for about
+# 1.1 GB RSS for the server process.
+bun scripts/prepare-memory-model.ts
 bun run migrate
 bun run dev
 ```
