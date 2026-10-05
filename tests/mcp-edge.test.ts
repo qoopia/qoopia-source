@@ -2,6 +2,8 @@ import {expect, test} from 'bun:test';
 import http from 'node:http';
 import net, {type AddressInfo} from 'node:net';
 import {mcpEdgeRoute, startMcpEdge} from '../src/delivery/mcp-edge.ts';
+import {readFileSync} from 'node:fs';
+import {brandHead, brandLockup} from '../src/brand.ts';
 
 const ready = async (server: http.Server) => {
   if (!server.listening) await new Promise<void>(resolve => server.once('listening', resolve));
@@ -20,12 +22,22 @@ function request(port: number, url: string, options: {method?: string; body?: st
 }
 test('edge rejects admin routes, path normalization tricks, and unsupported methods', () => {
   // F-076: the retired ticket-only finalize is not published either.
-  for (const url of ['/dashboard','/api/dashboard/login','/health','/ready','/mcp/','/x/../mcp','/%6dcp','//mcp','/mcp%2f..%2fdashboard','/oauth/authorize/finalize?ticket=qct_x'])
+  for (const url of ['/dashboard','/api/dashboard/login','/health','/ready','/mcp//','/x/../mcp','/%6dcp','//mcp','/mcp%2f..%2fdashboard','/oauth/authorize/finalize?ticket=qct_x'])
     expect(mcpEdgeRoute(url,'GET')).toBe('not_found');
   for(const asset of ['/brand/base.css','/brand/tokens.css','/brand/Manrope.ttf','/brand/graphite/qoopia-mark-ivory.svg','/brand/graphite/qoopia-wordmark-ivory.svg','/brand/graphite/favicon.svg','/brand/logo/qoopia-mark.svg','/brand/logo/qoopia-favicon.svg']){expect(mcpEdgeRoute(asset,'GET')).toBe('allowed');expect(mcpEdgeRoute(asset,'POST')).toBe('method_not_allowed');}
   for(const asset of ['/brand/i18n.js','/brand/../identity/broker.ts','/brand/%2e%2e/identity/broker.ts','/brand/email-lockup.png'])expect(mcpEdgeRoute(asset,'GET')).toBe('not_found');
   expect(mcpEdgeRoute('/oauth/token','GET')).toBe('method_not_allowed');
   expect(mcpEdgeRoute('/mcp?profile=full','POST')).toBe('allowed');
+  // A client that adds a trailing slash reaches the same MCP endpoint, and its challenge names the published root metadata.
+  for(const method of ['GET','POST','DELETE','OPTIONS'])expect(mcpEdgeRoute('/mcp/',method)).toBe('allowed');
+});
+// The isolated consent page is served through the edge: every brand asset it references (head, lockup and
+// the stylesheet's imports) must be published there, or the browser gets a 404 (apple-touch-icon did).
+test('edge publishes every static asset the consent page references, read-only',()=>{
+  const refs=new Set([...(brandHead+brandLockup).matchAll(/(?:href|src)="(\/brand\/[^"]+)"/g)].map(m=>m[1]!));
+  for(const css of ['base.css','tokens.css'])for(const m of readFileSync('src/public/brand/'+css,'utf8').matchAll(/url\("([^"]+)"\)/g))refs.add('/brand/'+m[1]);
+  expect(refs.size).toBeGreaterThan(4);
+  for(const asset of refs){expect(mcpEdgeRoute(asset,'GET')).toBe('allowed');expect(mcpEdgeRoute(asset,'HEAD')).toBe('allowed');expect(mcpEdgeRoute(asset,'POST')).toBe('method_not_allowed');}
 });
 test('edge preserves local authorization, strips identity/cookie headers, and never exposes admin redirects', async () => {
   let seen: http.IncomingHttpHeaders | undefined; let calls=0;
@@ -37,12 +49,17 @@ test('edge preserves local authorization, strips identity/cookie headers, and ne
   }).listen(0,'127.0.0.1');
   const edge=startMcpEdge({publicOrigin:'https://synthetic.example',upstreamPort:await ready(upstream)}), port=await ready(edge);
   try {
-    const response=await request(port,'/mcp',{method:'POST',body:'{}',headers:{authorization:'Bearer synthetic',cookie:'owner=private','x-qoopia-owner':'forged','x-forwarded-for':'forged'}});
+    const response=await request(port,'/mcp',{method:'POST',body:'{}',headers:{authorization:'Bearer synthetic','accept-language':'ru-RU',cookie:'owner=private','x-qoopia-owner':'forged','x-forwarded-for':'forged'}});
     expect(response.status).toBe(401);expect(response.headers['www-authenticate']).toContain('synthetic.example');
-    expect(seen?.authorization).toBe('Bearer synthetic');expect(seen?.cookie).toBeUndefined();expect(seen?.['x-qoopia-owner']).toBeUndefined();
+    expect(seen?.authorization).toBe('Bearer synthetic');expect(seen?.['accept-language']).toBe('ru-RU');expect(seen?.cookie).toBeUndefined();expect(seen?.['x-qoopia-owner']).toBeUndefined();
     expect(seen?.['x-forwarded-for']).toBeUndefined();expect(seen?.host).toBe('127.0.0.1:'+await ready(upstream));
     expect(response.headers['set-cookie']).toBeUndefined();expect(response.headers['x-debug-secret']).toBeUndefined();
     expect((await request(port,'/dashboard')).status).toBe(404);
+    // A phone browser opening the tunnel address learns it is an MCP address with no dashboard, in its language.
+    const phone=await request(port,'/dashboard',{headers:{accept:'text/html,application/xhtml+xml','accept-language':'ru-RU,ru;q=0.9'}});
+    expect(phone.status).toBe(404);expect(phone.headers['content-type']).toContain('text/html');expect(phone.body).toContain('Дашборда здесь нет');
+    expect(phone.headers['content-security-policy']).toContain("default-src 'none'");
+    expect((await request(port,'/',{headers:{accept:'text/html'}})).body).toContain('This address is for AI clients');
     expect((await request(port,'/mcp',{headers:{host:'attacker.example'}})).status).toBe(403);
     expect(calls).toBe(1);
     expect((await request(port,'/oauth/authorize')).body).toContain('REMOTE_CONSENT_REQUIRED');

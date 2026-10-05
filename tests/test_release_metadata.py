@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -28,6 +29,23 @@ class MetadataGateTests(unittest.TestCase):
             self.assertIn('release:version_mismatch', issues)
             self.assertIn('appcast:package_mismatch', issues)
             self.assertIn('website:missing_release_notes', issues)
+
+    def test_appcast_build_must_exceed_every_earlier_release(self):
+        item = '<sparkle:version>{}</sparkle:version><sparkle:shortVersionString>{}</sparkle:shortVersionString>'
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            appcast = fixture / metadata.APPCAST
+            appcast.parent.mkdir(parents=True)
+            git = lambda *args: subprocess.run(['git', '-C', directory, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', *args], check=True, capture_output=True)
+            git('init', '-q')
+            appcast.write_text(item.format(1791062872, '5.0.16'))
+            git('add', '.'); git('commit', '-qm', '5.0.16')
+            self.assertTrue(metadata.appcast_build_is_newest(fixture, '5.0.16'))
+            for build, newest in [(1791062872, False), (1700000000, False), (1791100000, True)]:
+                appcast.write_text(item.format(build, '5.0.17'))
+                self.assertEqual(metadata.appcast_build_is_newest(fixture, '5.0.17'), newest, build)
+            git('commit', '-qam', '5.0.17')
+            self.assertTrue(metadata.appcast_build_is_newest(fixture, '5.0.17'))
 
 
 if __name__ == '__main__':

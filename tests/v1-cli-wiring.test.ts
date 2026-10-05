@@ -67,3 +67,34 @@ test('runtime provision precedes generic runtime dispatch and task gets local PA
  expect(entry).toContain('nativeRuntimeEnvironment(root');
  expect(entry).toContain("cmd==='runtime'&&argv[1]==='task'?330_000:120_000");
 });
+
+test('the serving runtime adopts what earlier versions left behind before it serves',()=>{
+ const start=entry.indexOf("if(cmd==='start'||cmd==='open'){");
+ const block=entry.slice(start,entry.indexOf("await import('../index.ts')",start));
+ expect(block).toContain("autostart(current.instance).retarget(installationLauncher(root,path.join(bundle,'qoopia')))");
+ expect(block.indexOf('.retarget(')).toBeLessThan(block.indexOf('configure('));
+ expect(block).toContain("migrateMemoryHooks(root,path.join(bundle,'qoopia'))");
+ expect(block).toContain('migrateMemoryOrigins()');
+ expect(block).toContain('refreshAgentInstructions(root,true)');
+});
+
+test('open from a newer downloaded package adopts it before dispatch, and a failing adopted runtime is rolled back',()=>{
+ const open=entry.slice(entry.indexOf('// Runtime commands use installed code'),entry.indexOf('const {current,bundle}=await dispatchInstalled();'));
+ expect(open).toContain('preparePackageUpdate(delivery,self,QOOPIA_PINNED_KEY,allow)');
+ expect(open).toContain("' update --bundle '");
+ // The refusal names the whole apply command (plan file, digest, the same --root), not just "--commit".
+ expect(open).toContain(`--plan "$HOME/qoopia-update-plan.json" --approve PLAN_DIGEST --commit`);
+ expect(open).toContain("(arg('root')?' --root '+JSON.stringify(root):'')");
+ const dispatch=entry.slice(entry.indexOf('const dispatchInstalled='),entry.indexOf("if(cmd==='setup'){"));
+ // A runtime ended by a forwarded signal (128+n) is a stop, not a failed start: only a plain failing exit rolls back.
+ expect(dispatch).toContain("if(packageUpdated&&status!==0&&status<128)try{delivery.rollback();");
+ expect(dispatch.indexOf('delivery.rollback()')).toBeLessThan(dispatch.indexOf('process.exit(status)'));
+});
+
+test('memory hooks never depend on a package folder the next download replaces',()=>{
+ const remote=entry.slice(entry.indexOf("if(remote && cmd==='open'){"),entry.indexOf("if(remote && cmd==='setup')"));
+ expect(remote).toContain('migrateMemoryHooks(root,process.execPath)');
+ const link=entry.slice(entry.indexOf("if(cmd==='memory-link'){"),entry.indexOf("if(cmd==='memory-unlink'){"));
+ expect(link).toContain("process.execPath.includes('.app/Contents/')");
+ expect(link).toContain('next_action');
+});

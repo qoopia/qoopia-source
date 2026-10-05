@@ -14,7 +14,7 @@ import {
   type DashboardAuth,
 } from "../dashboard-api.ts";
 import type { AuthContext } from "../auth/middleware.ts";
-import { stringArrayEquals, stringArraySubsetOf, isChatGptRedirectArray, CLAUDE_AI_REDIRECT_URI } from "../auth/dcr-policy.ts";
+import { stringArraySubsetOf, isChatGptRedirectArray, isClaudeRedirectArray } from "../auth/dcr-policy.ts";
 import {
   exchangeCodeForTokens,
   refreshTokens,
@@ -46,6 +46,7 @@ import { logger } from "../utils/logger.ts";
 import { audit } from "../utils/audit.ts";
 import { isReadOnlyInstance } from "../utils/instance-role.ts";
 import { ownerIdentityRoot } from "../utils/standalone.ts";
+import { edgeClientKey } from "../delivery/mcp-edge.ts";
 import { parseJsonObject } from "../utils/http-json.ts";
 import { escapeHtml, json, securityHeaders, sendHtml } from "./respond.ts";
 
@@ -81,7 +82,7 @@ function consentLanguage(req: IncomingMessage): ConsentLanguage {
 }
 const scopeDescriptionRu: Record<OAuthScope, string> = {
   "mcp:read": "Читать память и журнал аудита Qoopia без изменений.",
-  "mcp:write": "Создавать и обновлять записи Qoopia без удаления.",
+  "mcp:write": "Добавлять новые записи памяти и вносить другие неразрушающие изменения. Для изменения или удаления заметок нужен mcp:admin.",
   "mcp:admin": "Удаляющие и административные операции MCP.",
 };
 
@@ -268,9 +269,10 @@ export function handleAuthorizeRedirect(
   if(resourceId){
     const connection=publicConnection(resourceId);
     if(client.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id)return fail("invalid_target");
+    // A client that names no scope gets the connection's own; "".split(" ") is [""], never a scope.
+    if(!scope)scope=connection.access_mode==="read"?"mcp:read":"mcp:read mcp:write";
     if(connection.access_mode==="read"&&scope.split(" ").some(s=>s!=="mcp:read"))return fail("invalid_scope");
     if(scope.includes("mcp:admin"))return fail("invalid_scope");
-    if(!scope)scope=connection.access_mode==="read"?"mcp:read":"mcp:read mcp:write";
   }
   if (!client.workspace_id) {
     // Legacy oauth_clients row that escaped migration 011's backfill.
@@ -308,7 +310,9 @@ export function handleAuthorizeRedirect(
   const identityRoot=ownerIdentityRoot(),binding=identityRoot?ownerIdentity(identityRoot):null;
   const remote=!!(resourceId&&binding&&connectionOrigin(resourceId).startsWith('https://')&&publicConnection(resourceId).owner_id===binding.ownerId);
   const consentOrigin=remote?connectionOrigin(resourceId!):process.env.QOOPIA_STANDALONE==='true'?`http://127.0.0.1:${env.PORT}`:resourceId?connectionOrigin(resourceId):env.PUBLIC_URL;
-  const target = new URL('/api/dashboard/oauth-consent', consentOrigin);
+  // The tunnel edge publishes only /oauth/consent, never /api/dashboard/*, and strips the dashboard
+  // cookie, so an edge request skips the session-reuse hop that only a same-origin dashboard can serve.
+  const target = new URL(remote&&edgeClientKey(req)?'/oauth/consent':'/api/dashboard/oauth-consent', consentOrigin);
   target.searchParams.set("ticket", ticket.id);
   res.writeHead(302, {
     location: target.toString(),
@@ -415,7 +419,7 @@ export function resolveTrustedUnauthenticatedDcrAuth(body: Buffer): TrustedDcrAu
  * 'claude-privileged' type string is an ordinary agent since ADR-020 and selects nothing else.
  */
 function resolveClaudeAiUnauthenticatedDcrAuthParsed(parsed: Record<string, unknown>): AuthContext | null {
-  if (!stringArrayEquals(parsed.redirect_uris, [CLAUDE_AI_REDIRECT_URI])) return null;
+  if (!isClaudeRedirectArray(parsed.redirect_uris)) return null;
   if (
     parsed.token_endpoint_auth_method !== undefined &&
     parsed.token_endpoint_auth_method !== "none" &&

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import net from 'node:net';
 import http from 'node:http';
-import { claimInstallationPort, reservePort } from '../src/delivery/entry.ts';
+import { claimInstallationPort, reservePort, withPortNote } from '../src/delivery/entry.ts';
 
 test('installed start port reservation closes while a probe keeps its client socket open', async () => {
   const reservation = await reservePort(0);
@@ -33,4 +33,10 @@ test('start tells "already running" (same installation /health) apart from anoth
   const free = await reservePort(0);
   await free.close();
   await claimInstallationPort(free.port, 'installation-a');
+});
+
+test('a reinstall that keeps its preserved port says --port was not applied', () => {
+  expect(withPortNote({port:3737})).toEqual({port:3737});
+  expect(withPortNote({port:3737},'3737')).toEqual({port:3737});
+  expect(withPortNote({port:3737},'4242')).toMatchObject({port:3737,port_requested:4242,port_note:expect.stringContaining('--port was not applied')});
 });

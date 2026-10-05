@@ -1,3 +1,4 @@
+import {sameAgentName} from '../utils/agent-name.ts';
 import {ulid} from 'ulid';
 import type {Database} from 'bun:sqlite';
 import {db} from '../db/connection.ts';
@@ -186,7 +187,7 @@ export function setMemoryPolicy(input:SetMemoryPolicyInput):MemoryPolicy {
 /** Resolves a display name to exactly one agent. An ambiguous name is reported rather
  * than guessed — picking the wrong target would silently change someone else's setting. */
 export function resolveAgentByName(workspace:string,name:string):MemoryPolicy {
-  const matches=db.query(`${SELECT} WHERE workspace_id=? AND active=1 AND lower(name)=lower(?)`).all(workspace,name.trim()) as PolicyRow[];
+  const matches=(db.query(`${SELECT} WHERE workspace_id=? AND active=1`).all(workspace) as PolicyRow[]).filter(row=>sameAgentName(row.name,name));
   if(matches.length===1)return shape(matches[0]!);
   if(!matches.length)throw new QoopiaError('NOT_FOUND',`No active agent named ${name}`);
   throw new QoopiaError('CONFLICT',`Several agents are named ${name}. Use the agent id: ${matches.map(m=>m.id).join(', ')}`);
@@ -195,6 +196,17 @@ export function resolveAgentByName(workspace:string,name:string):MemoryPolicy {
 /** Only a conversation active this recently is summarised. A finished one is already stored whole
  * and searchable, so catching up its backlog would spend subscription calls on nothing. */
 export const LIVE_SESSION_MS=2*3600_000;
+/** How far the agent's last call may run ahead of its last hook capture before capture counts as stopped. */
+export const CAPTURE_STALE_MS=3600_000;
+/** Last tool call per agent that only a working conversation makes. `agents.last_seen` moves on every
+ * authenticated request: AgentComm inbox polling, pings, reconnect handshakes and empty session
+ * registrations kept it fresh and made idle agents look like stopped capture.
+ * ponytail: in memory, so a restart forgets it and judges again only after the next real call. */
+const lastWork=new Map<string,number>();
+/** How long an explicit save keeps an agent without hooks counted as saving. */
+const UNHOOKED_CAPTURE_MS=7*86400_000;
+const POLLING_TOOLS=new Set(['agent_inbox']);
+export function noteAgentWork(agent:string,tool:string,at=Date.now()){if(!POLLING_TOOLS.has(tool))lastWork.set(agent,at);}
 
 type MemoryChannelState='working'|'manual'|'waiting'|'behind'|'sign_in'|'error';
 interface AgentMemoryStatus {mode:MemoryMode;revision:number;state:MemoryChannelState;last_capture_at:string|null;last_summary_at_ms:number|null;pending_sessions:number;pending_saves:number;error_code:string|null}
@@ -213,9 +225,24 @@ export function agentMemoryStatus(workspace:string,agent:string,database:Databas
         FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0))`)
     .get(workspace,agent,new Date(Date.now()-LIVE_SESSION_MS).toISOString()) as {pending:number;error:string|null};
   const signIn=['MODEL_NOT_CONNECTED','SIGN_IN_REQUIRED','MODEL_QUOTA','UNAUTHENTICATED'];
-  const state:MemoryChannelState=policy.mode==='manual'?'manual':backlog.error?(signIn.includes(backlog.error)?'sign_in':'error')
-    :!capture.at?'waiting':backlog.pending>1?'behind':'working';
+  // Hooks that stopped (removed, untrusted after an update, a broken launcher) leave the last capture
+  // behind while the same agent keeps working: every tool call writes transcript lines that a working
+  // hook delivers within the turn. Only an agent that has delivered through hooks is judged, an idle one
+  // never, and not one whose hooks still register sessions after its last capture: they run, and what
+  // they could not send (a transcript the runtime never writes, as `claude -p --no-session-persistence`,
+  // or one it cannot read) is reported by `qoopia doctor` on that computer, where the transcript is.
+  const seen=database.query(`SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2
+      AND json_extract(s.metadata,'$.continuity_enabled')=1) AS hooked,
+    EXISTS(SELECT 1 FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1
+      AND s.created_at>?3) AS registered`).get(workspace,agent,capture.at??'') as {hooked:number;registered:number};
+  const work=lastWork.get(agent),captured=Date.parse(capture.at??'');
+  const stopped=!!capture.at&&!!seen.hooked&&!seen.registered&&work!==undefined&&work-captured>CAPTURE_STALE_MS&&Date.now()-captured>CAPTURE_STALE_MS;
+  const error=backlog.error??(stopped?'CAPTURE_STOPPED':null);
+  const state:MemoryChannelState=policy.mode==='manual'?'manual':error?(signIn.includes(error)?'sign_in':'error')
+    // Without lifecycle hooks (ChatGPT, Claude web, a bot) a conversation arrives only when the agent saves
+    // one itself: an old save is not "saving automatically", it is a connected client that sends nothing.
+    :!capture.at||!seen.hooked&&Date.now()-captured>UNHOOKED_CAPTURE_MS?'waiting':backlog.pending>1?'behind':'working';
   const saves={n:pendingSavesFor(workspace,agent).length};
   return {mode:policy.mode,revision:policy.revision,state,last_capture_at:capture.at,last_summary_at_ms:summary.at,
-    pending_sessions:backlog.pending,pending_saves:saves.n,error_code:policy.mode==='auto'?backlog.error:null};
+    pending_sessions:backlog.pending,pending_saves:saves.n,error_code:policy.mode==='auto'?error:null};
 }

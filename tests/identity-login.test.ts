@@ -6,6 +6,7 @@ import path from 'node:path';
 import {randomBytes,createHash} from 'node:crypto';
 import type {IncomingMessage,ServerResponse} from 'node:http';
 import {loginBroker,releaseStampSha} from '../src/identity/broker.ts';
+import {SESSION_DAYS} from '../src/identity/profile.ts';
 import {localIdentityLogin,ownerIdentity,LOGIN_ORIGIN} from '../src/identity/local.ts';
 import {issueLocalLogin} from '../src/delivery/local-login.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
@@ -103,4 +104,14 @@ test('every sign-in service response carries HSTS (F-127)',async()=>{
  for(const request of [new Request(LOGIN_ORIGIN+'/profile'),new Request(LOGIN_ORIGIN+'/confirm'),new Request(LOGIN_ORIGIN+'/privacy'),new Request(LOGIN_ORIGIN+'/brand/base.css'),
   new Request(LOGIN_ORIGIN+'/requests',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}),new Request('https://elsewhere.example/profile')])
   expect((await handler(request,'test-device')).headers.get('strict-transport-security'),request.url).toBe('max-age=31536000; includeSubDomains');
+});
+
+test('the privacy page states the real profile session lifetime and the opt-in-free download count',async()=>{
+ const handler=loginBroker(new Database(':memory:'),{origin:LOGIN_ORIGIN,resendKey:'fixture',from:'Qoopia <login@mail.qoopia.ai>',googleClientId:'fixture-client',googleClientSecret:'fixture-secret'});
+ const page=await (await handler(new Request(LOGIN_ORIGIN+'/privacy'),'test-device')).text();
+ expect(SESSION_DAYS).toBe(365);
+ expect(page).toContain('Profile sessions last one year and renew when you visit');
+ expect(page).not.toContain('seven days;');
+ expect(page).toContain('download button clicks are counted anonymously for everyone');
+ expect(page).not.toContain('After you confirm your email');
 });

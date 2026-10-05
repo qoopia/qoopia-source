@@ -1,6 +1,7 @@
 // F-322: agent activity is stated in words, not by a hover-only dot.
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
+import { readFileSync } from "node:fs";
 import { dashboardScript } from "./helpers/dashboard-source.ts";
 
 const between = (from: string, to: string) => {
@@ -63,4 +64,14 @@ test("the owner leads the list, then the steward, then each runtime in order, th
   const cards = [...el.html.matchAll(/class="agent-card" data-id="([^"]+)"/g)].map((m) => m[1]);
   expect(cards).toEqual(["owner", "steward", "claude", "claude-code", "chatgpt", "codex", "grok", "muse", "hermes", "other-new", "other-old", "tailer"]);
   expect(visibleText(el.html)).toContain("System & integration agents");
+});
+
+test("on a phone the memory state and the confirm button take their own line instead of overlapping the counts", () => {
+  const css = readFileSync(new URL("../src/public/brand/dashboard.css", import.meta.url), "utf8");
+  const phone = css.slice(css.indexOf("@container (max-width:440px)"), css.indexOf("/* Switch:"));
+  // flex:1 1 0 with nowrap let the nowrap "N to confirm" button draw over the session/message counts at 320 px
+  // and cut "Only on request" down to its icon at 430 px.
+  expect(phone).toMatch(/\.ar-status \{[^}]*flex-basis:100%[^}]*flex-wrap:wrap/);
+  // A prepared save names its type in the reader's language, not the raw "note" key.
+  expect(dashboardScript).toContain("noteTypeLabel(x.type || 'note')");
 });

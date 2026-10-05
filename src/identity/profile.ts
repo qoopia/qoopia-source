@@ -6,13 +6,15 @@ import {newsletter} from './newsletter.ts';
 import {ownerPortal,type OwnerOptions} from './owner.ts';
 import {accountHandoff,mobileDashboard} from './account-handoff.ts';
 import {appProfileView} from './profile-app-view.ts';
+import {deviceView} from './device-view.ts';
+import {attemptCounter,deviceCodes} from './device-code.ts';
 import { hash, randomToken } from '../utils/fs.ts';
 import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
 import { parseCookies } from '../utils/cookies.ts';
 
 const sessionName='__Host-qoopia_profile',pendingName='__Host-qoopia_profile_pending';
 /** One sign-in per device: a profile session lasts a year and every visit renews it. */
-const SESSION_DAYS=365;
+export const SESSION_DAYS=365;
 const cookie=(req:Request,name:string)=>parseCookies(req.headers.get('cookie')??undefined)[name]??'';
 const setCookie=(name:string,value:string,seconds:number)=>`${name}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${seconds}`;
 type Page=(title:string,content:string,script?:string,status?:number,language?:'en'|'ru')=>Response;
@@ -33,7 +35,7 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
   const identify=accounts(db);
   const news=newsletter(db);
   const owner=ownerPortal(db,page,ownerOptions);
-  const handoff=accountHandoff(db);
+  const handoff=accountHandoff(db),codes=deviceCodes(db),attempt=attemptCounter(db);
   db.exec(`CREATE TABLE IF NOT EXISTS profile_sessions(hash TEXT PRIMARY KEY,account_id TEXT NOT NULL,expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_pending(hash TEXT PRIMARY KEY,request_id TEXT NOT NULL,verifier TEXT NOT NULL,expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS profile_news_pending(hash TEXT PRIMARY KEY,language TEXT NOT NULL);
@@ -74,6 +76,12 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       const preference=account?news.preference(account.id):null;
       return profileView(page,ru,account,suggested,pendingOpen(req),{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id});
     }
+    if(req.method==='GET'&&url.pathname==='/profile/device'){
+      const ru=(url.searchParams.get('lang')??req.headers.get('cookie')?.match(/(?:^|;\s*)qoopia_language=(en|ru)(?:;|$)/)?.[1]??(req.headers.get('accept-language')?.startsWith('ru')?'ru':'en'))==='ru';
+      // Not signed in: the ordinary profile sign-in (bound to this browser's network) reloads this page with the code.
+      if(!account)return profileView(page,ru,null,'',pendingOpen(req));
+      return deviceView(page,ru,account.email,url.searchParams.get('code')??'');
+    }
     if(req.method!=='POST')return json(404,{error:'NOT_FOUND'});
     if(req.headers.get('origin')!==origin)return json(403,{error:'ORIGIN_REFUSED'});
     if(req.headers.get('content-type')?.split(';')[0]!=='application/json')return json(400,{error:'JSON_REQUIRED'});
@@ -81,7 +89,8 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
     try{
       const body=JSON.parse(text);if(!body||typeof body!=='object'||Array.isArray(body))return json(400,{error:'INVALID_REQUEST'});
       if(url.pathname==='/profile/start'){
-        if(body.news!==undefined&&typeof body.news!=='boolean')return json(400,{error:'INVALID_REQUEST'});
+        // This browser finishes its own sign-in: a device code or account continuation it never sees is not opened for it.
+        if(!['email','google'].includes(body.method)||body.news!==undefined&&typeof body.news!=='boolean')return json(400,{error:'INVALID_REQUEST'});
         const verifier=randomToken(),pending=randomToken();
         // F-125: the sign-in finishes only from this browser's network; nothing to copy between screens.
         const response=await call('/requests',{method:body.method,email:body.email,language:body.language==='ru'?'ru':'en',bind:'network',challenge:hash(verifier)},ip);
@@ -116,6 +125,18 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
         }finally{busy.delete(key);}
       }
       if(!account)return json(401,{error:'SIGN_IN_REQUIRED'});
+      if(url.pathname==='/profile/device/lookup'||url.pathname==='/profile/device/approve'||url.pathname==='/profile/device/deny'){
+        // Guessing codes costs attempts per account and per network; an explicit approve follows a lookup.
+        if(!attempt('account:'+account.id,10,3_600_000)||!attempt('ip:'+ip,20,3_600_000))return json(429,{error:'TOO_MANY_ATTEMPTS'});
+        if(url.pathname==='/profile/device/lookup'){
+          const flow=codes.find(body.code);if(!flow)return json(410,{error:'CODE_EXPIRED'});
+          return json(200,{label:flow.label,network:flow.network,adds_device:!!flow.adds_device,requested_at:new Date(flow.created).toISOString(),expires_at:new Date(flow.expires).toISOString()});
+        }
+        const done=url.pathname==='/profile/device/approve'?codes.approve(body.code,{email:account.email,google_sub:account.google_sub}):codes.deny(body.code);
+        if(!done)return json(410,{error:'CODE_EXPIRED'});
+        record({kind:'auth_http',page:'profile',outcome:'ok'});
+        return json(200,{ok:true});
+      }
       if(url.pathname==='/profile/authorize'){
         if(typeof body.request!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(body.request))return json(400,{error:'INVALID_REQUEST'});
         return json(200,{url:handoff.authorize(body.request,account)});

@@ -34,13 +34,32 @@ afterAll(async()=>{
   server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));
 });
 
-test('a public registration never creates a case-variant of an existing agent name',()=>{
+test('a public registration never creates a case-variant of an existing agent name, and says why',async()=>{
   const local=createAgent({name:'gpt',workspaceSlug:'browser-onboarding'});
+  const claude=createAgent({name:'claude',workspaceSlug:'browser-onboarding'});
   try {
-    expect(browserAgent('GPT')).toBeNull();
+    expect(()=>browserAgent('GPT')).toThrow("already has an agent named 'gpt'");
     expect(db.query("SELECT count(*) AS n FROM agents WHERE workspace_id=? AND name='GPT'").get(owner.workspace_id)).toEqual({n:0});
+    // The client sees the conflict and the next action, not a bare 'Bearer api_key required'.
+    authLimiter.resetForTests();
+    const response=await fetch(base+'/oauth/register',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({client_name:'Claude',redirect_uris:['https://claude.ai/api/mcp/auth_callback'],token_endpoint_auth_method:'none'})});
+    expect(response.status).toBe(400);
+    const body=await response.json() as {error_description:string};
+    expect(body.error_description).toContain("agent named 'claude'");
+    expect(body.error_description).toContain('Connections');
   } finally {
+    db.query("UPDATE agents SET name='claude-renamed-fixture' WHERE id=?").run(claude.id);
     db.query("UPDATE agents SET name='gpt-renamed-fixture' WHERE id=?").run(local.id);
+  }
+});
+
+test('a public registration never binds to a steward that happens to carry the connector name',()=>{
+  const steward=createAgent({name:'Claude',workspaceSlug:'browser-onboarding',type:'steward'});
+  try {
+    expect(()=>browserAgent('Claude')).toThrow("its steward named 'Claude'");
+  } finally {
+    db.query("UPDATE agents SET name='claude-steward-renamed-fixture',active=0 WHERE id=?").run(steward.id);
   }
 });
 
@@ -106,7 +125,7 @@ test('connected applications: every app that can reach the memory; disconnecting
 
 test('browser discovery does not reactivate a revoked identity or choose between owners',()=>{
   const agent=browserAgent('GPT')!;db.query('UPDATE agents SET active=0 WHERE id=?').run(agent.id);
-  expect(browserAgent('GPT')).toBeNull();db.query('UPDATE agents SET active=1 WHERE id=?').run(agent.id);
+  expect(()=>browserAgent('GPT')).toThrow('was disconnected');db.query('UPDATE agents SET active=1 WHERE id=?').run(agent.id);
   const workspace=createWorkspace({name:'Other browser owner',slug:'other-browser-owner'});second=bootstrapOwner(db,'Other owner',undefined,workspace.id);
   expect(browserAgent('GPT')).toBeNull();expect(browserAgent('Claude')).toBeNull();
 });

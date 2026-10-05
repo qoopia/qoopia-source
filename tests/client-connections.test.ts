@@ -7,11 +7,15 @@ import {createWorkspace} from '../src/admin/workspaces.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {adminTools} from '../src/mcp/admin-tools.ts';
-import {connectionAction,observeClientProtocol} from '../src/services/client-connections.ts';
+import {connectionAction,connectionRegistrationAuth,observeClientProtocol} from '../src/services/client-connections.ts';
+import {registerClient} from '../src/auth/oauth.ts';
+import {browserConnectionState} from '../src/services/browser-connections.ts';
 import {startHttpServer} from '../src/http.ts';
 import {env} from '../src/utils/env.ts';
 import {authLimiter,dashboardLimiter} from '../src/utils/rate-limit.ts';
 import {authenticate} from '../src/auth/middleware.ts';
+import {discoverOAuthMetadata} from '@modelcontextprotocol/sdk/client/auth.js';
+import {mcpEdgeRoute} from '../src/delivery/mcp-edge.ts';
 let owner:ReturnType<typeof bootstrapOwner>,other:ReturnType<typeof bootstrapOwner>,server:ReturnType<typeof startHttpServer>,base:string;
 let saved:{public:string;issuer:string;origins:string[]};
 beforeAll(async()=>{
@@ -26,7 +30,7 @@ afterAll(async()=>{env.PUBLIC_URL=saved.public;env.OAUTH_ISSUER=saved.issuer;env
 function apply(who=owner,mode:'read'|'read_write'='read_write',key=randomBytes(8).toString('hex')) {
   return (connectionAction(who.agent_id,{action:'apply',surface:'codex',access_mode:mode,request_key:key}) as any).connection;
 }
-async function authorize(connection:any,who=owner,deny=false) {
+async function authorize(connection:any,who=owner,deny=false,omit:{scope?:boolean;resource?:boolean}={}) {
   authLimiter.resetForTests();dashboardLimiter.resetForTests();
   const unauthorized=await fetch(connection.mcp_url,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
   expect(unauthorized.status).toBe(401);
@@ -39,7 +43,7 @@ async function authorize(connection:any,who=owner,deny=false) {
   const registration=await fetch(discovery.registration_endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_name:'Synthetic Codex',redirect_uris:[callback],token_endpoint_auth_method:'none'})});
   expect(registration.status).toBe(201);const client=await registration.json() as any;
   const verifier=randomBytes(32).toString('base64url'),challenge=createHash('sha256').update(verifier).digest('base64url');
-  const url=new URL(discovery.authorization_endpoint);for(const [key,value] of Object.entries({client_id:client.client_id,redirect_uri:callback,response_type:'code',code_challenge:challenge,code_challenge_method:'S256',scope:discovery.scopes_supported.join(' '),resource:connection.mcp_url}))url.searchParams.set(key,value as string);
+  const url=new URL(discovery.authorization_endpoint);for(const [key,value] of Object.entries({client_id:client.client_id,redirect_uri:callback,response_type:'code',code_challenge:challenge,code_challenge_method:'S256',...omit.scope?{}:{scope:discovery.scopes_supported.join(' ')},...omit.resource?{}:{resource:connection.mcp_url}}))url.searchParams.set(key,value as string);
   const started=await fetch(url,{redirect:'manual'});expect(started.status).toBe(302);
   const consentUrl=started.headers.get('location')!,ticket=new URL(consentUrl).searchParams.get('ticket')!;
   const login=await fetch(base+'/api/dashboard/login',{method:'POST',headers:{authorization:'Bearer '+who.api_key,origin:base}});
@@ -57,7 +61,7 @@ async function authorize(connection:any,who=owner,deny=false) {
   const code=callbackUrl.searchParams.get('code')!;
   const form={client_id:client.client_id,code,code_verifier:verifier,redirect_uri:callback,grant_type:'authorization_code'};
   const wrong=await fetch(discovery.token_endpoint,{method:'POST',body:new URLSearchParams({...form,resource:base+'/mcp'})});expect(wrong.status).toBe(400);
-  const token=await fetch(discovery.token_endpoint,{method:'POST',body:new URLSearchParams({...form,resource:connection.mcp_url})});expect(token.status).toBe(200);
+  const token=await fetch(discovery.token_endpoint,{method:'POST',body:new URLSearchParams(omit.resource?form:{...form,resource:connection.mcp_url})});expect(token.status).toBe(200);
   return {...await token.json() as any,client_id:client.client_id};
 }
 async function call(connection:any,token:string,name:string,args:any) {
@@ -69,6 +73,9 @@ test('selection is idempotent, isolated and never reports configuration as a cli
   // Without an installed layout the client file is offered for another computer.
   expect(first.client_config).toBe('download_file');
   expect((connectionAction(owner.agent_id,{action:'client-plan',id:first.id}) as any).code).toBe('CLIENT_COMPUTER_REQUIRED');
+  // A loopback address in a file for another computer would reach that computer itself.
+  const exported=connectionAction(owner.agent_id,{action:'client-export',id:first.id}) as any;
+  expect(exported.code).toBe('CLIENT_EXPORT_LOCAL_ONLY');expect(exported.binding).toBeUndefined();expect(exported.next_action).toContain('"transport":"remote"');
   expect(()=>apply(owner,'read_write','repeat')).toThrow('Request key');
   expect(()=>connectionAction(other.agent_id,{action:'resume',id:first.id})).toThrow('Connection unavailable');
   expect(JSON.stringify(connectionAction(owner.agent_id,{action:'status'}))).not.toMatch(/q_[A-Za-z0-9_-]{20}/);
@@ -84,6 +91,74 @@ test('Muse Code and cloud Grok Bot get distinct HTTPS addresses and remain unver
     expect((connectionAction(owner.agent_id,{action:'verify',id:connection.id}) as any).code).toBe('CLIENT_CALL_REQUIRED');
     expect((connectionAction(owner.agent_id,{action:'status',id:connection.id}) as any).connections[0].state).toBe('requires_user_action');
   }}finally{env.PUBLIC_URL=base;}
+});
+// Claude Code's SDK names a scope only when the metadata advertises one; ours does not, so a read
+// connection must default to mcp:read instead of reading "" as an unknown scope (invalid_scope).
+test('a read connection connects a client that requests no scope',async()=>{
+  const connection=apply(owner,'read'),token=await authorize(connection,owner,false,{scope:true});
+  expect(token.scope).toBe('mcp:read');
+  expect(authenticate(new Request(connection.mcp_url,{headers:{authorization:'Bearer '+token.access_token}}))?.workspace_id).toBe(owner.workspace_id);
+});
+// A client that relies on the advertised ?connection= authorization endpoint and names no resource at
+// the token endpoint gets the audience the owner consented to (RFC 8707 §2.2); naming another stays refused.
+test('a client that names no resource gets the consented audience on code exchange and refresh',async()=>{
+  const connection=apply(),token=await authorize(connection,owner,false,{resource:true});
+  expect(authenticate(new Request(connection.mcp_url,{headers:{authorization:'Bearer '+token.access_token}}))?.workspace_id).toBe(owner.workspace_id);
+  const refreshed=await fetch(base+'/oauth/token',{method:'POST',body:new URLSearchParams({grant_type:'refresh_token',client_id:token.client_id,refresh_token:token.refresh_token})});
+  expect(refreshed.status).toBe(200);const next=await refreshed.json() as any;
+  expect(authenticate(new Request(connection.mcp_url,{headers:{authorization:'Bearer '+next.access_token}}))?.workspace_id).toBe(owner.workspace_id);
+  expect(authenticate(new Request(base+'/mcp',{headers:{authorization:'Bearer '+next.access_token}}))).toBeNull();
+  const moved=await fetch(base+'/oauth/token',{method:'POST',body:new URLSearchParams({grant_type:'refresh_token',client_id:token.client_id,refresh_token:next.refresh_token,resource:base+'/mcp'})});
+  expect(moved.status).toBe(400);expect((await moved.json() as any).error).toBe('invalid_target');
+});
+// RFC 8414 path insertion of the resource path: a client that derives the metadata URL from the MCP URL
+// (the SDK's discoverOAuthMetadata(serverUrl)) asks /.well-known/oauth-authorization-server/mcp/c/<id>.
+// The generic metadata it used to get sent it to the generic /oauth/register, which refuses its callback.
+test('path-derived authorization server metadata of a connection is that connection’s, on the server and the edge',async()=>{
+  const connection=apply(),id=connection.id;
+  const metadata=await discoverOAuthMetadata(connection.mcp_url);
+  expect(metadata?.issuer).toBe(base+'/oauth/c/'+id);
+  expect(metadata?.registration_endpoint).toBe(base+'/oauth/register?connection='+id);
+  expect(metadata?.authorization_endpoint).toBe(base+'/oauth/authorize?connection='+id);
+  expect(mcpEdgeRoute('/.well-known/oauth-authorization-server/mcp/c/'+id,'GET')).toBe('allowed');
+  expect(mcpEdgeRoute('/.well-known/oauth-authorization-server/mcp/c/'+id,'POST')).toBe('method_not_allowed');
+  connectionAction(owner.agent_id,{action:'disconnect',id});
+  expect((await fetch(base+'/.well-known/oauth-authorization-server/mcp/c/'+id)).status).toBe(404);
+});
+// Every failed connect attempt registers again. Twenty dead registrations used to block the connection for
+// good ("registration limit reached"); unused ones past a consent's lifetime are now reclaimed, live ones never.
+test('dead client registrations are reclaimed at the limit; fresh and used ones still count',()=>{
+  const connection=apply(),callback=['http://127.0.0.1:19191/callback'];
+  const register=()=>registerClient({client_name:'Retrying Codex',redirect_uris:callback},connectionRegistrationAuth(connection.id,callback));
+  const clients=Array.from({length:20},register);
+  expect(()=>connectionRegistrationAuth(connection.id,callback)).toThrow('registration limit');
+  const agent=(db.query('SELECT agent_id FROM client_connections WHERE id=?').get(connection.id) as {agent_id:string}).agent_id;
+  db.query("UPDATE oauth_clients SET created_at='2000-01-01T00:00:00Z' WHERE agent_id=?").run(agent);
+  db.query(`INSERT INTO oauth_tokens(token_hash,client_id,agent_id,workspace_id,token_type,granted_scope,expires_at,revoked,created_at)
+    VALUES(?,?,?,?,'refresh','mcp:read','2999-01-01T00:00:00Z',0,'2000-01-01T00:00:00Z')`).run(randomBytes(16).toString('hex'),clients[0]!.client_id,agent,owner.workspace_id);
+  const fresh=register();
+  const left=(db.query('SELECT id FROM oauth_clients WHERE agent_id=?').all(agent) as {id:string}[]).map(r=>r.id).sort();
+  expect(left).toEqual([clients[0]!.client_id,fresh.client_id].sort());
+  for(let i=0;i<18;i++)register();
+  expect(()=>connectionRegistrationAuth(connection.id,callback)).toThrow('registration limit');
+});
+// A client that revokes its own grant (sign-out, removed connector) can no longer call. The card used to keep
+// saying ready / "Use this connection"; it now asks for a new sign-in until the client holds a grant again.
+test('a verified connection whose client revoked its grant asks for a new sign-in',async()=>{
+  const connection=apply(),token=await authorize(connection);
+  expect((await call(connection,token.access_token,'qoopia_protocol',{})).data.result.isError).not.toBe(true);
+  const ready=(connectionAction(owner.agent_id,{action:'status',id:connection.id}) as any).connections[0];
+  expect(ready.state).toBe('ready');
+  const agent=(db.query('SELECT agent_id FROM client_connections WHERE id=?').get(connection.id) as {agent_id:string}).agent_id;
+  expect(browserConnectionState(owner.agent_id).apps.find(a=>a.id===connection.id)?.authorized).toBe(1);
+  expect((await fetch(base+'/oauth/revoke',{method:'POST',body:new URLSearchParams({token:token.refresh_token,client_id:token.client_id})})).status).toBe(200);
+  const stale=(connectionAction(owner.agent_id,{action:'status',id:connection.id}) as any).connections[0];
+  expect(stale).toMatchObject({state:'requires_user_action',code:'CLIENT_REAUTHORIZATION_REQUIRED',authorized:false});
+  expect(stale.next_action).toContain('Sign in to this same connection address again');
+  expect(browserConnectionState(owner.agent_id).apps.find(a=>a.agent_id===agent)?.authorized).toBe(0);
+  const again=await authorize(connection);
+  expect((connectionAction(owner.agent_id,{action:'status',id:connection.id}) as any).connections[0].state).toBe('ready');
+  expect(again.access_token).toBeString();
 });
 test('declining local OAuth includes the pinned issuer without issuing a code',async()=>{await authorize(apply(),owner,true);});
 test('automatic protocol proof rejects fabricated bindings and works with read-only OAuth without granting writes',async()=>{
@@ -196,7 +271,13 @@ test('steward prepares a scoped review link; owner labels Muse without changing 
   expect(proposal.changes_applied).toBe(false);expect(proposal.connection).toBeNull();expect(count()).toBe(before);
   expect(new URL(proposal.owner_url).searchParams.get('workspace')).toBe(owner.workspace_id);
   expect(new URL(proposal.owner_url).searchParams.get('agent')).toBe('FIBI');
+  // A tunnel install's PUBLIC_URL is the tunnel origin, which publishes no dashboard: the link stays on loopback.
+  const priorStandalone=process.env.QOOPIA_STANDALONE;process.env.QOOPIA_STANDALONE='true';env.PUBLIC_URL='https://c-tunnel.example';
+  try{expect(new URL((prepare.handler(selection,auth) as any).owner_url).origin).toBe('http://127.0.0.1:'+env.PORT);}
+  finally{if(priorStandalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=priorStandalone;env.PUBLIC_URL=base;}
   expect(()=>prepare.handler(selection,{...auth,agent_id:standard.id})).toThrow('steward');
+  // A case-only variant of an existing agent's name is that agent: apply would refuse it as a duplicate.
+  expect(()=>prepare.handler({...selection,agent_name:'preparation STANDARD'},auth)).toThrow('already has access');
   expect(()=>prepare.handler({...selection,agent_name:'<script>'},auth)).toThrow();
   expect(()=>connectionAction(steward.id,{action:'apply',...selection,request_key:'steward-denied'})).toThrow();
   env.PUBLIC_URL='https://fixture.example';
@@ -209,6 +290,10 @@ test('steward prepares a scoped review link; owner labels Muse without changing 
     expect(()=>prepare.handler({...selection,connection_id:c.id},{...auth,workspace_id:other.workspace_id})).toThrow();
     const row=db.query('SELECT * FROM client_connections WHERE id=?').get(c.id) as any;
     db.query("UPDATE client_connections SET state='verified',verified_at='2026-09-30T03:36:43Z' WHERE id=?").run(c.id); // synthetic proof fixture only
+    // The verified client still holds a grant; without one the card asks for a new sign-in instead of ready.
+    const museClient=registerClient({client_name:'Muse',redirect_uris:['https://muse.example/callback']},connectionRegistrationAuth(c.id,['https://muse.example/callback']));
+    db.query(`INSERT INTO oauth_tokens(token_hash,client_id,agent_id,workspace_id,token_type,granted_scope,expires_at,revoked,created_at)
+      VALUES(?,?,?,?,'refresh','mcp:read mcp:write','2999-01-01T00:00:00Z',0,'2026-09-30T03:36:43Z')`).run(randomBytes(16).toString('hex'),museClient.client_id,row.agent_id,owner.workspace_id);
     const identity=db.query('SELECT * FROM agents WHERE id=?').get(row.agent_id) as any;
     const reused=prepare.handler({...selection,connection_id:c.id},auth) as any;
     expect(reused.connection.id).toBe(c.id);expect(()=>prepare.handler({...selection,connection_id:c.id,access_mode:'read'},auth)).toThrow('different application or access');expect(reused.connection.mcp_url).toBe(c.mcp_url);
@@ -265,4 +350,27 @@ test('plan for a cloud client without external access says so and names network-
   const applied=await fetch(base+'/api/dashboard/connection-setup',{method:'POST',headers:{cookie,origin:base,'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action:'apply',...selection})});
   expect(applied.status).toBe(400);
   expect(await applied.json()).toMatchObject({state:'error',code:'NOT_READY',next_action:plan.next_action});
+});
+test('a refused client profile tells the owner why instead of the generic setup failure',async()=>{
+  const fs=await import('node:fs'),{QoopiaError}=await import('../src/utils/errors.ts');
+  const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-client-refusal-')),saved=process.env.QOOPIA_STANDALONE_LAYOUT;
+  try {
+    process.env.QOOPIA_STANDALONE_LAYOUT=JSON.stringify({root,logs:root+'/logs'});
+    // e.g. a home directory created 0775 under umask 002
+    const profile=root+'/shared-profile';fs.mkdirSync(profile);fs.chmodSync(profile,0o775);
+    let error:unknown;try{connectionAction(owner.agent_id,{action:'client-plan',id:apply().id,config_directory:profile});}catch(e){error=e;}
+    expect(error).toBeInstanceOf(QoopiaError);expect((error as Error).message).toContain('not writable by other users');
+  } finally {if(saved===undefined)delete process.env.QOOPIA_STANDALONE_LAYOUT;else process.env.QOOPIA_STANDALONE_LAYOUT=saved;fs.rmSync(root,{recursive:true,force:true});}
+});
+test('on an installation a remote Claude Code/Codex connection is offered as a file for the other computer; a local one is set up here',async()=>{
+  const fs=await import('node:fs');
+  const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-client-remote-')),saved=process.env.QOOPIA_STANDALONE_LAYOUT,url=env.PUBLIC_URL;
+  try {
+    process.env.QOOPIA_STANDALONE_LAYOUT=JSON.stringify({root,logs:root+'/logs'});
+    expect(apply().client_config).toBe('on_this_computer');
+    env.PUBLIC_URL='https://c-fixture.qoopia.ai';
+    const remote=(connectionAction(owner.agent_id,{action:'apply',surface:'claude_code',access_mode:'read',request_key:'remote-laptop',transport:'remote'}) as any).connection;
+    expect(remote.mcp_url).toStartWith('https://c-fixture.qoopia.ai/');expect(remote.client_config).toBe('download_file');
+    expect((connectionAction(owner.agent_id,{action:'client-export',id:remote.id}) as any).binding.mcp_url).toBe(remote.mcp_url);
+  } finally {env.PUBLIC_URL=url;if(saved===undefined)delete process.env.QOOPIA_STANDALONE_LAYOUT;else process.env.QOOPIA_STANDALONE_LAYOUT=saved;fs.rmSync(root,{recursive:true,force:true});}
 });

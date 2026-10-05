@@ -8,6 +8,7 @@ import { isAdmin } from "../auth/principal.ts";
 import { connectionOrigin, publicConnection } from "../services/connection-identity.ts";
 import { env } from "../utils/env.ts";
 import { logger } from "../utils/logger.ts";
+import { noteAgentWork } from "../services/memory-policy.ts";
 import { getAllowedOrigin, json, nodeReqToFetchRequest, readBody } from "./respond.ts";
 
 // --- Auth context per-request (no module-level variable, no race condition) ---
@@ -29,7 +30,7 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
   if (!auth) {
     const headers: Record<string, string> = {
       "content-type": "application/json",
-      "www-authenticate": `Bearer realm="qoopia", resource_metadata="${resourceBase}/.well-known/oauth-protected-resource${new URL(req.url!,env.PUBLIC_URL).pathname === "/mcp" ? "" : new URL(req.url!,env.PUBLIC_URL).pathname}"`,
+      "www-authenticate": `Bearer realm="qoopia", resource_metadata="${resourceBase}/.well-known/oauth-protected-resource${["/mcp","/mcp/"].includes(new URL(req.url!,env.PUBLIC_URL).pathname) ? "" : new URL(req.url!,env.PUBLIC_URL).pathname}"`,
     };
     const origin = getAllowedOrigin(req);
     if (origin) {
@@ -74,6 +75,7 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
         // Risk class makes destructive/admin calls greppable in stderr
         // even when the tool name itself isn't obviously dangerous.
         detail = ` tool=${risk ? toolName : "unknown"} risk=${risk ?? "unknown"} profile=${agentProfile}`;
+        noteAgentWork(auth.agent_id, toolName);
       }
       logger.info(
         `MCP ${rpcMethod || "?"}${detail} agent=${auth.agent_name} (${auth.source})`,

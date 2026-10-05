@@ -104,6 +104,8 @@ test('completed writes with pending receipt finalize; reconnect preserves the st
 // digest recorded, which is also the moment a reader decides the change is worth
 // re-publishing to every profile.
 const PUBLISHED_REVISIONS: Record<number, string> = {
+  11: 'b6025f88543dcabd1d660225501eb3a9099dfe7d0c48da343ad839d35d08de94',
+  10: '7f45a162abc2387f3ee6298b136e32058038f3d0e6b07db579470aeb3d084b64',
   9: '2836b52017b72b8ef3930f573d02f6153bee455a2923e297b42d712db311a481',
   8: '631b1a1829e09d74e05b60d8c4d3e4058fb021e7567b53a21297f87e63d7e695',
   7: '9a2159d6a263b8078ca27072e78ac52a2c9f88441019aa1314a29e4609217cd1',
@@ -126,6 +128,8 @@ test('changing a shipped document requires a new kit revision',()=>{
     const block=fs.readFileSync(path.join(profile,'CLAUDE.md'),'utf8');
     expect(block).toContain('manifest.json');
     expect(block).toContain('qoopia_capabilities');
+    // A stale kit names the one command that updates it, not just "tell the owner".
+    expect(block).toContain('qoopia instructions refresh --commit');
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 

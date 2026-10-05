@@ -117,3 +117,70 @@ test('a batch shrunk by timeouts grows back after recovery, and a pending backlo
   await checkpointSession(workspace,agent,session,ok);
   expect(meta().continuity_batch_limit).toBeUndefined();
 });
+test('a predecessor the server never recorded, or one already continued, stays unlinked instead of failing the start',()=>{
+  const event=(session_id:string,extra:Record<string,unknown>={})=>({session_id,project:'/guess',runtime:'claude_code',event:'start',...extra});
+  continuityEvent(workspace,agent,event('claude_code:guess-1',{event:'progress',messages:[{id:'guess-1',role:'user',content:'Решение: оставить Corsair.'}]}));
+  expect(continuityEvent(workspace,agent,event('claude_code:guess-2',{previous_session_id:'claude_code:guess-1'})).tail.some(m=>m.content.includes('Corsair'))).toBe(true);
+  // A second session guessing the same predecessor starts, empty and unlinked; the first link stays.
+  expect(continuityEvent(workspace,agent,event('claude_code:guess-3',{previous_session_id:'claude_code:guess-1'})).tail).toEqual([]);
+  // A session from a manual period or an outage was never recorded here.
+  expect(continuityEvent(workspace,agent,event('claude_code:guess-4',{previous_session_id:'claude_code:never-recorded'})).tail).toEqual([]);
+  // Another agent's session is still never linked.
+  continuityEvent(workspace,other,event('claude_code:guess-foreign',{event:'progress',messages:[{id:'f-1',role:'user',content:'foreign'}]}));
+  expect(continuityEvent(workspace,agent,event('claude_code:guess-5',{previous_session_id:'claude_code:guess-foreign'})).tail).toEqual([]);
+  const meta=(id:string)=>JSON.parse((db.query('SELECT metadata FROM sessions WHERE id=?').get(id) as {metadata:string}).metadata);
+  expect(meta('claude_code:guess-1').continuity_successor).toBe('claude_code:guess-2');
+  for(const id of ['claude_code:guess-3','claude_code:guess-4','claude_code:guess-5'])expect(meta(id).continuity_previous).toBeUndefined();
+});
+test('a resumed conversation written to a new transcript does not store its earlier history twice',()=>{
+  const turn=(id:string,content:string)=>({id,role:'user' as const,content});
+  const count=(session:string)=>(db.query('SELECT COUNT(*) AS n FROM session_messages WHERE session_id=?').get(session) as {n:number}).n;
+  continuityEvent(workspace,agent,{session_id:'claude_code:resume-1',project:'/resume',runtime:'claude_code',event:'progress',messages:[turn('r-a:0:0','первый'),turn('r-b:0:0','второй')]});
+  // Resumed once: the new file starts with the copied history under the same record ids.
+  continuityEvent(workspace,agent,{session_id:'claude_code:resume-2',project:'/resume',runtime:'claude_code',event:'start',previous_session_id:'claude_code:resume-1',
+    messages:[turn('r-a:0:0','первый'),turn('r-b:0:0','второй'),turn('r-c:0:0','третий')]});
+  // Resumed again: history from both earlier files is copied.
+  continuityEvent(workspace,agent,{session_id:'claude_code:resume-3',project:'/resume',runtime:'claude_code',event:'start',previous_session_id:'claude_code:resume-2',
+    messages:[turn('r-a:0:0','первый'),turn('r-b:0:0','второй'),turn('r-c:0:0','третий'),turn('r-d:0:0','четвёртый')]});
+  expect([count('claude_code:resume-1'),count('claude_code:resume-2'),count('claude_code:resume-3')]).toEqual([2,1,1]);
+  expect(restoreContext(workspace,agent,'claude_code:resume-3').tail.map(m=>m.content)).toEqual(['первый','второй','третий','четвёртый']);
+});
+test('memory keeps file paths in the journal and the summary; credential files stay hidden',async()=>{
+  const session='claude_code:paths-kept',file='/Users/example/Code/qoopia/src/services/continuity.ts';
+  continuityEvent(workspace,agent,{session_id:session,project:'/paths',runtime:'claude_code',event:'precompact',messages:[
+    {id:'p-1',role:'assistant',content:`Edited ${file}; the key stays in /Users/example/.ssh/id_ed25519.`}]});
+  const tail=restoreContext(workspace,agent,session).tail;
+  expect(tail[0]!.content).toBe(`Edited ${file}; the key stays in [REDACTED:credential-path].`);
+  let source='';
+  await checkpointSession(workspace,agent,session,async(_w,_i,input)=>{source=JSON.stringify(input);
+    return {text:`Done: changed ${file}. Key: /Users/example/.ssh/id_ed25519`,model:'test-fixture',observed_models:[]};});
+  expect(source).toContain(file);
+  expect(restoreContext(workspace,agent,session).context).toBe(`Done: changed ${file}. Key: [REDACTED:credential-path]`);
+});
+test('a 7 MB tool output reaches the summarizer as a few KB of head and tail; the journal keeps it whole [F-341]',async()=>{
+  const session='claude_code:huge-tool-output';
+  const line='ok  src/module.test.ts  builds and links every target cleanly\n';
+  const log='$ bun test --coverage\n'+line.repeat(Math.ceil(7_000_000/line.length))+'Ran 1342 tests: 1342 pass, 0 fail. Exit code 0.';
+  // Shaped like the hook delivers it: the action, then the result split into 12k-char rows.
+  const rows:Array<{id:string;role:'assistant'|'tool';content:string}>=[{id:'act:0:0',role:'assistant',content:'Action requested: Bash\n{"command":"bun test --coverage"}'}];
+  for(let start=0;start<log.length;start+=12_000)rows.push({id:'res:0:'+start,role:'tool',content:log.slice(start,start+12_000)});
+  rows.push({id:'after:0:0',role:'assistant',content:'All tests pass; moving on to the release notes.'});
+  for(let i=0;i<rows.length;i+=100)continuityEvent(workspace,agent,{session_id:session,project:'/huge',runtime:'claude_code',event:'precompact',messages:rows.slice(i,i+100)});
+  const prompts:string[]=[];
+  for(let i=0;i<200&&cursor(session)<lastId(session);i++) {
+    db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_priority',1) WHERE id=?").run(session);
+    await checkpointSession(workspace,agent,session,async(_w,instruction,input)=>{prompts.push(memoryPrompt(instruction,input));return summarize();});
+  }
+  expect(cursor(session)).toBe(lastId(session));
+  // Before: ~150 calls of ~50k chars each. Now the 584-row output is one event, so the backlog
+  // drains in two calls whose prompts a model reads and answers well within its 45-second budget.
+  expect(prompts).toHaveLength(2);for(const prompt of prompts)expect(prompt.length).toBeLessThan(8000);
+  expect(prompts[0]).toContain('Action requested: Bash');expect(prompts[0]).toContain('$ bun test --coverage');
+  expect(prompts[0]).toContain('1342 pass, 0 fail. Exit code 0.');expect(prompts[1]).toContain('All tests pass');
+  expect(prompts[0]).toMatch(/\[… \d+ characters omitted …\]/);
+  const stored=db.query("SELECT content FROM session_messages WHERE session_id=? AND role='tool' ORDER BY id").all(session) as {content:string}[];
+  expect(stored.map(r=>r.content).join('')).toBe(log);
+  // Following the output must not leave a statement mid-step: that holds a read transaction open (the WAL
+  // cannot checkpoint) and locks the table against schema changes.
+  expect(()=>db.exec('CREATE INDEX f341_probe ON session_messages(id); DROP INDEX f341_probe')).not.toThrow();
+});

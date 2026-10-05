@@ -350,7 +350,9 @@ describe("Flag ON — the single documented divergence from legacy latest_only (
   test("replacement-unavailable: legacy shows the predecessor, current belief hides it", async () => {
     enableFlag();
     const term = "vantorix";
-    const predecessor = note(`${term} public predecessor`);
+    // Предшественник общий (читатель видит его через общий контекст), обе ноты
+    // принадлежат другому агенту: заменять можно только свою ноту (2026-10-04).
+    const predecessor = note(`${term} public predecessor`, { agent_id: OTHER_AGENT_ID });
     // Преемник private и принадлежит другому агенту: для нашего читателя
     // замена недоступна.
     const successor = createNote({

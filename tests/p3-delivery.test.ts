@@ -57,6 +57,41 @@ test('P3 new-machine restore keeps IDs/history and public trust; rotates access,
  fs.appendFileSync(path.join(backup,'snapshot.db'),'corrupt');expect(()=>target.restore(backup)).toThrow('checksum mismatch');
  }finally{f.cleanup();}
 });
+test('same-machine restore migrates an older-schema backup with the installed bundle and refuses a newer one',()=>{
+ const f=fixture();try{const b=f.bundle('first'),c=f.delivery.install(b,3737);
+  const older=path.join(f.root,'older');f.delivery.backup(older);
+  // Startup refuses pending migrations: a restored copy left at the backup's schema would not start.
+  const migrated:string[]=[],delivery=new Delivery(f.install,f.trust,true,(bundle,gen)=>{migrated.push(gen);f.migrate(bundle,gen);});
+  const restored=delivery.restore(older);expect(migrated).toEqual([path.join(f.install,'generations',restored.current.generation)]);
+  const d=new Database(dataFile(f.install,restored.current));d.query("INSERT INTO schema_versions(version,description) VALUES (38,'newer than the installed bundle')").run();d.close();
+  const newer=path.join(f.root,'newer');delivery.backup(newer);const pointer=fs.readFileSync(path.join(f.install,'current.json'));
+  expect(()=>delivery.restore(newer)).toThrow('Backup schema 38 is newer');expect(fs.readFileSync(path.join(f.install,'current.json'))).toEqual(pointer);
+  expect(c.instance).toBe(restored.current.instance);
+ }finally{f.cleanup();}
+});
+test('new-Mac restore moves a fresh, never-used installation aside; one with data or no installation is refused with the next step',()=>{
+ const f=fixture();try{const b=f.bundle('first'),c=f.delivery.install(b,3737);
+  const source=new Database(dataFile(f.install,c));source.query("INSERT INTO notes(id,workspace_id,agent_id,type,text) SELECT 'kept-note',workspace_id,id,'memory','from the old Mac' FROM agents LIMIT 1").run();source.close();
+  const backup=path.join(f.root,'backup');f.delivery.backup(backup);
+  // The app was opened once on the new Mac: an installation with only its owner exists.
+  const fresh=(name:string)=>{const d=new Delivery(path.join(f.root,name),f.trust,true,f.migrate);const own=d.install(b,4000);return {d,own};};
+  const target=fresh('New Mac Ж');const restored=target.d.restoreNew(backup,b,4141);
+  expect(restored.current.instance).toBe(c.instance);expect(readCurrent(target.d.root).instance).toBe(c.instance);
+  expect(readCurrent(restored.unused_installation_moved_to!).instance).toBe(target.own.instance);
+  const r=new Database(dataFile(target.d.root,restored.current),{readonly:true});expect(r.query("SELECT text FROM notes WHERE id='kept-note'").get()).toEqual({text:'from the old Mac'});r.close();
+  // Used installation: refused, untouched, with the exact next step.
+  const used=fresh('Used');const u=new Database(dataFile(used.d.root,used.own));u.query("INSERT INTO notes(id,workspace_id,agent_id,type,text) SELECT 'mine',workspace_id,id,'memory','new Mac note' FROM agents LIMIT 1").run();u.close();
+  const pointer=fs.readFileSync(path.join(used.d.root,'current.json'));
+  expect(()=>used.d.restoreNew(backup,b,4141)).toThrow(/already holds data \(notes\)\. Next: .*--root ABSOLUTE_EMPTY_DIRECTORY.*qoopia backup --out/);
+  expect(fs.readFileSync(path.join(used.d.root,'current.json'))).toEqual(pointer);
+  const foreign=path.join(f.root,'Foreign');privateDirectory(foreign);fs.writeFileSync(path.join(foreign,'notes.txt'),'mine');
+  expect(()=>new Delivery(foreign,f.trust,true,f.migrate).restoreNew(backup,b,4141)).toThrow('holds no Qoopia installation');
+  // A failing restore puts the unused installation back.
+  const again=fresh('Retry');const before=fs.readFileSync(path.join(again.d.root,'current.json'));
+  expect(()=>new Delivery(again.d.root,f.trust,true,()=>{throw new Error('injected restore migration failure');}).restoreNew(backup,b,4141)).toThrow('injected');
+  expect(fs.readFileSync(path.join(again.d.root,'current.json'))).toEqual(before);
+ }finally{f.cleanup();}
+});
 test('P3 doctor is read-only and support excludes private bodies; uninstall preserves data, backup and user skills',()=>{
  const f=fixture();try{const b=f.bundle('first'),c=f.delivery.install(b,3737);durableWrite(path.join(f.install,'user-skill.md'),'manual bytes');const before=inventory(f.install);const report=f.delivery.doctor();const preview=f.delivery.supportPreview();expect(preview.preview).toBe(true);expect(preview.automatic_send).toBe(false);expect(JSON.stringify(preview)).not.toContain(f.install);expect(report.ok).toBe(true);expect(inventory(f.install)).toEqual(before);expect(JSON.stringify(report)).not.toContain(f.install);
  f.delivery.update(f.bundle('next'));const installedBundles=fs.readdirSync(path.join(f.install,'bundles'));expect(installedBundles.length).toBe(2);
@@ -160,6 +195,19 @@ test('doctor reports verified/stale/wrong-instance/corrupt scheduled backup, pen
  }finally{f.cleanup();}
 });
 
+test('a backup made while the clock was in the future does not hide the real latest backup; it is its own finding',()=>{
+ const f=fixture();try{
+  f.delivery.install(f.bundle('doctor-future'),3737);
+  const current=path.join(f.install,'backups','qoopia-2026-09-06T00-00-00-000Z.backup');f.delivery.backup(current);
+  const future=path.join(f.install,'backups','qoopia-2036-01-01T00-00-00-000Z.backup');f.delivery.backup(future);
+  const manifest=path.join(future,'manifest.json');durableWrite(manifest,JSON.stringify({...JSON.parse(fs.readFileSync(manifest,'utf8')),created_at:'2036-01-01T00:00:00.000Z'}));
+  const report=f.delivery.doctor();
+  expect(report.checks.backup).toMatchObject({status:'pass',reason:'LATEST_SCHEDULED_BACKUP_VERIFIED',future_dated:1});
+  expect(report.checks.backup_clock).toMatchObject({status:'fail',reason:'BACKUP_DATED_IN_FUTURE'});expect(report.checks.backup_clock!.action).toContain('clock');
+  fs.rmSync(current,{recursive:true});
+  expect(f.delivery.doctor().checks.backup).toMatchObject({status:'fail',reason:'BACKUP_DATED_IN_FUTURE'});
+ }finally{f.cleanup();}
+});
 test('doctor names the stored-state cause: not installed, test build without flag, private-path permissions',()=>{
  const f=fixture();try{
   const stored=(delivery:Delivery)=>{const report=delivery.doctor();expect(JSON.stringify(report)).not.toContain(f.root);return report.checks.stored_state!;};

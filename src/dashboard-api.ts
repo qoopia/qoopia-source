@@ -821,8 +821,12 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
     const mp: any[] = admin ? [] : [aid, aid];
     const wf = admin ? "" : " AND target_agent_id = ?";
     const wp: any[] = admin ? [] : [aid];
+    // A session's participants: its creator and every sender or recipient in it.
+    const sf = admin ? "" : ` AND (created_by_agent_id = ? OR EXISTS (SELECT 1 FROM agent_comm_messages m
+      WHERE m.session_id = agent_comm_sessions.id AND (m.sender_agent_id = ? OR m.recipient_agent_id = ?)))`;
+    const sp: any[] = admin ? [] : [aid, aid, aid];
     return {
-      open_sessions: ccCount("agent_comm_sessions", "workspace_id = ? AND status = 'open'", [ws]),
+      open_sessions: ccCount("agent_comm_sessions", `workspace_id = ? AND status = 'open'${sf}`, [ws, ...sp]),
       messages_24h: ccCount(
         "agent_comm_messages",
         `workspace_id = ?${mf} AND created_at >= ?`,

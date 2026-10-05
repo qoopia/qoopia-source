@@ -26,3 +26,17 @@ test("the full-scan estimate is not recomputed on the next recall", async () => 
   const second = await run();
   expect(second.cost.tokens_full_scan_estimate).toBe(first.cost.tokens_full_scan_estimate);
 });
+
+test("the estimate covers only notes the caller may read (ADR-020)", async () => {
+  const w = createWorkspace({ name: "Recall cost visibility", slug: "recall-cost-visibility" });
+  const writer = createAgent({ name: "cost-writer", workspaceSlug: w.slug }).id;
+  const loner = createAgent({ name: "cost-loner", workspaceSlug: w.slug }).id;
+  createNote({ workspace_id: w.id, agent_id: loner, type: "memory", text: "costvisible own note" });
+  createNote({ workspace_id: w.id, agent_id: writer, type: "memory", text: "y".repeat(40_000), visibility: "private" });
+  const estimate = async (agent: string, isAdmin = false) =>
+    (await recallBaseline({ workspace_id: w.id, caller_agent_id: agent, is_admin: isAdmin, query: "costvisible", mode: "fts5" }))
+      .cost.tokens_full_scan_estimate;
+  // A sibling's private note is not in a shared-context agent's corpus; the steward's includes it.
+  expect(await estimate(loner)).toBeLessThan(100);
+  expect(await estimate(loner, true)).toBeGreaterThan(10_000);
+});

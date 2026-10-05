@@ -647,13 +647,9 @@ function watchFile(filePath: string) {
   void processNewLines(filePath);
 }
 
-function watchProjectsDir() {
-  if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) {
-    console.warn(`[tailer] projects dir not found: ${CLAUDE_PROJECTS_DIR}`);
-    return;
-  }
-
-  // Watch existing JSONL files. QSEC-006: skip symlinked dirs/files.
+/** Watch every JSONL file under the projects dir. QSEC-006: skip symlinked dirs/files. */
+function discoverSessionFiles() {
+  if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return;
   for (const projectDir of fs.readdirSync(CLAUDE_PROJECTS_DIR)) {
     const fullProjectDir = path.join(CLAUDE_PROJECTS_DIR, projectDir);
     if (!isSafeWatchDir(fullProjectDir)) continue;
@@ -663,6 +659,15 @@ function watchProjectsDir() {
       }
     }
   }
+}
+
+function watchProjectsDir() {
+  if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) {
+    console.warn(`[tailer] projects dir not found: ${CLAUDE_PROJECTS_DIR}`);
+    return;
+  }
+
+  discoverSessionFiles();
 
   // Watch for new project dirs / new JSONL files. watchFile() does the
   // symlink/realpath rejection per-file.
@@ -686,12 +691,13 @@ if (import.meta.main) {
   QOOPIA_URL = qoopiaBaseUrl();
   loadCursors();
   watchProjectsDir();
-  // Watch events are hints, not delivery guarantees. A bounded sweep also
-  // retries after network recovery even when the conversation is idle; it visits
-  // files one at a time, 2 s after the previous sweep ends.
-  // ponytail: one lstat per file per sweep plus one fs.watch per file; rely on the
-  // recursive directory watcher alone if session files reach the tens of thousands.
-  const sweep = async () => { for (const file of watchers.keys()) await processNewLines(file); setTimeout(sweep, 2_000); };
+  // Watch events are hints, not delivery guarantees. A bounded sweep also picks up
+  // session files the directory watcher missed and retries after network recovery
+  // even when the conversation is idle; it visits files one at a time, 2 s after
+  // the previous sweep ends.
+  // ponytail: one readdir per project dir and one lstat per file per sweep plus one
+  // fs.watch per file; rely on the watchers alone if session files reach the tens of thousands.
+  const sweep = async () => { discoverSessionFiles(); for (const file of watchers.keys()) await processNewLines(file); setTimeout(sweep, 2_000); };
   setTimeout(sweep, 2_000);
   process.on('SIGTERM',()=>{persistCursors();process.exit(0);});
   process.on('SIGINT',()=>{persistCursors();process.exit(0);});

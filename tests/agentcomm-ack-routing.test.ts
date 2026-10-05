@@ -30,6 +30,7 @@ import {
   agentReply,
   agentInbox,
   agentSessionCreate,
+  agentStatus,
 } from "../src/services/agent-comm.ts";
 
 let WS = "";
@@ -253,6 +254,17 @@ describe("agent names that differ only by case", () => {
     expect(() => createAgent({ name: "LEO-T", workspaceSlug: wsSlug })).toThrow(/already exists/);
   });
 
+  test("surrounding spaces never make a near-duplicate name", () => {
+    expect(() => createAgent({ name: "leo-t ", workspaceSlug: wsSlug })).toThrow(/already exists/);
+    expect(() => createAgent({ name: "   ", workspaceSlug: wsSlug })).toThrow(/invalid characters/);
+    const spaced = createAgent({ name: "  spaced-t  ", workspaceSlug: wsSlug });
+    expect(spaced.name).toBe("spaced-t");
+    expect((db.prepare("SELECT name FROM agents WHERE id = ?").get(spaced.id) as { name: string }).name).toBe("spaced-t");
+    // A legacy row stored with a trailing space still blocks its trimmed twin.
+    db.prepare("UPDATE agents SET name = 'legacy-t ' WHERE id = ?").run(createAgent({ name: "legacy-tmp", workspaceSlug: wsSlug }).id);
+    expect(() => createAgent({ name: "legacy-t", workspaceSlug: wsSlug })).toThrow(/already exists/);
+  });
+
   test("addressing never silently picks between case-variant agents", () => {
     // Such pairs may already exist (they were creatable before); model one directly.
     const lower = createAgent({ name: "case-twin", workspaceSlug: wsSlug }).id;
@@ -340,5 +352,43 @@ describe("agent-comm parent_message_id names a message of the same thread", () =
       session_id: thread.session_id, parent_message_id: thread.id,
     });
     expect(row(child.id).parent_message_id).toBe(thread.id);
+  });
+
+  test("a follow-up reply before any answer goes to the recipient, never back to the sender", () => {
+    const request = agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "corsair-t", body: "first" });
+    const followUp = agentReply({ workspace_id: WS, agent_id: LIAM, session_id: request.session_id, body: "second" });
+    expect(row(followUp.id).recipient_agent_id).toBe(CORSAIR);
+    // The only other party gone: the implicit target is missing, not the caller itself.
+    const gone = createAgent({ name: "reply-gone-t", workspaceSlug: wsSlug }).id;
+    const toGone = agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "reply-gone-t", body: "hello" });
+    db.query("UPDATE agents SET active = 0 WHERE id = ?").run(gone);
+    expect(errorOf(() => agentReply({ workspace_id: WS, agent_id: LIAM, session_id: toGone.session_id, body: "still?" })))
+      .toMatchObject({ code: "NOT_FOUND" });
+    // An empty session the caller opened itself has nobody to reply to.
+    const empty = agentSessionCreate({ workspace_id: WS, agent_id: LIAM, topic: "empty" });
+    expect(errorOf(() => agentReply({ workspace_id: WS, agent_id: LIAM, session_id: empty.id, body: "anyone?" })))
+      .toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  test("a message to an agent without an inbox is refused, not queued", () => {
+    // Shaped like a client-connection / memory-setup agent: its profile has no agent_inbox.
+    const worker = createAgent({ name: "inboxless-t", workspaceSlug: wsSlug }).id;
+    db.query("UPDATE agents SET authority_profile = 'memory-worker', legacy_skill_access = 0 WHERE id = ?").run(worker);
+    const count = () => (db.prepare("SELECT count(*) AS n FROM agent_comm_messages WHERE recipient_agent_id = ?").get(worker) as { n: number }).n;
+    const refused = errorOf(() => agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "inboxless-t", body: "please review" }));
+    expect(refused).toMatchObject({ code: "UNSUPPORTED" });
+    expect((refused as { message: string }).message).toContain("cannot read agent messages");
+    expect(errorOf(() => agentSessionCreate({ workspace_id: WS, agent_id: LIAM, topic: "t", to_agent: worker, message: "hi" })))
+      .toMatchObject({ code: "UNSUPPORTED" });
+    expect(count()).toBe(0);
+    // An agent with the legacy surface (its inbox included) still receives.
+    expect(agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "leo-t", body: "still fine" }).to).toBe("leo-t");
+  });
+
+  test("agent_status by a local agent's id is not flagged as another workspace", () => {
+    expect(agentStatus({ workspace_id: WS, agent: LEO }).agents).toEqual([
+      expect.not.objectContaining({ external_workspace: true }),
+    ]);
+    expect(agentStatus({ workspace_id: WS, agent: LEO }).agents[0]!.name).toBe("leo-t");
   });
 });

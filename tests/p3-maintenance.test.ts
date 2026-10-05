@@ -4,7 +4,7 @@ import path from 'node:path';
 import { db } from '../src/db/connection.ts';
 import { runMigrations } from '../src/db/migrate.ts';
 import { env } from '../src/utils/env.ts';
-import { runMaintenance } from '../src/services/retention.ts';
+import { runMaintenance, maintenanceOverdue, maintenanceCatchUp } from '../src/services/retention.ts';
 import { bootstrapOwner } from '../src/auth/pairings.ts';
 import { verifyBackup } from '../src/delivery/snapshot.ts';
 import { reviseDraft } from '../src/skills/authority.ts';
@@ -170,4 +170,49 @@ test('F-280: activity_deleted counts activity rows, not FTS shadow writes',()=>{
  expect(old).toBeGreaterThanOrEqual(3);
  const result=runMaintenance();expect(result.ok).toBe(true);
  expect(result.report.activity_deleted).toBe(old);
+});
+
+test('a log retention failure is reported but the daily backup is still written; a missed window is caught up',()=>{
+ runMigrations();
+ const prior=env.LOG_DIR,logs=fs.mkdtempSync(path.join(env.BACKUP_DIR,'..','logs-unsafe-'));
+ // An unowned file without a ledger: retention refuses to touch the directory.
+ fs.mkdirSync(path.join(logs,'application'),{mode:0o700});fs.writeFileSync(path.join(logs,'application','app-unowned.jsonl'),'x',{mode:0o600});
+ env.LOG_DIR=logs;
+ try {
+  const before=new Set(fs.readdirSync(env.BACKUP_DIR));
+  const result=runMaintenance();
+  expect(result.ok).toBe(false);expect(result.report.error).toBe('LOG_RETENTION_FAILED');
+  expect(result.report.backup).toMatchObject({verified:true});
+  expect(fs.readdirSync(env.BACKUP_DIR).some(n=>n.startsWith('qoopia-')&&!before.has(n))).toBe(true);
+  // A failed last run is overdue at once; a successful one is not overdue until a day has passed.
+  expect(maintenanceOverdue()).toBe(true);
+  env.LOG_DIR=prior;expect(runMaintenance().ok).toBe(true);
+  expect(maintenanceOverdue()).toBe(false);expect(maintenanceOverdue(Date.now()+86_400_001)).toBe(true);
+ } finally {env.LOG_DIR=prior;fs.rmSync(logs,{recursive:true,force:true});}
+});
+
+test('a Mac that slept through the window catches up on the hourly wall-clock check, never twice at once',async()=>{
+ runMigrations();
+ expect(runMaintenance().ok).toBe(true);
+ // The last success is a day old by the wall clock; the long daily timer has not fired yet.
+ const later=Date.now()+86_400_001;expect(maintenanceOverdue(later)).toBe(true);
+ const run=maintenanceCatchUp(later);expect(run).not.toBeNull();
+ expect(maintenanceCatchUp(later)).toBeNull();
+ await run;expect(maintenanceOverdue()).toBe(false);
+ // Not overdue now, and this process just tried: no further run on the next hourly checks.
+ expect(maintenanceCatchUp()).toBeNull();expect(maintenanceCatchUp(Date.now()+3_600_000)).toBeNull();
+});
+
+test('maintenance retires the managed logs a 5.0.16 server left in <root>/logs',async ()=>{
+ runMigrations();
+ const {appendManagedLog}=await import('../src/utils/managed-logs.ts');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(path.dirname(env.BACKUP_DIR),'legacy-logs-'))),legacy=path.join(root,'logs'),at=Date.now()-20*86_400_000;
+ appendManagedLog(legacy,'info','0'.repeat(64),at);
+ const dir=path.join(legacy,'application'),name=fs.readdirSync(dir).find(n=>n.startsWith('app-'))!;fs.utimesSync(path.join(dir,name),at/1000,at/1000);
+ const saved=process.env.QOOPIA_STANDALONE_LAYOUT;process.env.QOOPIA_STANDALONE_LAYOUT=JSON.stringify({root,logs:env.LOG_DIR});
+ try{
+  const result=runMaintenance();
+  expect(result.report.legacy_application_logs).toMatchObject({deleted:1,retained:0,status:'ok'});
+  expect(fs.existsSync(path.join(dir,name))).toBe(false);
+ }finally{if(saved===undefined)delete process.env.QOOPIA_STANDALONE_LAYOUT;else process.env.QOOPIA_STANDALONE_LAYOUT=saved;fs.rmSync(root,{recursive:true,force:true});}
 });

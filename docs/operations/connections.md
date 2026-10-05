@@ -140,6 +140,13 @@ installation's private `config/transport.json` (0600); its directory is 0700.
 Interrupted provisioning reconciles the same tunnel and DNS record. A retry with
 another key, workspace or tunnel secret is refused. Provider failure after revoke
 leaves durable revocation in effect while cleanup is retried.
+After this installation's own device is revoked (here or in the account
+profile), `network-start` registers it again as a new device: a fresh sign-in,
+a new installation identifier, key and tunnel secret, and a new address. The
+revoked key stays revoked. Memory and local connections are unchanged; remote
+connections bound to the old address report `RECONNECT_REQUIRED` and must be
+added again. While external access is paused or revoked, discovery names the
+loopback origin and new remote connections are refused (`EXTERNAL_ACCESS_REQUIRED`).
 
 The existing installed service supervises bundled cloudflared 2026.9.1. Packages
 are pinned to official archive checksums and carry provenance and transitive

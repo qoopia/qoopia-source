@@ -241,3 +241,31 @@ test('Telegram setup checks in parallel and persists confirmation independently 
     expect(db.query('SELECT telegram_user_id FROM qoopia_agent_settings WHERE owner_id=?').get(owner.agent_id)).toEqual({telegram_user_id:'123'});
   }finally{stopTelegramChannels();globalThis.fetch=original;}
 });
+test('a deactivated agent identity is replaced on setup; a key changed elsewhere names the retire command',async()=>{
+  const {rotateAgentKey,deleteAgent}=await import('../src/admin/agents.ts');
+  const {IDENTITY_DEACTIVATED,IDENTITY_KEY_CHANGED}=await import('../src/services/my-agent.ts');
+  db.query("INSERT INTO workspaces(id,name,slug) VALUES('agent-recovery','Agent recovery','agent-recovery')").run();
+  const owner=bootstrapOwner(db,'Recovery owner',undefined,'agent-recovery');
+  const steward=createAgent({name:'My Qoopia agent',workspaceSlug:'agent-recovery',type:'steward'});
+  db.query('INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,created_at) VALUES(?,?,?,?)').run(owner.agent_id,'agent-recovery',steward.id,'now');
+  durableWrite(path.join(agentDirectory(owner.agent_id),'credentials.json'),JSON.stringify({key:steward.api_key}));
+  const setup=()=>myAgentAction(owner.agent_id,{action:'setup',provider:'codex',acceptPermissions:true});
+  expect(myAgentState(owner.agent_id)).toMatchObject({access_error:null,recovery:null});
+  // Rotated elsewhere: the steward is still active under a key this page does not hold. It is never taken over.
+  rotateAgentKey('My Qoopia agent','agent-recovery');
+  const command='qoopia admin delete-agent "My Qoopia agent" --workspace agent-recovery';
+  expect(myAgentState(owner.agent_id)).toMatchObject({access_error:IDENTITY_KEY_CHANGED,recovery:{action:'retire',command}});
+  await expect(setup()).rejects.toThrow(command);
+  // Deactivated: setup no longer returns the broken state silently; it provisions a new identity.
+  deleteAgent('My Qoopia agent','agent-recovery');
+  expect(myAgentState(owner.agent_id)).toMatchObject({access_error:IDENTITY_DEACTIVATED,recovery:{action:'setup'}});
+  const original=globalThis.fetch;
+  globalThis.fetch=(async()=>{throw new Error('offline fixture: no runtime download');}) as unknown as typeof fetch;
+  try{await expect(setup()).rejects.toThrow('offline fixture');}finally{globalThis.fetch=original;}
+  // A failed download creates nothing and never revives the old identity.
+  expect(db.query("SELECT count(*) AS n FROM agents WHERE workspace_id='agent-recovery' AND type='steward' AND active=1").get()).toEqual({n:0});
+  expect((db.query('SELECT active FROM agents WHERE id=?').get(steward.id) as {active:number}).active).toBe(0);
+  // The one-steward rule still holds: another active steward is not joined by a second one.
+  createAgent({name:'Other steward',workspaceSlug:'agent-recovery',type:'steward'});
+  await expect(setup()).rejects.toThrow('A second steward will not be created');
+});

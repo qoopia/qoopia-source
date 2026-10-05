@@ -1,4 +1,4 @@
-import {prepareDesktopUpdate,DESKTOP_RELEASE} from '../src/delivery/desktop-update.ts';
+import {prepareDesktopUpdate,preparePackageUpdate,DESKTOP_RELEASE} from '../src/delivery/desktop-update.ts';
 import {desktopRelease} from '../scripts/desktop-release.ts';
 import {updateFeed} from '../scripts/update-feed.ts';
 import { test, expect } from 'bun:test';
@@ -15,14 +15,14 @@ import { OPS_READER_MEMBER, OPS_READER_CAPABILITY } from '../src/delivery/bundle
 function fixture() {
   const outer=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-t24-'))),root=path.join(outer,'installation');
   const {privateKey,publicKey}=generateKeyPairSync('ed25519'),trust=publicKey.export({type:'spki',format:'pem'}).toString();
-  const bundle=(name:string,schema=37,script=name!=='first')=>{
+  const bundle=(name:string,schema=37,script=name!=='first',version='5.0.0-p3.0',desktop=name!=='first')=>{
     const dir=path.join(outer,name);privateDirectory(dir);
     for(const file of ['qoopia','assets/src/public/dashboard.html', ...(script?['assets/src/public/brand/dashboard.js']:[]),'assets/migrations/037-skill-loop.sql','SBOM.json','THIRD-PARTY-NOTICES.txt','assets/scripts/runtime/codex-seatbelt.py',`assets/native/owner-peer.${process.platform==='darwin'?'dylib':'so'}`]){
       privateDirectory(path.dirname(path.join(dir,file)));durableWrite(path.join(dir,file),name);
     }
     durableWrite(path.join(dir,OPS_READER_MEMBER),JSON.stringify(OPS_READER_CAPABILITY));
-    if(name!=='first')durableWrite(path.join(dir,DESKTOP_RELEASE),JSON.stringify(desktopRelease(trust,name.startsWith('next')?200:100)));
-    const raw=JSON.stringify({format:'qoopia-bundle/1',version:'5.0.0-p3.0',horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:schema,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
+    if(desktop)durableWrite(path.join(dir,DESKTOP_RELEASE),JSON.stringify(desktopRelease(trust,name.startsWith('next')?200:100)));
+    const raw=JSON.stringify({format:'qoopia-bundle/1',version,horizon:'QOOPIA-V-1',api_version:1,build_sha:'a'.repeat(40),source_digest:hash(name),target:`${process.platform}-${process.arch}`,bun_version:Bun.version,schema_min:32,schema_max:schema,signing:'test-fixture',publisher_key_sha256:hash(trust),platform_signing:'NOT_RUN',members:inventory(dir)});
     durableWrite(path.join(dir,'manifest.json'),raw);durableWrite(path.join(dir,'manifest.sig'),sign(null,Buffer.from(raw),privateKey));return dir;
   };
   const migrate=(_bundle:string,generationRoot:string)=>{privateDirectory(path.join(generationRoot,'data'));const file=path.join(generationRoot,'data','qoopia.db');if(!fs.existsSync(file)){const f=ownerFixture(37);durableWrite(file,f.database.serialize());f.database.close();}};
@@ -117,5 +117,23 @@ test('desktop appcast signs exact archive bytes and rejects a different key or n
     expect(result.state).toBe('updated');
     const next=new Database(dataFile(f.root,readCurrent(f.root)));
     try{expect((next.query('SELECT name FROM workspaces LIMIT 1').get() as {name:string}).name).toBe('Closed WAL workspace');}finally{next.close();}
+  }finally{f.cleanup();}
+});
+
+test('opening a newer downloaded package adopts it like the Mac app; an equal, older or rolled-back one leaves the installation alone',()=>{
+  const f=fixture();try{
+    writeWorkspace(f.root,f.current,'Synthetic package workspace');
+    // Linux packages carry no desktop build number: they are ordered by version.
+    const same=f.bundle('linux-same',37,true,'5.0.0-p3.0',false),older=f.bundle('linux-older',37,true,'5.0.0-p2.0',false),newer=f.bundle('linux-newer',37,true,'5.0.1',false);
+    const pointer=fs.readFileSync(path.join(f.root,'current.json'),'utf8');
+    expect(preparePackageUpdate(f.delivery,same,f.trust,true)).toEqual({state:'not_newer',installed:'5.0.0-p3.0',package:'5.0.0-p3.0'});
+    expect(preparePackageUpdate(f.delivery,older,f.trust,true).state).toBe('not_newer');
+    expect(fs.readFileSync(path.join(f.root,'current.json'),'utf8')).toBe(pointer);
+    expect(preparePackageUpdate(f.delivery,newer,f.trust,true)).toMatchObject({state:'updated',memory_preserved:true,backup_created:true});
+    const selected=readCurrent(f.root);expect(selected.instance).toBe(f.current.instance);expect(selected.previous?.bundle).toBe(f.current.bundle);
+    const database=new Database(dataFile(f.root,selected),{readonly:true});try{expect((database.query('SELECT name FROM workspaces LIMIT 1').get() as {name:string}).name).toBe('Synthetic package workspace');}finally{database.close();}
+    expect(preparePackageUpdate(f.delivery,newer,f.trust,true)).toEqual({state:'current'});
+    f.delivery.rollback();
+    expect(preparePackageUpdate(f.delivery,newer,f.trust,true)).toEqual({state:'rolled_back'});
   }finally{f.cleanup();}
 });

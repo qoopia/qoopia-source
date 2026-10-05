@@ -16,8 +16,10 @@ function cookie(id:string){
 }
 test('managed agent HTTP requires owner cookie, same-origin CSRF and an authorized file path',async()=>{
   runMigrations();const slug='my-agent-http';db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
-  const owner=bootstrapOwner(db,'Agent HTTP owner',undefined,slug),agent=createAgent({name:'HTTP fixture',workspaceSlug:slug});
+  // A live agent identity (the steward and its stored key): setup below is a no-op, never a runtime download.
+  const owner=bootstrapOwner(db,'Agent HTTP owner',undefined,slug),agent=createAgent({name:'HTTP fixture',workspaceSlug:slug,type:'steward'});
   db.query('INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,enabled,created_at) VALUES(?,?,?,0,?)').run(owner.agent_id,slug,agent.id,'now');
+  durableWrite(path.join(agentDirectory(owner.agent_id),'credentials.json'),JSON.stringify({key:agent.api_key}));
   const folder=privateDirectory(path.join(agentDirectory(owner.agent_id),'workspace'));durableWrite(path.join(folder,'result.txt'),'Synthetic HTTP artifact');
   const server=startHttpServer();await new Promise<void>(resolve=>server.listening?resolve():server.once('listening',resolve));
   const origin='http://127.0.0.1:'+(server.address() as AddressInfo).port,url=origin+'/api/dashboard/my-agent',headers={cookie:cookie(owner.agent_id)};

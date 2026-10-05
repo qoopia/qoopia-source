@@ -9,7 +9,7 @@ import {
   loadWorkspaceEntityEmbeddings,
 } from "./embedding-store.ts";
 import { redactQuery } from "./recall_log_redaction.ts";
-import { FTS5_MATCH_NOTHING, analyzeFtsQuery, buildFtsMatch } from "./fts-query.ts";
+import { FTS5_MATCH_NOTHING, analyzeFtsQuery, buildFtsMatch, ftsPrefixTerm } from "./fts-query.ts";
 import { isReadOnlyInstance } from "../utils/instance-role.ts";
 import { runV4Recall, v4RecallRequested, type V4RecallResponse } from "./recall/v4-pipeline.ts";
 import { boundDefaultRecall, type FullBodyRequest } from "./recall/response-envelope.ts";
@@ -80,7 +80,7 @@ export function sanitizeFtsQuery(query: string): string {
   // index. Drop them unless nothing else was asked.
   const meaningful = terms.filter((t) => !FTS_STOP_WORDS.has(t));
   if (meaningful.length === 0) return buildFtsMatch(query) || FTS5_MATCH_NOTHING;
-  return meaningful.map((t) => `"${t}"*`).join(" OR ");
+  return meaningful.map(ftsPrefixTerm).join(" OR ");
 }
 
 // ponytail: short EN/RU function-word list; a language-aware tokenizer if recall quality needs it.
@@ -805,16 +805,19 @@ async function entityCandidates(
 }
 
 // F-100: SUM(length(text)) reads every note body, so it dominated recall latency.
-// ponytail: up to 60s stale per workspace; bounded by the number of workspaces.
+// The estimate covers only the notes this caller may read (ADR-020): a workspace-wide sum would
+// show an agent without shared context how much its siblings and their private notes hold.
+// ponytail: up to 60s stale per (workspace, caller, read level); bounded by the number of agents.
 const CORPUS_CHARS_TTL_MS = 60_000;
 const corpusChars = new Map<string, { chars: number; at: number }>();
-function workspaceCorpusChars(workspaceId: string): number {
-  const cached = corpusChars.get(workspaceId);
+function visibleCorpusChars(workspaceId: string, callerId: string, level: number): number {
+  const key = `${workspaceId}|${callerId}|${level}`;
+  const cached = corpusChars.get(key);
   if (cached && Date.now() - cached.at < CORPUS_CHARS_TTL_MS) return cached.chars;
   const { chars } = db.prepare(
-    `SELECT COALESCE(SUM(length(text)),0) AS chars FROM notes WHERE workspace_id = ? AND deleted_at IS NULL`,
-  ).get(workspaceId) as { chars: number };
-  corpusChars.set(workspaceId, { chars, at: Date.now() });
+    `SELECT COALESCE(SUM(length(text)),0) AS chars FROM notes WHERE workspace_id = ? AND deleted_at IS NULL AND ${visibleRowSql()}`,
+  ).get(workspaceId, callerId, level) as { chars: number };
+  corpusChars.set(key, { chars, at: Date.now() });
   return chars;
 }
 
@@ -1124,7 +1127,7 @@ export async function recallBaseline(p: RecallParams) {
 
   // Rough cost metric: compare to a naive full scan estimate. Good enough to
   // demonstrate savings to the agent.
-  const fullScanTokens = Math.ceil(workspaceCorpusChars(p.workspace_id) / 4);
+  const fullScanTokens = Math.ceil(visibleCorpusChars(p.workspace_id, p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin)) / 4);
   const savings =
     fullScanTokens > 0 ? 1 - tokensReturned / fullScanTokens : 0;
 

@@ -69,3 +69,38 @@ test('native accept rejects actual peer when policy UID mismatches before return
     fs.rmSync(path.dirname(socket),{recursive:true,force:true});fs.rmSync(root,{recursive:true,force:true});
   }
 });
+
+test('the owner socket prefers a private XDG_RUNTIME_DIR, ignores a shared one, and a client finds the server wherever it bound', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'p3-ipc-xdg-'))), runtime = fs.realpathSync(fs.mkdtempSync('/tmp/qx-'));
+  const cleanup: string[] = [root, runtime];
+  try {
+    fs.chmodSync(runtime, 0o700);
+    const preferred = ownerSocketPath(root, true, { XDG_RUNTIME_DIR: runtime });
+    expect(preferred).toBe(path.join(runtime, 'qoopia-owner', path.basename(path.dirname(preferred)), 'owner.sock'));
+    // A shared (group/other-accessible) runtime directory is not trusted.
+    fs.chmodSync(runtime, 0o755);
+    const fallback = ownerSocketPath(root, true, { XDG_RUNTIME_DIR: runtime });cleanup.push(path.dirname(fallback));
+    expect(fallback).not.toStartWith(runtime);
+    fs.chmodSync(runtime, 0o700);
+    // The server bound without the variable; a client that has it still reaches that socket.
+    fs.writeFileSync(fallback, '', { mode: 0o600 });
+    expect(ownerSocketPath(root, false, { XDG_RUNTIME_DIR: runtime })).toBe(fallback);
+  } finally { for (const dir of cleanup) fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a deleted owner socket is bound again, so owner login keeps working on a long-running server', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'p3-ipc-rebind-'))), database = p1Database(37);
+  let close: (()=>void) | undefined;
+  try {
+    const library = buildOwnerPeer(root);
+    close = startOwnerControl(root, input => ownerControlRequest(database, input), library);
+    expect('code' in await requestOwnerLogin(root, {operation:'bootstrap',name:'A'}, library)).toBe(true);
+    fs.unlinkSync(ownerSocketPath(root)); // e.g. systemd-tmpfiles aging /tmp
+    await Bun.sleep(1_300);
+    expect('code' in await requestOwnerLogin(root, {operation:'login'}, library)).toBe(true);
+  } finally {
+    close?.(); database.close();
+    fs.rmSync(path.dirname(ownerSocketPath(root, true)), {recursive:true,force:true});
+    fs.rmSync(root,{recursive:true,force:true});
+  }
+}, 15000);

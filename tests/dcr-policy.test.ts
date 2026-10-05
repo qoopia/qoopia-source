@@ -1,5 +1,5 @@
 import {expect,test} from 'bun:test';
-import {stringArrayEquals,stringArraySubsetOf,isChatGptRedirectUri,isChatGptRedirectArray} from '../src/auth/dcr-policy.ts';
+import {stringArrayEquals,stringArraySubsetOf,isChatGptRedirectUri,isChatGptRedirectArray,isClaudeRedirectArray,connectionRedirectsAllowed} from '../src/auth/dcr-policy.ts';
 
 test('redirects are accepted only for https ChatGPT hosts, never by prefix or userinfo tricks',()=>{
   for(const ok of ['https://chatgpt.com/connector_platform_oauth_redirect','https://CHAT.openai.com/x','https://www.chatgpt.com/'])expect(isChatGptRedirectUri(ok)).toBe(true);
@@ -16,4 +16,11 @@ test('grant and response type lists are compared exactly or as a non-empty subse
   expect(stringArraySubsetOf(undefined,['a'])).toBe(true);
   expect(stringArraySubsetOf(['a'],['a','b'])).toBe(true);
   for(const bad of [[],['c'],['a',1],'a',null])expect(stringArraySubsetOf(bad,['a','b'])).toBe(false);
+});
+
+test('Claude registers with its claude.ai callback, the claude.com one Anthropic asks to allowlist, or both — nothing else',()=>{
+  const ai='https://claude.ai/api/mcp/auth_callback',com='https://claude.com/api/mcp/auth_callback';
+  for(const ok of [[ai],[com],[ai,com],[com,ai]]){expect(isClaudeRedirectArray(ok)).toBe(true);expect(connectionRedirectsAllowed('claude_web',ok)).toBe(true);}
+  for(const bad of [[],[ai,ai],[ai,'https://evil.example/api/mcp/auth_callback'],['https://claude.com.evil.example/api/mcp/auth_callback'],['http://claude.com/api/mcp/auth_callback'],ai,undefined])
+    {expect(isClaudeRedirectArray(bad)).toBe(false);expect(connectionRedirectsAllowed('claude_web',bad)).toBe(false);}
 });

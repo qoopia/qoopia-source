@@ -24,6 +24,10 @@ export function prepareDesktopUpdate(delivery:Delivery,bundle:string,trust:strin
   if(previous&&previous.build>=targetRelease.build)throw new Error(previous.build===targetRelease.build
     ?'This app is another build of the installed Qoopia release. Open the application that installed it, or install a newer release.'
     :'This app is older than the installed Qoopia. Open the newer application.');
+  return adopt(delivery,bundle,current);
+}
+/** Backup, writer barrier, migrated copy and atomic cutover through the existing update. */
+function adopt(delivery:Delivery,bundle:string,current:ReturnType<typeof readCurrent>){
   // A cleanly closed WAL database may have no -wal/-shm files. SQLite needs
   // a read/write opener to initialize them before the read-only snapshot checks.
   // Keep this query-only handle alive through cutover; no application rows change.
@@ -33,6 +37,18 @@ export function prepareDesktopUpdate(delivery:Delivery,bundle:string,trust:strin
   source.query('SELECT count(*) FROM sqlite_master').get();
   const plan=delivery.previewUpdate(bundle);
   const updated=delivery.update(bundle,plan,plan.plan_digest);
-  return {state:'updated',binary:path.join(delivery.root,'bundles',updated.bundle,'qoopia'),memory_preserved:true,backup_created:true,freed_bytes:updated.freed_bytes};
+  return {state:'updated' as const,binary:path.join(delivery.root,'bundles',updated.bundle,'qoopia'),memory_preserved:true,backup_created:true,freed_bytes:updated.freed_bytes};
   } finally { source.close(); }
+}
+/** ./qoopia open from a downloaded package. Linux has no app updater, and opening a newer package used to
+ * run the older installed version without a word; a newer signed package is adopted as the Mac app's
+ * is. Packages carry no desktop build number, so they are ordered by version; equal or older stays. */
+export function preparePackageUpdate(delivery:Delivery,bundle:string,trust:string,allowTest=false){
+  const target=verifyBundle(bundle,trust,allowTest),current=readCurrent(delivery.root);
+  if(current.bundle===target.digest)return {state:'current' as const};
+  // The owner or the launcher rolled this package back; only a different build updates again.
+  if(readRolledBack(delivery.root,current)?.from===target.digest)return {state:'rolled_back' as const};
+  const installed=verifyBundle(path.join(delivery.root,'bundles',current.bundle),trust,allowTest).manifest.version;
+  if(Bun.semver.order(target.manifest.version,installed)<=0)return {state:'not_newer' as const,installed,package:target.manifest.version};
+  return adopt(delivery,bundle,current);
 }

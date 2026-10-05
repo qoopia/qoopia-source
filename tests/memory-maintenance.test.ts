@@ -203,3 +203,10 @@ test('a failing maintenance tick leaves one warn line, not silence and not one p
     warn.mockRestore();
   }
 });
+
+test('without a chosen memory model the agent reads «needs sign-in», not «catching up» forever',async()=>{
+  const ws=createWorkspace({name:'No model',slug:'maintenance-no-model'}),agent=createAgent({name:'no-model-agent',workspaceSlug:ws.slug}).id;
+  pending(ws.id,agent,'codex:no-model-1','progress');pending(ws.id,agent,'codex:no-model-2','progress');
+  await processMemoryMaintenance();
+  expect(agentMemoryStatus(ws.id,agent)).toMatchObject({state:'sign_in',error_code:'MODEL_NOT_CONNECTED',pending_sessions:2});
+});

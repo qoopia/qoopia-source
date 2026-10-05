@@ -1,5 +1,79 @@
 # Changelog
 
+## 5.0.17 — 2026-10-04
+
+- External access (user report): ChatGPT and Claude.ai connect to a Mac/Linux install behind the managed
+  tunnel. `/oauth/authorize` sent the browser to an unpublished dashboard path (503
+  `REMOTE_CONSENT_REQUIRED`); it now opens `/oauth/consent` directly. The email or Google sign-in on that
+  page confirms from the owner's own browser, the page follows the browser language, a spent email
+  allowance names the way out, read connections accept clients that send no scope, token requests without
+  `resource` get the consented audience, generic discovery names the tunnel issuer, and path-derived
+  authorization metadata of a connection is that connection's. Retried connects no longer exhaust
+  registrations; a client that revoked its grant shows as needing a new sign-in.
+- Session memory (user report): local Claude Code and Codex bind to `http://127.0.0.1:<port>`, not the
+  tunnel origin that never served `/memory/continuity` (HTTP 404). Hooks run through the installation
+  launcher `<root>/bin/qoopia`, so an update never strands them on a pruned bundle; capture survives odd
+  transcript records, records over 8 MiB, non-UTF-8 bytes, killed hooks, Mac restarts (no resend, no
+  manual-mode leak) and time-zone changes; a refused delivery is told to the agent at session start and in
+  `qoopia doctor`. Session memory for an agent on another computer is published through the tunnel with
+  the agent key.
+- Logs and backups (user report): managed logs no longer read as replaced after a Mac restart
+  (`LOG_OWNERSHIP_INVALID`), a deleted or Time-Machine-restored log no longer degrades maintenance, a log
+  failure no longer skips the daily backup (`BACKUP_STALE_OR_CLOCK_INVALID`), and a missed maintenance
+  window is caught up after boot or sleep.
+- Dashboard: "Saving needs attention" no longer fires for agents that are only polling the AgentComm inbox,
+  pinging, reconnecting, or registering sessions whose runtime writes no transcript (`claude -p
+  --no-session-persistence`); it is judged by real tool calls. An agent without hooks (ChatGPT, Claude
+  web, a bot) whose last explicit save is older than a week shows as connected without automatic saving,
+  not as saving. A connection the application never signed in through reads "setup not finished", not
+  "sign in again", and no longer borrows the agent's requests over other credentials as its last use;
+  cancelling it keeps an agent that already works over its own key instead of deactivating it.
+- Security: an opened `.qoopia-memory` file shows its address before any hook is linked, and
+  `memory-link` previews by default (`--commit --approve`). A public claude.ai/ChatGPT registration never
+  binds to the steward. A same-machine restore keeps client access but re-applies every revocation,
+  demotion and privacy decision made after the backup; a revoked device's grants stop working on a new
+  tunnel. 401 responses carry `WWW-Authenticate`.
+- Headless Linux: sign in and enable external access with a device code confirmed on another device;
+  correct log location for `--root`, a systemd unit that retries and reports lingering, signal forwarding
+  from the launcher, owner socket in the runtime directory, loopback connection files are not exported,
+  unknown commands fail, `./qoopia open` from a newer package adopts it.
+- Upgrades: same-machine restore migrates an older backup; new-machine restore over a fresh unused
+  install; `use-server`/`doctor` check the server answers as Qoopia and a server-workspace computer reports
+  the server, not a leftover local install.
+- Dashboard and site: phone widths (tap targets, menus, consent page, sign-in polling, no false sign-out),
+  revoked-device recovery, paused tunnel refuses new remote connections, truthful iPhone page, unsupported
+  devices told before download, privacy page matches the code.
+- Agent kit revision 11.
+- Upgrade: on its first start the updated runtime moves what older versions left pinned to one bundle
+  onto the installation launcher: Claude Code and Codex memory hooks (an update prunes old bundles, and
+  such hooks then failed silently) and a LaunchAgent or systemd unit from `service install` (read at the
+  next login; nothing restarts). Only Qoopia-written entries change, with a backup; edited ones are kept.
+  **Codex:** the hook command changes once, so Codex asks to approve the Qoopia hooks again in `/hooks`.
+- Memory: a local hook binding that 5.0.16 linked to the tunnel origin moves to loopback at start for the
+  same agent and key; no reconnect is needed. Profiles connected through Connections receive the new
+  instruction kit at start too (edited or removed instructions stay as they are).
+- Visibility (OWNER DECISION, ADR-020): shared context is read-only. An agent that sees its neighbours'
+  notes can read them but no longer change, supersede or delete them; it gets `FORBIDDEN` naming the
+  author, with the next action. The author, the steward and the owner keep full rights. Agent kit
+  revision 11 says so in the protocol (ru and en).
+- Memory: the session-summary model sees a large tool output as its first 2,000 and last 1,000 characters
+  with an "[… N characters omitted …]" marker, and an output the client split into 12k rows counts as one
+  event. A 7 MB log now costs one small call instead of ~150, so the summary backlog drains [F-341]. The
+  stored journal keeps every character.
+- Agents: names may be Cyrillic (Russian, Kazakh) as well as Latin, one alphabet per name, so a Cyrillic
+  «а» cannot hide inside «aaron». Names are NFC-normalized; a new name is refused when it matches an
+  existing one ignoring case or reads the same across alphabets («ТОМ» against «TOM»). AgentComm,
+  agent status, memory policy and connection lookups now match Cyrillic names in any case.
+- Memory: automatically captured turns and session summaries keep the file paths they mention (they
+  were stored as `[LOCAL_PATH]`, so a summary could not say which file changed). Secrets, tokens and
+  credential URLs are still removed, and paths of credential files (`.ssh`, `.aws`, `.env`, `*.pem`,
+  `*.key`, keychains, `credentials`/`secrets` folders) read `[REDACTED:credential-path]`. Logs, error
+  messages and support output keep hiding all local paths.
+- Search: without embeddings, a Russian word also finds its other case and number forms («миграция»
+  finds «миграцию», «базы» finds «база»): recall, session search, entity and dashboard search add a
+  query-side stem as a prefix term next to the exact word, which still ranks first. No reindex or
+  migration; English, Kazakh and short words are searched as before.
+
 ## 5.0.16 — 2026-10-03
 
 - Sign-in: Google sign-in lands in Qoopia at once, with no confirmation email and no code. A sign-in

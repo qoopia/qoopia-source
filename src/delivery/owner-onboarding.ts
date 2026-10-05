@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite';
+import { spawnSync } from 'node:child_process';
 import { bootstrapOwner } from '../auth/pairings.ts';
 import { issueLocalLogin } from './local-login.ts';
 import { ownerRequestSchema, type OwnerResponse } from './owner-control.ts';
@@ -31,10 +32,19 @@ export function ownerControlRequest(database: Database, input: unknown): OwnerRe
     // The outer immediate transaction keeps check + bootstrap atomic across processes.
     ownerId = database.transaction(() => {
       if (database.query('SELECT 1 FROM workspace_owners LIMIT 1').get()) throw new Error('Owner already bound; select existing owner login');
-      return bootstrapOwner(database, request.name, request.workspaceName ?? (request.workspaceId ? undefined : 'My workspace'), request.workspaceId).agent_id;
+      return bootstrapOwner(database, request.name, request.workspaceName ?? (request.workspaceId ? undefined : defaultWorkspaceName(systemLanguage())), request.workspaceId).agent_id;
     }).immediate();
   } else {
     ownerId = request.ownerId;
   }
   return { code: issueLocalLogin(localOwner(database, ownerId).agent_id), expiresInSeconds: 300 };
 }
+
+/** The OS interface language, as the desktop app's own texts use it (macOS AppleLanguages; elsewhere the process locale). */
+export function systemLanguage(raw: string = process.platform === 'darwin'
+  ? spawnSync('/usr/bin/defaults', ['read', '-g', 'AppleLanguages'], { encoding: 'utf8', timeout: 2000 }).stdout ?? ''
+  : Intl.DateTimeFormat().resolvedOptions().locale): 'ru' | 'en' {
+  return raw.match(/[A-Za-z]{2,3}/)?.[0]?.toLowerCase() === 'ru' ? 'ru' : 'en';
+}
+/** A first workspace is named in the owner's language; the owner can rename it later. */
+export const defaultWorkspaceName = (language: 'ru' | 'en') => language === 'ru' ? 'Моё пространство' : 'My workspace';

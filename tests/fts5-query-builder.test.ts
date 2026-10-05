@@ -58,3 +58,36 @@ describe("term floor counts code points and keeps logographic terms (F-170)", ()
     expect(r.results).toEqual([]);
   });
 });
+
+describe("Russian inflections find each other without embeddings", () => {
+  const texts = ["Миграция базы на Corsair завершена", "Перенос заметок отложен", "Рецепт бешбармака"];
+  let ruWs = "", ruAgent = "";
+  beforeAll(() => {
+    const w = createWorkspace({ name: "FTS5 Russian", slug: "fts5-russian" });
+    ruWs = w.id; ruAgent = createAgent({ name: "fts5-russian-agent", workspaceSlug: w.slug }).id;
+    for (const text of texts) createNote({ workspace_id: ruWs, agent_id: ruAgent, type: "memory", text });
+    saveMessage({ session_id: "fts5-russian-session", workspace_id: ruWs, agent_id: ruAgent, role: "user", content: "Начинаем миграцию базы" });
+    createNote({ workspace_id: ruWs, agent_id: ruAgent, type: "memory", text: "Қазақстан филиалы ашылды" });
+    createNote({ workspace_id: ruWs, agent_id: ruAgent, type: "memory", text: "Database migrations finished" });
+  });
+  const found = async (query: string) =>
+    (await recall({ workspace_id: ruWs, caller_agent_id: ruAgent, is_admin: false, query, mode: "fts5" })).results.map((row) => row.text);
+
+  test("common case and number forms match the stored form", async () => {
+    for (const query of ["миграция", "миграцию", "миграции", "миграций", "база", "базы", "базой"])
+      expect(await found(query), query).toContain(texts[0]);
+    for (const query of ["перенос", "переноса", "переносом"]) expect(await found(query), query).toContain(texts[1]);
+    expect(await found("миграцию")).not.toContain(texts[2]);
+    expect(sessionSearch({ workspace_id: ruWs, agent_id: ruAgent, query: "миграция" }).results.map((row: { content: string }) => row.content))
+      .toEqual(["Начинаем миграцию базы"]);
+  });
+
+  test("the exact form is still a term, so it ranks first; English and Kazakh terms are unchanged", async () => {
+    expect(sanitizeFtsQuery("миграцию")).toBe('("миграцию"* OR "миграц"*)');
+    expect(sanitizeFtsQuery("migrations")).toBe('"migrations"*');
+    expect(sanitizeFtsQuery("қазақстан")).toBe('"қазақстан"*');
+    expect(sanitizeFtsQuery("кот")).toBe('"кот"*');
+    expect(await found("migration")).toContain("Database migrations finished");
+    expect(await found("қазақстан")).toContain("Қазақстан филиалы ашылды");
+  });
+});

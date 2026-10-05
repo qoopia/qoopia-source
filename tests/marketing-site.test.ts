@@ -76,6 +76,36 @@ test('each sitemap page shares its own card: og:url is the canonical and descrip
  expect(seen.size).toBe(18);
 });
 
+// Runs site.js's download card against browser stubs for one visitor device.
+async function downloadCard(platform:string,userAgent:string,maxTouchPoints=0){
+ type Node={className?:string;textContent?:string;href?:string;dataset:Record<string,string>};
+ const children:Node[]=[],select={value:'mac',addEventListener(){}},meta={textContent:''},state={textContent:''};
+ const action={replaceChildren(){children.length=0;},append(child:Node){children.push(child);}};
+ const nodes:Record<string,unknown>={'#platform':select,'#release-meta':meta,'#release-state':state,'#download-action':action};
+ const release=JSON.parse(read('release.json'));
+ new Function('document','navigator','window','fetch','QI',read('site.js'))(
+  {querySelector:(selector:string)=>nodes[selector]??null,createElement:()=>({dataset:{}})},
+  {platform,userAgent,maxTouchPoints},{addEventListener(){}},
+  ()=>Promise.resolve({ok:true,json:()=>Promise.resolve(release)}),
+  {language:'en',msg:(text:string,values:Record<string,string>={})=>text.replace(/\{(\w+)\}/g,(_,key)=>values[key]!),number:String,date:String});
+ for(let i=0;i<5;i++)await Promise.resolve();
+ return {platform:select.value,notice:children.find(child=>child.className==='notice')?.textContent,download:children.find(child=>child.href)?.href};
+}
+
+test('visitors on Windows, phones, tablets and ARM Linux are told no package runs on their device',async()=>{
+ const notice='This device does not look like an Apple Silicon Mac or a Linux x64 computer. Choose the package for the computer where Qoopia will run.';
+ const chrome='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36';
+ for(const [name,platform,agent,selected] of [['Mac','MacIntel','Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)','mac'],['Linux x64','Linux x86_64',chrome,'linux']] as const){
+  const card=await downloadCard(platform,agent);
+  expect(card.notice,name).toBeUndefined();expect(card.platform,name).toBe(selected);expect(card.download,name).toStartWith('https://github.com/');
+ }
+ for(const [name,platform,agent,touch] of [['Windows','Win32','Mozilla/5.0 (Windows NT 10.0; Win64; x64)',0],['Linux arm64','Linux aarch64',chrome.replace('x86_64','aarch64'),0],
+  ['Android','Linux armv81','Mozilla/5.0 (Linux; Android 14; Pixel 8) Mobile',5],['iPhone','iPhone','Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',5],['iPad','MacIntel','Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',5]] as const){
+  const card=await downloadCard(platform,agent,touch);
+  expect(card.notice,name).toBe(notice);expect(card.download,name).toStartWith('https://github.com/');
+ }
+});
+
 // Runs analytics.js against minimal browser stubs; every request is captured, nothing leaves.
 function runAnalytics(pathname:string,stored:string|null=null){
  type StubNode={append():void;addEventListener(type:string,fn:()=>void):void;checked?:boolean};

@@ -42,7 +42,7 @@ import { enabledV4Tools } from "./v4-tools.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
 import { db } from "../db/connection.ts";
 import { bootstrapToolAllowed, currentToolAuth } from "../auth/policy.ts";
-import { seesWholeWorkspace } from "../auth/principal.ts";
+import { levelOf, seesWholeWorkspace } from "../auth/principal.ts";
 import { canManagePolicy } from "../services/memory-policy.ts";
 import { boundedMetadata, boundedTags, isToolAllowedForProfile, type AgentToolProfile, type RiskClass } from "./profiles.ts";
 
@@ -652,7 +652,7 @@ const tools: ToolDef[] = [
     name: "agent_status",
     risk: "read",
     description:
-      "List active agents in the workspace. Pass 'agent' to look up a single name; that lookup also finds an agent in another workspace when the name is unique instance-wide, flagged with external_workspace.",
+      "List active agents in the workspace. Pass 'agent' to look up a single name or id; that lookup also finds an agent in another workspace of the same owner, flagged with external_workspace. An agent whose shared context is off sees only itself.",
     rawSchema: {
       agent: z.string().optional(),
       limit: z.number().int().min(1).max(100).optional(),
@@ -662,6 +662,7 @@ const tools: ToolDef[] = [
         workspace_id: auth.workspace_id,
         agent: args.agent as string | undefined,
         limit: args.limit as number | undefined,
+        only_agent_id: levelOf(auth) === 0 ? auth.agent_id : undefined,
       }),
   },
   {

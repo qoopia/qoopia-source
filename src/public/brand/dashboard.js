@@ -40,7 +40,7 @@
     });
     if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw Object.assign(new Error(data.error_description || ('HTTP ' + r.status)), { status: r.status });
+    if (!r.ok) throw Object.assign(new Error(data.error_description || ('HTTP ' + r.status)), { status: r.status, code: data.code });
     return data;
   }
 
@@ -66,15 +66,20 @@
   }
   $('#accountLoginBtn').onclick=startAccountLogin;
   // The sign-in finishes by itself once Google or the email link completes it on this device.
-  async function awaitEmailConfirmation(googleUrl,openGoogle=false,code=null){
+  async function awaitEmailConfirmation(googleUrl,openGoogle=false,code=null,device=null){
     const poll=++loginPoll;
-    $('#emailLoginStatus').textContent=QI.msg(code?'Opening your dashboard…':googleUrl?"Choose your Google account — Qoopia opens here by itself.":"Open the email on this device and tap Sign in to Qoopia — this page opens your workspace by itself.");
+    $('#emailLoginStatus').textContent=QI.msg(code?'Opening your dashboard…':googleUrl?"Choose your Google account — Qoopia opens here by itself.":device?"On your phone or another computer, open the page below, sign in to your Qoopia account and enter this code. This page continues by itself.":"Open the email on this device and tap Sign in to Qoopia — this page opens your workspace by itself.");
+    // A headless installation: the code is confirmed on another device. Only the sign-in service's own page is linked.
+    if(device){const strong=document.createElement('strong');strong.textContent=device.userCode;const a=document.createElement('a');a.href=device.verificationUriComplete;a.target='_blank';a.rel='noopener noreferrer';a.textContent=device.verificationUri;$('#emailLoginStatus').append(' ',a,' · ',strong);}
     if(googleUrl){const a=document.createElement('a');a.href=googleUrl;a.target='_blank';a.rel='noopener';a.textContent=QI.msg("Choose your Google account");$('#emailLoginStatus').append(' ',a);if(openGoogle)a.click();}
     const cancel=document.createElement('button');cancel.type='button';cancel.textContent=QI.msg("Cancel sign-in");cancel.onclick=()=>{++loginPoll;loginAbort?.abort();$('#loginView').classList.remove('account-connecting');$('#emailLoginStatus').textContent=QI.msg("Sign-in cancelled. You can try again.");$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;};$('#emailLoginStatus').append(' ',cancel);
     for(let i=0;i<240&&poll===loginPoll;i++){
       if(!code||i>0)await new Promise(resolve=>setTimeout(resolve,2500));
       if(poll!==loginPoll)return;
-      const data=await identityPost('poll',code?{accountCode:code}:{});
+      // A phone drops the request while the Google tab or Mail is in front, or on a flaky network:
+      // keep waiting instead of failing a sign-in the owner may already have confirmed.
+      let data;try{data=await identityPost('poll',code?{accountCode:code}:{});}
+      catch(e){if(poll!==loginPoll)return;if(['TypeError','SyntaxError','TimeoutError'].includes(e?.name))continue;throw e;}
       if(poll!==loginPoll)return;
       if(data.ok){finishAccountSignIn();$('#emailLoginStatus').textContent='';if(consumeSafeNext())return;showApp();boot();return;}
     }
@@ -95,6 +100,17 @@
     }catch(e){if(popup&&!popupNavigated&&!popup.closed)popup.close();if(!controller.signal.aborted)loginError(e);}
     finally{if(loginAbort===controller){$('#googleLoginBtn').disabled=false;$('#emailLoginBtn').disabled=false;}}
   }
+  async function startDeviceLogin(){
+    loginAbort?.abort();const controller=loginAbort=new AbortController();
+    $('#deviceLoginBtn').disabled=true;$('#loginErr').style.display='none';
+    try{
+      const data=await identityPost('start',{method:'device',language:QI.language});
+      const url=new URL(data.verificationUriComplete);if(url.origin!=='https://auth.qoopia.ai'||url.pathname!=='/device')throw new Error(QI.msg('Sign-in is temporarily unavailable'));
+      await awaitEmailConfirmation(null,false,null,data);
+    }catch(e){if(!controller.signal.aborted)loginError(e);}
+    finally{if(loginAbort===controller)$('#deviceLoginBtn').disabled=false;}
+  }
+  $('#deviceLoginBtn').onclick=startDeviceLogin;
   $('#emailLoginForm').onsubmit=e=>{e.preventDefault();startEmailLogin('email');};
   $('#googleLoginBtn').onclick=()=>startEmailLogin('google');
   function showLogin() { chat?.dispose();chat=null;localWorkspace=null; $('#sessionCheck')?.remove(); $('#loginView').style.display = 'flex'; $('#appView').style.display = 'none'; pollFn = null; }
@@ -700,7 +716,7 @@
     const host = $('#memorySaves'); if (!host) return;
     let items; try { items = ((await api('/api/dashboard/memory-saves')).items || []).filter(x => x.agent_id === a.id); }
     catch (e) { host.insertAdjacentHTML('beforeend', '<div></div>'); const box = host.lastElementChild; errBox(box, QI.msg("Could not load the saves waiting for confirmation."), () => { box.remove(); void bindMemorySaves(a); }, e); return; }
-    host.insertAdjacentHTML('beforeend', items.map(x => '<article data-save="' + esc(x.id) + '"><p class="meta">' + esc(x.operation === 'note_update' ? QI.msg("Change to an existing note") : (x.type || 'note')) +
+    host.insertAdjacentHTML('beforeend', items.map(x => '<article data-save="' + esc(x.id) + '"><p class="meta">' + esc(x.operation === 'note_update' ? QI.msg("Change to an existing note") : noteTypeLabel(x.type || 'note')) +
       ' · ' + esc(QI.msg("Expires:")) + ' ' + fmtTimeFull(new Date(x.expires_at_ms).toISOString()) + '</p><pre>' + esc(x.text || '') + '</pre>' +
       '<button type="button" class="btn primary" data-accept="1">' + esc(QI.msg("Save to memory")) + '</button> <button type="button" class="btn" data-accept="">' + esc(QI.msg("Decline")) + '</button></article>').join(''));
     host.querySelectorAll('button').forEach(button => button.onclick = async () => {
@@ -1350,7 +1366,7 @@
     host.innerHTML='<p id="setupFeedback" role="status" aria-live="polite"></p><div id="setupConnections"></div><details id="setupNew" class="connection-add"><summary>'+t('Add an application','Добавить приложение')+'</summary><div class="work-controls"><div><label for="setupSurface">'+t('Application','Приложение')+'</label><select id="setupSurface">'+Object.entries(names).map(([id,name])=>'<option value="'+id+'">'+name+'</option>').join('')+'</select></div><div><label for="setupAccess">'+t('Access','Права')+'</label><select id="setupAccess"><option value="read">'+t('Read only','Только чтение')+'</option><option value="read_write">'+t('Read and add','Чтение и добавление')+'</option></select></div><div><label for="setupAgentName">'+t('Agent name (optional)','Имя агента (необязательно)')+'</label><input id="setupAgentName" maxlength="64" placeholder="FIBI" autocomplete="off"></div><button id="setupApply" class="primary">'+t('Continue','Продолжить')+'</button></div><p class="meta">'+t('A separate connection for this application. Existing agents keep their access.','Отдельное подключение для этого приложения. Доступ существующих агентов сохраняется.')+'</p><p class="meta">'+t('Read and add allows new notes, without editing or deleting existing ones.','Чтение и добавление разрешает создавать заметки, без изменения и удаления существующих.')+'</p></details><details id="setupNetworkDetails" class="connection-options"><summary>'+t('External access settings','Настройки внешнего доступа')+'</summary><div id="setupNetwork"></div><p id="setupNetworkFeedback" role="status" aria-live="polite"></p></details>';
     const feedback=host.querySelector('#setupFeedback'),networkFeedback=host.querySelector('#setupNetworkFeedback');
     let actionBusy=false,revision=0,refreshing=false,lastResult='',lastConnections='',lastNetwork='';
-    const call=async body=>{if(actionBusy)throw Error(QI.resolve(QI.msg('Please wait for the current action')));actionBusy=true;revision++;feedback.textContent=QI.msg('Working…');host.setAttribute('aria-busy','true');try{return await apiWrite('/api/dashboard/connection-setup',body);}finally{actionBusy=false;if(host.isConnected)host.removeAttribute('aria-busy');}};
+    const call=async(body,target=feedback)=>{if(actionBusy)throw Error(QI.resolve(QI.msg('Please wait for the current action')));actionBusy=true;revision++;target.textContent=QI.msg('Working…');host.setAttribute('aria-busy','true');try{return await apiWrite('/api/dashboard/connection-setup',body);}finally{actionBusy=false;if(host.isConnected)host.removeAttribute('aria-busy');}};
     let networkBusy=false;
     const draftKey='qoopia-connection-draft:'+workspaceName;
     let draft;try{draft=JSON.parse(sessionStorage.getItem(draftKey));}catch{/* No usable draft (storage unavailable or corrupt). */}
@@ -1358,14 +1374,19 @@
       host.querySelector('#setupSurface').value=draft.surface;host.querySelector('#setupAccess').value=draft.access_mode;host.querySelector('#setupAgentName').value=draft.agent_name||'';
     }else draft=null;
     function selection(){
-      const surface=host.querySelector('#setupSurface').value,access_mode=host.querySelector('#setupAccess').value,agent_name=host.querySelector('#setupAgentName').value.trim();
-      if(agent_name&&!/^[a-zA-Z0-9_\-\s]{1,64}$/.test(agent_name))throw Error(QI.resolve(t('Use up to 64 letters, digits, spaces, underscores or hyphens.','Используйте до 64 букв латиницы, цифр, пробелов, подчёркиваний или дефисов.')));
+      const surface=host.querySelector('#setupSurface').value,access_mode=host.querySelector('#setupAccess').value,agent_name=host.querySelector('#setupAgentName').value.normalize('NFC').trim();
+      if(agent_name&&!/^(?=[\s\S]{1,64}$)(?:[A-Za-z0-9_\-\s]+|(?:(?=\p{Script=Cyrillic})\p{L}|[0-9_\-\s])+)$/u.test(agent_name))throw Error(QI.resolve(t('Use up to 64 Latin or Cyrillic letters (one alphabet per name), digits, spaces, underscores or hyphens.','Используйте до 64 букв латиницы или кириллицы (один алфавит в имени), цифр, пробелов, подчёркиваний или дефисов.')));
       if(!draft||draft.surface!==surface||draft.access_mode!==access_mode||(draft.agent_name||'')!==agent_name)draft={surface,access_mode,...(agent_name?{agent_name}:{}),request_key:crypto.randomUUID()};
       try{sessionStorage.setItem(draftKey,JSON.stringify(draft));}catch{/* Storage unavailable; the draft lives only in this page. */}return draft;
     }
+    const networkLine=n=>{const r=n.operation?.result;return r&&(!(r.code||'').startsWith('NETWORK_')||r.code===n.code)?r:n;};
     const showResult=(r,target=feedback)=>{
-      const messages={ACTION_IN_PROGRESS:t('Working. You can use other pages.','Выполняем. Можно пользоваться другими страницами.'),CLIENT_AUTH_STARTING:t('Preparing the secure sign-in page…','Подготавливаем защищённую страницу входа…'),CLIENT_AUTHORIZATION_REQUIRED:t('Open the consent page, review this connection’s permissions, and approve. Then restart Claude Desktop.','Откройте страницу подтверждения, проверьте права этого подключения и подтвердите доступ. Затем перезапустите Claude Desktop.'),CLIENT_CALL_REQUIRED:t('Access is saved. Restart the client and send the connection request.','Доступ сохранён. Перезапустите клиент и отправьте запрос подключения.'),CLIENT_AUTH_EXPIRED:t('The sign-in expired. Choose Approve access again.','Время входа истекло. Снова нажмите Подтвердить доступ.'),CLIENT_CONFIG_REQUIRED:t('Add the client on this computer first.','Сначала добавьте клиент на этом компьютере.'),SIGN_IN_REQUIRED:t('Account confirmation expired. Start sign-in again; the installation and memory are preserved.','Подтверждение аккаунта истекло. Начните вход заново; установка и память сохранены.'),ACCOUNT_CONFIRMATION_REQUIRED:t('Confirm the email sent to your Qoopia account, then choose Continue setup.','Подтвердите письмо на почте аккаунта Qoopia и нажмите Продолжить настройку.'),OWNER_ACCOUNT_REQUIRED:t('Finish signing in to your Qoopia account first.','Сначала завершите вход в аккаунт Qoopia.'),NETWORK_ONLINE:t('External connection is running.','Внешняя связь работает.'),NETWORK_CONNECTING:t('Reconnecting. Local memory is preserved.','Восстанавливаем связь. Локальная память сохранена.'),NETWORK_SERVICE_UNAVAILABLE:t('The connection service is unavailable. Keep this setup and try Continue setup later.','Сервис подключения недоступен. Сохраните настройку и позднее нажмите Продолжить настройку.'),NETWORK_DISABLED:t('External access is paused.','Внешний доступ приостановлен.'),DEVICE_REVOKED:t('This device was revoked.','Это устройство отозвано.')};
+      const messages={ACTION_IN_PROGRESS:t('Working. You can use other pages.','Выполняем. Можно пользоваться другими страницами.'),TOO_MANY_SIGN_INS:t('Too many sign-in emails were sent in the last hour. Use “Confirm with Google”, or try again later.','За последний час отправлено слишком много писем для входа. Нажмите «Подтвердить через Google» или повторите позже.'),CLIENT_AUTH_STARTING:t('Preparing the secure sign-in page…','Подготавливаем защищённую страницу входа…'),CLIENT_AUTHORIZATION_REQUIRED:t('Open the consent page, review this connection’s permissions, and approve. Then restart Claude Desktop.','Откройте страницу подтверждения, проверьте права этого подключения и подтвердите доступ. Затем перезапустите Claude Desktop.'),CLIENT_CALL_REQUIRED:t('Access is saved. Restart the client and send the connection request.','Доступ сохранён. Перезапустите клиент и отправьте запрос подключения.'),CLIENT_AUTH_EXPIRED:t('The sign-in expired. Choose Approve access again.','Время входа истекло. Снова нажмите Подтвердить доступ.'),CLIENT_CONFIG_REQUIRED:t('Add the client on this computer first.','Сначала добавьте клиент на этом компьютере.'),SIGN_IN_REQUIRED:t('Account confirmation expired. Start sign-in again; the installation and memory are preserved.','Подтверждение аккаунта истекло. Начните вход заново; установка и память сохранены.'),ACCOUNT_CONFIRMATION_REQUIRED:t('Confirm the email sent to your Qoopia account, then choose Continue setup.','Подтвердите письмо на почте аккаунта Qoopia и нажмите Продолжить настройку.'),OWNER_ACCOUNT_REQUIRED:t('Finish signing in to your Qoopia account first.','Сначала завершите вход в аккаунт Qoopia.'),NETWORK_ONLINE:t('External connection is running.','Внешняя связь работает.'),NETWORK_CONNECTING:t('Reconnecting. Local memory is preserved.','Восстанавливаем связь. Локальная память сохранена.'),NETWORK_SERVICE_UNAVAILABLE:t('The connection service is unavailable. Keep this setup and try Continue setup later.','Сервис подключения недоступен. Сохраните настройку и позднее нажмите Продолжить настройку.'),NETWORK_DISABLED:t('External access is paused.','Внешний доступ приостановлен.'),DEVICE_REVOKED:t('This installation was revoked as an external device. Choose one of the enable buttons below to register it again.','Эта установка отозвана как внешнее устройство. Чтобы зарегистрировать её снова, нажмите одну из кнопок включения ниже.'),DEVICE_CODE_UNSUPPORTED:t('The Qoopia sign-in service does not offer code confirmation yet. Use email or Google from a browser on this network.','Сервис входа Qoopia пока не поддерживает подтверждение кодом. Используйте почту или Google из браузера в этой сети.')};
       target.textContent=messages[r.code]||r.next_action||r.code||'';
+      // Device-code confirmation: the code and the sign-in service's page, to use on any device.
+      if(r.user_code){target.textContent=t('On your phone or another computer, open the page, sign in to the Qoopia account linked to this installation and enter the code ','На телефоне или другом компьютере откройте страницу, войдите в аккаунт Qoopia, связанный с этой установкой, и введите код ');
+        const code=document.createElement('strong');code.textContent=r.user_code;const a=document.createElement('a');a.href=r.open_url||r.verification_uri;a.target='_blank';a.rel='noopener noreferrer';a.className='connect-link';a.textContent=r.verification_uri;
+        target.append(code,document.createTextNode('. '+t('Then choose Continue setup.','Затем нажмите «Продолжить настройку».')+' '),a);return;}
       if(r.open_url){const a=document.createElement('a');a.href=r.open_url;a.target='_blank';a.rel='noopener noreferrer';a.className='connect-link';a.textContent=r.code==='CLIENT_AUTHORIZATION_REQUIRED'?t('Open consent page','Открыть подтверждение'):t('Open account sign-in','Открыть вход в аккаунт');target.append(document.createTextNode(' '),a);}
     };
     async function refresh(showNetworkStatus=false){
@@ -1375,8 +1396,8 @@
       if(onRefresh)await onRefresh();
       if(!host.isConnected||actionBusy||started!==revision)return;
       const network=result.network,key=JSON.stringify(result);
-      if(!showNetworkStatus&&key===lastResult)return;lastResult=key;
-      if(!networkBusy&&network?.operation){if(network.operation.result)showResult(network.operation.result,networkFeedback);else if(network.operation.state==='running')showResult({code:'ACTION_IN_PROGRESS'},networkFeedback);}else if(showNetworkStatus&&!networkBusy)showResult(network,networkFeedback);
+      if(!showNetworkStatus&&key===lastResult)return;lastResult=networkBusy?'':key;
+      if(!networkBusy&&network?.operation){if(network.operation.result)showResult(networkLine(network),networkFeedback);else if(network.operation.state==='running')showResult({code:'ACTION_IN_PROGRESS'},networkFeedback);}else if(showNetworkStatus&&!networkBusy)showResult(network,networkFeedback);
       const networkKey=JSON.stringify([network?.code,network?.enabled,network?.device?.state,network?.transport?.reachable,network?.operation?.state,networkBusy]);
       if(networkKey!==lastNetwork){lastNetwork=networkKey;
       const section=host.querySelector('#setupNetwork');
@@ -1384,8 +1405,8 @@
       if(network?.code==='MANAGED_INSTALLATION_REQUIRED')section.innerHTML='<h3>'+t('External connection','Внешняя связь')+'</h3><p>'+t('The current server manages its external address. Availability is checked when the client connects.','Внешним адресом управляет текущий сервер. Доступность проверяется при обращении клиента.')+'</p>';
       else{
         const ready=network?.transport?.reachable;
-        section.innerHTML='<h3>'+t('External connection','Внешняя связь')+'</h3><p>'+esc(ready?t('Tunnel connected','Туннель подключён'):network?.code==='DEVICE_REVOKED'?t('Device revoked','Устройство отозвано'):network?.enabled?t('Connecting…','Подключение…'):t('External access is off','Внешний доступ выключен'))+'</p><p>'+t('Memory stays on this machine. Cloudflare handles encrypted transport and terminates HTTPS; it can process MCP traffic and connection metadata. The dashboard stays local.','Память остаётся на этой машине. Cloudflare обеспечивает защищённую передачу и завершает HTTPS; провайдер может обрабатывать MCP-трафик и метаданные соединений. Панель управления остаётся локальной.')+'</p><div class="work-actions">'+
-          (!network?.device?'<button data-network="network-start">'+t('Enable with email confirmation','Включить с подтверждением по почте')+'</button><button data-network="network-start-google">'+t('Confirm with Google','Подтвердить через Google')+'</button>':network.device.state!=='revoked'?'<button data-network="'+(network.enabled?'network-disable':'network-enable')+'">'+(network.enabled?t('Pause external access','Приостановить внешний доступ'):t('Enable external access','Включить внешний доступ'))+'</button>':'')+
+        section.innerHTML='<h3>'+t('External connection','Внешняя связь')+'</h3><p>'+esc(ready?t('Tunnel connected','Туннель подключён'):network?.code==='DEVICE_REVOKED'?t('This installation was revoked as an external device. Enable external access again to register it as a new device: memory and local connections stay; ChatGPT, Claude.ai and other remote applications must be connected again at the new address.','Эта установка отозвана как внешнее устройство. Включите внешний доступ снова, чтобы зарегистрировать её как новое устройство: память и локальные подключения сохранятся, а ChatGPT, Claude.ai и другие удалённые приложения нужно будет подключить заново по новому адресу.'):network?.enabled?t('Connecting…','Подключение…'):t('External access is off','Внешний доступ выключен'))+'</p><p>'+t('Memory stays on this machine. Cloudflare handles encrypted transport and terminates HTTPS; it can process MCP traffic and connection metadata. The dashboard stays local.','Память остаётся на этой машине. Cloudflare обеспечивает защищённую передачу и завершает HTTPS; провайдер может обрабатывать MCP-трафик и метаданные соединений. Панель управления остаётся локальной.')+'</p><div class="work-actions">'+
+          (!network?.device||network.device.state==='revoked'?'<button data-network="network-start">'+t('Enable with email confirmation','Включить с подтверждением по почте')+'</button><button data-network="network-start-google">'+t('Confirm with Google','Подтвердить через Google')+'</button><button data-network="network-start-device">'+t('Confirm on another device','Подтвердить с другого устройства')+'</button>':'<button data-network="'+(network.enabled?'network-disable':'network-enable')+'">'+(network.enabled?t('Pause external access','Приостановить внешний доступ'):t('Enable external access','Включить внешний доступ'))+'</button>')+
           '<button data-network="network-resume">'+t('Continue setup','Продолжить настройку')+'</button></div><p class="meta">'+t('Sleeping or offline machines cannot answer requests. The service reconnects when connectivity returns.','Спящая или отключённая от сети машина не отвечает на запросы. Служба переподключается после восстановления связи.')+'</p>';
         section.querySelectorAll('[data-network]').forEach(b=>{
           b.disabled=networkBusy||network?.operation?.state==='running';
@@ -1395,7 +1416,7 @@
             networkFeedback.textContent=t('Updating external connection…','Настраиваем внешнюю связь…');
             try{
               const action=b.dataset.network;
-              const r=await call(action.startsWith('network-start')?{action:'network-start',language:QI.language,method:action.endsWith('google')?'google':'email'}:{action});
+              const r=await call(action.startsWith('network-start')?{action:'network-start',language:QI.language,method:action.endsWith('google')?'google':action.endsWith('device')?'device':'email'}:{action},networkFeedback);
               showResult(r,networkFeedback);await refresh();
             }catch(e){networkFeedback.textContent=e.message;}
             finally{networkBusy=false;section.querySelectorAll('[data-network]').forEach(button=>button.disabled=false);networkFeedback.scrollIntoView({block:'nearest'});}
@@ -1413,9 +1434,9 @@
       const labels=new Map([...host.querySelectorAll('[data-label-name]')].map(el=>[el.dataset.labelName,{name:el.value,surface:host.querySelector('[data-label-surface="'+el.dataset.labelName+'"]')?.value,open:el.closest('details').open}]));
       const active=result.connections.filter(c=>c.code!=='REVOKED');
       function connectionRow(c){
-        const guide=guides[c.surface],revoked=c.code==='REVOKED',ready=c.state==='ready';
+        const guide=guides[c.surface],revoked=c.code==='REVOKED',ready=c.state==='ready',reauth=c.code==='CLIENT_REAUTHORIZATION_REQUIRED';
         const title=(c.agent_name?c.agent_name+' · ':'')+(names[c.surface]||c.surface);
-        const stateLabel=ready?t('Connected','Подключено'):revoked?t('Access revoked','Доступ отозван'):t('Waiting for the agent’s first request','Ждём первый запрос агента');
+        const stateLabel=ready?t('Connected','Подключено'):revoked?t('Access revoked','Доступ отозван'):c.code==='RECONNECT_REQUIRED'?t('Connect again at the new address','Подключите заново по новому адресу'):reauth?t('Sign in again in the application','Нужно снова войти в приложении'):t('Waiting for the agent’s first request','Ждём первый запрос агента');
         const cloud=['muse_app','grok_bot'].includes(c.surface);
         const authHtml=c.surface==='claude_desktop'&&c.client_config==='on_this_computer'?'<div class="work-actions"><button data-client-auth="'+c.id+'">'+t('Approve access','Подтвердить доступ')+'</button>'+(c.client_auth?.open_url?link(c.client_auth.open_url,t('Open consent page','Открыть подтверждение')):'')+'</div>':'';
         const request='<button class="'+(cloud?'primary':'')+'" data-copy-request="'+c.id+'">'+(cloud?t('Copy setup request','Скопировать запрос подключения'):t('Copy request for your agent','Скопировать запрос агенту'))+'</button><details class="connection-help" data-request-details="'+c.id+'"><summary>'+t('View request','Посмотреть запрос')+'</summary><pre class="connection-request" data-request="'+c.id+'">'+esc(connectRequest(c))+'</pre></details>';
@@ -1444,6 +1465,7 @@
             (applied.protocol?.state==='refused'?' '+t('Local Qoopia instructions were not installed: ','Локальные инструкции Qoopia не установлены: ')+applied.protocol.code+(applied.protocol.file?' — '+applied.protocol.file:'')+'. '+t('The agent reads qoopia_protocol over this connection.','Агент прочитает qoopia_protocol через это подключение.'):'');
         }else{
           const r=await call({action:'client-export',id:c.id});
+          if(!r.binding){feedback.textContent=r.next_action;return;}
           const url=URL.createObjectURL(new Blob([JSON.stringify(r.binding)],{type:'application/json'})),a=document.createElement('a');
           a.href=url;a.download='Qoopia-'+c.surface+'.qoopia-connection';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
           feedback.textContent=t('Open the downloaded file with Qoopia on your client’s computer. Review the address, add it, then authenticate in the client.','Откройте скачанный файл в Qoopia на компьютере с клиентом. Проверьте адрес, добавьте его и подтвердите доступ в клиенте.');
@@ -1464,12 +1486,17 @@
       await refresh();host.querySelector('#setupNew').open=false;
       const detail=host.querySelector('[data-connection="'+created.connection.id+'"]');if(detail){const group=detail.closest('[data-connection-drafts]');if(group)group.open=true;detail.open=true;detail.querySelector('summary').focus();}
       feedback.textContent=t('Connection prepared. Finish setup in the selected application.','Подключение подготовлено. Завершите настройку в выбранном приложении.');
-    }catch(e){feedback.textContent=e.message;}finally{host.querySelector('#setupApply').disabled=false;}};
+    }catch(e){
+      // The server's English hint names CLI commands; on a phone the owner needs the switch on this page instead.
+      const network=host.querySelector('#setupNetworkDetails');
+      if(e.code==='NOT_READY'&&!network.hidden){feedback.textContent='';network.open=true;networkFeedback.textContent=t('Turn on external access here first, then tap Continue again.','Сначала включите здесь внешний доступ, затем снова нажмите «Продолжить».');network.scrollIntoView({block:'start'});}
+      else feedback.textContent=e.message;
+    }finally{host.querySelector('#setupApply').disabled=false;}};
     await refresh();
     const proposal=new URL(location.href),params=proposal.searchParams;
     if(params.has('connect')){
       const surface=params.get('connect'),name=params.get('agent')||'',access=params.get('access'),id=params.get('connection');
-      if(params.get('workspace')!==workspaceId||!names[surface]||!['read','read_write'].includes(access)||!/^[a-zA-Z0-9_\-\s]{1,64}$/.test(name)||id&&!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id))feedback.textContent=t('This setup link does not match your workspace or has invalid settings.','Ссылка настройки не соответствует вашему workspace или содержит неверные параметры.');
+      if(params.get('workspace')!==workspaceId||!names[surface]||!['read','read_write'].includes(access)||!/^(?=[\s\S]{1,64}$)(?:[A-Za-z0-9_\-\s]+|(?:(?=\p{Script=Cyrillic})\p{L}|[0-9_\-\s])+)$/u.test(name.normalize('NFC').trim())||id&&!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id))feedback.textContent=t('This setup link does not match your workspace or has invalid settings.','Ссылка настройки не соответствует вашему workspace или содержит неверные параметры.');
       else if(id){
         const detail=host.querySelector('[data-connection="'+id+'"]');
         if(detail){const group=detail.closest('[data-connection-drafts]');if(group)group.open=true;detail.open=true;const input=detail.querySelector('[data-label-name]');input.value=name;input.closest('details').open=true;const select=detail.querySelector('[data-label-surface]');if(select)select.value=surface;input.focus();feedback.textContent=t('Review this existing connection. Saving its name preserves its access and verification.','Проверьте существующее подключение. Сохранение имени сохраняет доступ и подтверждение.');}
@@ -1494,13 +1521,16 @@
     const DAY=86400000,appName=a=>a.client||SURFACE_NAMES[a.surface]||a.name;
     const appRow=a=>{const days=Math.floor((Date.now()-new Date(a.last_seen).getTime())/DAY);
       return '<div class="connection-line"><div><strong>'+esc(appName(a))+'</strong>'+(appName(a)!==a.name?' <span class="meta">· '+esc(a.name)+'</span>':'')+'</div>'+
-        '<div class="connection-app"><span>'+(days<7?'● '+t('Working','Работает'):'○ '+t('Not used for '+days+' days','Не используется '+days+' дн.'))+'</span><p class="meta">'+esc(lastSeen(a.last_seen))+'</p></div>'+
-        '<button data-disconnect="'+esc(a.kind+':'+a.id)+'" data-name="'+esc(appName(a)+' · '+a.name)+'">'+t('Disconnect','Отключить')+'</button></div>';};
+        '<div class="connection-app"><span>'+(a.state&&a.state!=='verified'?'○ '+t('Setup not finished: the application has not signed in yet','Подключение не завершено: приложение ещё не вошло'):a.reconnect?'○ '+t('Connect again: its address stopped with the revoked device','Подключите заново: его адрес отключён вместе с отозванным устройством'):!a.authorized?'○ '+t('Sign in again in the application','Нужно снова войти в приложении'):days<7?'● '+t('Working','Работает'):'○ '+t('Not used for '+days+' days','Не используется '+days+' дн.'))+'</span><p class="meta">'+esc(a.state&&a.state!=='verified'?t('Added ','Добавлено ')+date(a.created_at):lastSeen(a.last_seen))+'</p></div>'+
+        '<button data-disconnect="'+esc(a.kind+':'+a.id)+'" data-name="'+esc(appName(a)+' · '+a.name)+'"'+(a.state&&a.state!=='verified'?' data-unfinished="1">'+t('Cancel setup','Отменить подключение'):'>'+t('Disconnect','Отключить'))+'</button></div>';};
     main.innerHTML='<section class="work connections"><header><h1>'+t('Connections','Подключения')+'</h1><p>'+esc(data.workspace)+'. '+t('MCP clients connected to this memory, and how it is processed.','MCP-клиенты, подключённые к этой памяти, и как она обрабатывается.')+'</p></header><p id="connectionsStatus" class="work-status" role="status" aria-live="polite"></p>'+
       '<section aria-labelledby="connectedTitle"><h2 id="connectedTitle"></h2><div id="connectedApplications"></div><div id="connectionWizard"></div></section>'+
       '<section class="connection-summary"><div class="connection-line"><div><h2>'+t('Memory model','Модель памяти')+'</h2><p id="connectionsModelSummary"></p><p id="connectionsModelChecked" class="meta"></p></div><button id="connectionsModel">'+t('Settings','Настройки')+'</button></div>'+
       '<div class="connection-line"><div><h2>'+t('My Qoopia agent','Мой Qoopia агент')+'</h2><p id="connectionsStewardName">'+esc(stewards||t('Not assigned','Не назначен'))+'</p></div><button id="connectionsSteward">'+t('Open agent','Открыть агента')+'</button></div></section>'+
-      '<details class="connection-options"><summary>'+t('Session memory settings','Настройки памяти сессий')+'</summary><p>'+t('Configure automatic context for a local agent. This is separate from its access to notes.','Настройте автоматическое сохранение контекста локального агента. Это отдельно от его доступа к заметкам.')+'</p><div class="work-actions"><button data-memory-client="claude_code">Claude Code</button><button data-memory-client="codex">Codex</button></div></details></section>';
+      '<details class="connection-options"><summary>'+t('Session memory settings','Настройки памяти сессий')+'</summary><p>'+t('Configure automatic context for a Claude Code or Codex agent. This is separate from its access to notes.','Настройте автоматическое сохранение контекста агента Claude Code или Codex. Это отдельно от его доступа к заметкам.')+'</p>'+
+        (data.installed?'<h3>'+t('On this computer','На этом компьютере')+'</h3>':'')+'<div class="work-actions"><button data-memory-client="claude_code">Claude Code</button><button data-memory-client="codex">Codex</button></div>'+
+        (data.installed?'<h3>'+t('On another computer','На другом компьютере')+'</h3><p>'+t('Downloads a .qoopia-memory file that reaches this installation through its external address. Enable external access first.','Скачивает файл .qoopia-memory, который обращается к этой установке через её внешний адрес. Сначала включите внешний доступ.')+'</p><div class="work-actions"><button data-memory-client="claude_code" data-memory-target="another_computer">Claude Code</button><button data-memory-client="codex" data-memory-target="another_computer">Codex</button></div>':'')+
+        '</details></section>';
     function overview(next){
       $('#connectionsStewardName').textContent=next.stewards.map(a=>a.name).join(', ')||t('Not assigned','Не назначен');
       const model=next.memory_model||{state:'not_connected'};
@@ -1518,7 +1548,8 @@
     // Disconnecting ends the application's access; the agent's notes and conversations stay.
     $('#connectedApplications').onclick=async e=>{
       const b=e.target.closest('[data-disconnect]');if(!b)return;
-      if(!window.confirm(QI.resolve(t('Disconnect '+b.dataset.name+'? It loses access to this memory; its notes and conversations stay.','Отключить '+b.dataset.name+'? Доступ к памяти закроется, заметки и разговоры сохранятся.'))))return;
+      if(!window.confirm(QI.resolve(b.dataset.unfinished?t('Cancel the unfinished setup '+b.dataset.name+'? An agent already working with its own key keeps working.','Отменить незавершённое подключение '+b.dataset.name+'? Агент, который уже работает со своим ключом, продолжит работать.')
+        :t('Disconnect '+b.dataset.name+'? It loses access to this memory; its notes and conversations stay.','Отключить '+b.dataset.name+'? Доступ к памяти закроется, заметки и разговоры сохранятся.'))))return;
       const [kind,id]=b.dataset.disconnect.split(/:(.*)/);b.disabled=true;
       try{await apiWrite('/api/dashboard/connection-setup',kind==='oauth'?{action:'revoke-oauth',agent_id:id}:{action:'disconnect',id});
         status.textContent=QI.resolve(t('Disconnected: ','Отключено: '))+b.dataset.name;const next=await api('/api/dashboard/connections');if(state.page==='connections')overview(next);}
@@ -1527,11 +1558,11 @@
     main.querySelectorAll('[data-memory-client]').forEach(button=>button.onclick=async()=>{
       button.disabled=true;status.textContent=QI.msg('Preparing your connection…');
       try {
-        const result=await apiWrite('/api/dashboard/memory',{action:'connect-agent',runtime:button.dataset.memoryClient});
+        const result=await apiWrite('/api/dashboard/memory',{action:'connect-agent',runtime:button.dataset.memoryClient,...(button.dataset.memoryTarget?{target:button.dataset.memoryTarget}:{})});
         if(result.state==='download_connection') {
           const url=URL.createObjectURL(new Blob([JSON.stringify(result.connection)],{type:'application/json'})),a=document.createElement('a');
           a.href=url;a.download='Qoopia-'+button.dataset.memoryClient+'.qoopia-memory';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-          status.textContent=QI.msg('Open the downloaded file with Qoopia where your agent runs. It contains a private connection key; keep it on your own device.');
+          status.textContent=QI.msg('Open the downloaded file with Qoopia where your agent runs and confirm that the address shown is your Qoopia. On Linux, run qoopia memory-link --file FILE and follow the plan it prints. The file contains a private connection key; keep it on your own device.');
         }else status.textContent=result.next||QI.msg('Connection configured.');
       }catch(e){status.textContent=e.message;}finally{button.disabled=false;}
     });
@@ -1573,14 +1604,21 @@
   })();
 
   (async()=>{
-    let identity=null;
-    try{
-      if(setupCode)await identityPost('setup',{code:setupCode});
-      const r=await fetch(BASE+'/api/dashboard/identity',{credentials:'same-origin',signal:AbortSignal.timeout(15000)});
-      if(r.ok){identity=await r.json();$('#emailLogin').hidden=false;}else r.body?.cancel().catch(()=>{});
-    }catch(e){loginError(e);}
-    const r=await fetch(BASE+'/api/dashboard/agents',{credentials:'same-origin',signal:AbortSignal.timeout(15000)});
-    r.body?.cancel().catch(()=>{}); // Only r.ok is read; an unread body held the request open until the timeout (F-331).
+    let identity=null,identityDone=false,r;
+    try{if(setupCode)await identityPost('setup',{code:setupCode});}catch(e){loginError(e);}
+    // Only a 401 means signed out. A phone that drops the request, a restarting server (502/503) or a rate
+    // limit (429) used to land on the sign-in page, often without its sign-in buttons: keep checking instead.
+    const get=path=>fetch(BASE+path,{credentials:'same-origin',signal:AbortSignal.timeout(15000)});
+    for(let attempt=0;;attempt++){
+      try{
+        if(!identityDone){const i=await get('/api/dashboard/identity');if(i.ok){identity=await i.json();$('#emailLogin').hidden=false;identityDone=true;}else{i.body?.cancel().catch(()=>{});identityDone=i.status<500&&i.status!==429;}}
+        r=await get('/api/dashboard/agents');
+        r.body?.cancel().catch(()=>{}); // Only r.ok is read; an unread body held the request open until the timeout (F-331).
+        if(r.ok||r.status===401&&identityDone)break;
+      }catch{/* Offline or timed out: checked again below. */}
+      if($('#sessionCheck'))$('#sessionCheck').textContent=QI.msg('Connection lost. Reconnecting…');
+      await new Promise(resolve=>setTimeout(resolve,Math.min(1000*2**attempt,10000)));
+    }
     // An authenticated dashboard session is valid without an email binding (local owner login).
     if(r.ok){finishAccountSignIn();if(consumeSafeNext())return;showApp();boot();}
     else{

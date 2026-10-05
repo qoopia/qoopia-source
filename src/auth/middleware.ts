@@ -1,4 +1,6 @@
-import {resourceConnection} from "../services/connection-identity.ts";
+import {connectionOrigin,resourceConnection} from "../services/connection-identity.ts";
+import {retiredRemoteOrigin} from "../delivery/transport-config.ts";
+import {standaloneRoot} from "../utils/standalone.ts";
 import { db } from "../db/connection.ts";
 import { verifyApiKey, type AgentRecord } from "./api-keys.ts";
 import type { OAuthScope } from "./oauth.ts";
@@ -58,7 +60,9 @@ export function authenticate(request: Request): AuthContext | null {
   const connection=oauthRow?.resource?resourceConnection(oauthRow.resource):undefined;
   // F-131: off the MCP transport (REST, dashboard, continuity) only legacy and root-/mcp tokens pass;
   // a connection-bound token is good for its own /mcp/c/<id> endpoint and nothing else.
-  const targetMatches=!mcp?!oauthRow?.resource||oauthRow.resource===oauthResource():connection?pathname==='/mcp/c/'+connection:
+  // A connection whose tunnel address belonged to a revoked or replaced device reports RECONNECT_REQUIRED:
+  // its grant must not keep working through the new device's tunnel, which serves the same /mcp/c/<id> path.
+  const targetMatches=!mcp?!oauthRow?.resource||oauthRow.resource===oauthResource():connection?pathname==='/mcp/c/'+connection&&!retiredRemoteOrigin(standaloneRoot(),connectionOrigin(connection)):
     oauthRow?.resource?oauthRow.resource===new URL(pathname.replace(/\/$/,''),oauthResource()).href:pathname==='/mcp'||pathname==='/mcp/';
   if (oauthRow && oauthRow.token_type === "access" && targetMatches) {
     const a = db

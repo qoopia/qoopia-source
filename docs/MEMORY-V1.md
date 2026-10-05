@@ -24,9 +24,18 @@ the dashboard connects their subscription and memory, without a task composer.
 ## Session continuity
 
 Connect a native agent from Memory settings. On Mac, open its `.qoopia-memory`
-connection file; on Linux run `qoopia memory-link --file /absolute/path/to/file`.
+connection file and confirm its address; on Linux run `qoopia memory-link --file /absolute/path/to/file`,
+check the address it shows, then repeat with the printed `--commit --approve PLAN_DIGEST`.
 Existing native settings are backed up and unrelated MCP entries/hooks are preserved.
 Codex requires one native hook trust review in `/hooks`.
+
+An installed Qoopia links an agent on its own computer over loopback. For an agent on
+another computer, enable external access, then choose Session memory settings → On another
+computer: the downloaded file names the installation's external address and a separate
+memory agent with its own key. Its hooks send `POST /memory/continuity` through the
+tunnel; the edge forwards only key-authenticated POSTs within the continuity size limit,
+and the installation still checks the key and its write scope. A server workspace's file
+always names the server's public address.
 
 Hooks capture visible user/assistant/tool events from the native transcript. They do
 not capture hidden reasoning or binary attachments. The transcript is the durable

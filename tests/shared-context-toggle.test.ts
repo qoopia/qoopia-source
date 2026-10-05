@@ -164,4 +164,31 @@ describe("AgentComm provenance follows the toggle", () => {
     expect(cite("bob").created).toBe(true);
     expect(() => cite("carl")).toThrow(/not found/);
   });
+
+  test("agent_status shows an agent without shared context only itself", async () => {
+    const status = async (key: string, args: Record<string, unknown> = {}) => {
+      const r = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, accept: "application/json, text/event-stream", "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_status", arguments: args } }),
+      });
+      const text = await r.text();
+      const line = text.split("\n").find((l) => l.startsWith("data:"));
+      const body = JSON.parse(line ? line.slice(5) : text);
+      return (JSON.parse(body.result.content[0].text) as { agents: { name: string }[] }).agents.map((a) => a.name);
+    };
+    expect(sharesContext(id.carl!)).toBe(false);
+    expect(await status(carlKey)).toEqual(["toggle-carl"]);
+    expect(await status(carlKey, { agent: "toggle-alice" })).toEqual([]);
+    expect(await status(carlKey, { agent: "toggle-carl" })).toEqual(["toggle-carl"]);
+    expect(await status(bobKey)).toContain("toggle-alice");
+    expect(await status(stewardKey)).toContain("toggle-alice");
+  });
+
+  test("the overview counts only conversations the viewer may read", async () => {
+    // 'toggle-acs' (alice ↔ priv) is open: carl, with the toggle off, is no party to it.
+    const open = async (key: string) => ((await get(key, "/api/dashboard/overview")).body.comm as { open_sessions: number }).open_sessions;
+    expect(await open(carlKey)).toBe(0);
+    expect(await open(bobKey)).toBeGreaterThan(0);
+  });
 });

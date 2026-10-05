@@ -7,10 +7,13 @@ import {isToolAllowedForProfile,normalizeAgentProfile,ownerAllowed,toolCatalog,t
 import {assertInstanceWriteAllowed} from '../utils/instance-role.ts';
 import {BRIDGE_READ_TOOLS,BRIDGE_TOOL_NAMES,bridgeRefusal} from '../bridges/api.ts';
 import {agentMemoryStatus} from '../services/memory-policy.ts';
+import {memoryClientAgent} from '../services/memory-model.ts';
 import {AGENT_KIT_REVISION} from '../agent-kit/index.ts';
 
 export type MechanismStatus='available'|'forbidden'|'client_unsupported'|'needs_setup'|'faulty';
-export interface Mechanism {id:string;title:string;status:MechanismStatus;tools:string[];withheld:string[];reason:string|null;action:string|null}
+export interface Mechanism {id:string;title:string;status:MechanismStatus;tools:string[];withheld:string[];reason:string|null;action:string|null;
+  /** memory.continuity only: the separate memory agent whose hooks capture this runtime's sessions. */
+  served_by?:string}
 interface ContractOperation {name:string;action:AuthorityAction;humanOnly?:boolean}
 
 /** Titles, reasons and actions are fixed sentences so the dashboard can translate them.
@@ -29,12 +32,14 @@ const MECHANISMS:{id:string;title:string;match:RegExp;flag?:string}[]=[
 ];
 const MCP_ONLY_SURFACES=['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','muse_code','muse_app','grok_bot'];
 
+/** What this connection really got, when the transport recorded it; otherwise the default rule. */
+const bootstrapOf=(auth:AuthContext)=>auth.bootstrap_profile!==undefined?(auth.bootstrap_profile??undefined)
+  :auth.legacy_skill_access===1?undefined:auth.authority_profile;
+
 /** What this agent really gets, by the same predicates the MCP registration applies. */
 export function grantedTools(database:Database,auth:AuthContext,operations:readonly ContractOperation[]) {
   const profile=normalizeAgentProfile(auth.tool_profile,auth.agent_name);
-  // What this connection really got, when the transport recorded it; otherwise the default rule.
-  const bootstrap=auth.bootstrap_profile!==undefined?(auth.bootstrap_profile??undefined)
-    :auth.legacy_skill_access===1?undefined:auth.authority_profile;
+  const bootstrap=bootstrapOf(auth);
   const steward=isAdmin(auth);
   // The same four predicates MCP registration applies, plus the instance gate the handler
   // enforces: on a follower or with storage exhausted a write tool exists but always refuses,
@@ -56,18 +61,45 @@ function currentConnection(database:Database,workspace:string,agent:string) {
     .get(agent,workspace) as {surface:string;state:string;verified_at:string|null}|null;
 }
 
+type ContinuityBase={id:string;title:string;tools:string[];withheld:string[]};
+/** One channel's live status as the mechanism row; `waiting` is decided by the caller. */
+function channelMechanism(base:ContinuityBase,memory:ReturnType<typeof agentMemoryStatus>):Mechanism {
+  if(memory.state==='manual')return {...base,status:'forbidden',reason:'The owner set this agent to save only on request.',
+    action:'Reading and search keep working. note_create prepares the note for the owner to confirm; the owner can turn automatic saving back on.'};
+  if(memory.state==='working')return {...base,status:'available',reason:null,action:null};
+  if(memory.error_code==='CAPTURE_STOPPED')return {...base,status:'faulty',reason:'This agent keeps working, but its sessions stopped arriving: the lifecycle hooks no longer deliver.',
+    action:'The owner runs qoopia doctor on the computer where this runtime runs; it names the failing hook and what to do. Saved memory stays readable.'};
+  return {...base,status:'faulty',reason:memory.state==='behind'?'Conversations wait for a summary.':'The memory model reported an error.',
+    action:memory.state==='sign_in'?'The owner signs in to the memory subscription in Qoopia, or checks its quota.':'Accepted messages are kept. The owner checks the memory model in Qoopia; summaries resume by themselves.'};
+}
 function continuity(database:Database,auth:AuthContext):Mechanism {
   const base={id:'memory.continuity',title:'Automatic session capture and restore',tools:[] as string[],withheld:[] as string[]};
   const memory=agentMemoryStatus(auth.workspace_id,auth.agent_id,database);
   const surface=currentConnection(database,auth.workspace_id,auth.agent_id)?.surface;
-  if(memory.state==='manual')return {...base,status:'forbidden',reason:'The owner set this agent to save only on request.',
-    action:'Reading and search keep working. note_create prepares the note for the owner to confirm; the owner can turn automatic saving back on.'};
-  if(memory.state==='working')return {...base,status:'available',reason:null,action:null};
-  if(memory.state==='waiting')return surface&&MCP_ONLY_SURFACES.includes(surface)
-    ?{...base,status:'client_unsupported',reason:'This client has no session lifecycle hooks, so nothing is captured automatically.',action:'Save what matters with note_create. Full coverage needs a client with the Qoopia memory adapter (Claude Code, Codex).'}
-    :{...base,status:'needs_setup',reason:'No lifecycle adapter has delivered a session for this agent yet.',action:'Connect the Qoopia memory client in the runtime this agent already uses; its identity and provider stay as they are.'};
-  return {...base,status:'faulty',reason:memory.state==='behind'?'Conversations wait for a summary.':'The memory model reported an error.',
-    action:memory.state==='sign_in'?'The owner signs in to the memory subscription in Qoopia, or checks its quota.':'Accepted messages are kept. The owner checks the memory model in Qoopia; summaries resume by themselves.'};
+  if(memory.state!=='waiting')return channelMechanism(base,memory);
+  if(surface&&MCP_ONLY_SURFACES.includes(surface))return {...base,status:'client_unsupported',reason:'This client has no session lifecycle hooks, so nothing is captured automatically.',action:'Save what matters with note_create. Full coverage needs a client with the Qoopia memory adapter (Claude Code, Codex).'};
+  // The Qoopia memory client of a runtime delivers under its own memory agent, never under this
+  // OAuth/linked identity: that agent's channel is this runtime's capture. Memory settings record it.
+  const served=surface==='claude_code'||surface==='codex'?memoryClientAgent(auth.workspace_id,surface):null;
+  const delegate=served&&served!==auth.agent_id?database.query('SELECT id,name FROM agents WHERE id=? AND workspace_id=? AND active=1')
+    .get(served,auth.workspace_id) as {id:string;name:string}|null:null;
+  const delegated=delegate?agentMemoryStatus(auth.workspace_id,delegate.id,database):null;
+  // A memory client linked but not yet delivering (Codex hooks not trusted yet) is setup, not a model error.
+  if(delegate&&delegated!.state!=='waiting') {
+    const channel=channelMechanism(base,delegated!);
+    return {...channel,served_by:delegate.name,...(channel.status==='available'?{reason:'Sessions of this runtime are captured and restored by its separate Qoopia memory agent.'}:{})};
+  }
+  return {...base,...(delegate?{served_by:delegate.name}:{}),status:'needs_setup',reason:'No lifecycle adapter has delivered a session for this agent yet.',
+    action:'The owner connects the Qoopia memory client for this runtime in Qoopia memory settings. It runs as a separate memory agent: sessions are captured under that agent and, while shared context is on, are searchable from here.'};
+}
+
+/** What really widens a withheld mechanism. A connection's access profile (a client connection or
+ * a paired memory worker) has no switch at all; only the tool profile is the steward's agent_set_profile. */
+function widenAction(auth:AuthContext,withheld:string[]) {
+  const bootstrap=bootstrapOf(auth);
+  return withheld.length&&withheld.every(name=>!bootstrapToolAllowed(name,bootstrap))
+    ?'This connection\'s access profile does not include these tools, and agent_set_profile cannot add them.'
+    :'The steward can change this agent\'s tool profile with agent_set_profile.';
 }
 
 /** The same contract for every agent, new or existing: what exists on this server, what this
@@ -85,14 +117,14 @@ export function agentContract(database:Database,auth:AuthContext,operations:read
     const refusal=m.id==='bridges'?bridgeRefusal(auth):null;
     mechanisms.push(refusal?.includes('external agent')?{...row,status:'needs_setup',reason:refusal,action:'The owner selects this agent in Bridges.'}
       :{...row,status:'forbidden',reason:m.id==='management'?'Reserved for the steward and the owner.':'Not included in this agent\'s access profile.',
-        action:'The owner can change this agent\'s access on its card or with agent_set_profile.'});
+        action:m.id==='management'?'Ask the steward or the owner to do it.':widenAction(auth,row.withheld)});
   }
   const other=universe.filter(name=>!placed.has(name));
   if(other.length) {
     const tools=granted.filter(name=>other.includes(name));
     mechanisms.push({id:'other',title:'Other operations',status:tools.length?'available':'forbidden',tools,
       withheld:other.filter(name=>!tools.includes(name)),reason:tools.length?null:'Not included in this agent\'s access profile.',
-      action:tools.length?null:'The owner can change this agent\'s access on its card or with agent_set_profile.'});
+      action:tools.length?null:widenAction(auth,other)});
   }
   mechanisms.splice(2,0,continuity(database,auth));
   const connection=currentConnection(database,auth.workspace_id,auth.agent_id);

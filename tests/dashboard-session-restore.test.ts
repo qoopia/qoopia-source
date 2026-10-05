@@ -14,7 +14,7 @@ for(const scenario of [
   const events:string[]=[];
   await runInNewContext(restore,{
     setupCode:null,accountCode:null,accountSignIn:null,AbortSignal,finishAccountSignIn(){},BASE:'',$:()=>({}),
-    fetch:async(url:string)=>url.endsWith('/identity')?{ok:true,json:async()=>({linked:scenario.linked,pending:scenario.pending})}:{ok:scenario.authorized},
+    fetch:async(url:string)=>url.endsWith('/identity')?{ok:true,json:async()=>({linked:scenario.linked,pending:scenario.pending})}:{ok:scenario.authorized,status:scenario.authorized?200:401},
     consumeSafeNext:()=>false,showApp:()=>events.push('app'),boot:()=>events.push('boot'),showLogin:()=>events.push('login'),awaitEmailConfirmation:async()=>events.push('confirm'),loginError:()=>events.push('error'),
   });
   expect(events).toEqual(scenario.authorized?['app','boot']:scenario.pending?['login','confirm']:['login']);
@@ -24,7 +24,7 @@ for(const signin of ['account','complete'])test('account continuation starts aga
  const events:string[]=[];
  await runInNewContext(restore,{
   setupCode:null,accountCode:null,accountSignIn:signin,AbortSignal,BASE:'',$:()=>({}),
-  fetch:async(url:string)=>url.endsWith('/identity')?{ok:true,json:async()=>({linked:true,pending:true})}:{ok:false},
+  fetch:async(url:string)=>url.endsWith('/identity')?{ok:true,json:async()=>({linked:true,pending:true})}:{ok:false,status:401},
   showLogin:()=>events.push('login'),startAccountLogin:async()=>events.push('account'),awaitEmailConfirmation:async()=>events.push('email'),loginError:()=>events.push('error'),
  });
  expect(events).toEqual(['login','account']);
@@ -36,10 +36,24 @@ for(const authorized of [true,false])test('the session check releases the respon
  const body=(name:string)=>({cancel:async()=>{released.push(name);}});
  await runInNewContext(restore,{
   setupCode:null,accountCode:null,accountSignIn:null,AbortSignal,finishAccountSignIn(){},BASE:'',$:()=>({}),
-  fetch:async(url:string)=>url.endsWith('/identity')?{ok:false,body:body('identity')}:{ok:authorized,body:body('agents')},
+  fetch:async(url:string)=>url.endsWith('/identity')?{ok:false,status:404,body:body('identity')}:{ok:authorized,status:authorized?200:401,body:body('agents')},
   consumeSafeNext:()=>false,showApp(){},boot(){},showLogin(){},loginError(){},
  });
  expect(released.sort()).toEqual(['agents','identity']);
+});
+
+// Only a 401 signs the owner out. A dropped request, a restarting server or a rate limit keeps checking
+// (with a visible status) instead of showing a sign-in card without its sign-in buttons.
+test('a transient failure during the session check retries instead of showing the sign-in page',async()=>{
+ const events:string[]=[],status={textContent:''},replies:any[]=[{ok:false,status:429},'offline',{ok:false,status:503},{ok:true,status:200}];let identityCalls=0;
+ await runInNewContext(restore,{
+  setupCode:null,accountCode:null,accountSignIn:null,AbortSignal,finishAccountSignIn(){},BASE:'',QI:{msg:String},setTimeout:(fn:()=>void)=>fn(),
+  $:(s:string)=>s==='#sessionCheck'?status:{},
+  fetch:async(url:string)=>{if(url.endsWith('/identity')){identityCalls++;return identityCalls===1?{ok:false,status:429}:{ok:true,json:async()=>({linked:true})};}
+   const next=replies.shift();if(next==='offline')throw new TypeError('Load failed');return next;},
+  consumeSafeNext:()=>false,showApp:()=>events.push('app'),boot:()=>events.push('boot'),showLogin:()=>events.push('login'),loginError:()=>events.push('error'),
+ });
+ expect(events).toEqual(['app','boot']);expect(status.textContent).toBe('Connection lost. Reconnecting…');expect(identityCalls).toBe(2);
 });
 
 // F-324: a signed-in owner on a slow link sees a neutral check, not the sign-in card, until the check answers.

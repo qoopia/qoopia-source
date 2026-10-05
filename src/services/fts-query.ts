@@ -42,7 +42,32 @@ export function analyzeFtsQuery(query: string | null | undefined): { candidates:
   return { candidates, terms: candidates.filter((tok) => INDEXABLE.test(tok)) };
 }
 
-/** "" when no term is searchable. `prefix` appends `*` to each quoted term. */
+/** Russian case and number endings, nouns and adjectives. At each position the alternatives are
+ * tried in order, and the leftmost position that reaches the end wins, so the longest ending goes. */
+const RU_ENDING = /(?:иями|ями|ами|иях|ого|его|ому|ему|ыми|ими|ией|ия|ие|ию|ии|ий|ая|яя|ое|ее|ые|ых|их|ый|ой|ую|юю|ым|им|ей|ом|ем|ам|ям|ах|ях|ов|ев|а|я|о|е|ы|и|у|ю|ь|й)$/;
+/** Russian letters only: a word with Kazakh letters (ә ғ қ ң ө ұ ү һ і) or Latin is never stemmed. */
+const RUSSIAN_WORD = /^[а-яё]{4,}$/;
+
+/**
+ * Query-side stem for a Russian word, or the word itself: «миграцию», «миграции» and «миграция» all
+ * become «миграц». The index keeps whole words (unicode61 has no morphology), so the stem is used
+ * as a prefix. A stem shorter than three letters would match too much and is not used.
+ * ponytail: suffix list, no verb forms or alternating stems (сон/сна); a Snowball stemmer if needed.
+ */
+export function russianStem(word: string): string {
+  if (!RUSSIAN_WORD.test(word)) return word;
+  const ending = RU_ENDING.exec(word)?.[0] ?? "";
+  return [...word].length - ending.length >= 3 ? word.slice(0, word.length - ending.length) : word;
+}
+
+/** One prefix term. A Russian word also matches its other forms through its stem; the exact form
+ * still matches both alternatives, so bm25 ranks it first. */
+export function ftsPrefixTerm(term: string): string {
+  const stem = russianStem(term);
+  return stem === term ? `"${term}"*` : `("${term}"* OR "${stem}"*)`;
+}
+
+/** "" when no term is searchable. `prefix` appends `*` to each quoted term (and adds Russian stems). */
 export function buildFtsMatch(query: string | null | undefined, join: "OR" | "AND" = "OR", prefix = true): string {
-  return analyzeFtsQuery(query).terms.map((t) => `"${t}"${prefix ? "*" : ""}`).join(` ${join} `);
+  return analyzeFtsQuery(query).terms.map((t) => prefix ? ftsPrefixTerm(t) : `"${t}"`).join(` ${join} `);
 }

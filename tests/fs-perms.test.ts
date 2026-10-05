@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ensureSafeDir, ensureSafeFile } from "../src/utils/fs-perms.ts";
+import { durableWrite, safePath } from "../src/utils/fs.ts";
 
 // chmod never fails for root, so a failing chmod is stubbed instead of using a foreign-owned directory.
 function withTemp(run: (dir: string) => void) {
@@ -38,4 +39,20 @@ test("ensureSafeFile refuses a file that stays group or world readable", () => w
   withFailingChmod(() => expect(() => ensureSafeFile(file)).toThrow(/0644/));
   ensureSafeFile(file);
   expect(mode(file)).toBe(0o600);
+}));
+
+test("durableWrite removes its staged file when the write fails (disk full) and keeps the original", () => withTemp((dir) => {
+  const file = path.join(fs.realpathSync(dir), "state.json");
+  durableWrite(file, "original");
+  const fsync = spyOn(fs, "fsyncSync").mockImplementationOnce(() => { throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }); });
+  try { expect(() => durableWrite(file, "replacement")).toThrow("ENOSPC"); } finally { fsync.mockRestore(); }
+  expect(fs.readFileSync(file, "utf8")).toBe("original");
+  expect(fs.readdirSync(path.dirname(file))).toEqual(["state.json"]);
+}));
+
+test("safePath names the linked folder and what to do instead", () => withTemp((dir) => {
+  const real = path.join(fs.realpathSync(dir), "External Ж"), link = path.join(fs.realpathSync(dir), "Qoopia");
+  fs.mkdirSync(real); fs.symlinkSync(real, link);
+  expect(() => safePath(path.join(link, "data", "qoopia.db"))).toThrow(`Links and special files are refused: ${link} is a symbolic link to ${real}.`);
+  expect(() => safePath(path.join(link, "data"))).toThrow("Use the real folder path instead");
 }));

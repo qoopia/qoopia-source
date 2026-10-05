@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { appendManagedLog, retainManagedLogs } from '../src/utils/managed-logs.ts';
+import { appendManagedLog, retainManagedLogs, inspectManagedLogs } from '../src/utils/managed-logs.ts';
 import { recordMaintenance, readOps, opsSummary, opsFile } from '../src/delivery/ops-state.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
 import { hash } from '../src/utils/fs.ts';
@@ -28,21 +28,73 @@ test('managed logs retain exact/future boundary, remove only ledger owned expire
   expect(fs.readFileSync(path.join(dir,boundary),'utf8')).not.toContain('second');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
-test('retention refuses replaced inode, hardlinks, symlink file/ancestor and corrupt ownership; preserves targets',()=>{
+test('retention refuses hardlinks, symlink file/ancestor and corrupt ownership; preserves targets',()=>{
  const root=fixture(),now=Date.now();try{
-  for(const kind of ['symlink','hardlink','replacement','corrupt','ancestor']){
+  for(const kind of ['symlink','hardlink','corrupt','ancestor']){
    const logs=path.join(root,kind);appendManagedLog(logs,'info',hash('fixture'),now-16*day);
    const dir=path.join(logs,'application'),file=path.join(dir,fs.readdirSync(dir).find(n=>n.endsWith('.jsonl'))!);
    fs.utimesSync(file,new Date(now-16*day),new Date(now-16*day));
    const external=path.join(root,kind+'-target');fs.writeFileSync(external,'untouched');
    if(kind==='symlink'){fs.unlinkSync(file);fs.symlinkSync(external,file);}
    if(kind==='hardlink')fs.linkSync(file,path.join(root,'hardlink-copy'));
-   if(kind==='replacement'){fs.renameSync(file,file+'.original');fs.writeFileSync(file,'replacement',{mode:0o600});}
    if(kind==='corrupt')fs.writeFileSync(path.join(dir,'ownership.json'),'{}');
    if(kind==='ancestor'){fs.renameSync(dir,dir+'-original');fs.symlinkSync(dir+'-original',dir);}
    expect(()=>retainManagedLogs(logs,now)).toThrow();
    expect(fs.readFileSync(external,'utf8')).toBe('untouched');expect(fs.existsSync(file)).toBe(true);
   }
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('a replaced log file (new inode) becomes unowned: forgotten, never written or deleted, maintenance recovers',()=>{
+ const root=fixture(),now=Date.now();try{
+  appendManagedLog(root,'info',hash('fixture'),now-16*day);
+  const dir=path.join(root,'application'),file=path.join(dir,fs.readdirSync(dir).find(n=>n.endsWith('.jsonl'))!);
+  fs.renameSync(file,file+'.original');fs.writeFileSync(file,'replacement',{mode:0o600});
+  const old=new Date(now-16*day);fs.utimesSync(file,old,old);fs.utimesSync(file+'.original',old,old);
+  expect(inspectManagedLogs(root)).toMatchObject({status:'pass'});
+  expect(retainManagedLogs(root,now)).toMatchObject({deleted:0,retained:0,status:'ok'});
+  appendManagedLog(root,'info',hash('after'),now);
+  expect(fs.readFileSync(file,'utf8')).toBe('replacement');expect(fs.existsSync(file+'.original')).toBe(true);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('Migration Assistant / Time Machine restore gives every log a new inode: logging and retention keep working',()=>{
+ const root=fixture(),now=Date.now();try{
+  appendManagedLog(root,'info',hash('old Mac'),now-day);appendManagedLog(root,'info',hash('old Mac today'),now);
+  const dir=path.join(root,'application');
+  // A restore writes a copy and moves it into place. Writing the copy while the original still
+  // exists guarantees a new inode: unlink-then-create lets ext4 hand the freed inode straight back.
+  for(const name of fs.readdirSync(dir).filter(n=>n.endsWith('.jsonl'))){
+   const f=path.join(dir,name),before=fs.statSync(f).ino;
+   fs.writeFileSync(f+'.restoring',fs.readFileSync(f),{mode:0o600});fs.renameSync(f+'.restoring',f);
+   expect(fs.statSync(f).ino).not.toBe(before);
+  }
+  expect(inspectManagedLogs(root)).toMatchObject({status:'pass'});
+  expect(()=>appendManagedLog(root,'info',hash('new Mac'),now)).not.toThrow();
+  expect(retainManagedLogs(root,now)).toMatchObject({retained:1,status:'ok'});
+  expect(fs.readdirSync(dir).filter(n=>n.endsWith('.jsonl'))).toHaveLength(3);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('a reboot that renumbers the volume keeps the same log files owned: write, inspect and retention still work',()=>{
+ const root=fixture(),now=Date.now();try{
+  appendManagedLog(root,'info',hash('before reboot'),now-15*day);
+  const dir=path.join(root,'application'),file=path.join(dir,fs.readdirSync(dir).find(n=>n.endsWith('.jsonl'))!);
+  // APFS assigns st_dev at mount time: after a restart the recorded number differs, the inode does not.
+  const ledgerFile=path.join(dir,'ownership.json'),ledger=JSON.parse(fs.readFileSync(ledgerFile,'utf8'));
+  for(const item of Object.values(ledger.files) as {dev:number}[])item.dev+=2;
+  fs.writeFileSync(ledgerFile,JSON.stringify(ledger),{mode:0o600});
+  expect(inspectManagedLogs(root)).toMatchObject({status:'pass',reason:'LOG_OWNERSHIP_VERIFIED'});
+  expect(()=>appendManagedLog(root,'info',hash('after reboot'),now-15*day)).not.toThrow();
+  fs.utimesSync(file,new Date(now-15*day),new Date(now-15*day));
+  expect(retainManagedLogs(root,now)).toMatchObject({deleted:1,retained:0});expect(fs.existsSync(file)).toBe(false);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('a log file deleted outside Qoopia (a cleaner, the owner) is forgotten: logging, inspection and retention keep working',()=>{
+ const root=fixture(),now=Date.now();try{
+  appendManagedLog(root,'info',hash('yesterday'),now-day);appendManagedLog(root,'info',hash('today'),now);
+  const dir=path.join(root,'application');for(const name of fs.readdirSync(dir).filter(n=>n.endsWith('.jsonl')))fs.unlinkSync(path.join(dir,name));
+  expect(inspectManagedLogs(root)).toMatchObject({status:'pass'});
+  expect(()=>appendManagedLog(root,'info',hash('after cleanup'),now)).not.toThrow();
+  expect(retainManagedLogs(root,now)).toMatchObject({deleted:0,retained:1,status:'ok'});
+  expect(fs.readdirSync(dir).filter(n=>n.endsWith('.jsonl'))).toHaveLength(1);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 test('maintenance lifecycle durable pending, active suppression, resolve clears, two distinct confirmed receipts',async()=>{

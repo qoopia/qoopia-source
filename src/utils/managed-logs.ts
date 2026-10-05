@@ -5,6 +5,8 @@ import { safePath, privateDirectory, durableWrite, readJson, syncDirectory } fro
 
 const DAY = 86_400_000;
 const FORMAT = 'qoopia-application-logs/1';
+// `dev` is recorded but never compared: APFS renumbers volumes across reboots, so the same file
+// (same inode, nlink 1, inside the private 0700 directory) would read as replaced after every restart.
 type Ledger = { format: typeof FORMAT; files: Record<string, { dev: number; ino: number; created: number }> };
 function directory(root: string, create: boolean) {
   const dir = safePath(path.join(root, 'application'));
@@ -30,9 +32,26 @@ function ledger(dir: string): Ledger {
   }
   return v;
 }
+/** An entry whose file was deleted outside Qoopia (a log cleaner, the owner), or is now a different
+ * single-link regular file (Migration Assistant and Time Machine restore give every file a new inode).
+ * Symlinks and hardlinks are not stale: they stay in the ledger and are refused. */
+function stale(dir: string, name: string, own: Ledger['files'][string]) {
+  let s: fs.Stats;
+  try { s = fs.lstatSync(safePath(path.join(dir, name))); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true; throw error; }
+  return s.isFile() && s.nlink === 1 && s.ino !== own.ino;
+}
+/** Forgets stale entries. Their file, if any, becomes an unowned file: never written or deleted here,
+ * and keeping the entry would fail every later write, inspection and retention run. */
+function forgetStale(dir: string, state: Ledger) {
+  let forgotten = 0;
+  for (const [name, own] of Object.entries(state.files)) if (stale(dir, name, own)) { delete state.files[name]; forgotten++; }
+  return forgotten;
+}
 /** Only fixed safe event metadata is persisted. Existing console redaction remains separate. */
 export function appendManagedLog(root: string, level: string, messageDigest: string, now = Date.now()) {
   const dir = directory(root, true), state = ledger(dir);
+  if (forgetStale(dir, state)) durableWrite(path.join(dir, 'ownership.json'), JSON.stringify(state));
   let name = Object.keys(state.files).find(n => Math.floor(state.files[n]!.created / DAY) === Math.floor(now / DAY));
   if (!name) {
     name = 'app-' + randomUUID() + '.jsonl';
@@ -46,7 +65,7 @@ export function appendManagedLog(root: string, level: string, messageDigest: str
   const fd = fs.openSync(file, fs.constants.O_APPEND | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW);
   try {
     const s = fs.fstatSync(fd), own = state.files[name]!;
-    if (!s.isFile() || s.nlink !== 1 || s.uid !== process.getuid?.() || s.dev !== own.dev || s.ino !== own.ino || (s.mode & 0o077)) throw new Error('LOG_FILE_UNSAFE');
+    if (!s.isFile() || s.nlink !== 1 || s.uid !== process.getuid?.() || s.ino !== own.ino || (s.mode & 0o077)) throw new Error('LOG_FILE_UNSAFE');
     fs.writeSync(fd, JSON.stringify({ at: new Date(now).toISOString(), level, event_sha256: messageDigest }) + '\n');
   } finally { fs.closeSync(fd); }
 }
@@ -54,18 +73,17 @@ export function retainManagedLogs(root: string, now = Date.now()) {
   if (!Number.isFinite(now)) throw new Error('LOG_CLOCK_INVALID');
   const dir = directory(root, false);
   if (!fs.existsSync(dir)) return { deleted: 0, retained: 0, days: 14, status: 'not_initialized' };
-  const state = ledger(dir); let deleted = 0;
+  const state = ledger(dir), forgotten = forgetStale(dir, state); let deleted = 0;
   for (const [name, own] of Object.entries(state.files)) {
     const file = safePath(path.join(dir, name));
-    if (!fs.existsSync(file)) throw new Error('LOG_FILE_MISSING');
     const s = fs.lstatSync(file);
-    if (!s.isFile() || s.nlink !== 1 || s.uid !== process.getuid?.() || s.dev !== own.dev || s.ino !== own.ino || (s.mode & 0o077)) throw new Error('LOG_FILE_UNSAFE');
+    if (!s.isFile() || s.nlink !== 1 || s.uid !== process.getuid?.() || s.ino !== own.ino || (s.mode & 0o077)) throw new Error('LOG_FILE_UNSAFE');
     // Both creation and last write must be strictly older; exact boundary and future files stay.
     if (Math.max(own.created, s.mtimeMs) < now - 14 * DAY) {
       fs.unlinkSync(file); delete state.files[name]; deleted++;
     }
   }
-  if (deleted) { durableWrite(path.join(dir, 'ownership.json'), JSON.stringify(state)); syncDirectory(dir); }
+  if (deleted || forgotten) { durableWrite(path.join(dir, 'ownership.json'), JSON.stringify(state)); syncDirectory(dir); }
   return { deleted, retained: Object.keys(state.files).length, days: 14, status: 'ok' };
 }
 
@@ -75,8 +93,9 @@ export function inspectManagedLogs(root: string) {
     if (!fs.existsSync(dir)) return {status:'unknown',reason:'LOGS_NOT_INITIALIZED',action:'Logs initialize on the first standalone log event.'};
     const state=ledger(dir);
     for (const [name,own] of Object.entries(state.files)) {
+      if(stale(dir,name,own))continue;
       const s=fs.lstatSync(safePath(path.join(dir,name)));
-      if (!s.isFile() || s.nlink!==1 || s.uid!==process.getuid?.() || s.dev!==own.dev || s.ino!==own.ino || (s.mode&0o077)) throw new Error('unsafe');
+      if (!s.isFile() || s.nlink!==1 || s.uid!==process.getuid?.() || s.ino!==own.ino || (s.mode&0o077)) throw new Error('unsafe');
     }
     return {status:'pass',reason:'LOG_OWNERSHIP_VERIFIED',action:'14-day deletion runs through maintenance.',managed_files:Object.keys(state.files).length};
   } catch {return {status:'fail',reason:'LOG_OWNERSHIP_INVALID',action:'Preserve files; inspect ownership or corruption before maintenance.'};}

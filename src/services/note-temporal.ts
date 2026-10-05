@@ -14,7 +14,7 @@ import { db } from "../db/connection.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { logActivity } from "./activity.ts";
-import { readLevel, visibleRowSql } from "../auth/principal.ts";
+import { assertCanModifyNote, readLevel, visibleRowSql } from "../auth/principal.ts";
 import { logger } from "../utils/logger.ts";
 import {
   assertSubjectKey,
@@ -237,7 +237,8 @@ function assertSupersessionInterval(predecessor: PredecessorRow, validFromMs: nu
 /**
  * Прочитать предшественника с соблюдением авторизации. Отсутствующий,
  * удалённый или невидимый — `NOT_FOUND` (существование private-ноты
- * соседа не раскрывается).
+ * соседа не раскрывается). Видимая только через общий контекст — `FORBIDDEN`:
+ * обе стороны замены меняются, а чужие ноты только для чтения (2026-10-04).
  */
 function readPredecessor(
   workspaceId: string,
@@ -257,6 +258,7 @@ function readPredecessor(
     .get(noteId, workspaceId, callerAgentId, readLevel(callerAgentId, isAdmin)) as PredecessorRow | undefined;
 
   if (!row) throw new QoopiaError("NOT_FOUND", `note ${noteId} not found`);
+  assertCanModifyNote(row, callerAgentId, isAdmin);
   return row;
 }
 

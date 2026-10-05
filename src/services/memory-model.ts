@@ -14,19 +14,47 @@ import {logger} from '../utils/logger.ts';
 import {redactSensitive} from '../utils/secret-guard.ts';
 
 const MEMORY_MODELS={claude_code:'claude-haiku-4-5',codex:'gpt-5.6-luna'} as const;
+/** `model` is what the owner chose only when `pinned`; otherwise it records the default at selection
+ * time and the build's current default is used, so an update moves it. `replaced` records a pinned
+ * model the vendor no longer serves, after the profile fell back to the default. */
 export const memoryProfileSchema=z.object({runtime:z.enum(['claude_code','codex']),model:z.string().regex(/^(claude|gpt)-[a-z0-9.-]+$/),
-  login_store:z.string().startsWith('/'),login_backend:z.enum(['config-dir','file'])}).strict();
+  login_store:z.string().startsWith('/'),login_backend:z.enum(['config-dir','file']),pinned:z.literal(true).optional(),
+  replaced:z.object({model:z.string().max(100),at:z.string().max(40)}).strict().optional()}).strict();
 export type MemoryProfile=z.infer<typeof memoryProfileSchema>;
 let installedRoot:string|undefined;
 export function enableMemoryRoot(root:string){installedRoot=root;}
 export function memoryRoot(){return installedRoot??env.ROOT_DIR;}
 export function memoryProfilePath(workspace:string){return path.join(memoryRoot(),'config','memory',hash(workspace)+'.json');}
+/** Where memory settings keep the connection of a runtime's memory client (it holds the agent key). */
+export function memoryClientConnectionPath(workspace:string,runtime:MemoryProfile['runtime']){return path.join(memoryRoot(),'config','memory-clients',hash(workspace),runtime+'.json');}
+/** The agent the runtime's memory client delivers under, or null. Only its id is read. */
+export function memoryClientAgent(workspace:string,runtime:MemoryProfile['runtime']):string|null {
+  try{const id=(readJson(memoryClientConnectionPath(workspace,runtime)) as {agent_id?:unknown}).agent_id;return typeof id==='string'?id:null;}catch{return null;}
+}
 export function memoryProfile(workspace:string):MemoryProfile|null {
   const file=memoryProfilePath(workspace);
   if(!fs.existsSync(file))return null;
   const result=memoryProfileSchema.parse(readJson(file));
   if(!result.model.startsWith(result.runtime==='codex'?'gpt-':'claude-'))throw new QoopiaError('INVALID_INPUT','Model does not match subscription');
-  return result;
+  return result.pinned?result:{...result,model:MEMORY_MODELS[result.runtime]};
+}
+/** The vendor's answer for a model it does not know (renamed, retired, not offered on this plan).
+ * Only error output is read, never a successful answer that may mention models. */
+const UNKNOWN_MODEL=/model_not_found|not_found_error[^\n]{0,80}model|\bmodel\b[^\n]{0,120}(?:not[ _]found|does not exist|may not exist|not supported|no longer available|is not available|deprecated|retired)|(?:unknown|invalid|unsupported) model/i;
+function errorText(stdout:string,stderr:string) {
+  const texts=[stderr];
+  for(const line of stdout.split('\n')){let e:any;try{e=JSON.parse(line);}catch{continue;}
+    if(e?.type==='result'&&e.is_error)texts.push(String(e.result??''));if(e?.type==='error')texts.push(String(e.message??''));if(e?.type==='turn.failed')texts.push(String(e.error?.message??''));}
+  return texts.join('\n');
+}
+/** A pinned model the vendor rejects falls back to the default and the profile says so; a rejected
+ * default needs a newer build, which only the owner can install. */
+function unknownModel(workspace:string,profile:MemoryProfile):QoopiaError {
+  if(!profile.pinned)return new QoopiaError('MODEL_UNAVAILABLE',`The memory model ${profile.model} is not available from the vendor; update Qoopia`);
+  const file=memoryProfilePath(workspace),stored=memoryProfileSchema.parse(readJson(file)),fallback=MEMORY_MODELS[profile.runtime];
+  const {pinned:_pinned,...rest}=stored;
+  durableWrite(file,JSON.stringify({...rest,model:fallback,replaced:{model:stored.model,at:new Date().toISOString()}}));
+  return new QoopiaError('MODEL_UNAVAILABLE',`The chosen memory model ${stored.model} is no longer available; switched to ${fallback}`);
 }
 export function selectMemoryProfile(workspace:string,runtime:MemoryProfile['runtime']) {
   const file=memoryProfilePath(workspace);privateDirectory(path.dirname(file));
@@ -153,6 +181,8 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
         else if(failed)reject(new QoopiaError(failed==='time'?'MODEL_TIMEOUT':'MODEL_INVALID_RESPONSE',failed==='time'?`Memory model exceeded its ${term/1000}-second time budget`:'Memory model exceeded its output budget'));
         else resolve({code,stdout,stderr});});
     });
+    const failed=result.code!==0||result.stdout.split('\n').some(line=>{try{const e=JSON.parse(line);return e?.type==='result'&&e.is_error===true;}catch{return false;}});
+    if(failed&&!nativeFailureCode(result.stdout,result.stderr)&&UNKNOWN_MODEL.test(errorText(result.stdout,result.stderr)))throw unknownModel(workspace,profile);
     if(result.code!==0)throw new QoopiaError(nativeFailureCode(result.stdout,result.stderr)??'MODEL_UNAVAILABLE','Subscription inference failed; check Memory settings');
     let parsed:unknown;let completed=false;
     for(const line of result.stdout.split('\n')) {
@@ -180,7 +210,8 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
     logger.warn('Memory model unavailable: '+redactSensitive(error instanceof Error?error.message:'Unknown dependency failure').text.slice(0,300),
       {code:code||'DEPENDENCY_UNAVAILABLE',runtime:profile.runtime,elapsed_ms:Date.now()-started,input_chars:prompt.length});
     const state:MemoryStatus['state']=code==='UNAUTHENTICATED'?'auth_required':code==='MODEL_QUOTA'?'quota':code==='MODEL_TIMEOUT'?'timeout':code==='MODEL_INVALID_RESPONSE'?'invalid_response':'unavailable';
-    states.set(workspace,{state,requested_model:profile.model,checked_at:new Date().toISOString()});throw error;
+    // The owner reads what to do here; the messages are fixed text, never model or source output.
+    states.set(workspace,{state,requested_model:profile.model,checked_at:new Date().toISOString(),...(code==='MODEL_UNAVAILABLE'&&error instanceof QoopiaError?{message:error.message}:{})});throw error;
   } finally {
     if(options.background){yieldSlot=undefined;if(!yielded)yields=0;}
     try{if(directory)fs.rmSync(directory,{recursive:true,force:true});}finally{active=false;queue--;release();}

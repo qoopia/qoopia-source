@@ -18,6 +18,15 @@ export function linuxUserManagerEnvironment(platform:NodeJS.Platform,source:Node
   return env;
 }
 
+/** A user unit runs only while its user has a session unless lingering is enabled: on a headless server
+ * an enabled service would not start after a reboot until someone logs in over SSH. Read-only. */
+export function linuxLinger(user:string,read:(user:string)=>string|undefined):{linger:'enabled'|'disabled'|'unknown';next_action?:string} {
+  const value=read(user)?.trim();
+  if(value==='yes')return {linger:'enabled'};
+  if(value==='no')return {linger:'disabled',next_action:`To start Qoopia after a reboot without logging in, run: loginctl enable-linger ${user}`};
+  return {linger:'unknown',next_action:`If this computer has no desktop login, check loginctl show-user ${user} --property=Linger; Qoopia starts after a reboot only with lingering enabled.`};
+}
+
 // XML 1.0 forbids C0 controls in the plist and a unit file line must stay one line.
 // eslint-disable-next-line no-control-regex
 function clean(value:string){if(/[\x00-\x1f\x7f]/.test(value))throw new Error('Autostart paths cannot contain control characters');return value;}
@@ -40,10 +49,17 @@ export class UserAutostart implements AutostartLifecycle {
   constructor(readonly options:{root:string;installation:string;platform:'darwin'|'linux';configFile:string;execute:ServiceExecutor;allowTestFixture?:boolean}) {
     this.root=safePath(options.root);this.configFile=safePath(clean(options.configFile));this.ledgerFile=path.join(this.root,'config','autostart.json');
   }
+  // 5.0.16 and earlier wrote the unit without the restart limits; retarget must still recognise it as ours.
+  private legacyUnit(executable:string){
+    const allow=this.options.allowTestFixture?' --allow-test-fixture':'';
+    return `[Unit]\nDescription=Qoopia user service\n[Service]\nExecStart=${systemd(clean(safePath(executable)))} start --root ${systemd(clean(this.root))}${allow}\nRestart=on-failure\n[Install]\nWantedBy=default.target\n`;
+  }
   private bytes(executable:string){
     const binary=clean(safePath(executable)),root=clean(this.root),allow=this.options.allowTestFixture?'--allow-test-fixture':'';
     if(this.options.platform==='darwin')return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.qoopia.server</string><key>ProgramArguments</key><array><string>${xml(binary)}</string><string>start</string><string>--root</string><string>${xml(root)}</string>${allow?`<string>${allow}</string>`:''}</array><key>RunAtLoad</key><true/></dict></plist>\n`;
-    return `[Unit]\nDescription=Qoopia user service\n[Service]\nExecStart=${systemd(binary)} start --root ${systemd(root)}${allow?' '+allow:''}\nRestart=on-failure\n[Install]\nWantedBy=default.target\n`;
+    // A start refused while a terminal `qoopia start` holds the port must keep retrying: the default
+    // 100 ms restart hits systemd's start limit in a second and the service stays failed after that terminal closes.
+    return `[Unit]\nDescription=Qoopia user service\nStartLimitIntervalSec=0\n[Service]\nExecStart=${systemd(binary)} start --root ${systemd(root)}${allow?' '+allow:''}\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n`;
   }
   private ledger():Ledger|null {
     if(!fs.existsSync(this.ledgerFile))return null;
@@ -87,6 +103,33 @@ export class UserAutostart implements AutostartLifecycle {
     const ledger:Ledger={format:'qoopia-autostart-ledger/1',installation:this.options.installation,platform:this.options.platform,native_config:this.configFile,config_sha256,executable_sha256,state:'pending'};
     durableWrite(this.ledgerFile,JSON.stringify(ledger));this.run('install');if(hash(regular(this.configFile).bytes)!==config_sha256)throw new Error('Autostart native config changed during install');durableWrite(this.ledgerFile,JSON.stringify({...ledger,state:'enabled'}));
     return {autostart:'enabled' as const,native_files_touched:1};
+  }
+  /** Before the installation launcher, service install wrote bundles/<digest>/qoopia: a later update prunes
+   * it and login start fails, and a repeat install is refused as a changed executable. The serving runtime
+   * moves only its own unchanged config of that form onto the launcher; launchd/systemd read it at the next
+   * start (systemd after daemon-reload), nothing is restarted now. */
+  retarget(launcher:string){
+    if(!fs.existsSync(this.ledgerFile))return {autostart:'never_enabled' as const,native_files_touched:0};
+    return this.locked(()=>{
+      const old=this.ledger();if(!old)return {autostart:'never_enabled' as const,native_files_touched:0};
+      const bytes=this.bytes(launcher),config_sha256=hash(bytes);
+      if(old.config_sha256===config_sha256)return {autostart:'current' as const,native_files_touched:0};
+      const current=regular(this.configFile).bytes;
+      // New bytes already on disk are a retarget interrupted before its ledger write.
+      if(hash(current)!==config_sha256){
+        if(hash(current)!==old.config_sha256)throw new Error('Autostart native config changed; installer ownership check refused');
+        const text=current.toString(),plist=/<key>ProgramArguments<\/key><array><string>([^<]*)<\/string>/.exec(text)?.[1],unit=/^ExecStart="((?:[^"\\]|\\.)*)"/m.exec(text)?.[1];
+        const written=plist!==undefined?plist.replaceAll('&quot;','"').replaceAll('&apos;',"'").replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&')
+          :unit?.replace(/\\(.)/g,'$1').replaceAll('%%','%').replaceAll('$$','$');
+        const pinned=!!written&&path.basename(written)==='qoopia'&&/^[0-9a-f]{64}$/.test(path.basename(path.dirname(written)))&&path.dirname(path.dirname(written))===path.join(this.root,'bundles');
+        const ours=!!written&&(hash(this.bytes(written))===old.config_sha256||this.options.platform==='linux'&&hash(this.legacyUnit(written))===old.config_sha256);
+        if(!pinned||!ours)throw new Error('Autostart native config does not name an installation bundle');
+        durableWrite(this.configFile,bytes);
+      }
+      durableWrite(this.ledgerFile,JSON.stringify({...old,config_sha256,executable_sha256:hash(regular(launcher).bytes)}));
+      if(this.options.platform==='linux')this.options.execute('/usr/bin/systemctl',['--user','daemon-reload']);
+      return {autostart:'retargeted' as const,native_files_touched:1};
+    });
   }
   remove(){return this.locked(()=>this.removeUnlocked());}
   private removeUnlocked(){

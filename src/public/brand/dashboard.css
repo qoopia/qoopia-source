@@ -270,7 +270,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* ---- Files: a path bar, then folders and files as flat rows ---- */
 .files-bar { display:flex; align-items:center; flex-wrap:wrap; gap:var(--qoopia-space-compact); margin-bottom:var(--qoopia-space-compact); }
 .files-path { display:flex; align-items:center; flex:1 1 200px; flex-wrap:wrap; gap:4px; min-width:0; color:var(--text2); font-size:var(--qoopia-type-body); }
-.files-path button { padding:0 2px; border:0; background:none; color:var(--text2); font:inherit; cursor:pointer; }
+.files-path button { min-width:44px; padding:0 2px; border:0; background:none; color:var(--text2); font:inherit; cursor:pointer; }
 .files-path button:hover { color:var(--text); text-decoration:underline; text-underline-offset:3px; }
 .files-path strong { color:var(--text); font-weight:600; overflow-wrap:anywhere; }
 .files-new { display:flex; flex-wrap:wrap; gap:var(--qoopia-space-compact); margin-bottom:var(--qoopia-space-compact); }
@@ -284,7 +284,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .f-row .meta { color:var(--text2); font-size:var(--qoopia-type-metadata); }
 .f-row .btn-more { display:inline-flex; align-items:center; margin:0; padding:2px 8px; }
 /* Phones keep a usable target without turning one-line rows into tall boxes. */
-@media(pointer:coarse),(max-width:600px) { .feed .frow>.chip,.f-row .btn-more { min-height:32px; } }
+/* A feed chip stays compact; its touch area reaches 44px through ::before. */
+@media(pointer:coarse),(max-width:600px) { .feed .frow>.chip,.f-row .btn-more { min-height:32px; } .feed .frow>.chip.click { position:relative; } .feed .frow>.chip.click::before { content:''; position:absolute; inset:-6px 0; } }
 .sel { max-width:100%; padding:7px 10px; border-radius:8px; border:1px solid var(--border); background: var(--surface); color: var(--text); font-size:var(--qoopia-type-metadata); font-family:var(--font); outline:none; }
 
 /* ---- AgentComm reader (messenger view) ---- */
@@ -360,7 +361,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .foot-row { flex: 0 0 auto; }
   .topbar { padding: 12px 16px; min-height: 52px; }
   .content { padding: 18px 14px 50px; }
-  .tabs { overflow-x: auto; }
+  /* Tabs wrap instead of scrolling sideways: a last tab (an agent's Access) is never hidden off screen. */
+  .tabs { flex-wrap: wrap; }
   .tab { flex-shrink: 0; }
   .tb-clock { display: none; }
 }
@@ -376,7 +378,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .skill-loop .skill-card strong { font-size:1.2rem; }
 .skill-loop input,.skill-loop select,.skill-loop textarea { display:block; box-sizing:border-box; width:100%; max-width:100%; padding:10px; color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:var(--qoopia-radius-navigation); font:inherit; margin:6px 0 16px; }
 .skill-loop label { display:block; font-weight:600; margin-top:12px; }
-.skill-loop button { min-height:42px; margin:5px 5px 5px 0; white-space:normal; }
+.skill-loop button { min-height:44px; margin:5px 5px 5px 0; white-space:normal; }
 .skill-loop :focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
 .skill-loop pre { overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; max-height:480px; font-size:var(--qoopia-type-metadata); padding:16px; background:var(--surface2); }
 .skill-loop summary { cursor:pointer; padding:12px 0; }
@@ -571,8 +573,11 @@ a { color:inherit;text-underline-offset:3px; }
 .work-controls { gap:var(--qoopia-space-control); }
 .work .eyebrow,.skill-loop .eyebrow { display:none; }
 .work button,.btn,.err button,.input-text,.sel,.login-input { border-color:var(--control); }
+/* Only a real pointer hovers: on a phone a tapped primary button otherwise stays grey and reads as disabled. */
+@media (hover:hover) {
 .work button:hover:not(:disabled),.btn:hover:not(:disabled),.err button:hover:not(:disabled) { background:var(--surface3); }
 .work button.primary:hover:not(:disabled),.btn.primary:hover:not(:disabled) { background:var(--text2); }
+}
 .work input,.work select { min-height:34px; }
 .work input[type=checkbox],.work input[type=radio] { min-height:0; }
 .connection-add { margin:16px 0; }
@@ -592,11 +597,15 @@ a { color:inherit;text-underline-offset:3px; }
 @media(max-width:1100px) { .ov-tiles { grid-template-columns:repeat(3,minmax(0,1fr)); }.ov-wide { grid-column:1/-1;order:1; } }
 @media(max-width:900px) {
  .side-brand { padding:12px 16px; }.workspace-location,.sidebar .side-foot { display:none; }.sidebar.open .side-foot { display:flex;flex-wrap:wrap; }.sidebar.open .workspace-location { display:block; }
- .sidebar.open .nav { max-height:55dvh;overflow:auto; }.nav-item { min-height:44px; }.topbar { position:static;min-height:44px; }
+ .sidebar.open .nav { max-height:55dvh;overflow:auto; }
+ /* The open menu fits the screen and scrolls; the floating Chat and to-top buttons would sit on Logout. */
+ .sidebar.open { max-height:100dvh;overflow-y:auto;overscroll-behavior:contain; }
+ body:has(.sidebar.open) :is(.chat-launcher,.to-top) { display:none; }
+.nav-item { min-height:44px; }.topbar { position:static;min-height:44px; }
  .content { padding:20px 18px 80px; }.nav-toggle { min-height:36px; }.page-heading h1,.work h1 { font-size:var(--qoopia-type-headline); }
 }
 @media(max-width:600px) { .ov-tiles { grid-template-columns:repeat(3,minmax(0,1fr)); }.feed .frow { grid-template-columns:44px 88px minmax(0,1fr); }.feed .fic { display:none; }.page-heading { align-items:flex-start; }.page-heading .btn { flex-shrink:0; }.panel-h { flex-wrap:wrap;gap:var(--qoopia-space-compact); } }
-@media(pointer:coarse),(max-width:600px) { button,.btn,.icon-btn,.nav-toggle,.sel,.work button,.work .connect-link { min-height:44px; }.work input,.work select,.work textarea,.input-text,.sel,.login-input { font-size:16px; }.work input:not([type=checkbox]):not([type=radio]),.work select { min-height:44px; }
+@media(pointer:coarse),(max-width:600px) { button,.btn,.icon-btn,.nav-toggle,.sel,.work button,.work .connect-link,.err button { min-height:44px; }.work input,.work select,.work textarea,.input-text,.sel,.login-input { font-size:16px; }.work input:not([type=checkbox]):not([type=radio]),.work select { min-height:44px; }
  summary { min-height:44px;padding-block:12px; }.system-status summary { padding-block:12px; }.connection-add>summary,.login-sub>a { display:inline-flex;align-items:center;min-height:44px; } }
 
 /* Rows reflow instead of widening the mobile canvas. */
@@ -636,7 +645,7 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
 #installApp[hidden],#appUpdate[hidden],#appConnection[hidden],#installGuide[hidden]{display:none!important}
 
 /* The router moves focus to <main> after navigation for screen readers; that is not a control. */
-#main:focus { outline:none; }
+#main:focus,#chatTitle:focus { outline:none; } /* focus targets for screen readers, not controls: no ring on open */
 
 /* ---- Agents: one flat row per agent (2026-10) ----
    Identity, memory state, the owner's two switches and the counts on one line; in a narrow
@@ -687,9 +696,11 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
   .agent-row::before { content:''; order:2; flex-basis:100%; }
   .agent-row>.ar-switch { order:3; }
   .agent-row::after { order:4; }
-  .ar-status { order:5; }
+  /* The memory state and the confirm button get their own line, so neither is cut to an icon nor
+     drawn over the counts; everything below the name lines up with it. */
+  .ar-status { order:5; flex-basis:100%; flex-wrap:wrap; }
   .ar-num { order:6; }
-  .agent-row>.ar-autosave { margin-left:30px; }
+  .agent-row>.ar-switch,.agent-row>.ar-num:nth-last-child(3) { margin-left:30px; }
 }
 
 /* Switch: the thumb's position carries the state, fill only reinforces it. */
@@ -703,13 +714,13 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
 .qswitch:focus-visible { outline:2px solid var(--text); outline-offset:3px; }
 .qswitch::before { content:''; position:absolute; inset:-8px -6px; }
 @media(max-width:600px) { .topbar { flex-wrap:wrap; } .topbar .app-update { order:9; flex-basis:100%; } }
-@media(pointer:coarse),(max-width:600px) { .qswitch { min-height:0; min-width:0; width:34px; height:20px; } .qswitch-thumb { width:14px; height:14px; } .qswitch[aria-checked="true"] .qswitch-thumb { transform:translateX(14px); } .qswitch::before { inset:-12px -5px; } .ar-saves { min-height:32px; } }
+@media(pointer:coarse),(max-width:600px) { .qswitch { min-height:0; min-width:0; width:34px; height:20px; } .qswitch-thumb { width:14px; height:14px; } .qswitch[aria-checked="true"] .qswitch-thumb { transform:translateX(14px); } .qswitch::before { inset:-12px -5px; } .ar-saves { min-height:44px; } }
 
 /* ---- Desktop density (2026-10): about 1.5x more on one screen than before ----
    Type steps down one notch through the tokens; here spacing and chrome shrink by about a third.
    Spacing tokens stay as they are because account pages share them. Phones and coarse pointers
-   keep the larger targets and 16px form text from the rules above. */
-@media(min-width:601px) {
+   keep the larger targets and 16px form text from the rules above: a touch tablet is wider than 600px. */
+@media(min-width:601px) and (pointer:fine) {
   body { line-height:1.5; }
   .ui-feedback { font-size:var(--qoopia-type-label); }
   .btn,.err button { min-height:24px; padding:2px 10px; border-radius:var(--qoopia-radius-detail); }
@@ -774,3 +785,10 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
   #chatLauncher { min-height:32px; padding:5px 12px; gap:6px; border-radius:var(--qoopia-radius-field); font-size:var(--qoopia-type-body); right:18px; bottom:16px; }
   #chatLauncher svg { width:15px; height:15px; }
 }
+/* A touch tablet in landscape gets the desktop shell, not its 26px rows. */
+@media(min-width:901px) and (pointer:coarse) {
+  .nav-item,.icon-btn,#chatLauncher { min-height:44px; }
+  .q-language button { min-width:44px; min-height:44px; }
+}
+/* Room below the last control for the floating to-top (bottom 80px, 46px) and Chat buttons. */
+.content { padding-bottom:calc(136px + env(safe-area-inset-bottom)); }

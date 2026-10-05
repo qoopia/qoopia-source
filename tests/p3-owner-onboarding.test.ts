@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { bootstrapOwner } from '../src/auth/pairings.ts';
 import { ownerFixture, p1Database } from './helpers/p1-fixtures.ts';
-import { ownerControlRequest } from '../src/delivery/owner-onboarding.ts';
+import { ownerControlRequest, systemLanguage, defaultWorkspaceName } from '../src/delivery/owner-onboarding.ts';
 import { consumeLocalLogin, issueLocalLogin, parseLocalLoginBody } from '../src/delivery/local-login.ts';
 import { platformPaths, ownerSocketPath } from '../src/delivery/platform-paths.ts';
 import { openOwnerPeer } from '../src/delivery/owner-control.ts';
@@ -93,6 +93,10 @@ test('platform paths use macOS and Linux XDG defaults, explicit isolated root an
     expect(() => platformPaths(undefined, 'linux', {XDG_DATA_HOME:'relative'}, home)).toThrow('absolute');
     const explicit = platformPaths(parent+'/isolated', 'linux', {XDG_DATA_HOME:'/unused'}, home);
     expect(explicit.logs).toBe(parent+'/isolated/logs');
+    // `--root` naming the default root (setup's next action, the autostart unit) keeps the default layout.
+    const xdg = { XDG_DATA_HOME: parent+'/data', XDG_CONFIG_HOME: parent+'/config', XDG_STATE_HOME: parent+'/state' };
+    expect(platformPaths(parent+'/data/qoopia', 'linux', xdg, home)).toEqual(linux);
+    expect(platformPaths(path.join(home, 'Library/Application Support/Qoopia'), 'darwin', {}, home)).toEqual(mac);
     const socket = ownerSocketPath(parent+'/long Ж '.repeat(40), true), dir = path.dirname(socket);
     expect(Buffer.byteLength(socket)).toBeLessThan(104);
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
@@ -102,4 +106,12 @@ test('platform paths use macOS and Linux XDG defaults, explicit isolated root an
     const link = path.join(parent,'alias'); fs.symlinkSync(parent,link);
     expect(() => platformPaths(link)).toThrow('Links');
   } finally { fs.rmSync(parent, {recursive:true,force:true}); }
+});
+
+test('a first workspace is named in the language of the Mac, as the desktop app speaks it', () => {
+  // `defaults read -g AppleLanguages` lists the preferred languages first to last.
+  expect(systemLanguage('(\n    "ru-RU",\n    "en-US"\n)')).toBe('ru');
+  expect(systemLanguage('(\n    "en-RU",\n    "ru-RU"\n)')).toBe('en');
+  expect(systemLanguage('ru-RU')).toBe('ru');expect(systemLanguage('')).toBe('en');
+  expect(defaultWorkspaceName('ru')).toBe('Моё пространство');expect(defaultWorkspaceName('en')).toBe('My workspace');
 });

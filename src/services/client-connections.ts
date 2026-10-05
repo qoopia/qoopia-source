@@ -1,7 +1,8 @@
 import {randomBytes, randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {db} from '../db/connection.ts';
-import {createAgent, AGENT_NAME_RE} from '../admin/agents.ts';
+import {createAgent} from '../admin/agents.ts';
+import {AGENT_NAME_RE,AGENT_NAME_HINT,normalizeAgentName,lookalikeAgents} from '../utils/agent-name.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {authorize, currentToolAuth} from '../auth/policy.ts';
 import type {AuthContext} from '../auth/middleware.ts';
@@ -10,15 +11,17 @@ import {constantTimeHexEqual} from '../auth/oauth.ts';
 import {env} from '../utils/env.ts';
 import {standaloneRoot} from '../utils/standalone.ts';
 import {nowIso, QoopiaError} from '../utils/errors.ts';
+import {redactSensitive} from '../utils/secret-guard.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
 import {surfaces, connectionId, type ConnectionRow as Row, connectionResource, publicConnection} from './connection-identity.ts';
 export {publicConnection};
 import {configureNativeClient} from '../delivery/client-config.ts';
+import {retiredRemoteOrigin} from '../delivery/transport-config.ts';
 import {connectionRedirectsAllowed} from '../auth/dcr-policy.ts';
 import {desktopAuthStatus,startDesktopAuth,cancelDesktopAuth} from '../delivery/desktop-auth.ts';
 
 const clientDirectory=z.string().startsWith('/').max(4096).optional();
-const agentName=z.string().trim().regex(AGENT_NAME_RE,'Use 1–64 letters, digits, spaces, underscores or hyphens');
+const agentName=z.string().transform(normalizeAgentName).refine(n=>AGENT_NAME_RE.test(n),AGENT_NAME_HINT);
 const selection = {surface:z.enum(surfaces), access_mode:z.enum(['read','read_write']), agent_name:agentName.optional(), request_key:z.string().min(1).max(100),transport:z.enum(['auto','local','remote']).default('auto')};
 const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('plan'),...selection}).strict(),
@@ -39,12 +42,23 @@ const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('client-auth-start'),id:connectionId}).strict(),
   z.object({action:z.literal('client-auth-status'),id:connectionId}).strict(),
 ]);
+const REGISTRATION_LIMIT=20;
+/** The consent ticket lifetime: an unused registration older than this has no flow left to finish. */
+const UNUSED_REGISTRATION_MS=600_000;
 export function connectionRegistrationAuth(id:string,redirectUris:unknown):AuthContext {
   if(!connectionId.safeParse(id).success)throw new QoopiaError('NOT_FOUND','Connection unavailable');
   const row=publicConnection(id);
   if(!connectionRedirectsAllowed(row.surface,redirectUris))throw new QoopiaError('INVALID_INPUT','redirect_uris are not this client’s callback');
-  if((db.query('SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?').get(row.agent_id) as {n:number}).n>=20)
-    throw new QoopiaError('RATE_LIMITED','Connection registration limit reached');
+  const registered=()=>(db.query('SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?').get(row.agent_id) as {n:number}).n;
+  if(registered()>=REGISTRATION_LIMIT){
+    // A client that retries a failed connect registers again each time. Registrations that never received
+    // a code or token and outlived a consent ticket are dead: reclaim them. Fresh or used ones still count.
+    db.query(`DELETE FROM oauth_clients WHERE agent_id=? AND created_at<=?
+      AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
+      AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`)
+      .run(row.agent_id,new Date(Date.now()-UNUSED_REGISTRATION_MS).toISOString().replace(/\.\d{3}Z$/,'Z'));
+    if(registered()>=REGISTRATION_LIMIT)throw new QoopiaError('RATE_LIMITED','Connection registration limit reached');
+  }
   return {agent_id:row.agent_id,workspace_id:row.workspace_id,agent_name:row.surface,source:'api-key',type:'standard'};
 }
 function owned(ownerId:string,id:string):Row {
@@ -56,15 +70,20 @@ function status(row:Row) {
   const agent=db.query('SELECT name,last_seen FROM agents WHERE id=? AND workspace_id=? AND active=1').get(row.agent_id,row.workspace_id) as {name:string;last_seen:string|null}|null;
   const revoked=row.state==='revoked'||!agent;
   const authorized=!revoked&&!!db.query("SELECT 1 FROM oauth_tokens WHERE agent_id=? AND workspace_id=? AND revoked=0 AND token_type IN ('access','refresh') AND expires_at>? LIMIT 1").get(row.agent_id,row.workspace_id,nowIso());
-  const root=standaloneRoot();
+  // A verified client that no longer holds a live grant (it signed out, revoked its token, or let it lapse)
+  // cannot call until it signs in again: it is not "ready", whatever its last verified call.
+  const reauthorize=!revoked&&row.state==='verified'&&!authorized;
+  const root=standaloneRoot(),retired=!revoked&&retiredRemoteOrigin(root,row.origin);
   return {id:row.id,surface:row.surface,agent_name:agent?.name??null,created_at:row.created_at,workspace_id:row.workspace_id,access_mode:row.access_mode,
-    state:revoked?'error':row.state==='verified'?'ready':'requires_user_action',code:revoked?'REVOKED':row.state==='verified'?'CLIENT_CALL_VERIFIED':'CLIENT_CALL_REQUIRED',
+    state:revoked||retired?'error':row.state==='verified'&&!reauthorize?'ready':'requires_user_action',
+    code:revoked?'REVOKED':retired?'RECONNECT_REQUIRED':reauthorize?'CLIENT_REAUTHORIZATION_REQUIRED':row.state==='verified'?'CLIENT_CALL_VERIFIED':'CLIENT_CALL_REQUIRED',
     mcp_url:connectionResource(row.id),verified_at:row.verified_at,last_seen:revoked?null:agent?.last_seen??null,authorized,
     evidence:row.verified_at?'authenticated_mcp_call':null,live_availability:'not_checked',
-    client_config:row.surface==='codex'||row.surface==='claude_code'||row.surface==='claude_desktop'?(root&&(row.surface!=='claude_desktop'||process.platform==='darwin')?'on_this_computer':'download_file'):null,
+    // A remote (HTTPS) connection was made for another computer: its client gets the file, not this computer's config.
+    client_config:row.surface==='codex'||row.surface==='claude_code'||row.surface==='claude_desktop'?(root&&row.origin.startsWith('http:')&&(row.surface!=='claude_desktop'||process.platform==='darwin')?'on_this_computer':'download_file'):null,
     ...(row.surface==='claude_desktop'&&root&&process.platform==='darwin'&&!revoked?{client_auth:desktopAuthStatus(root,{
       format:'qoopia-client-connection/1',connection_id:row.id,workspace_id:row.workspace_id,surface:row.surface,access_mode:row.access_mode,mcp_url:connectionResource(row.id)})}:{}),
-    next_action:revoked?null:row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_app'?'Send this exact MCP URL to the Muse.app cloud agent. Use its supported remote MCP runtime and secure OAuth callback; do not use Muse Code CLI commands or paste callback codes into chat. Then read qoopia_protocol from that agent.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then call qoopia_protocol in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then call qoopia_protocol in a Bot conversation.':'Add the MCP URL in the selected client, consent, then call qoopia_protocol.'};
+    next_action:revoked?null:retired?'Its external address stopped with a revoked device. Disconnect it and add the application again at the current external address.':reauthorize?(row.surface==='claude_desktop'?'This client no longer holds access. Approve access again with Qoopia client-auth, then restart Claude Desktop.':'This client no longer holds access. Sign in to this same connection address again in the client, then call qoopia_protocol.'):row.state==='verified'?'Use this connection in the selected client.':row.surface==='muse_app'?'Send this exact MCP URL to the Muse.app cloud agent. Use its supported remote MCP runtime and secure OAuth callback; do not use Muse Code CLI commands or paste callback codes into chat. Then read qoopia_protocol from that agent.':row.surface==='muse_code'?'Add the MCP URL to Muse Code user settings, complete muse mcp login, then call qoopia_protocol in Muse Code.':row.surface==='grok_bot'?'Ask Grok Bot to add this exact remote MCP URL, complete its OAuth sign-in, then call qoopia_protocol in a Bot conversation.':'Add the MCP URL in the selected client, consent, then call qoopia_protocol.'};
 }
 const EXTERNAL_ACCESS_NEXT='Run connections network-plan, then network-start --input METHOD_JSON --commit; apply this selection after external access is enabled.';
 /** Where a new connection for this selection is served; plan and apply refuse the same selections. */
@@ -119,6 +138,9 @@ export function connectionAction(ownerId:string,raw:unknown) {
     if(row.state==='revoked'&&input.action!=='client-remove')throw new QoopiaError('REVOKED','Create a new connection to reconnect');
     if(row.surface!=='codex'&&row.surface!=='claude_code'&&row.surface!=='claude_desktop')return {format:'qoopia-connections/1',state:'unsupported',code:'CLIENT_CONFIG_UNSUPPORTED',next_action:'Use this client’s supported connection settings.'};
     const binding={format:'qoopia-client-connection/1',connection_id:row.id,workspace_id:row.workspace_id,surface:row.surface,access_mode:row.access_mode,mcp_url:connectionResource(row.id)};
+    // http: is only ever loopback (resourceOrigin): on another computer that address reaches that computer itself.
+    if(input.action==='client-export'&&binding.mcp_url.startsWith('http:'))return {format:'qoopia-connections/1',state:'requires_user_action',code:'CLIENT_EXPORT_LOCAL_ONLY',
+      next_action:'This connection serves clients on this computer only (client-plan / client-apply). For a client on another computer, enable external access, apply a selection with "transport":"remote", then export that connection.'};
     if(input.action==='client-export')return {format:'qoopia-connections/1',state:'requires_user_action',code:'CLIENT_FILE_READY',binding,next_action:'Open this connection file with Qoopia on the computer running your client, then approve OAuth in the client.'};
     if(row.surface==='claude_desktop'&&process.platform!=='darwin')return {format:'qoopia-connections/1',state:'unsupported',code:'CLIENT_OS_UNSUPPORTED',binding,
       next_action:'Download this connection file for Claude Desktop on a Mac, or use Claude Web / Claude Code on Linux.'};
@@ -131,19 +153,27 @@ export function connectionAction(ownerId:string,raw:unknown) {
       if(!('configuration_present' in nativeStatus)||nativeStatus.configuration_present!==true)return {format:'qoopia-connections/1',state:'requires_user_action',code:'CLIENT_CONFIG_REQUIRED',next_action:'Add this connection to Claude Desktop first.'};
       return startDesktopAuth(root,binding);
     }
-    return configureNativeClient(root,binding,input.action.slice(7) as 'plan'|'apply'|'status'|'remove',undefined,'config_directory' in input?input.config_directory:undefined,'language' in input?input.language:undefined);
+    try{return configureNativeClient(root,binding,input.action.slice(7) as 'plan'|'apply'|'status'|'remove',undefined,'config_directory' in input?input.config_directory:undefined,'language' in input?input.language:undefined);}
+    catch(error){
+      // The owner must see why (e.g. a group-writable home), not the generic "Setup failed"; parser text may quote the file.
+      if(error instanceof QoopiaError)throw error;
+      throw new QoopiaError('INVALID_INPUT',error instanceof Error&&!(error instanceof SyntaxError)?redactSensitive(error.message).text.slice(0,300):'The client configuration file could not be read as JSON or TOML');
+    }
   }
   if(input.action==='disconnect')return db.transaction(()=>{
     const root=standaloneRoot();if(root)cancelDesktopAuth(root,row.id);
     db.query("UPDATE client_connections SET state='revoked',revoked_at=COALESCE(revoked_at,?) WHERE id=?").run(nowIso(),row.id);
-    db.query('UPDATE agents SET active=0,session_version=session_version+CASE WHEN active=1 THEN 1 ELSE 0 END WHERE id=?').run(row.agent_id);
     db.query('UPDATE oauth_tokens SET revoked=1 WHERE agent_id=?').run(row.agent_id);
-    return {format:'qoopia-connections/1',state:'ready',code:'DISCONNECTED',id:row.id,memory_preserved:true};
+    // A setup the application never signed in through, for an agent that already works over other
+    // credentials (a bridge key), ends only the setup: deactivating the agent would cut that work off.
+    const inUse=row.state!=='verified'&&!!(db.query('SELECT last_seen FROM agents WHERE id=?').get(row.agent_id) as {last_seen:string|null}|null)?.last_seen;
+    if(!inUse)db.query('UPDATE agents SET active=0,session_version=session_version+CASE WHEN active=1 THEN 1 ELSE 0 END WHERE id=?').run(row.agent_id);
+    return {format:'qoopia-connections/1',state:'ready',code:'DISCONNECTED',id:row.id,memory_preserved:true,agent_kept:inUse};
   })();
   if(row.state==='revoked')throw new QoopiaError('REVOKED','Create a new connection to reconnect');
   if(input.action==='label')return db.transaction(()=>{
     if(input.surface&&row.surface!=='muse_app'&&row.surface!=='muse_code')throw new QoopiaError('INVALID_INPUT','Only Muse connections can change their Muse surface');
-    if(db.query('SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?) AND active=1 AND id!=?').get(row.workspace_id,input.agent_name,row.agent_id))
+    if(lookalikeAgents(db.query('SELECT name FROM agents WHERE workspace_id=? AND active=1 AND id!=?').all(row.workspace_id,row.agent_id) as {name:string}[],input.agent_name).length)
       throw new QoopiaError('CONFLICT','An active agent already uses this name');
     db.query('UPDATE agents SET name=? WHERE id=? AND workspace_id=?').run(input.agent_name,row.agent_id,row.workspace_id);
     if(input.surface)db.query('UPDATE client_connections SET surface=? WHERE id=?').run(input.surface,row.id);

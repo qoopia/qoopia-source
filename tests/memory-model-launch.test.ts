@@ -125,3 +125,33 @@ cat "$dir/response"
     expect(memoryModelBusy()).toBe(false);
   } finally {process.env.PATH=path0;enableMemoryRoot(before);fs.rmSync(root,{recursive:true,force:true});}
 },60_000);
+
+test('an unpinned profile follows the build default; a pinned model the vendor no longer serves falls back and is recorded',async()=>{
+  const root=tempRoot(),before=memoryRoot(),path0=process.env.PATH,bin=path.join(root,'bin');
+  fs.mkdirSync(bin,{mode:0o700});
+  fs.writeFileSync(path.join(bin,'codex'),`#!/bin/sh
+dir=$(dirname "$0")
+[ "$1" = --version ] && { echo 'codex-cli ${RUNTIMES.codex.version}'; exit 0; }
+case " $* " in *' login status '*) echo 'Logged in using ChatGPT'; exit 0;; esac
+printf '%s\\n' "$@" > "$dir/argv"; cat >/dev/null
+case " $* " in *' gpt-retired '*) echo '{"type":"turn.failed","error":{"message":"The gpt-retired model is not supported when using Codex with a ChatGPT account."}}'; exit 1;; esac
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"{\\\\"result\\\\":\\\\"OK\\\\"}"}}'; echo '{"type":"turn.completed"}'
+`,{mode:0o700});
+  const argv=()=>fs.readFileSync(path.join(bin,'argv'),'utf8').split('\n');
+  try {
+    enableMemoryRoot(root);process.env.PATH=bin+path.delimiter+path0;
+    // Selected under an older build: the stored name is that build's default, not an owner choice.
+    selectMemoryProfile('ws-old','codex');const file=memoryProfilePath('ws-old');
+    fs.writeFileSync(file,JSON.stringify({...JSON.parse(fs.readFileSync(file,'utf8')),model:'gpt-5.1-old-default'}));
+    expect(memoryProfile('ws-old')?.model).toBe('gpt-5.6-luna');
+    expect((await memoryText('ws-old','Return OK.',{})).model).toBe('gpt-5.6-luna');expect(argv()).toContain('gpt-5.6-luna');
+    // An explicit choice is kept until the vendor rejects it.
+    fs.writeFileSync(file,JSON.stringify({...JSON.parse(fs.readFileSync(file,'utf8')),model:'gpt-retired',pinned:true}));
+    expect(memoryProfile('ws-old')?.model).toBe('gpt-retired');
+    await expect(memoryText('ws-old','Return OK.',{})).rejects.toMatchObject({code:'MODEL_UNAVAILABLE',message:expect.stringContaining('switched to gpt-5.6-luna')});
+    expect(memoryModelStatus('ws-old')).toMatchObject({state:'unavailable',message:expect.stringContaining('gpt-retired')});
+    expect(JSON.parse(fs.readFileSync(file,'utf8'))).toMatchObject({model:'gpt-5.6-luna',replaced:{model:'gpt-retired'}});
+    expect(JSON.parse(fs.readFileSync(file,'utf8')).pinned).toBeUndefined();
+    expect((await memoryText('ws-old','Return OK.',{})).text).toBe('OK');expect(argv()).toContain('gpt-5.6-luna');
+  } finally {process.env.PATH=path0;enableMemoryRoot(before);fs.rmSync(root,{recursive:true,force:true});}
+},30_000);
