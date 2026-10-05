@@ -60,6 +60,17 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         }
         #endif
         if !connecting { openWorkspace() }
+        if runsFromTemporaryLocation { warnTemporaryLocation() }
+    }
+    // A read-only disk image or a Gatekeeper-translocated copy (opened straight from Downloads)
+    // works, but Sparkle cannot replace it and a login item would point at a vanishing path.
+    var runsFromTemporaryLocation: Bool {
+        Bundle.main.bundlePath.contains("/AppTranslocation/") || (try? Bundle.main.bundleURL.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly) == true
+    }
+    func warnTemporaryLocation() {
+        let alert = NSAlert(); alert.messageText = text("Move Qoopia to Applications", "Перенесите Qoopia в «Программы»")
+        alert.informativeText = text("Qoopia is running from the disk image or the Downloads folder. Quit it, drag Qoopia to Applications and open it from there: updates and Open at Login only work from there. Your data is kept.", "Qoopia запущена с образа диска или из «Загрузок». Выйдите, перетащите Qoopia в «Программы» и откройте оттуда: обновления и автозапуск работают только так. Ваши данные сохранятся.")
+        alert.addButton(withTitle: "OK"); alert.beginSheetModal(for: window) { _ in }
     }
     func createWindow() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -85,6 +96,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     @objc func openInBrowser() { if let url = workspaceURL { NSWorkspace.shared.open(url) } }
     @objc func toggleLogin() {
+        if runsFromTemporaryLocation && SMAppService.mainApp.status != .enabled { warnTemporaryLocation(); return }
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() }
             loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -97,28 +109,35 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         #endif
         presentError(text("Updates are available in signed release builds.", "Проверка обновлений доступна в подписанной версии приложения."))
     }
-    func presentError(_ message: String) {
+    func presentError(_ message: String, detail: String? = nil) {
         guard !shuttingDown else { return }; statusItem.button?.toolTip = message; showWindow(); progress.stopAnimation(nil); progress.isHidden = true; statusLabel.isHidden = false; statusLabel.stringValue = message
         let alert = NSAlert(); alert.messageText = message
-        alert.informativeText = text("Your saved data is preserved. Close older copies of Qoopia and try again.", "Ваши данные сохранены. Закройте старые копии Qoopia и повторите попытку.")
+        alert.informativeText = detail ?? text("Your saved data is preserved. Close older copies of Qoopia and try again.", "Ваши данные сохранены. Закройте старые копии Qoopia и повторите попытку.")
         alert.addButton(withTitle: text("Retry", "Повторить")); alert.addButton(withTitle: text("Later", "Позже"))
         alert.beginSheetModal(for: window) { response in if response == .alertFirstButtonReturn { self.openWorkspace() } }
     }
     func openWorkspace() {
         if child?.isRunning == true || preparing?.isRunning == true { showWindow(); return }
         statusLabel.stringValue = text("Preparing your workspace…", "Подготавливаем ваше пространство…"); statusLabel.isHidden = false; progress.isHidden = false; progress.startAnimation(nil)
-        let process = Process(), pipe = Pipe(); process.executableURL = executable; process.arguments = ["desktop-prepare", "--commit"]; process.standardOutput = pipe; process.standardError = FileHandle.nullDevice; preparing = process
+        let process = Process(), pipe = Pipe(), errors = Pipe(); process.executableURL = executable; process.arguments = ["desktop-prepare", "--commit"]; process.standardOutput = pipe; process.standardError = errors; preparing = process
         process.terminationHandler = { done in
-            let bytes = pipe.fileHandleForReading.readDataToEndOfFile()
+            let bytes = pipe.fileHandleForReading.readDataToEndOfFile(), refusal = Self.refusal(errors.fileHandleForReading.readDataToEndOfFile())
             DispatchQueue.main.async {
                 self.preparing = nil; guard !self.shuttingDown else { return }
                 guard done.terminationStatus == 0, let result = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any], let binary = result["binary"] as? String, binary.hasPrefix("/") else {
-                    self.presentError(self.text("Qoopia could not prepare this update", "Не удалось подготовить обновление Qoopia")); return
+                    self.presentError(self.text("Qoopia could not prepare this update", "Не удалось подготовить обновление Qoopia"), detail: refusal.map { $0 + "\n\n" + self.text("Your saved data is preserved.", "Ваши данные сохранены.") }); return
                 }
                 self.startWorkspace(URL(fileURLWithPath: binary), updated: result["state"] as? String == "updated")
             }
         }
         do { try process.run() } catch { preparing = nil; presentError(text("Qoopia could not start", "Не удалось запустить Qoopia")) }
+    }
+    // The runtime reports one "Qoopia operation refused: <reason>" line, e.g. an older app than the installed one.
+    static func refusal(_ data: Data) -> String? {
+        let output = String(decoding: data, as: UTF8.self)
+        guard let start = output.range(of: "Qoopia operation refused: ")?.upperBound else { return nil }
+        let reason = output[start...].prefix { $0 != "\n" }.trimmingCharacters(in: .whitespaces)
+        return reason.isEmpty ? nil : reason
     }
     func startWorkspace(_ binary: URL, updated: Bool = false) {
         let process = Process(), pipe = Pipe(); process.executableURL = binary; process.arguments = ["open", "--desktop"]
@@ -212,9 +231,46 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
             sender.reply(toOpenOrPrint: .failure); return
         }
         connecting = true
+        linkMemory(filenames[0], sender: sender, approval: nil)
+    }
+
+    /// An opened file can come from anyone: show where conversations will be sent before linking it.
+    func linkMemory(_ file: String, sender: NSApplication, approval: String?) {
+        let ru = Locale.preferredLanguages.first?.hasPrefix("ru") == true
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["memory-link", "--file", filenames[0]]
+        process.arguments = ["memory-link", "--file", file] + (approval.map { ["--commit", "--approve", $0] } ?? [])
+        if approval == nil {
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            process.terminationHandler = { done in
+                let bytes = output.fileHandleForReading.readDataToEndOfFile()
+                DispatchQueue.main.async {
+                    let result = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
+                    var reply = NSApplication.DelegateReply.failure
+                    if done.terminationStatus == 0, result?["state"] as? String == "planned", let digest = result?["plan_digest"] as? String {
+                        reply = .cancel
+                        let alert = NSAlert()
+                        alert.messageText = ru ? "Подключить память сессий к этому адресу?" : "Connect session memory to this address?"
+                        alert.informativeText = "\(result?["runtime"] as? String ?? "")\n\(result?["url"] as? String ?? "")\n\n" + (ru ? "Разговоры этого клиента на компьютере будут отправляться по этому адресу. Открывайте только файл, скачанный из вашей Qoopia." : "This client's conversations on this computer will be sent to this address. Open only a file you downloaded from your own Qoopia.")
+                        alert.addButton(withTitle: ru ? "Подключить" : "Connect")
+                        alert.addButton(withTitle: ru ? "Отмена" : "Cancel")
+                        if alert.runModal() == .alertFirstButtonReturn { self.linkMemory(file, sender: sender, approval: digest); return }
+                    } else {
+                        let alert = NSAlert()
+                        alert.messageText = self.text("Connection could not be installed", "Не удалось установить подключение")
+                        alert.informativeText = self.memoryLinkRetry
+                        alert.runModal()
+                    }
+                    self.connecting = false
+                    sender.reply(toOpenOrPrint: reply)
+                    self.finishConnection()
+                }
+            }
+            do { try process.run() } catch { connecting = false; sender.reply(toOpenOrPrint: .failure) }
+            return
+        }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -222,9 +278,13 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
             let bytes = output.fileHandleForReading.readDataToEndOfFile()
             DispatchQueue.main.async {
                 let alert = NSAlert()
-                alert.messageText = done.terminationStatus == 0 ? "Connection configured" : "Connection could not be installed"
+                alert.messageText = done.terminationStatus == 0 ? self.text("Connection configured", "Подключение настроено") : self.text("Connection could not be installed", "Не удалось установить подключение")
                 let result = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
-                alert.informativeText = result?["next"] as? String ?? "Open your selected Qoopia workspace and download its connection file again. Existing connections were preserved."
+                // memory-link reports its next step in English; the app speaks the Mac's language.
+                let codex = result?["runtime"] as? String == "codex"
+                alert.informativeText = done.terminationStatus != 0 || result?["next"] == nil ? self.memoryLinkRetry : codex
+                    ? self.text("Review and trust the Qoopia hooks once in Codex /hooks. New sessions then restore context automatically.", "Один раз проверьте и разрешите хуки Qoopia в Codex через /hooks. Новые сессии затем восстанавливают контекст автоматически.")
+                    : self.text("Restart or open a Claude Code session. Context capture and restoration are automatic.", "Перезапустите или откройте сессию Claude Code. Контекст сохраняется и восстанавливается автоматически.")
                 alert.runModal()
                 self.connecting = false
                 sender.reply(toOpenOrPrint: done.terminationStatus == 0 ? .success : .failure)
@@ -234,6 +294,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         do { try process.run() } catch { connecting = false; sender.reply(toOpenOrPrint: .failure) }
     }
 
+    var memoryLinkRetry: String { text("Open your selected Qoopia workspace and download its connection file again. Existing connections were preserved.", "Откройте выбранное пространство Qoopia и скачайте файл подключения заново. Существующие подключения сохранены.") }
     func finishConnection() {
         showWindow()
         if workspaceURL == nil {

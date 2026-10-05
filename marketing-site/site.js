@@ -1,6 +1,8 @@
 const platform=document.querySelector('#platform');
 if(platform){
  if(/Linux/.test(navigator.platform)&&!/Android/.test(navigator.userAgent))platform.value='linux';
+ // Windows, phones, tablets and ARM Linux cannot run either package; say so instead of offering one as theirs.
+ const os=navigator.platform||'',foreign=/Win/.test(os)||/Android|iPhone|iPad|iPod/.test(navigator.userAgent+os)||(os==='MacIntel'&&navigator.maxTouchPoints>1)||(/Linux/.test(os)&&!/x86_64|amd64/i.test(os));
  fetch('release.json').then(r=>{if(!r.ok)throw Error();return r.json();}).then(release=>{
   function render(){
    const pkg=release.packages[platform.value];
@@ -8,6 +10,7 @@ if(platform){
    const action=document.querySelector('#download-action');action.replaceChildren();
    if(release.availability==='public'&&pkg.url&&new URL(pkg.url).protocol==='https:'){
     document.querySelector('#release-state').textContent=QI.msg('{version} is available for {platform}.',{version:release.version,platform:pkg.label});
+    if(foreign){const notice=document.createElement('p');notice.className='notice';notice.textContent=QI.msg('This device does not look like an Apple Silicon Mac or a Linux x64 computer. Choose the package for the computer where Qoopia will run.');action.append(notice);}
     const a=document.createElement('a');a.className='button';a.href=pkg.url;a.dataset.platform=platform.value;a.dataset.version=release.version;a.textContent=QI.msg('Download {format} ↓',{format:pkg.format});action.append(a);
     const checksum=document.createElement('p');checksum.className='release-meta';checksum.textContent='SHA-256: '+pkg.sha256;action.append(checksum);
    }

@@ -16,7 +16,7 @@ Separate "the process runs", "the user signed in", "the model answered", "MCP re
 
 Read MCP-CONNECTIONS.md. Choose the existing installation, client, profile and minimal permissions. A connection does not make an agent the steward automatically. If an assignment is needed, the standard steward flow first shows a plan with a digest; replacing an existing steward is not allowed by bypassing the check. Do not give every client the human-owner role.
 
-For native continuity, set up memory-link for the exact profile, check that qoopia-protocol.md is loaded and the hooks are approved, then a real conversation → a saved session → a summary, if the summary model is configured → a new conversation with restoration. When another agent's settings are unknown, first find out the format it supports; do not create a generic configuration by guesswork.
+For native continuity, set up memory-link for the exact profile (first the plan, then `--commit --approve PLAN_DIGEST` once the owner has confirmed the address), check that qoopia-protocol.md is loaded and the hooks are approved, then a real conversation → a saved session → a summary, if the summary model is configured → a new conversation with restoration. When another agent's settings are unknown, first find out the format it supports; do not create a generic configuration by guesswork.
 
 ## Bridge and external folder
 

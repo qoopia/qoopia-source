@@ -19,7 +19,7 @@ Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/d
 
 ## Можно начать с телефона?
 
-На iPhone доступен существующий дашборд Qoopia: память, агенты, подключения, файлы и чат. Откройте его доступный HTTPS-адрес в Safari, войдите с почтой, привязанной к этому пространству, и добавьте на экран «Домой» как веб-приложение. Компьютер или сервер должен оставаться включённым. Телефон не запускает рантайм Mac/Linux и не создаёт вторую базу памяти. Управляемый MCP-адрес предназначен для инструментов агента, а не для входа в дашборд.
+На iPhone доступен существующий дашборд Qoopia: память, агенты, подключения, файлы и чат. На серверной установке откройте её HTTPS-адрес в Safari, войдите с почтой, привязанной к этому пространству, и добавьте на экран «Домой» как веб-приложение; сервер должен оставаться включённым. У установки на Mac или Linux дашборд остаётся на этом компьютере — открывайте его там. Телефон не запускает рантайм Mac/Linux и не создаёт вторую базу памяти. Управляемый MCP-адрес предназначен для инструментов агента, а не для входа в дашборд.
 
 Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md), [src/http/web-app.ts](https://github.com/qoopia/qoopia-source/blob/main/src/http/web-app.ts), [src/public/app.webmanifest](https://github.com/qoopia/qoopia-source/blob/main/src/public/app.webmanifest)
 

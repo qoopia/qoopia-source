@@ -8,6 +8,8 @@ import { canManagePolicy } from "../services/memory-policy.ts";
 import { logActivity } from "../services/activity.ts";
 import { hasColumn } from "../db/introspect.ts";
 import { workspaceIdBySlug } from "./workspaces.ts";
+import { AGENT_NAME_RE, AGENT_NAME_HINT, normalizeAgentName, lookalikeAgents } from "../utils/agent-name.ts";
+export { AGENT_NAME_RE };
 
 export type AgentType = "standard" | "steward" | "owner" | "ingest-daemon";
 
@@ -21,32 +23,27 @@ function refuseLegacyType(type: string | undefined): void {
       "Type 'claude-privileged' is retired (ADR-020). Create a standard agent: its shared context is on by default and the owner switches it on the agent card or through the steward. Management stays with the steward and the owner.");
 }
 
-export const AGENT_NAME_RE = /^[a-zA-Z0-9_\-\s]{1,64}$/;
-
 export function createAgent(opts: {
   name: string;
   workspaceSlug: string;
   type?: AgentType;
 }): { id: string; name: string; api_key: string; workspace_id: string } {
   refuseLegacyType(opts.type);
-  if (!AGENT_NAME_RE.test(opts.name)) {
-    throw new QoopiaError(
-      "INVALID_INPUT",
-      "Agent name contains invalid characters (allowed: letters, digits, underscore, hyphen, space; max 64)",
-    );
-  }
+  // One spelling per name: 'aaron ' would be a near-duplicate of 'aaron' that every list shows
+  // the same way while AgentComm addresses them apart. Every entry point stores the trimmed name.
+  const name = normalizeAgentName(opts.name);
+  if (!AGENT_NAME_RE.test(name)) throw new QoopiaError("INVALID_INPUT", `Agent name contains invalid characters. ${AGENT_NAME_HINT}.`);
 
   const workspaceId = workspaceIdBySlug(opts.workspaceSlug);
 
-  // Case-insensitive: AgentComm addresses agents by name, and a case-only
-  // variant would make that address ambiguous.
-  const existing = db
-    .prepare(`SELECT id FROM agents WHERE lower(name) = lower(?) AND workspace_id = ? AND active = 1`)
-    .get(opts.name, workspaceId);
+  // Case-insensitive and look-alike-insensitive: AgentComm addresses agents by name, and a case-only
+  // variant or a Cyrillic look-alike would make that address ambiguous or impersonate an agent.
+  const existing = lookalikeAgents(
+    db.prepare(`SELECT name FROM agents WHERE workspace_id = ? AND active = 1`).all(workspaceId) as { name: string }[], name)[0];
   if (existing)
     throw new QoopiaError(
       "CONFLICT",
-      `agent '${opts.name}' already exists in workspace ${opts.workspaceSlug}`,
+      `agent '${name}' already exists in workspace ${opts.workspaceSlug}${existing.name === name ? "" : ` (as '${existing.name}', which reads the same)`}`,
     );
 
   const id = ulid();
@@ -58,7 +55,7 @@ export function createAgent(opts: {
     db.prepare(
       `INSERT INTO agents (id, workspace_id, name, type, api_key_hash, active, created_at${legacySkills ? ", legacy_skill_access" : ""})
        VALUES (?, ?, ?, ?, ?, 1, ?${legacySkills ? ", 1" : ""})`,
-    ).run(id, workspaceId, opts.name, opts.type || "standard", sha256Hex(apiKey), nowIso());
+    ).run(id, workspaceId, name, opts.type || "standard", sha256Hex(apiKey), nowIso());
   } catch (err) {
     const msg = (err as Error).message || "";
     if (msg.includes("UNIQUE constraint failed")) {
@@ -66,7 +63,7 @@ export function createAgent(opts: {
     }
     throw err;
   }
-  return { id, name: opts.name, api_key: apiKey, workspace_id: workspaceId };
+  return { id, name, api_key: apiKey, workspace_id: workspaceId };
 }
 
 export function listAgents() {
@@ -83,7 +80,7 @@ export function rotateAgentKey(name: string, workspaceSlug: string): string {
   const workspaceId = workspaceIdBySlug(workspaceSlug);
   const a = db
     .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
-    .get(name, workspaceId) as { id: string } | undefined;
+    .get(normalizeAgentName(name), workspaceId) as { id: string } | undefined;
   if (!a) throw new QoopiaError("NOT_FOUND", `agent ${name} not found`);
   const newKey = generateApiKey();
   // QDASHCOOKIE-002: bump session_version so any outstanding dashboard
@@ -109,7 +106,7 @@ export function setAgentType(
     .prepare(
       `UPDATE agents SET type = ? WHERE name = ? AND workspace_id = ? AND active = 1`,
     )
-    .run(type, name, workspaceId);
+    .run(type, normalizeAgentName(name), workspaceId);
   if (info.changes === 0)
     throw new QoopiaError("NOT_FOUND", `active agent '${name}' not found in workspace ${workspaceSlug}`);
   return { name, type };
@@ -156,7 +153,7 @@ export function deleteAgent(name: string, workspaceSlug: string) {
   const workspaceId = workspaceIdBySlug(workspaceSlug);
   const agent = db
     .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
-    .get(name, workspaceId) as { id: string } | undefined;
+    .get(normalizeAgentName(name), workspaceId) as { id: string } | undefined;
   if (!agent) throw new QoopiaError("NOT_FOUND", `agent ${name} not found`);
 
   // QDASHCOOKIE-002: bump session_version on deactivation as well, so the

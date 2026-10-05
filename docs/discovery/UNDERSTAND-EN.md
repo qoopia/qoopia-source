@@ -19,7 +19,7 @@ Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/d
 
 ## Can I start from a phone?
 
-Use your existing Qoopia dashboard on iPhone, including memory, agents, connections, files and chat. Open its reachable HTTPS address in Safari, sign in with the email linked to that workspace, then add it to Home Screen as a web app. Your computer or server must stay running. The phone does not run the Mac/Linux agent runtime or create a second memory database. A managed MCP endpoint is for agent tools, not dashboard access.
+Use your existing Qoopia dashboard on iPhone, including memory, agents, connections, files and chat. On a server installation, open its HTTPS address in Safari, sign in with the email linked to that workspace, then add it to Home Screen as a web app; the server must stay running. A Mac or Linux installation keeps its dashboard on that computer, so open it there. The phone does not run the Mac/Linux agent runtime or create a second memory database. A managed MCP endpoint is for agent tools, not dashboard access.
 
 Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md), [src/http/web-app.ts](https://github.com/qoopia/qoopia-source/blob/main/src/http/web-app.ts), [src/public/app.webmanifest](https://github.com/qoopia/qoopia-source/blob/main/src/public/app.webmanifest)
 

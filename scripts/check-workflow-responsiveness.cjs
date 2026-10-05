@@ -1,5 +1,5 @@
 // Synthetic HTTP fixtures only. Does not access user memory, OAuth or subscriptions.
-const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||process.env.QOOPIA_PLAYWRIGHT_MODULE||'playwright');
 const fs=require('node:fs'),http=require('node:http'),assert=require('node:assert/strict');
 const out=process.env.QOOPIA_PERF_OUTPUT||'work';fs.mkdirSync(out,{recursive:true});
 let posts=[],operation=null,connections=[],tick=0,login=null;
@@ -12,7 +12,7 @@ const server=http.createServer(async(req,res)=>{
   const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));posts.push(body);
   if(url.pathname.endsWith('/memory')){if(body.action==='cancel-login'){login=null;return res.end('{}');}operation={state:'running',action:body.action};res.statusCode=202;return res.end('{"accepted":true}');}
   await new Promise(r=>setTimeout(r,600));
-  if(body.action==='apply'){const c={id:'fixture-'+connections.length,surface:body.surface,access_mode:body.access_mode,mcp_url:'https://fixture.example/mcp',state:'requires_user_action',code:'CLIENT_CALL_REQUIRED',client_config:'on_this_computer'};connections.push(c);return res.end(JSON.stringify({connection:c}));}
+  if(body.action==='apply'){const c={id:'fixture-'+connections.length,surface:body.surface,access_mode:body.access_mode,mcp_url:'https://fixture.example/mcp',state:'requires_user_action',code:'CLIENT_CALL_REQUIRED',client_config:'on_this_computer',created_at:new Date().toISOString(),last_seen:null};connections.push(c);return res.end(JSON.stringify({connection:c}));}
   if(body.action==='client-auth-start'){connections[0].client_auth={code:'CLIENT_AUTH_STARTING'};setTimeout(()=>{connections[0].client_auth={code:'CLIENT_AUTHORIZATION_REQUIRED',open_url:'https://fixture.example/authorize'};},300);return res.end('{"code":"CLIENT_AUTH_STARTING"}');}
   if(body.action==='verify')return res.end('{"prompt":"Synthetic verification prompt"}');
   return res.end('{}');
@@ -38,11 +38,15 @@ try{for(const width of [1440,390]){
  await page.locator('[data-client-auth]').click();await page.locator('a[href="https://fixture.example/authorize"]').waitFor({timeout:10000});
  assert.equal(posts.filter(p=>p.action==='apply').length,1);assert.equal(posts.filter(p=>p.action==='client-auth-start').length,1);
  assert(await page.locator('[data-connection]').innerText().then(t=>!t.includes('Вызов подтверждён')));
- await page.locator('[data-verify-connection]').click();await page.waitForFunction(()=>document.querySelector('[data-proof]').textContent.includes('Synthetic'));
+ // No temporary verification code: the first real protocol call moves the setup to Connected by polling.
+ assert.equal(await page.locator('[data-verify-connection]').count(),0);
+ connections[0]={...connections[0],state:'ready',code:null,last_seen:new Date().toISOString(),verified_at:new Date().toISOString()};
+ await page.waitForFunction(()=>document.querySelector('#setupFeedback').textContent.includes('Подключено'),null,{timeout:15000});
+ assert.equal(await page.locator('#setupConnections [data-connection]').count(),0,'a connected setup leaves the in-progress list');
  await page.screenshot({path:out+'/workflow-'+width+'.png',fullPage:true});
  operation=null;login={state:'waiting',url:'https://fixture.example/login'};await page.goto(origin+'/dashboard?lang=ru#work');await page.locator('#memoryLoginCode').fill('synthetic-code');
  await page.waitForTimeout(5500);assert.equal(await page.locator('#memoryLoginCode').inputValue(),'synthetic-code');
  assert.deepEqual(errors,[]);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
- results.push({width,immediateFeedback:true,navigationWhilePreparing:true,stableMcpButtonsDuringNetworkPolling:stability,oauthLinkFromPolling:true,noFalseVerification:true,loginInputPreserved:true,errors});await page.close();
+ results.push({width,immediateFeedback:true,navigationWhilePreparing:true,stableMcpButtonsDuringNetworkPolling:stability,oauthLinkFromPolling:true,noFalseVerification:true,connectedByPolling:true,loginInputPreserved:true,errors});await page.close();
 }fs.writeFileSync(out+'/workflow-results.json',JSON.stringify(results,null,2));console.log(JSON.stringify(results,null,2));}
 finally{await browser.close();server.close();}})().catch(e=>{console.error(e);server.close();process.exitCode=1});

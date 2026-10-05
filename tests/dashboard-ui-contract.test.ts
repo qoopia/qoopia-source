@@ -29,6 +29,29 @@ test('long unbreakable names wrap inside chips, connection rows and folder picke
   expect(decls(dashboardStyles,'.f-name')).toContain('overflow-wrap:anywhere');
 });
 
+test('an external access action ends with its result, not a stuck "Working…"',()=>{
+  // Its "Working…" goes to the network status line, which the result replaces, not the shared one above the apps.
+  expect(dashboardScript).toContain("const call=async(body,target=feedback)=>");
+  expect(dashboardScript).toContain(":{action},networkFeedback);");
+  // Pause completes before the follow-up read returns: a result read while the button is busy is read again.
+  expect(dashboardScript).toContain("lastResult=networkBusy?'':key;");
+});
+
+test('a revoked external device is named for any platform and points at every enable button',()=>{
+  // Device-code sign-in exists for headless Linux servers, so the revoked state must not say "Mac",
+  // and it must not list only email and Google while the device-code button is offered beside them.
+  expect(dashboardScript).toContain("data-network=\"network-start-device\"");
+  expect(dashboardScript).not.toContain('This Mac was revoked');expect(dashboardScript).not.toContain('Этот Mac отозван');
+  expect(dashboardScript).toContain("DEVICE_REVOKED:t('This installation was revoked as an external device. Choose one of the enable buttons below");
+});
+
+test('a finished external access action does not keep saying "Reconnecting" once the tunnel is online',()=>{
+  // network-resume can finish while the tunnel still connects (NETWORK_CONNECTING); the tunnel comes online a
+  // moment later. The line follows the current network state instead of that stale result; other results stay.
+  expect(dashboardScript).toContain("const networkLine=n=>{const r=n.operation?.result;return r&&(!(r.code||'').startsWith('NETWORK_')||r.code===n.code)?r:n;};");
+  expect(dashboardScript).toContain('if(network.operation.result)showResult(networkLine(network),networkFeedback);');
+});
+
 test('skip link is the first keyboard stop of the signed-in app [F-315]',()=>{
   const app=dashboardPage.slice(dashboardPage.indexOf('id="appView"'));
   const firstFocusable=app.match(/<(a|button|input|select|textarea)\b[^>]*>/)![0];
@@ -148,4 +171,35 @@ test('edge-aligned shell controls respect the left/right safe-area insets [F-329
 test('the login wordmark keeps its 144px width and natural aspect [F-330]',()=>{
   // base.css sizes every .q-brand img 28px tall; the login wordmark must override the height too.
   expect(decls(dashboardStyles,'.login-brand .brand-wordmark')).toMatch(/width:144px;\s*height:auto/);
+});
+
+test('a tapped button on a phone does not stay in its grey hover state',()=>{
+  // Touch browsers keep :hover after a tap; the primary fill turned --text2 and read as disabled.
+  const base=readFileSync(new URL('../src/public/brand/base.css',import.meta.url),'utf8');
+  expect(dashboardStyles).toMatch(/@media \(hover:hover\) \{\n[^@]*?\.btn\.primary:hover:not\(:disabled\)[^@]*?\n\}/);
+  expect(base).toMatch(/@media\(hover:hover\)\{\.q-auth button:hover/);
+});
+
+test('preparing a client before external access is on points a phone owner to the switch, not to CLI commands',()=>{
+  expect(dashboardScript).toContain('{ status: r.status, code: data.code }');
+  expect(dashboardScript).toMatch(/e\.code==='NOT_READY'&&!network\.hidden\)\{[^}]*network\.open=true/);
+});
+
+test('the open phone menu fits the screen and the floating buttons do not cover Logout',()=>{
+  expect(decls(dashboardStyles,'.sidebar.open')).toMatch(/max-height:100dvh;overflow-y:auto/);
+  expect(dashboardStyles).toContain('body:has(.sidebar.open) :is(.chat-launcher,.to-top) { display:none; }');
+});
+
+test('a touch tablet keeps 44px targets: the compact desktop density applies only to a fine pointer',()=>{
+  expect(dashboardStyles).toContain('@media(min-width:601px) and (pointer:fine) {');
+  expect(dashboardStyles).not.toMatch(/@media\(min-width:601px\) \{/);
+  expect(dashboardStyles).toMatch(/@media\(min-width:901px\) and \(pointer:coarse\) \{[^}]*\.nav-item,\.icon-btn,#chatLauncher \{ min-height:44px; \}/);
+  expect(decls(dashboardStyles,'.ar-saves')).toContain('min-height:44px');
+  expect(decls(dashboardStyles,'.skill-loop button')).toContain('min-height:44px');
+});
+
+test('on a phone no tab hides off screen, the chat title draws no ring and the floating buttons leave room',()=>{
+  expect(dashboardStyles).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.tabs \{ flex-wrap: wrap; \}/);
+  expect(dashboardStyles).toContain('#main:focus,#chatTitle:focus { outline:none; }');
+  expect(dashboardStyles.trimEnd().endsWith('.content { padding-bottom:calc(136px + env(safe-area-inset-bottom)); }')).toBe(true);
 });

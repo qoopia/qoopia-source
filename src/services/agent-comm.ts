@@ -1,9 +1,11 @@
+import { sameAgentName } from "../utils/agent-name.ts";
 import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { logActivity } from "./activity.ts";
 import { markDeliveredOnRead, scheduleAgentWakeDrain } from "./agent-wake.ts";
+import { bootstrapToolAllowed } from "../auth/policy.ts";
 
 type AgentCommKind = "request" | "ack" | "reply" | "status" | "system";
 
@@ -73,10 +75,10 @@ function normalizeTargetName(nameOrId: string): string {
  * picking one of them would silently deliver to the wrong agent.
  */
 function findLocalAgent(workspace_id: string, target: string): AgentRow | undefined {
-  const rows = db.prepare(
-    `SELECT ${AGENT_COLUMNS} FROM agents
-     WHERE workspace_id = ? AND active = 1 AND (id = ? OR lower(name) = lower(?))`,
-  ).all(workspace_id, target, target) as AgentRow[];
+  // Names are compared in JS: SQLite lower() folds ASCII only, so 'Ассистент' would miss 'ассистент'.
+  const rows = (db.prepare(
+    `SELECT ${AGENT_COLUMNS} FROM agents WHERE workspace_id = ? AND active = 1`,
+  ).all(workspace_id) as AgentRow[]).filter((row) => row.id === target || sameAgentName(row.name, target));
   const exact = rows.find((row) => row.id === target) ?? rows.find((row) => row.name === target);
   if (exact) return exact;
   if (rows.length > 1) {
@@ -124,12 +126,12 @@ function resolveCounterparty(workspace_id: string, nameOrId: string): AgentRow {
   const local = findLocalAgent(workspace_id, target);
   if (local) return local;
 
-  const foreign = db.prepare(
+  const foreign = (db.prepare(
     `SELECT ${AGENT_COLUMNS} FROM agents a
-     WHERE workspace_id != ? AND active = 1 AND (id = ? OR lower(name) = lower(?)) AND ${SAME_OWNER}
-     ORDER BY name, id
-     LIMIT 2`,
-  ).all(workspace_id, target, target, workspace_id) as AgentRow[];
+     WHERE workspace_id != ? AND active = 1 AND ${SAME_OWNER}
+     ORDER BY name, id`,
+  ).all(workspace_id, workspace_id) as AgentRow[])
+    .filter((row) => row.id === target || sameAgentName(row.name, target)).slice(0, 2);
   if (!foreign.length) throw new QoopiaError("NOT_FOUND", `active agent not found: ${target}`);
   if (foreign.length > 1) {
     throw new QoopiaError(
@@ -138,6 +140,24 @@ function resolveCounterparty(workspace_id: string, nameOrId: string): AgentRow {
     );
   }
   return foreign[0]!;
+}
+
+/**
+ * A recipient whose connection profile has no agent_inbox (a client connection or memory-setup
+ * agent: 'memory-worker' without the legacy surface) can never read a message, so queueing one
+ * would answer "delivered automatically" for something nobody will see. Refuse it at send time.
+ */
+function assertCanReceive(target: AgentRow): void {
+  const row = db.prepare(`SELECT authority_profile, legacy_skill_access FROM agents WHERE id = ?`)
+    .get(target.id) as { authority_profile: string | null; legacy_skill_access: number | null } | undefined;
+  const profile = row?.legacy_skill_access === 1 ? undefined : row?.authority_profile ?? undefined;
+  if (bootstrapToolAllowed("agent_inbox", profile)) return;
+  const nextAction = "Save it as a workspace note that agent can recall (note_create), or ask the owner to give that runtime a full agent identity.";
+  throw new QoopiaError(
+    "UNSUPPORTED",
+    `${target.name} cannot read agent messages: its connection has no inbox, so nothing would reach it. ${nextAction}`,
+    { recipient: target.name, next_action: nextAction },
+  );
 }
 
 function resolveAgentById(workspaceId: string, agentId: string): AgentRow {
@@ -476,6 +496,7 @@ export function agentSessionCreate(input: {
   };
   usedBySend();
   const target = input.to_agent ? resolveCounterparty(input.workspace_id, input.to_agent) : null;
+  if (target) assertCanReceive(target);
 
   const sessionId = ulid();
   const messageId = body && target ? ulid() : null;
@@ -606,6 +627,7 @@ export function agentSend(input: AgentSendInput) {
     target = resolved.target;
     reroutedFrom = resolved.reroutedFrom;
   }
+  assertCanReceive(target);
 
   const sessionId = input.session_id ?? ulid();
   const messageId = ulid();
@@ -809,17 +831,20 @@ export function agentReply(input: {
   let to = input.to_agent ??
     findIdempotentMessage(sender.id, normalizeIdempotencyKey(input.idempotency_key))?.recipient_agent_id;
   if (!to) {
+    // The other end of the latest message the caller is not alone in: its sender, or, for a
+    // follow-up to a message nobody answered yet, its recipient. Never the caller itself.
     const last = db.prepare(
-      `SELECT sender_agent_id FROM agent_comm_messages
-        WHERE workspace_id = ? AND session_id = ? AND sender_agent_id != ?
+      `SELECT CASE WHEN sender_agent_id != ? THEN sender_agent_id ELSE recipient_agent_id END AS other
+         FROM agent_comm_messages
+        WHERE workspace_id = ? AND session_id = ? AND (sender_agent_id != ? OR recipient_agent_id != ?)
         ORDER BY created_at DESC, id DESC LIMIT 1`,
-    ).get(session.workspace_id, input.session_id, input.agent_id) as
-      | { sender_agent_id: string }
+    ).get(input.agent_id, session.workspace_id, input.session_id, input.agent_id, input.agent_id) as
+      | { other: string }
       | undefined;
-    const targetId = last?.sender_agent_id || session.created_by_agent_id;
-    const agent = db.prepare(`SELECT id FROM agents WHERE id = ? AND active = 1`).get(targetId) as
-      | { id: string }
-      | undefined;
+    const targetId = last?.other ?? (session.created_by_agent_id !== input.agent_id ? session.created_by_agent_id : null);
+    const agent = targetId
+      ? db.prepare(`SELECT id FROM agents WHERE id = ? AND active = 1`).get(targetId) as { id: string } | undefined
+      : undefined;
     if (!agent) throw new QoopiaError("NOT_FOUND", "reply target not found");
     // By id, not by name: the other party may live in another workspace, where
     // a name lookup would have to guess.
@@ -890,23 +915,29 @@ export function agentStatus(input: {
   workspace_id: string;
   agent?: string;
   limit?: number;
+  /** ADR-020: an agent whose shared context is off sees only itself — no sibling, no external lookup. */
+  only_agent_id?: string;
 }) {
   const where = ["workspace_id = ?", "active = 1"];
   const params: any[] = [input.workspace_id];
-  if (input.agent) {
-    where.push("lower(name) = lower(?)");
-    params.push(input.agent);
+  if (input.only_agent_id) {
+    where.push("id = ?");
+    params.push(input.only_agent_id);
   }
-  const agents = db.prepare(
+  // By name or by id, as agent_send addresses it: a local agent asked by id is not external.
+  // Filtered in JS before the limit: SQLite lower() folds ASCII only.
+  const agents = (db.prepare(
     `SELECT id, name, type, tool_profile, last_seen FROM agents
-      WHERE ${where.join(" AND ")} ORDER BY name LIMIT ?`,
-  ).all(...params, Math.min(Math.max(input.limit || 50, 1), 100)) as AgentRow[];
+      WHERE ${where.join(" AND ")} ORDER BY name`,
+  ).all(...params) as AgentRow[])
+    .filter((agent) => !input.agent || agent.id === input.agent || sameAgentName(agent.name, input.agent))
+    .slice(0, Math.min(Math.max(input.limit || 50, 1), 100));
   // Asking after one agent by name is an addressing question, and addressing is
   // no longer confined to the workspace. Answer it the same way agent_send
   // resolves it, so "can I reach Diana?" and "did my message to Diana route?"
   // can never disagree. The unfiltered listing stays workspace-local — this is
   // a lookup, not a directory of every agent on the instance.
-  if (input.agent && !agents.length) {
+  if (input.agent && !agents.length && !input.only_agent_id) {
     try {
       const reachable = resolveCounterparty(input.workspace_id, input.agent);
       return {

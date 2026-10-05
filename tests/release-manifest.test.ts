@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { inventory, hash } from "../src/utils/fs.ts";
+import { bundleSchema } from "../src/delivery/bundle.ts";
+import { listMigrationFiles } from "../src/db/v4-migrations.ts";
 import { inspectReleaseArtifact, assertReleaseIdentity, buildReleaseManifest, releaseSchemaVersion } from "../scripts/build-release-manifest.ts";
 
 // Independent synthetic signing identity: no production key or data is used.
@@ -64,4 +66,12 @@ test("release schema comes from signed packages and rejects mismatched declarati
     const newer={...m,schema_max:46 as const,members:{...m.members,'assets/migrations/046-example.sql':m.members['assets/migrations/037-skill-loop.sql']!}};
     expect(()=>releaseSchemaVersion([m,newer])).toThrow(/schemas disagree/);
   } finally {fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test("the newest shipped migration is a schema the signed bundle admits and requires", () => {
+  // build-bundle once hard-coded schema_max 48: a 049 migration would have shipped and then refused every update.
+  const newest = Math.max(...listMigrationFiles("migrations").map(m => m.version));
+  expect(bundleSchema.shape.schema_max.safeParse(newest).success).toBe(true);
+  expect(fs.readFileSync("src/delivery/bundle.ts", "utf8")).toContain(`m.schema_max>=${newest}&&`);
+  expect(fs.readFileSync("scripts/build-bundle.ts", "utf8")).toContain("schema_max:schemaMax");
 });

@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { privateDirectory, safePath, readJson, durableWrite, hash, randomToken } from '../utils/fs.ts';
 import { consumeLocalLogin } from '../delivery/local-login.ts';
 import { localOwner } from '../delivery/owner-onboarding.ts';
@@ -28,6 +29,17 @@ export function ownerIdentity(root:string): Binding | null {
   return binding;
 }
 
+/** The confirmation page shows this so the owner can tell their own installation from someone else's. */
+export function installationLabel(){return 'Qoopia '+(process.platform==='darwin'?'Mac':'Linux')+' · '+os.hostname().slice(0,48);}
+/** A broker that predates device codes answers a device request as an invalid sign-in request. */
+export const DEVICE_CODE_UNSUPPORTED='The Qoopia sign-in service does not offer code sign-in yet. Sign in with email or Google from a browser on this network, or try again after the service is updated.';
+/** Only a code-shaped value and a verification page on the sign-in origin are ever shown to the owner. */
+export function deviceCodeStep(data:Record<string,unknown>,origin=LOGIN_ORIGIN){
+  const code=data.user_code,uri=data.verification_uri,complete=data.verification_uri_complete;
+  if(typeof code!=='string'||!/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/.test(code)||uri!==origin+'/device'||complete!==origin+'/device?code='+code)
+    throw new Error(DEVICE_CODE_UNSUPPORTED);
+  return {userCode:code,verificationUri:uri,verificationUriComplete:complete,expiresIn:600};
+}
 export function localIdentityLogin(root:string,database:Database,request:typeof fetch=fetch) {
   const claims=new Map<string,{ownerId:string;expires:number}>();
   const attempts=new Map<string,{ownerId:string;version:number;id:string;verifier:string;expires:number;busy:boolean;ip:string}>();
@@ -61,7 +73,7 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         return json(res,200,{linked:false,setup:true});
       }
       if(route==='/start'){
-        if(!['google','email','account'].includes(String(body.method)))throw new Error('Choose Google or email');
+        if(!['google','email','account','device'].includes(String(body.method)))throw new Error('Choose Google or email');
         const binding=ownerIdentity(root),claim=claims.get(hash(cookie(req)));
         if(!binding&&!claim)throw new Error('Open Qoopia from its launcher once to link this workspace');
         // /poll would refuse any other address anyway; refusing here spends no e-mail on it.
@@ -70,9 +82,13 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         const owner=localOwner(database,binding?.ownerId??claim!.ownerId),verifier=randomToken();
         // F-125: e-mail and Google sign-ins finish only from the network of this browser, which the broker
         // cannot see behind this server (account continuation has its own one-use code).
-        const bind=body.method!=='account';
-        const data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:'https://'+req.headers.host+'/dashboard'}:{}),...(bind?{bind:'network',starter_ip:getClientIp(req)}:{}),challenge:hash(verifier)});
+        // A device code is confirmed on another device signed in to the account: its possession is the binding.
+        const bind=body.method==='email'||body.method==='google',device=body.method==='device';
+        let data:Record<string,unknown>;
+        try{data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:'https://'+req.headers.host+'/dashboard'}:{}),...(bind?{bind:'network',starter_ip:getClientIp(req)}:{}),...(device?{label:installationLabel()}:{}),challenge:hash(verifier)});}
+        catch(error){throw device&&error instanceof Error&&error.message==='Invalid sign-in request'?new Error(DEVICE_CODE_UNSUPPORTED):error;}
         if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new Error('Invalid sign-in service response');
+        const step=device?deviceCodeStep(data):undefined;
         // A client keeps its two newest pending sign-ins and the table its 20 newest, so anonymous
         // starts can never refuse the owner's. ponytail: the broker's per-server hourly start
         // allowance is still shared by every caller; closing that needs a per-installation allowance.
@@ -81,7 +97,7 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         if(attempts.size>=20)attempts.delete(attempts.keys().next().value!);
         const token=randomToken();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:data.id,verifier,expires:now+600_000,busy:false,ip});
         res.setHeader('set-cookie',`${pendingCookie}=${token}; HttpOnly; SameSite=Strict; Path=/api/dashboard/identity; Max-Age=600${isHttps(req)?'; Secure':''}`);
-        return json(res,200,body.method==='account'?{accountUrl:LOGIN_ORIGIN+'/profile?app=ios&request='+data.id}:body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id}:{email:loginEmail(body.email)});
+        return json(res,200,step??(body.method==='account'?{accountUrl:LOGIN_ORIGIN+'/profile?app=ios&request='+data.id}:body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id}:{email:loginEmail(body.email)}));
       }
       if(route==='/poll'){
         const token=cookie(req,pendingCookie),attempt=attempts.get(token);

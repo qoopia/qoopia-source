@@ -49,6 +49,22 @@ test.skipIf(missing.length>0)('built-in embeddings chunk notes, skip unchanged t
   expect(r.recall.ids[0]).toBe(r.ids.backup);
 },60_000);
 
+// Bun 1.3 skips every process 'exit' listener when process.exit follows terminating a worker that ran
+// ONNX. Shutdown stopped the worker that way: the standalone service then left its tunnel child running,
+// its installation lock held and its owner socket behind. Stopping must keep the listeners working.
+test.skipIf(missing.length>0)('shutdown after built-in inference still runs exit listeners',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-builtin-embed-')));
+  try {
+    const run=spawnSync(process.execPath,[path.join(import.meta.dir,'helpers','builtin-embed-exit-probe.ts')],{encoding:'utf8',timeout:55_000,
+      env:{PATH:process.env.PATH,HOME:root,TMPDIR:root,QOOPIA_ROOT:root,QOOPIA_DATA_DIR:path.join(root,'data'),QOOPIA_LOG_DIR:path.join(root,'logs'),
+        QOOPIA_BACKUP_DIR:path.join(root,'backups'),QOOPIA_LOG_LEVEL:'error',QOOPIA_SERVER_ROLE:'canonical',QOOPIA_PORT:'0',
+        QOOPIA_AUTO_EMBED:'false',QOOPIA_EMBED_PROVIDER:'builtin'}});
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout).embedded).toBe(true);
+    expect(fs.existsSync(path.join(root,'exit-listener-ran'))).toBe(true);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+},60_000);
+
 // F-081/F-307: neither ONNX/WASM inference nor building the 17 MB tokenizer may block
 // the event loop that serves /health, including the first (cold) recall after start.
 test.skipIf(missing.length>0)('built-in inference leaves the event loop responsive from a cold start',()=>{

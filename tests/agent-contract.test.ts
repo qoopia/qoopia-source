@@ -9,7 +9,11 @@ import {registerBridgeTools} from '../src/bridges/api.ts';
 import {bootstrapToolAllowed} from '../src/auth/policy.ts';
 import {authorityOperations,registerAuthorityTools,effectiveAuthority,agentCoverage} from '../src/api/authority.ts';
 import {agentContractFor,grantedTools} from '../src/api/agent-contract.ts';
+import {agentMemoryStatus,noteAgentWork} from '../src/services/memory-policy.ts';
+import fs from 'node:fs';
+import path from 'node:path';
 import {continuityEvent} from '../src/services/continuity.ts';
+import {memoryClientConnectionPath} from '../src/services/memory-model.ts';
 import {setMemoryPolicy} from '../src/services/memory-policy.ts';
 import type {AuthContext} from '../src/auth/middleware.ts';
 
@@ -71,7 +75,12 @@ test('each mechanism reports one of five states with a reason and an action',()=
   const of=(id:string)=>Object.fromEntries(agentContractFor(db,workspace,id,authorityOperations)!.mechanisms.map(m=>[m.id,m]));
   const standard=of(agents.standard!),reader=of(agents.reader!);
   expect(standard['memory.notes']).toMatchObject({status:'available',reason:null});
-  expect(standard.management).toMatchObject({status:'forbidden',tools:[]});expect(standard.management!.action).toBeString();
+  expect(standard.management).toMatchObject({status:'forbidden',tools:[],action:'Ask the steward or the owner to do it.'});
+  // A memory worker's AgentComm is withheld by its connection profile, which no switch widens:
+  // the contract must not send the owner to a card control or agent_set_profile that cannot help.
+  const worker=of(agents.worker!);
+  expect(worker.agentcomm).toMatchObject({status:'forbidden',tools:[]});
+  expect(worker.agentcomm!.action).toContain('agent_set_profile cannot add them');
   expect(of(agents.steward!).management!.tools).toContain('memory_policy_list');
   expect(of(agents.steward!).management!.tools).not.toContain('memory_policy_set');
   expect(of(owner).management!.tools).toContain('memory_policy_set');
@@ -115,4 +124,60 @@ test('every sentence the contract can show has a Russian translation',async()=>{
   const sentences=[...source.matchAll(/(?:title|reason|action):\s*(?:[^'`\n]*\?)?\s*'((?:[^'\\]|\\.)+)'/g),...source.matchAll(/\?'((?:[^'\\]|\\.){12,})'\s*:\s*'((?:[^'\\]|\\.){12,})'/g)].flatMap(m=>m.slice(1)).map(text=>text.replace(/\\'/g,"'"));
   expect(sentences.length).toBeGreaterThan(20);
   for(const text of sentences)expect(ru[text],text).toBeString();
+});
+
+test('a linked runtime agent reads the capture of its separate memory agent, and hooks that stopped delivering are faulty',()=>{
+  const linked=createAgent({name:'contract-claude-code',workspaceSlug:'agent-contract-check'}).id;
+  const memory=createAgent({name:'Qoopia Claude memory',workspaceSlug:'agent-contract-check'}).id;
+  const state=(id:string)=>agentContractFor(db,workspace,id,authorityOperations)!.mechanisms.find(m=>m.id==='memory.continuity')!;
+  db.query(`INSERT INTO client_connections(id,workspace_id,owner_id,agent_id,surface,access_mode,request_key,state,challenge_hash,challenge_expires_at,created_at)
+    VALUES('00000000-0000-4000-8000-00000000c1de',?,?,?,'claude_code','read_write','contract-linked','verified','x','2999-01-01','2026-01-01')`).run(workspace,owner,linked);
+  expect(state(linked)).toMatchObject({status:'needs_setup'});
+  expect(state(linked).action).toContain('separate memory agent');expect(state(linked).action).not.toContain('identity and provider stay');
+  // Another agent with Claude Code sessions is not this runtime's memory client; memory settings name it.
+  expect(state(linked)).toMatchObject({status:'needs_setup'});
+  const file=memoryClientConnectionPath(workspace,'claude_code');fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
+  fs.writeFileSync(file,JSON.stringify({format:'qoopia-memory-connection/1',agent_id:memory,runtime:'claude_code'}),{mode:0o600});
+  continuityEvent(workspace,memory,{session_id:'claude_code:served',project:'/served',runtime:'claude_code',event:'progress',messages:[{id:'s1',role:'user',content:'Синтетическое сообщение.'}]});
+  expect(state(linked)).toMatchObject({status:'available',served_by:'Qoopia Claude memory',reason:'Sessions of this runtime are captured and restored by its separate Qoopia memory agent.'});
+  const at=(ms:number)=>new Date(Date.now()-ms).toISOString();
+  db.query('UPDATE session_messages SET created_at=? WHERE agent_id=?').run(at(3*3600_000),memory);
+  db.query('UPDATE sessions SET created_at=? WHERE agent_id=?').run(at(3*3600_000),memory);
+  // Idle since its last capture: nothing is wrong.
+  db.query('UPDATE agents SET last_seen=? WHERE id=?').run(at(3*3600_000-60_000),memory);
+  expect(state(memory)).toMatchObject({status:'available'});
+  // Requests that are not conversation work keep last_seen fresh but prove nothing: inbox polling, pings.
+  db.query('UPDATE agents SET last_seen=? WHERE id=?').run(at(60_000),memory);
+  noteAgentWork(memory,'agent_inbox');
+  expect(state(memory)).toMatchObject({status:'available'});
+  // Still working two hours after its hooks last delivered: capture stopped.
+  noteAgentWork(memory,'recall');
+  expect(state(memory)).toMatchObject({status:'faulty'});expect(state(memory).action).toContain('qoopia doctor');
+  expect(state(linked)).toMatchObject({status:'faulty',served_by:'Qoopia Claude memory'});
+  // Hooks that still register sessions run; a transcript the runtime never writes (claude -p
+  // --no-session-persistence) has nothing to deliver, and doctor on that computer reports the rest.
+  continuityEvent(workspace,memory,{session_id:'claude_code:no-transcript',project:'/served',runtime:'claude_code',event:'start',messages:[]});
+  expect(state(memory)).toMatchObject({status:'available'});
+});
+
+test('an agent without hooks whose last save is old is not shown as saving automatically',()=>{
+  const bot=createAgent({name:'contract-chat-client',workspaceSlug:'agent-contract-check'}).id;
+  db.query(`INSERT INTO sessions(id,workspace_id,agent_id,metadata) VALUES('contract-explicit-save',?,?,'{}')`).run(workspace,bot);
+  db.query(`INSERT INTO session_messages(session_id,workspace_id,agent_id,role,content,created_at) VALUES('contract-explicit-save',?,?,'user','Синтетика.',?)`)
+    .run(workspace,bot,new Date(Date.now()-30*86400_000).toISOString());
+  expect(agentMemoryStatus(workspace,bot).state).toBe('waiting');
+  db.query('UPDATE session_messages SET created_at=? WHERE agent_id=?').run(new Date().toISOString(),bot);
+  expect(agentMemoryStatus(workspace,bot).state).toBe('working');
+});
+
+test('a memory client linked in settings that has not delivered yet is waiting for setup, not a model error',()=>{
+  const linked=createAgent({name:'contract-codex',workspaceSlug:'agent-contract-check'}).id;
+  const memory=createAgent({name:'Qoopia Codex memory',workspaceSlug:'agent-contract-check'}).id;
+  db.query(`INSERT INTO client_connections(id,workspace_id,owner_id,agent_id,surface,access_mode,request_key,state,challenge_hash,challenge_expires_at,created_at)
+    VALUES('00000000-0000-4000-8000-0000000c0d3e',?,?,?,'codex','read_write','contract-linked-codex','verified','x','2999-01-01','2026-01-01')`).run(workspace,owner,linked);
+  const file=memoryClientConnectionPath(workspace,'codex');fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
+  fs.writeFileSync(file,JSON.stringify({format:'qoopia-memory-connection/1',agent_id:memory,runtime:'codex'}),{mode:0o600});
+  const continuity=agentContractFor(db,workspace,linked,authorityOperations)!.mechanisms.find(m=>m.id==='memory.continuity')!;
+  expect(continuity).toMatchObject({status:'needs_setup',served_by:'Qoopia Codex memory'});
+  expect(continuity.reason).not.toContain('memory model reported an error');
 });

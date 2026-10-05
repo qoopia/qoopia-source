@@ -1,5 +1,6 @@
 import { inspectManagedLogs, previewManagedEvents } from '../utils/managed-logs.ts';
-import { inspectDoctorDatabase, inspectScheduledBackups, type Check } from './doctor-checks.ts';
+import { inspectDoctorDatabase, inspectScheduledBackups, BACKUP_DATED_IN_FUTURE, type Check } from './doctor-checks.ts';
+import { memoryClientsCheck } from './memory-client.ts';
 import { opsSummary, readRecoveryOps, mergeRecoveryOps, writeOps, opsFile, validateRecoveryOps, OpsJournalError, RECOVERY_DELIVERY_HOLD, RECOVERY_WARNING, serializeOps, OPS_JOURNAL_FORMAT } from './ops-state.ts';
 import { z } from 'zod';
 import fs from 'node:fs';
@@ -8,8 +9,10 @@ import { randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { verifyBundle, requireOpsJournalV3 } from './bundle.ts';
 import { safePath, privateDirectory, readJson, readJsonBytes, durableWrite, durableCopyFile, inventory, copyInventory, hash, syncDirectory, preflightSpace, MAX_JSON_BYTES } from '../utils/fs.ts';
-import { backupUnified, verifyBackup, snapshotInfo, invalidateRestoredAccess, backupOperations, snapshotExtent } from './snapshot.ts';
+import { backupUnified, verifyBackup, snapshotInfo, invalidateRestoredAccess, carryAccessForward, backupOperations, snapshotExtent } from './snapshot.ts';
 import { disabledAutostart, type AutostartLifecycle } from './autostart.ts';
+import { openReadonlyDatabase } from '../db/sqlite.ts';
+import { tableExists } from '../db/introspect.ts';
 const hex=z.string().regex(/^[a-f0-9]{64}$/),generationId=z.string().regex(/^generation-[a-f0-9-]{36}$/);
 const updatePlanBody=z.object({format:z.literal('qoopia-update-plan/1'),created_at:z.string().datetime(),source:z.object({generation:generationId,bundle:hex,instance:z.string().min(1).max(200),schema:z.number().int(),logical_hash:hex,version:z.string()}).strict(),target:z.object({bundle_digest:hex,build_sha:z.string().regex(/^[a-f0-9]{40}$/),source_digest:hex,schema_min:z.number().int(),schema_max:z.number().int(),version:z.string()}).strict(),downgrade:z.boolean()}).strict();
 const updatePlan=updatePlanBody.extend({plan_digest:hex}).strict();
@@ -63,6 +66,21 @@ export function lockInstallation(root: string) {
   return () => { if(released)return; released=true; try { d.run('ROLLBACK'); } finally { d.close(); } };
 }
 type MigrationRunner = (bundle:string, generationRoot:string) => void;
+/** Rows a person or a connected client creates. A first launch only adds the workspace and its human owner. */
+const USER_DATA_TABLES=['notes','sessions','session_messages','files','entity_pages','skill_versions','skill_draft_revisions','oauth_clients','oauth_tokens','agent_pairings','runtime_registrations'];
+function userData(file:string) {
+  const d=openReadonlyDatabase(safePath(file));
+  try {
+    const found=USER_DATA_TABLES.filter(table=>tableExists(d,table)&&d.query(`SELECT 1 FROM "${table}" LIMIT 1`).get());
+    if(d.query("SELECT 1 FROM agents WHERE principal_kind<>'human' LIMIT 1").get())found.push('agents');
+    return found;
+  } finally { d.close(); }
+}
+/** A newer backup cannot be migrated down; refused before anything is written. */
+function restorableSchema(schema:number,bundle:ReturnType<typeof verifyBundle>) {
+  if(schema>bundle.manifest.schema_max)throw new Error(`Backup schema ${schema} is newer than this Qoopia supports (${bundle.manifest.schema_max}); update Qoopia first, then restore`);
+  if(schema<bundle.manifest.schema_min)throw new Error(`Backup schema ${schema} is older than this Qoopia can migrate (${bundle.manifest.schema_min})`);
+}
 const STORED_STATE_ACTIONS={
   NOT_INSTALLED:'Qoopia is not installed here. Run qoopia install --commit (with the same --root, if you use one), then rerun doctor.',
   TEST_FIXTURE_REQUIRES_FLAG:'This installation is a development test build. Rerun doctor with --allow-test-fixture; that flag does not establish publisher trust.',
@@ -161,7 +179,9 @@ export class Delivery {
     const identity=()=>{
       const s=fs.lstatSync(safePath(file));
       if(!s.isFile() || s.nlink!==1 || s.uid!==process.getuid?.() || (s.mode&0o077))throw new Error('OPS_JOURNAL_UNSAFE');
-      return {dev:s.dev,ino:s.ino,size:s.size,mtime:s.mtimeMs,ctime:s.ctimeMs};
+      // No st_dev: APFS renumbers it at every boot, so a reviewed confirmation would go stale after a
+      // restart. The journal's bytes (sha256), inode, size and times already bind the reviewed state.
+      return {ino:s.ino,size:s.size,mtime:s.mtimeMs,ctime:s.ctimeMs};
     };
     const before=identity(), bytes=readJsonBytes(file), after=identity();
     if(JSON.stringify(before)!==JSON.stringify(after))throw new Error('OPS_JOURNAL_CHANGED');
@@ -327,7 +347,8 @@ export class Delivery {
     return this.locked(()=>{
       const c=readCurrent(this.root), verified=verifyBackup(backup,c.instance), id=generation(), dir=path.join(this.root,'generations',id);
       const local=readRecoveryOps(operationsDirectory(this.root,c),c.instance),saved=backupOperations(backup,verified);
-      requireOpsJournalV3(verifyBundle(path.join(this.root,'bundles',c.bundle),this.trust,this.allowTest));
+      const installed=verifyBundle(path.join(this.root,'bundles',c.bundle),this.trust,this.allowTest);
+      requireOpsJournalV3(installed);restorableSchema(verified.schema,installed);
       const merged=saved ? mergeRecoveryOps(saved,local,c.instance) : local;
       const mergedBytes=serializeOps(merged),live=dataFile(this.root,c);
       const fd=fs.openSync(live,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW),header=Buffer.alloc(100);
@@ -350,21 +371,55 @@ export class Delivery {
         verified.size,verified.size,Buffer.byteLength(mergedBytes),MAX_JSON_BYTES]);
       if(!corruptLive)backupUnified(live,path.join(this.root,'backups','pre-restore-'+randomUUID()),c.instance,operationsDirectory(this.root,c));
       privateDirectory(path.join(dir,'data'));durableCopyFile(path.join(backup,'snapshot.db'),path.join(dir,'data','qoopia.db'),verified.size,verified.sha256);
-      invalidateRestoredAccess(path.join(dir,'data','qoopia.db'));
+      // An unreadable current database cannot say what was revoked after the backup: reset all access.
+      if(corruptLive)invalidateRestoredAccess(path.join(dir,'data','qoopia.db'));
+      // Startup refuses pending migrations: a backup taken before an update is brought to the installed schema.
+      this.migrate(installed.root,dir);
+      // Same installation: keys and grants stay; revocations made after the backup are re-applied.
+      const reconnect=corruptLive?undefined:carryAccessForward(path.join(dir,'data','qoopia.db'),live);
       const info=snapshotInfo(path.join(dir,'data','qoopia.db'));
+      if(info.instance!==c.instance)throw new Error('Restore instance mismatch');
       const result:Current={...c,generation:id,previous:undefined,cutover_hash:undefined,operations_generation:id};
       writeOps(operationsDirectory(this.root,result),merged);
       this.commit(result);
-      return {current:result,operations_recovery:verified.operations?'restored; known confirmations retained':'CONDITIONAL: legacy backup has no operations; local journal retained',recovery:verified.key_recovery,live_access:'invalidated; local human owner recovery and agent re-pair required',counts:info.counts,
+      return {current:result,operations_recovery:verified.operations?'restored; known confirmations retained':'CONDITIONAL: legacy backup has no operations; local journal retained',recovery:verified.key_recovery,
+        live_access:reconnect?'kept; revocations, deactivations and key rotations made after the backup were re-applied':'invalidated (the current database is unreadable); local human owner recovery and agent re-pair required',
+        ...(reconnect?{reconnect}:{}),counts:info.counts,
         ...(corruptLive?{corrupt_live_recovery:true,retained_generation:c.generation}:{})};
     });
   }
+  /** Opening the app on a new Mac creates an installation before the owner thinks of restoring. One that
+   * holds no user data and no client connection is moved aside whole (nothing is deleted); anything else
+   * is refused with the exact next step. Under its lock, so a running server refuses. */
+  private setAsideUnused() {
+    const refuse=(why:string)=>{throw new Error(`New-machine restore requires an empty root or a fresh, never-used installation, but ${why}. `+
+      `Next: to keep it, rerun restore --new-machine with --root ABSOLUTE_EMPTY_DIRECTORY; to replace it, run qoopia backup --out ABSOLUTE_DIRECTORY --commit, move ${this.root} aside, then rerun restore --new-machine.`);};
+    if(!fs.existsSync(path.join(this.root,'current.json')))refuse(`${this.root} is not empty and holds no Qoopia installation`);
+    if(fs.existsSync(path.join(this.root,'config','autostart.json')))refuse('autostart is enabled for the installation here (run qoopia service uninstall --commit first)');
+    const release=lockInstallation(this.root);
+    try {
+      const used=userData(dataFile(this.root,readCurrent(this.root)));
+      if(used.length)refuse(`the installation here already holds data (${used.join(', ')})`);
+      const aside=safePath(this.root+'.unused-'+new Date().toISOString().replace(/[:.]/g,'-'));
+      fs.renameSync(this.root,aside);syncDirectory(path.dirname(this.root));return aside;
+    } finally { release(); }
+  }
   restoreNew(backup:string,bundle:string,port:number) {
     verifyBackup(backup);
+    const aside=fs.existsSync(this.root)&&fs.readdirSync(this.root).length?this.setAsideUnused():undefined;
+    if(aside&&bundle.startsWith(this.root+path.sep))bundle=aside+bundle.slice(this.root.length);
+    try { return {...this.restoreNewEmpty(backup,bundle,port),...(aside?{unused_installation_moved_to:aside}:{})}; }
+    catch(error) {
+      // Put the unused installation back; a partial restore is kept beside it, not deleted.
+      if(aside){if(fs.existsSync(this.root))fs.renameSync(this.root,this.root+'.failed-restore-'+randomUUID());fs.renameSync(aside,this.root);syncDirectory(path.dirname(this.root));}
+      throw error;
+    }
+  }
+  private restoreNewEmpty(backup:string,bundle:string,port:number) {
     if(fs.existsSync(this.root)&&fs.readdirSync(this.root).length)throw new Error('New-machine restore requires empty root');
     return this.locked(()=>{
       const b=this.stageBundle(bundle), m=verifyBackup(backup), id=generation(), dir=path.join(this.root,'generations',id);
-      requireOpsJournalV3(b);
+      requireOpsJournalV3(b);restorableSchema(m.schema,b);
       const saved=backupOperations(backup,m);
       const held={...(saved ?? {format:OPS_JOURNAL_FORMAT,last_run:null,alerts:[]}),delivery_hold:RECOVERY_DELIVERY_HOLD};
       preflightSpace(this.root,[m.size,m.size,Buffer.byteLength(serializeOps(held)),MAX_JSON_BYTES]);
@@ -404,7 +459,7 @@ export class Delivery {
     return {format:'qoopia-support-preview/1',preview:true,automatic_send:false,platform:report.platform,
       build:report.checks.build,schema:report.schema,counts:report.counts,state_fingerprint:report.state_fingerprint,
       config_names:['QOOPIA_PORT','QOOPIA_SERVER_ROLE','QOOPIA_DATA_DIR','QOOPIA_LOG_DIR','QOOPIA_BACKUP_DIR'],
-      findings:report.findings,unknown_checks:report.not_checked,events,strict_codex_model:'unknown',native_qualification:'NOT_RUN'};
+      findings:report.findings,unknown_checks:report.not_checked,memory_clients:report.checks.memory_clients,events,strict_codex_model:'unknown',native_qualification:'NOT_RUN'};
   }
   doctor(logRoot = path.join(this.root,'logs')) {
     const checks: Record<string, Check> = {};
@@ -432,6 +487,7 @@ export class Delivery {
       checks.native_adapter = unknown(inspected.runtimes ? 'STORED_REGISTRATIONS_NOT_LIVE_QUALIFICATION' : 'NO_RUNTIME_REGISTRATION','Connect an owner-selected runtime; qualify separately.');
       checks.index = {status:'pass',reason:'FTS_READ_QUERY_EXECUTED',action:'Rebuild equality remains unverified; no rebuild performed.'};
       checks.backup = inspectScheduledBackups(path.join(this.root,'backups'),current.instance) as Check;
+      if(checks.backup.future_dated&&checks.backup.reason!==BACKUP_DATED_IN_FUTURE.reason)checks.backup_clock={...BACKUP_DATED_IN_FUTURE,future_dated:checks.backup.future_dated};
       const operations=opsSummary(operationsDirectory(this.root,current),current.instance);
       checks.maintenance = {reason:operations.error??operations.delivery_hold??'PERSISTED_MAINTENANCE_STATUS',action:operations.error==='OPS_JOURNAL_UNSUPPORTED_VERSION'?'Preserve the journal and use a compatible reader; recover-ops is forbidden for unsupported versions.':operations.error==='OPS_JOURNAL_TOO_LARGE'?'Preserve all journal IDs and backups. Lossless compaction cannot fit; obtain a scoped storage decision. recover-ops cannot bypass capacity.':operations.error?'Preserve the selected journal; follow docs/v4/runbooks/backup-restore.md for separately confirmed recover-ops.':operations.delivery_hold?'Review replay risk with authorize-ops-replay; delivery requires separate owner confirmation.':'Inspect pending alerts; run maintenance explicitly if needed.',...operations, status:operations.status==='degraded'||(operations.pending??0)>0?'fail':operations.status==='ok'?'pass':'unknown'};
       const space=fs.statfsSync(path.dirname(file));
@@ -448,6 +504,7 @@ export class Delivery {
     for(const name of ['build','schema','data_path','auth','native_adapter','backup','index','config_drift','storage','maintenance'])
       checks[name]??=unknown('NOT_INSPECTED','Resolve the stored-state finding and rerun doctor.');
     checks.application_logs=inspectManagedLogs(logRoot) as Check;
+    checks.memory_clients=memoryClientsCheck(this.root);
     checks.port=unknown('NO_LISTENER_IDENTITY_PROBE','Start explicitly and use the functional fixture probe; an occupied port or health200 alone is insufficient.');
     checks.live_auth=unknown('NO_LIVE_UID_OR_HTTP_PROBE','Run separately authorized owner IPC and HTTP qualification.');
     checks.functional=unknown('NO_WRITE_ROUNDTRIP','Run deterministic isolated fixture probe; doctor never mutates user data.');

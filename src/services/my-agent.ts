@@ -19,7 +19,7 @@ import {provision} from './memory-setup.ts';
 import {ClaudeAgentRuntime,claudeLoginUrl} from './claude-agent-runtime.ts';
 import {prepareNativeKeychain,nativeOwnerHome} from '../delivery/native-keychain.ts';
 import {CodexAppServer} from './codex-app-server.ts';
-import {env} from '../utils/env.ts';
+import {localServiceOrigin} from '../utils/standalone.ts';
 import {QoopiaError} from '../utils/errors.ts';
 import {logger} from '../utils/logger.ts';
 import {saveMessage} from './sessions.ts';
@@ -119,6 +119,23 @@ function adoptableConnection(ownerId:string,provider:AgentProvider='codex'):{id:
     return agent?{id:input.agent_id,key:input.key}:null;
   }catch{return null;}
 }
+/** Shown by the dashboard (translated there); the recovery it names is in myAgentState().recovery. */
+export const IDENTITY_DEACTIVATED='Your agent\'s Qoopia identity was deactivated. Set your agent up again: a new identity is created, and your earlier conversations stay readable.';
+export const IDENTITY_KEY_CHANGED='The key of your agent\'s Qoopia identity was changed outside this page, so this page can no longer use it.';
+/** live: the stored key opens the active steward. replaceable: that identity is gone (deactivated or no
+ * longer the steward), so setup provisions a new one and never revives it. key_changed: the steward is
+ * still active under a key this page does not hold (rotated elsewhere); only the owner can retire it. */
+function identityState(settings:AgentSettings):'live'|'replaceable'|'key_changed' {
+  const agent=db.query('SELECT type,active,api_key_hash FROM agents WHERE id=? AND workspace_id=?').get(settings.agent_id,settings.workspace_id) as {type:string;active:number;api_key_hash:string}|null;
+  if(!agent?.active||agent.type!=='steward')return 'replaceable';
+  let key:unknown;try{key=(readJson(path.join(agentDirectory(settings.owner_id),'credentials.json')) as {key?:unknown}).key;}catch{/* A missing or unreadable key file is a key this page does not hold. */}
+  return typeof key==='string'&&sha256Hex(key)===agent.api_key_hash?'live':'key_changed';
+}
+/** The exact owner command that retires a steward whose key changed elsewhere. */
+function retireCommand(settings:AgentSettings) {
+  const row=db.query('SELECT a.name,w.slug FROM agents a JOIN workspaces w ON w.id=a.workspace_id WHERE a.id=?').get(settings.agent_id) as {name:string;slug:string};
+  return `qoopia admin delete-agent ${JSON.stringify(row.name)} --workspace ${row.slug}`;
+}
 function credentials(ownerId:string) {
   const settings=agentSettings(ownerId);if(!settings?.enabled)throw new QoopiaError('NOT_READY','Set up My Qoopia agent first');
   const secrets=readJson(path.join(agentDirectory(ownerId),'credentials.json')) as {key:string};
@@ -192,9 +209,9 @@ export function expireIdleMyAgentRuns(at=Date.now()){
 }
 function prepareAgentProfile(ownerId:string,provider:AgentProvider) {
   const folder=agentDirectory(ownerId),profile=privateDirectory(path.join(folder,provider));
-  if(provider==='codex')durableWrite(path.join(profile,'config.toml'),'cli_auth_credentials_store = "file"\napproval_policy = "on-request"\nsandbox_mode = "workspace-write"\n[mcp_servers.qoopia]\nurl = '+JSON.stringify(new URL('/mcp',env.PUBLIC_URL).href)+'\nbearer_token_env_var = "QOOPIA_AGENT_KEY"\nrequired = true\n');
+  if(provider==='codex')durableWrite(path.join(profile,'config.toml'),'cli_auth_credentials_store = "file"\napproval_policy = "on-request"\nsandbox_mode = "workspace-write"\n[mcp_servers.qoopia]\nurl = '+JSON.stringify(new URL('/mcp',localServiceOrigin()).href)+'\nbearer_token_env_var = "QOOPIA_AGENT_KEY"\nrequired = true\n');
   else {
-    durableWrite(path.join(profile,'qoopia-mcp.json'),JSON.stringify({mcpServers:{qoopia:{type:'http',url:new URL('/mcp',env.PUBLIC_URL).href,headers:{Authorization:'Bearer ${QOOPIA_AGENT_KEY}'}}}}));
+    durableWrite(path.join(profile,'qoopia-mcp.json'),JSON.stringify({mcpServers:{qoopia:{type:'http',url:new URL('/mcp',localServiceOrigin()).href,headers:{Authorization:'Bearer ${QOOPIA_AGENT_KEY}'}}}}));
     durableWrite(path.join(profile,'settings.json'),JSON.stringify({permissions:{defaultMode:'default'},env:{DISABLE_AUTOUPDATER:'1'}}));
   }
   installAgentInstructions(profile,provider,'steward');
@@ -209,7 +226,7 @@ async function runtime(ownerId:string):Promise<Live> {
     const {secrets,settings}=credentials(ownerId),folder=agentDirectory(ownerId),home=privateDirectory(path.join(folder,'home'));
     const cwd=privateDirectory(path.join(folder,'workspace')),profile=privateDirectory(path.join(folder,settings.provider));
     installAgentInstructions(profile,settings.provider,'steward');
-    durableWrite(path.join(profile,'qoopia','INSTALLATION.json'),JSON.stringify({root:memoryRoot(),workspace_directory:cwd,knowledge_directory:profile,cli_argv:agentKitManifest().source==='development'?null:[process.execPath],mcp_url:new URL('/mcp',env.PUBLIC_URL).href,owner_home:nativeOwnerHome(),external_profile_access:'Select the intended native profile explicitly; modifications outside the agent working folder require user-authorized runtime access. Never read or copy other profiles’ credentials.'},null,2));
+    durableWrite(path.join(profile,'qoopia','INSTALLATION.json'),JSON.stringify({root:memoryRoot(),workspace_directory:cwd,knowledge_directory:profile,cli_argv:agentKitManifest().source==='development'?null:[process.execPath],mcp_url:new URL('/mcp',localServiceOrigin()).href,owner_home:nativeOwnerHome(),external_profile_access:'Select the intended native profile explicitly; modifications outside the agent working folder require user-authorized runtime access. Never read or copy other profiles’ credentials.'},null,2));
     const native=await nativeRuntimeEnvironment(memoryRoot(),{PATH:process.env.PATH});
     const rpc=settings.provider==='claude_code'?new ClaudeAgentRuntime({binary:RUNTIMES.claude_code.binary,cwd,mcpConfig:path.join(profile,'qoopia-mcp.json'),env:{PATH:native.PATH,HOME:home,CLAUDE_CONFIG_DIR:profile,DISABLE_AUTOUPDATER:'1',QOOPIA_AGENT_KEY:secrets.key}}):new CodexAppServer({binary:RUNTIMES.codex.binary,cwd,env:{PATH:native.PATH,HOME:home,CODEX_HOME:profile,QOOPIA_AGENT_KEY:secrets.key}});
     const session:Live={rpc,provider:settings.provider,approvals:new Map(),progress:'',ready:new Set()};
@@ -257,8 +274,15 @@ export function myAgentState(ownerId:string,conversationId?:string,paging:{runBe
   const auth=agentOwner(ownerId),settings=agentSettings(ownerId),session=live.get(ownerId);
   if(session)expireApprovals(session);
   const steward=db.query("SELECT id,name FROM agents WHERE workspace_id=? AND active=1 AND type='steward'").get(auth.workspace_id);
-  let accessError:string|null=null;
-  if(settings?.enabled)try{credentials(ownerId);}catch{live.get(ownerId)?.rpc.stop();accessError='Agent access needs attention. Review your agents and reconnect the local profile.';}
+  let accessError:string|null=null,recovery:{action:'setup'}|{action:'retire';command:string}|null=null;
+  if(settings?.enabled){
+    const state=identityState(settings);
+    if(state!=='live'){
+      live.get(ownerId)?.rpc.stop();
+      accessError=state==='replaceable'?IDENTITY_DEACTIVATED:IDENTITY_KEY_CHANGED;
+      recovery=state==='replaceable'?{action:'setup'}:{action:'retire',command:retireCommand(settings)};
+    }
+  }
   const offset=Math.max(0,Math.min(100_000,Math.trunc(paging.conversationOffset??0)||0));
   const conversations=db.query('SELECT id,title,provider,created_at FROM qoopia_agent_conversations WHERE owner_id=? ORDER BY created_at DESC,id DESC LIMIT 101 OFFSET ?').all(ownerId,offset) as {id:string;provider:AgentProvider}[];
   const moreConversations=conversations.length>100;if(moreConversations)conversations.pop();
@@ -270,7 +294,7 @@ export function myAgentState(ownerId:string,conversationId?:string,paging:{runBe
   const runs=selected?db.query('SELECT id,prompt,answer,state,error,created_at FROM qoopia_agent_runs WHERE conversation_id=?'+(before?' AND (created_at<? OR (created_at=? AND id<?))':'')+' ORDER BY created_at DESC,id DESC LIMIT ?')
     .all(...(before?[selected,before.created_at,before.created_at,before.id]:[selected]),runLimit+1) as (Run&{created_at:string})[]:[];
   const hasOlderRuns=runs.length>runLimit;if(hasOlderRuns)runs.pop();runs.reverse();
-  return {model:settings?modelPreference(agentDirectory(ownerId),settings.provider)?.model??null:null,operation:setupOperations.get(ownerId)??null,provider:settings?.provider??'codex',selected_provider:selected?conversation(ownerId,selected).provider:null,access_error:accessError,configured:!!settings,enabled:!!settings?.enabled,steward,can_adopt:!settings&&!!adoptableConnection(ownerId),adoptable_providers:!settings?(['codex','claude_code'] as const).filter(p=>adoptableConnection(ownerId,p)):[],channel:settings?.channel??'dashboard',running:!!session&&!accessError,account:!accessError&&(session?.account??false),login:session?.login??null,
+  return {model:settings?modelPreference(agentDirectory(ownerId),settings.provider)?.model??null:null,operation:setupOperations.get(ownerId)??null,provider:settings?.provider??'codex',selected_provider:selected?conversation(ownerId,selected).provider:null,access_error:accessError,configured:!!settings,enabled:!!settings?.enabled,recovery,steward,can_adopt:!settings&&!!adoptableConnection(ownerId),adoptable_providers:!settings?(['codex','claude_code'] as const).filter(p=>adoptableConnection(ownerId,p)):[],channel:settings?.channel??'dashboard',running:!!session&&!accessError,account:!accessError&&(session?.account??false),login:session?.login??null,
     telegram:{username:settings?.telegram_username,verified:!!settings?.telegram_verified,linked:!!settings?.telegram_user_id},
     conversations,selected,selected_title:selected?conversation(ownerId,selected).title:null,more_conversations:moreConversations,next_conversation_offset:offset+100,has_older_runs:hasOlderRuns,files:paging.includeFiles===false?null:settings?artifacts(ownerId):[],working_directory:settings?path.join(agentDirectory(ownerId),'workspace'):null,
     runs:runs.map(run=>run.prompt?run:{...run,...(unsaved.get(run.id)??{unsaved:true})}),
@@ -314,7 +338,15 @@ export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{genera
   busy.add(ownerId);
   try {
     if(input.action==='setup') {
-      if(agentSettings(ownerId))return myAgentState(ownerId);
+      // An existing setup is kept while its identity works. A deactivated identity is replaced by a new
+      // one under the usual one-steward rule; a steward whose key changed elsewhere is never taken over.
+      const current=agentSettings(ownerId),state=current?identityState(current):null;
+      if(state==='live')return myAgentState(ownerId);
+      if(current&&state==='key_changed'){
+        const command=retireCommand(current);
+        throw new QoopiaError('CONFLICT',IDENTITY_KEY_CHANGED+' Retire it on this computer with '+command+', then set your agent up again.',{next_action:command});
+      }
+      await live.get(ownerId)?.rpc.stop();
       const adopted=adoptableConnection(ownerId,input.provider);
       if(!adopted&&db.query("SELECT id FROM agents WHERE workspace_id=? AND active=1 AND type='steward'").get(auth.workspace_id))throw new QoopiaError('CONFLICT','Your existing steward stays in its own application. A second steward will not be created.');
       await provision(input.provider);
@@ -328,7 +360,11 @@ export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{genera
           stewardCommand(db,{ownerId,agentId:agent.id,commit:true,approve:plan.plan_digest});
         }
         durableWrite(path.join(folder,'credentials.json'),JSON.stringify({key:agent.api_key}));
-        db.query('INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,provider,created_at) VALUES(?,?,?,?,?)').run(ownerId,auth.workspace_id,agent.id,input.provider,now());
+        if(current){
+          // The earlier conversations stay with the old identity's sessions; new work starts fresh.
+          db.query('UPDATE qoopia_agent_settings SET workspace_id=?,agent_id=?,provider=?,enabled=1,active_conversation_id=NULL WHERE owner_id=?').run(auth.workspace_id,agent.id,input.provider,ownerId);
+          db.query('UPDATE qoopia_telegram_channels SET conversation_id=NULL WHERE owner_id=?').run(ownerId);
+        }else db.query('INSERT INTO qoopia_agent_settings(owner_id,workspace_id,agent_id,provider,created_at) VALUES(?,?,?,?,?)').run(ownerId,auth.workspace_id,agent.id,input.provider,now());
       }).immediate();
       await runtime(ownerId);return myAgentState(ownerId);
     }
@@ -395,6 +431,8 @@ export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{genera
     const duplicate=db.query('SELECT id FROM qoopia_agent_runs WHERE conversation_id=? AND request_id=?').get(c.id,input.requestId);if(duplicate)return duplicate;
     if(session.run)throw new QoopiaError('CONFLICT','Your agent is working. Stop it or wait for its reply.');
     if(c.provider!==session.provider)throw new QoopiaError('CONFLICT','This conversation belongs to another subscription. Switch back or start a new conversation.');
+    const owner=db.query('SELECT agent_id FROM sessions WHERE id=?').get(c.id) as {agent_id:string}|null;
+    if(owner&&owner.agent_id!==credentials(ownerId).settings.agent_id)throw new QoopiaError('CONFLICT','This conversation belongs to your agent\'s previous identity. Start a new conversation to continue.');
     if(!session.account)throw new QoopiaError('NOT_READY','Sign in to your selected subscription first');
     const run:Run={id:randomUUID(),conversation_id:c.id,request_id:input.requestId,prompt:input.text,answer:'',state:'starting',native_turn_id:null,error:null};
     assertNoSecrets(input.text,'agent message');

@@ -14,7 +14,11 @@ export function safePath(input: string): string {
     cursor = path.join(cursor, part);
     try {
       const s = fs.lstatSync(cursor);
-      if (s.isSymbolicLink() || (!s.isDirectory() && (!s.isFile() || s.nlink !== 1))) throw new Error('Links and special files are refused');
+      if (s.isSymbolicLink()) {
+        let target = 'another location'; try { target = fs.realpathSync(cursor); } catch { /* dangling: the generic name stays */ }
+        throw new Error(`Links and special files are refused: ${cursor} is a symbolic link to ${target}. Use the real folder path instead (for example --root with that folder), or move the folder there instead of linking it.`);
+      }
+      if (!s.isDirectory() && (!s.isFile() || s.nlink !== 1)) throw new Error(`Links and special files are refused: ${cursor} is ${s.isFile() ? 'a hard-linked file' : 'not a regular file or folder'}. Replace it with a regular file of its own.`);
     } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   }
   return target;
@@ -49,8 +53,10 @@ export function durableWrite(file: string, value: string | Uint8Array, mode = 0o
   preflightSpace(path.dirname(file), [typeof value === 'string' ? Buffer.byteLength(value) : value.byteLength]);
   const temporary = file + '.stage-' + randomUUID();
   const fd = fs.openSync(temporary, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, mode);
-  try { fs.writeFileSync(fd, value); fs.fchmodSync(fd, mode); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  fs.renameSync(temporary, file); syncDirectory(path.dirname(file));
+  // A failed write (disk full) removes its own staged file, as durableCopyFile does; the original stays.
+  try { try { fs.writeFileSync(fd, value); fs.fchmodSync(fd, mode); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } fs.renameSync(temporary, file); }
+  catch (error) { try { fs.unlinkSync(temporary); } catch { /* Already renamed or gone: the write error is what matters. */ } throw error; }
+  syncDirectory(path.dirname(file));
 }
 export function durableCopyFile(source: string, file: string, expectedSize: number, expectedSha256: string, mode = 0o600) {
   source = safePath(source); file = safePath(file);

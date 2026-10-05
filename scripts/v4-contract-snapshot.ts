@@ -189,6 +189,10 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   const agentList = projected.canonical_tools.find((tool) => tool.name === "agent_list");
   if (!agentList?.description.includes("no agent reads another workspace")) throw new Error("ADR-020 agent_list description drift");
   agentList.description = historical.canonical_tools.find((tool) => tool.name === "agent_list")!.description;
+  // ADR-020: agent_status says who it shows (same-owner reach, only itself without shared context). Types and risk stay frozen.
+  const agentStatus = projected.canonical_tools.find((tool) => tool.name === "agent_status");
+  if (!agentStatus?.description.includes("shared context is off sees only itself")) throw new Error("ADR-020 agent_status description drift");
+  agentStatus.description = historical.canonical_tools.find((tool) => tool.name === "agent_status")!.description;
   // F-091: session_save asks for unique session ids (a taken id is refused). F-160 adds an
   // optional retry key, checked here; the remaining types stay frozen.
   const saveTool = projected.canonical_tools.find((tool) => tool.name === "session_save");

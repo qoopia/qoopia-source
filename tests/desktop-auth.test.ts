@@ -4,7 +4,7 @@ import {db} from '../src/db/connection.ts';import {runMigrations} from '../src/d
 import {createWorkspace} from '../src/admin/workspaces.ts';import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {startHttpServer} from '../src/http.ts';import {env} from '../src/utils/env.ts';
 import {authLimiter,dashboardLimiter} from '../src/utils/rate-limit.ts';
-import {cancelDesktopAuth} from '../src/delivery/desktop-auth.ts';
+import {cancelDesktopAuth,desktopAuthStatus,startDesktopAuth} from '../src/delivery/desktop-auth.ts';
 import {lockStdioCredentials,stdioFolder} from '../src/delivery/stdio-oauth.ts';
 
 test('Desktop wizard HTTP handoff returns immediately, polls OAuth, resumes one pending URL, saves consent and cancels revoked access',async()=>{
@@ -77,3 +77,19 @@ test('Desktop wizard HTTP handoff returns immediately, polls OAuth, resumes one 
     server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));fs.rmSync(root,{recursive:true,force:true});
   }
 },15_000);
+
+// The wizard polls desktopAuthStatus after the flow ends. Deleting the flow at once replaced a refusal or
+// expiry with the file's generic CLIENT_AUTH_REQUIRED before the poll could read it.
+test('a finished client sign-in keeps its refusal readable, and a new start begins a fresh flow',async()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-desktop-result-'))),id=randomUUID();
+  const binding={format:'qoopia-client-connection/1',connection_id:id,workspace_id:'w',surface:'claude_desktop',access_mode:'read',mcp_url:'http://127.0.0.1:1/mcp/c/'+id};
+  const release=lockStdioCredentials(stdioFolder(root,binding as any));
+  try{
+    expect((await startDesktopAuth(root,binding)).code).toBe('CLIENT_AUTH_STARTING');
+    await Bun.sleep(20);
+    expect(desktopAuthStatus(root,binding).code).toBe('CLIENT_AUTH_BUSY');
+    release();
+    expect((await startDesktopAuth(root,binding)).code).toBe('CLIENT_AUTH_STARTING');
+    cancelDesktopAuth(root,id);
+  }finally{try{release();}catch{/* released above */}await Bun.sleep(20);fs.rmSync(root,{recursive:true,force:true});}
+});

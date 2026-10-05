@@ -5,11 +5,27 @@ import json
 from pathlib import Path
 import re
 import plistlib
+import subprocess
 
 root = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('release_health', root / 'scripts/release-health.py')
 health = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(health)
+
+APPCAST = 'marketing-site/updates/macos/appcast.xml'
+BUILD = re.compile(r'<sparkle:version>(\d+)</sparkle:version><sparkle:shortVersionString>([^<]+)<')
+
+
+def appcast_build_is_newest(root, version):
+    """Sparkle offers an item only above the installed CFBundleVersion: every earlier release's
+    committed build must be lower. Without Git history (shallow checkout) there is nothing to compare."""
+    current = BUILD.search((root / APPCAST).read_text())
+    try:
+        history = subprocess.run(['git', '-C', str(root), 'log', '-p', '--format=', '--', APPCAST], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        history = ''
+    return bool(current) and all(int(build) < int(current[1]) for build, other in BUILD.findall(history) if other != version)
+
 
 def check(root):
     def read(path):
@@ -23,6 +39,8 @@ def check(root):
         item = release.get('packages', {}).get(name, {})
         if not item.get('url', '').startswith('https://github.com/qoopia/qoopia-downloads/releases/download/' + release['tag'] + '/') or package['version'] not in item.get('file', '') or not re.fullmatch('[0-9a-f]{64}', item.get('sha256', '')) or not isinstance(item.get('bytes'), int) or item.get('bytes', 0) <= 0:
             issues.append(name + ':invalid_package')
+    if not appcast_build_is_newest(root, release['version']):
+        issues.append('appcast:build_not_newer')
     if not re.fullmatch('[0-9a-f]{40}', release.get('source', '')):
         issues.append('release:invalid_source')
     if '## ' + package['version'] not in (root / 'CHANGELOG.md').read_text():

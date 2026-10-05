@@ -1,8 +1,14 @@
 import {db} from '../db/connection.ts';
 import {createAgent} from '../admin/agents.ts';
+import {lookalikeAgents} from '../utils/agent-name.ts';
 import {HUMAN_OWNERS,localOwner} from '../delivery/owner-onboarding.ts';
 import {env} from '../utils/env.ts';
+import {standaloneRoot} from '../utils/standalone.ts';
+import {retiredRemoteOrigin} from '../delivery/transport-config.ts';
 import {memoryModelStatus} from './memory-model.ts';
+import {QoopiaError} from '../utils/errors.ts';
+
+const NAMED_CONNECTION_NEXT='To connect this client, the owner prepares it in the Qoopia dashboard under Connections and adds the MCP address shown there.';
 
 /** Registration identifies the client; only the later owner consent grants access. */
 export function browserAgent(name:'GPT'|'Claude') {
@@ -15,9 +21,18 @@ export function browserAgent(name:'GPT'|'Claude') {
     const read=()=>db.query(`SELECT id,name,workspace_id,type,tool_profile FROM agents
       WHERE workspace_id=? AND name=? AND active=1 AND principal_kind='agent'`).get(owner.workspace_id,name) as
       {id:string;name:string;workspace_id:string;type:string;tool_profile:string}|null;
-    const existing=read();if(existing)return existing;
-    // An explicitly revoked identity must not be silently recreated by a public request.
-    if(db.query('SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)').get(owner.workspace_id,name))return null;
+    const existing=read();
+    // Only an ordinary agent is this connector's identity. A steward or other role that happens to be
+    // named 'Claude' or 'GPT' would hand the connector its whole-workspace reach after one consent.
+    if(existing?.type==='standard')return existing;
+    // An explicitly revoked identity, a case variant or a person holding the name is never reused or
+    // silently recreated by a public request. The client shows this text, so it names the conflict.
+    const holder:{name:string;type:string;active?:number;principal_kind?:string}|null=existing??lookalikeAgents(db.query('SELECT name,type,active,principal_kind FROM agents WHERE workspace_id=? ORDER BY active DESC')
+      .all(owner.workspace_id) as {name:string;type:string;active:number;principal_kind:string}[],name)[0]??null;
+    if(holder)throw new QoopiaError('CONFLICT',(holder.active===0
+      ?`The Qoopia agent '${holder.name}' that this connector would use was disconnected, and a public registration never recreates it.`
+      :`This Qoopia already has ${holder.principal_kind==='human'?'a person':holder.type==='standard'?'an agent':`its ${holder.type}`} named '${holder.name}', so the ${name} connector cannot take that identity.`)
+      +` ${NAMED_CONNECTION_NEXT}`,{next_action:NAMED_CONNECTION_NEXT});
     const agent=createAgent({name,workspaceSlug:owner.slug,type:'standard'});
     db.query("UPDATE agents SET tool_profile='no-destructive',legacy_skill_access=0 WHERE id=?").run(agent.id);
     return read();
@@ -26,16 +41,23 @@ export function browserAgent(name:'GPT'|'Claude') {
 
 /** Every application that can reach this memory: each client connection not disconnected, and each
  * agent holding a live OAuth grant. `last_seen` is the agent's last request; null means it never came.
- * `client` is the name an OAuth client registered with (ChatGPT, Claude…), `surface` the connection kind. */
+ * `authorized` is 0 for a connection whose client holds no live grant and must sign in again.
+ * `client` is the name an OAuth client registered with (ChatGPT, Claude…), `surface` the connection kind.
+ * `state` is the connection's own: one still `awaiting_client` was never signed in through, so neither
+ * "sign in again" nor the agent's requests over other credentials describe it. */
 export function connectedApps(workspace:string) {
   const live="t.revoked=0 AND t.token_type IN ('access','refresh') AND t.expires_at>strftime('%Y-%m-%dT%H:%M:%SZ','now')";
-  return db.query(`SELECT 'connection' AS kind,c.id,c.surface,NULL AS client,a.id AS agent_id,a.name,a.last_seen,c.created_at FROM client_connections c
+  const root=standaloneRoot();
+  return (db.query(`SELECT 'connection' AS kind,c.id,c.surface,NULL AS client,a.id AS agent_id,a.name,a.last_seen,c.created_at,c.origin,c.state,
+      EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.agent_id=a.id AND t.workspace_id=a.workspace_id AND ${live}) AS authorized FROM client_connections c
       JOIN agents a ON a.id=c.agent_id AND a.workspace_id=c.workspace_id WHERE c.workspace_id=?1 AND c.state!='revoked' AND a.active=1
     UNION ALL SELECT 'oauth',a.id,NULL,(SELECT o.name FROM oauth_tokens t JOIN oauth_clients o ON o.id=t.client_id
-        WHERE t.agent_id=a.id AND t.workspace_id=a.workspace_id AND ${live} ORDER BY t.created_at DESC LIMIT 1),a.id,a.name,a.last_seen,NULL FROM agents a
+        WHERE t.agent_id=a.id AND t.workspace_id=a.workspace_id AND ${live} ORDER BY t.created_at DESC LIMIT 1),a.id,a.name,a.last_seen,NULL,NULL,'verified',1 FROM agents a
       WHERE a.workspace_id=?1 AND a.active=1 AND EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.agent_id=a.id AND t.workspace_id=a.workspace_id AND ${live})
       AND NOT EXISTS(SELECT 1 FROM client_connections cc WHERE cc.agent_id=a.id AND cc.workspace_id=a.workspace_id)
-    ORDER BY last_seen DESC`).all(workspace) as {kind:'connection'|'oauth';id:string;surface:string|null;client:string|null;agent_id:string;name:string;last_seen:string|null;created_at:string|null}[];
+    ORDER BY last_seen DESC`).all(workspace) as {kind:'connection'|'oauth';id:string;surface:string|null;client:string|null;agent_id:string;name:string;last_seen:string|null;created_at:string|null;origin:string|null;state:string;authorized:0|1}[])
+    // reconnect: bound to the address of a revoked or replaced tunnel device; it cannot reach this memory any more.
+    .map(({origin,...app})=>({...app,reconnect:retiredRemoteOrigin(root,origin)}));
 }
 
 export function browserConnectionState(ownerId:string) {
@@ -43,6 +65,8 @@ export function browserConnectionState(ownerId:string) {
   return {
     workspace_id:workspace,
     mcp_url:new URL('/mcp',env.PUBLIC_URL).href,
+    // An installed Qoopia links its own computer locally and offers a file for an agent on another computer.
+    installed:process.env.QOOPIA_STANDALONE==='true',
     workspace:(db.query('SELECT name FROM workspaces WHERE id=?').get(workspace) as {name:string}).name,
     memory_model:memoryModelStatus(workspace),
     apps:connectedApps(workspace),

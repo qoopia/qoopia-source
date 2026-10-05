@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   assertNoSecrets,
   detectSecretLabels,
+  redactMemory,
   redactSensitive,
 } from "../src/utils/secret-guard.ts";
 import { QoopiaError } from "../src/utils/errors.ts";
@@ -192,5 +193,23 @@ describe("redactSensitive path boundaries", () => {
     expect(query.text).toBe("https://a.test/cb?state=ok&access_token=[REDACTED:credential-url]&X-Amz-Signature=[REDACTED:credential-url]&sig=[REDACTED:credential-url]");
     expect(query.categories).toEqual(["credential-url"]);
     expect(redactSensitive("https://user:hunter2-password@a.test/x").text).toBe("[REDACTED:credential-url]");
+  });
+});
+
+describe("memory redaction keeps file paths", () => {
+  test("stored memory keeps ordinary paths; operational redaction still hides them", () => {
+    const text = 'Edited /Users/example/Code/qoopia/src/services/continuity.ts and C:\\Users\\example\\proj\\app.ts, see "/home/user/app/README.md".';
+    expect(redactMemory(text)).toEqual({ text, categories: [] });
+    expect(redactSensitive(text).text).not.toContain("/Users/example");
+  });
+
+  test("credential files stay hidden, and secrets are redacted as before", () => {
+    for (const path of ["/Users/user/.ssh/id_ed25519", "/Users/user/.aws/credentials", "/home/user/app/.env", "/home/user/app/.env.production",
+      "/Users/user/certs/server.key", "/Users/user/certs/tls.pem", "C:\\Users\\a\\.ssh\\id_rsa", "/Users/user/Library/Keychains/login.keychain-db",
+      "/home/user/.netrc", "/Users/user/project/secrets/prod.json"]) {
+      expect(redactMemory(`read ${path} then`), path).toEqual({ text: "read [REDACTED:credential-path] then", categories: ["credential-path"] });
+    }
+    const mixed = redactMemory(`token=${SAMPLE_GITHUB} at /Users/user/proj/a.ts via https://u:hunter2-password@a.test/x`);
+    expect(mixed.text).toBe("[REDACTED:credential-assignment] at /Users/user/proj/a.ts via [REDACTED:credential-url]");
   });
 });

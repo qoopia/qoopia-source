@@ -2,22 +2,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { openReadonlyDatabase, openWritableDatabase } from '../db/sqlite.ts';
-import { safePath } from '../utils/fs.ts';
+import { safePath, readJson } from '../utils/fs.ts';
 import { snapshotInfo, verifyBackup, backupMembers } from './snapshot.ts';
 export type Check = { status: 'pass' | 'fail' | 'unknown'; reason: string; action: string; [key: string]: unknown };
+/** Allowed clock skew before a backup counts as dated in the future. */
+const BACKUP_CLOCK_SKEW_MS = 5 * 60_000;
+export const BACKUP_DATED_IN_FUTURE = { status: 'fail', reason: 'BACKUP_DATED_IN_FUTURE',
+  action: 'A backup is dated after the current time: the clock was wrong when it was made. Check the system date and time. The backup is kept and can still be restored; backup freshness ignores it.' } as const;
 export function inspectScheduledBackups(root: string, instance: string, now = Date.now()) {
   try {
     safePath(root);
     if (!fs.existsSync(root)) return { status: 'unknown', reason: 'NO_SCHEDULED_BACKUP', action: 'Run owner backup or maintenance.' };
-    const names = fs.readdirSync(root).filter(n => /^qoopia-\d{4}-\d{2}-\d{2}T[0-9Z-]+\.backup$/.test(n)).sort().reverse();
-    if (!names.length) return { status: 'unknown', reason: 'NO_SCHEDULED_BACKUP', action: 'Run owner backup or maintenance.' };
+    const all = fs.readdirSync(root).filter(n => /^qoopia-\d{4}-\d{2}-\d{2}T[0-9Z-]+\.backup$/.test(n)).sort().reverse();
+    // A backup made while the clock ran ahead would stay "latest" forever; it is reported on its own.
+    const created = (name: string) => { try { return Date.parse(readJson<{created_at?: string}>(path.join(root, name, 'manifest.json')).created_at ?? ''); } catch { return NaN; } };
+    const names = all.filter(name => !(created(name) > now + BACKUP_CLOCK_SKEW_MS)), future = all.length - names.length;
+    if (!names.length) return future ? { ...BACKUP_DATED_IN_FUTURE, future_dated: future } : { status: 'unknown', reason: 'NO_SCHEDULED_BACKUP', action: 'Run owner backup or maintenance.' };
     const latest=safePath(path.join(root,names[0]!));
     backupMembers(latest);
     const backup=verifyBackup(latest,instance);
     const age = now - Date.parse(backup.created_at);
     if (!Number.isFinite(age) || age < 0 || age > 86400000) return { status: 'fail', reason: 'BACKUP_STALE_OR_CLOCK_INVALID', action: 'Check clock and run verified backup.' };
     if (!backup.operations) return { status:'unknown',reason:'LEGACY_BACKUP_OPERATIONS_NOT_CAPTURED',action:'Create a current installation backup; historical alert recovery is unknown.' };
-    return { status: 'pass', reason: 'LATEST_SCHEDULED_BACKUP_VERIFIED', age_ms: age, sha256: backup.sha256, action: 'No backup repair needed.' };
+    return { status: 'pass', reason: 'LATEST_SCHEDULED_BACKUP_VERIFIED', age_ms: age, sha256: backup.sha256, action: 'No backup repair needed.', ...(future ? { future_dated: future } : {}) };
   } catch { return { status: 'fail', reason: 'BACKUP_INVALID', action: 'Preserve backup and inspect corruption or instance mismatch; create a new verified backup.' }; }
 }
 /** Inspect disposable copies, so SQLite cannot create journal/shm files in user data. */

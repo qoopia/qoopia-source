@@ -6,8 +6,10 @@ const BUILTIN_DIM=384;
 export function inferenceWorker(url:URL|string,timeoutMs:number) {
   let worker:Worker|undefined,seq=0;
   const waiting=new Map<number,{resolve:(result:{vector:Float32Array;end:number})=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
-  function stop(reason='Built-in embedding worker stopped') {
-    worker?.unref();worker?.terminate();worker=undefined;
+  /** `terminate:false` only releases the worker (shutdown): process.exit ends it anyway, and Bun 1.3 skips
+   * every 'exit' listener when process.exit follows terminating a worker that ran ONNX. */
+  function stop(reason='Built-in embedding worker stopped',terminate=true) {
+    worker?.unref();if(terminate)worker?.terminate();worker=undefined;
     for(const w of waiting.values()){clearTimeout(w.timer);w.reject(new Error(reason));}
     waiting.clear();
   }
@@ -37,7 +39,7 @@ export function inferenceWorker(url:URL|string,timeoutMs:number) {
 // (scripts/build-bundle.ts) under its virtual root, the entrypoints' common src/.
 const inference=inferenceWorker(import.meta.url.startsWith('file:///$bunfs/')?'./services/builtin-embeddings-worker.ts'
   :new URL('./builtin-embeddings-worker.ts',import.meta.url),60_000);
-export function stopBuiltinEmbeddings(){inference.stop();}
+export function stopBuiltinEmbeddings(){inference.stop(undefined,false);}
 interface EmbeddedChunk {start:number;end:number;vector:Float32Array}
 function normalize(v:Float32Array) {
   const norm=Math.sqrt(v.reduce((n,x)=>n+x*x,0));

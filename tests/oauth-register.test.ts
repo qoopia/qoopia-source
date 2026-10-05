@@ -145,6 +145,8 @@ describe("ADR-017 /oauth/register: Bearer is required, not ADMIN_SECRET", () => 
       { "x-admin-secret": process.env.QOOPIA_ADMIN_SECRET || "test-admin-secret" },
     );
     expect(r.status).toBe(401);
+    // RFC 7235 §3.1: a 401 must carry a challenge, or OAuth clients cannot tell which scheme is wanted.
+    expect(r.headers.get("www-authenticate")).toBe('Bearer realm="qoopia"');
     const row = db
       .prepare(`SELECT 1 FROM oauth_clients WHERE name = 'no-bearer-client'`)
       .get();
@@ -182,6 +184,7 @@ describe("ADR-017 /oauth/register: Bearer is required, not ADMIN_SECRET", () => 
       { authorization: "Bearer not_a_real_token_xxxxxxxxxxxxxx" },
     );
     expect(r.status).toBe(401);
+    expect(r.headers.get("www-authenticate")).toBe('Bearer realm="qoopia"');
   });
 });
 

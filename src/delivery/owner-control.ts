@@ -38,10 +38,24 @@ export function startOwnerControl(root: string, handle: (input: unknown) => Owne
     if (fs.existsSync(file)) { checkSocket(file); fs.unlinkSync(file); } // stale socket, under installation lock
     listener = api.qp_listen(ptr(Buffer.from(file + '\0')));
     if (listener < 0) throw new Error(`UID-authenticated owner IPC bind refused or unavailable (errno ${-listener})`);
-    const created = checkSocket(file);
+    let created = checkSocket(file), ticks = 0;
     const closeClient = (fd: number) => { api.qp_close(fd); clients.delete(fd); };
+    // A /tmp cleaner or logind removing the runtime directory at logout deletes the socket under a
+    // long-running server: bind it again (wherever is preferred now) instead of refusing every login.
+    const rebind = () => {
+      try { if (fs.existsSync(file) && fs.lstatSync(file).ino === created.ino) return; } catch { /* rebind */ }
+      if (listener >= 0) api.qp_close(listener);
+      listener = -1;
+      try {
+        file = ownerSocketPath(root, true);
+        if (fs.existsSync(file)) { checkSocket(file); fs.unlinkSync(file); }
+        const bound = api.qp_listen(ptr(Buffer.from(file + '\0')));
+        if (bound >= 0) { listener = bound; created = checkSocket(file); }
+      } catch { /* retried on the next check */ }
+    };
     const timer = setInterval(() => {
-      for (let n = 0; n < 16 && clients.size < 16; n++) {
+      if (++ticks % 50 === 0) rebind();
+      for (let n = 0; listener >= 0 && n < 16 && clients.size < 16; n++) {
         const fd = api.qp_accept(listener, process.getuid!());
         if (fd === -2) break;
         if (fd < 0) continue; // foreign/unknown UID: already closed before any bytes read

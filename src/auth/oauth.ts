@@ -310,7 +310,7 @@ export function exchangeCodeForTokens(opts: {
   clientSecret?: string;
   resource?: string;
 }): { access: string; refresh: string; expiresInSec: number; grantedScope: string } {
-  const resource = validateOAuthResource(opts.resource);
+  if (opts.resource !== undefined) validateOAuthResource(opts.resource);
   assertValidPkceVerifier(opts.codeVerifier);
   // Validate client_secret before entering the transaction (read-only check)
   assertClientSecret(getClient(opts.clientId), opts.clientSecret);
@@ -329,7 +329,10 @@ export function exchangeCodeForTokens(opts: {
       `SELECT * FROM oauth_tokens WHERE token_hash = ?`,
     ).get(codeHash) as OAuthTokenRecord | undefined;
     if (!codeRow) throw new Error("invalid_grant");
-    if (codeRow.resource && codeRow.resource !== (opts.resource ?? oauthResource())) throw new Error("invalid_target");
+    // RFC 8707 §2.2: a token request that names no resource gets the audience the owner consented to;
+    // naming a different one is still refused. A connection revoked since then fails here.
+    const resource = validateOAuthResource(opts.resource ?? codeRow.resource);
+    if (codeRow.resource && codeRow.resource !== resource) throw new Error("invalid_target");
     if (codeRow.redirect_uri !== opts.redirectUri) throw new Error("invalid_grant");
 
     if (!pkceMatches(codeRow, opts.codeVerifier)) throw new Error("invalid_grant");
@@ -346,7 +349,7 @@ export function refreshTokens(opts: {
   clientSecret?: string;
   resource?: string;
 }): { access: string; refresh: string; expiresInSec: number; grantedScope: string } {
-  const resource = validateOAuthResource(opts.resource);
+  if (opts.resource !== undefined) validateOAuthResource(opts.resource);
   // Validate client_secret before entering the transaction (read-only check)
   assertClientSecret(getClient(opts.clientId), opts.clientSecret);
 
@@ -364,6 +367,7 @@ export function refreshTokens(opts: {
       `SELECT * FROM oauth_tokens WHERE token_hash = ?`,
     ).get(refreshHash) as OAuthTokenRecord | undefined;
     if (!row) throw new Error("invalid_grant");
+    const resource = validateOAuthResource(opts.resource ?? row.resource);
     if (row.resource && row.resource !== resource) throw new Error("invalid_target");
     return issueTokenPair(row, resource);
   })();

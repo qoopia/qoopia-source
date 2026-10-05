@@ -121,7 +121,9 @@ export function verifyBackup(root: string, expectedInstance?: string) {
   } finally { fs.rmSync(scratch, {recursive:true,force:true}); }
   return m;
 }
-/** New-machine copy only. No identity/grant promotion or original package edits. */
+/** Resets every key, grant, pairing and native binding in a restored copy. Used for a new-machine copy, and
+ * for a same-machine restore whose current database is unreadable (later revocations cannot be known).
+ * No identity/grant promotion or original package edits. */
 export function invalidateRestoredAccess(file: string) {
   const d = openWritableDatabase(file);
   try {
@@ -142,4 +144,88 @@ export function invalidateRestoredAccess(file: string) {
     }).immediate();
     assertDatabaseIntegrity(d);
   } finally { d.close(); }
+}
+
+type AccessAgent = { id: string; name: string; api_key_hash: string; active: number; session_version: number; policy_epoch: number; tool_profile: string; principal_kind: string; authority_profile: string | null;
+  type: string; legacy_skill_access: number; shared: number | null; memory_mode?: string; memory_mode_revision?: number; memory_mode_updated_at_ms?: number | null; memory_mode_actor_id?: string | null };
+export type Reconnect = { agent_id: string; name: string; surface?: string; reason: string };
+const TOOL_RANK: Record<string, number> = { 'read-only': 0, 'no-destructive': 1, full: 2 };
+/** Same installation, same machine. The restored copy keeps its keys, grants and pairings, and every
+ * revocation made after the backup is re-applied from the current database (`live`, read before it is
+ * replaced): a revoked or deleted grant, a deactivated agent or a rotated key never comes back, and the
+ * current keys and live OAuth tokens keep working. Both databases must be at the same schema.
+ * Returns the clients that must reconnect, and why. */
+export function carryAccessForward(file: string, liveFile: string): Reconnect[] {
+  const live = openReadonlyDatabase(safePath(liveFile)), d = openWritableDatabase(safePath(file)), reconnect: Reconnect[] = [];
+  try {
+    const all = <T>(db: Database, sql: string) => db.query(sql).all() as T[];
+    const has = (table: string) => tableExists(live, table) && tableExists(d, table);
+    const columns = (table: string) => (d.query(`PRAGMA table_info("${table}")`).all() as {name:string}[]).map(c => c.name);
+    const copy = (table: string, row: Record<string, unknown>) => { const names = columns(table).filter(name => name in row);
+      d.query(`INSERT OR IGNORE INTO "${table}"(${names.map(n => `"${n}"`).join(',')}) VALUES (${names.map(() => '?').join(',')})`).run(...names.map(n => row[n] as never)); };
+    // Memory policy (schema 45+) is the owner's privacy decision: manual set after the backup stays manual.
+    const memory = columns('agents').includes('memory_mode') ? ',memory_mode,memory_mode_revision,memory_mode_updated_at_ms,memory_mode_actor_id' : '';
+    const agentSql = `SELECT id,name,api_key_hash,active,session_version,policy_epoch,tool_profile,principal_kind,authority_profile,type,legacy_skill_access,
+      json_extract(metadata,'$.shared_context') shared${memory} FROM agents`;
+    const current = new Map(all<AccessAgent>(live, agentSql).map(a => [a.id, a])), restored = new Map(all<AccessAgent>(d, agentSql).map(a => [a.id, a]));
+    const surfaces = new Map(has('client_connections') ? all<{agent_id:string;surface:string}>(live, "SELECT agent_id,surface FROM client_connections WHERE state<>'revoked'").map(c => [c.agent_id, c.surface]) : []);
+    const ask = (a: AccessAgent, reason: string) => { if (a.principal_kind !== 'human') reconnect.push({ agent_id: a.id, name: a.name, ...(surfaces.has(a.id) ? { surface: surfaces.get(a.id) } : {}), reason }); };
+    const now = Date.now(), nowIso = new Date(now).toISOString();
+    d.transaction(() => {
+      for (const a of restored.values()) {
+        const c = current.get(a.id);
+        if (!c) { d.query('UPDATE agents SET active=0,api_key_hash=lower(hex(randomblob(32))),session_version=session_version+1,policy_epoch=policy_epoch+1 WHERE id=?').run(a.id); continue; }
+        const tool = (TOOL_RANK[c.tool_profile] ?? 0) < (TOOL_RANK[a.tool_profile] ?? 0) ? c.tool_profile : a.tool_profile;
+        // Authority profiles are not ordered by power: the current one is the owner's latest decision, so a role
+        // lowered after the backup stays lowered.
+        // So are the agent type (a steward demoted after the backup is not a steward again), the shared-context
+        // toggle and the memory policy; the old skill API stays only if both copies allow it.
+        d.query(`UPDATE agents SET api_key_hash=?,active=?,session_version=?,policy_epoch=?,tool_profile=?,authority_profile=?,type=?,legacy_skill_access=?,
+          metadata=CASE WHEN ? IS NULL THEN json_remove(metadata,'$.shared_context') ELSE json_set(metadata,'$.shared_context',json('false')) END WHERE id=?`)
+          .run(c.api_key_hash, Math.min(a.active, c.active), Math.max(a.session_version, c.session_version), Math.max(a.policy_epoch, c.policy_epoch), tool, c.authority_profile,
+            c.type, Math.min(a.legacy_skill_access, c.legacy_skill_access), c.shared === 0 ? 0 : null, a.id);
+        if (memory) d.query('UPDATE agents SET memory_mode=?,memory_mode_revision=?,memory_mode_updated_at_ms=?,memory_mode_actor_id=? WHERE id=?')
+          .run(c.memory_mode!, Math.max(a.memory_mode_revision ?? 0, c.memory_mode_revision ?? 0), c.memory_mode_updated_at_ms ?? null, c.memory_mode_actor_id ?? null, a.id);
+        if (c.active && !a.active) ask(c, 'disabled in the backup: enable it again in Qoopia');
+      }
+      for (const c of current.values()) if (c.active && !restored.has(c.id)) ask(c, 'connected after the backup was taken: connect it again');
+      const workspaces = new Set(all<{id:string}>(d, 'SELECT id FROM workspaces').map(w => w.id));
+      if (has('oauth_clients')) {
+        const liveClients = new Map(all<Record<string, unknown> & {id:string;agent_id:string|null;workspace_id:string|null;client_secret_hash:string}>(live, 'SELECT * FROM oauth_clients').map(c => [c.id, c]));
+        for (const { id } of all<{id:string}>(d, 'SELECT id FROM oauth_clients')) {
+          const c = liveClients.get(id);
+          if (!c) d.query("UPDATE oauth_clients SET client_secret_hash=lower(hex(randomblob(32))),redirect_uris='[]' WHERE id=?").run(id);
+          else d.query('UPDATE oauth_clients SET client_secret_hash=? WHERE id=?').run(c.client_secret_hash, id);
+        }
+        for (const c of liveClients.values()) if ((c.agent_id === null || restored.has(c.agent_id)) && (c.workspace_id === null || workspaces.has(c.workspace_id))) copy('oauth_clients', c);
+      }
+      if (has('oauth_tokens')) {
+        const liveTokens = new Map(all<{token_hash:string;revoked:number}>(live, 'SELECT token_hash,revoked FROM oauth_tokens').map(t => [t.token_hash, t.revoked]));
+        for (const { token_hash } of all<{token_hash:string}>(d, 'SELECT token_hash FROM oauth_tokens WHERE revoked=0'))
+          if (liveTokens.get(token_hash) !== 0) d.query('UPDATE oauth_tokens SET revoked=1 WHERE token_hash=?').run(token_hash);
+        const clients = new Set(all<{id:string}>(d, 'SELECT id FROM oauth_clients').map(c => c.id));
+        for (const t of all<Record<string, unknown> & {client_id:string;agent_id:string;workspace_id:string}>(live, "SELECT * FROM oauth_tokens WHERE revoked=0 AND datetime(expires_at) > datetime('now')"))
+          if (clients.has(t.client_id) && restored.has(t.agent_id) && workspaces.has(t.workspace_id)) copy('oauth_tokens', t);
+      }
+      const revokeMs = (table: string) => { if (!has(table)) return;
+        const later = new Map(all<{id:string;revoked_at_ms:number|null}>(live, `SELECT id,revoked_at_ms FROM "${table}"`).map(r => [r.id, r.revoked_at_ms]));
+        for (const { id } of all<{id:string}>(d, `SELECT id FROM "${table}" WHERE revoked_at_ms IS NULL`))
+          if (!later.has(id) || later.get(id) !== null) d.query(`UPDATE "${table}" SET revoked_at_ms=? WHERE id=?`).run(later.get(id) ?? now, id); };
+      revokeMs('agent_pairings'); revokeMs('publisher_keys');
+      if (has('client_connections')) {
+        const later = new Map(all<{id:string;state:string;revoked_at:string|null}>(live, 'SELECT id,state,revoked_at FROM client_connections').map(r => [r.id, r]));
+        for (const { id } of all<{id:string}>(d, "SELECT id FROM client_connections WHERE state<>'revoked'")) {
+          const c = later.get(id);
+          if (!c || c.state === 'revoked') d.query("UPDATE client_connections SET state='revoked',revoked_at=? WHERE id=?").run(c?.revoked_at ?? nowIso, id);
+        }
+      }
+      // Sends queued at backup time have happened since; replaying them would message people twice.
+      if (tableExists(d, 'qoopia_telegram_channels')) {
+        d.query("UPDATE qoopia_telegram_inbox SET state='cancelled' WHERE state IN ('queued','starting','running')").run();
+        d.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE state IN ('queued','sending')").run();
+      }
+    }).immediate();
+    assertDatabaseIntegrity(d);
+    return reconnect;
+  } finally { d.close(); live.close(); }
 }

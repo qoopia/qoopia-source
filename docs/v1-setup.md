@@ -1,6 +1,6 @@
 # V1 first launch
 
-The normal path is the signed application, then browser setup: Google (or email and its link) → Memory → select and authorize your own Claude or ChatGPT subscription → Check connection → connect your native client. On Mac, open the downloaded `.qoopia-memory` file with Qoopia. On Linux, run `./qoopia memory-link --file /absolute/path/to/connection.qoopia-memory`. Codex requires one native `/hooks` trust review. Existing unrelated hooks and MCP entries are preserved with backups.
+The normal path is the signed application, then browser setup: Google (or email and its link) → Memory → select and authorize your own Claude or ChatGPT subscription → Check connection → connect your native client. On Mac, open the downloaded `.qoopia-memory` file with Qoopia and confirm the address it shows. On Linux, run `./qoopia memory-link --file /absolute/path/to/connection.qoopia-memory`, check the address it shows, then repeat with the printed `--commit --approve PLAN_DIGEST`. Codex requires one native `/hooks` trust review. Existing unrelated hooks and MCP entries are preserved with backups.
 
 The bundled semantic model runs locally; subscription authorization is separate from the Qoopia email identity. Browser-only MCP still works for memory tools but does not expose the complete transcript or native lifecycle. See [Memory in V1](MEMORY-V1.md).
 

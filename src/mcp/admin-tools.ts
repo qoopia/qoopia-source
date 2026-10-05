@@ -19,11 +19,12 @@ import { z } from "zod";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError } from "../utils/errors.ts";
-import { createAgent, AGENT_NAME_RE, setSharedContext } from "../admin/agents.ts";
+import { createAgent, setSharedContext } from "../admin/agents.ts";
+import { AGENT_NAME_RE, AGENT_NAME_HINT, normalizeAgentName, sameAgentName } from "../utils/agent-name.ts";
 import { currentToolAuth } from "../auth/policy.ts";
 import { seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
 import { surfaces, connectionId, connectionResource } from "../services/connection-identity.ts";
-import { env } from "../utils/env.ts";
+import { localServiceOrigin } from "../utils/standalone.ts";
 import { logActivity } from "../services/activity.ts";
 import { getRolePreset, ROLE_PRESET_NAMES } from "../admin/templates.ts";
 import { createNote } from "../services/notes.ts";
@@ -50,7 +51,7 @@ function assertSteward(auth: AuthContext) {
 }
 
 const connectionPreparationSchema=z.object({
-  agent_name: z.string().trim().regex(AGENT_NAME_RE),
+  agent_name: z.string().transform(normalizeAgentName).refine(n=>AGENT_NAME_RE.test(n),AGENT_NAME_HINT),
   surface: z.enum(surfaces),
   access_mode: z.enum(['read','read_write']).default('read'),
   connection_id: connectionId.optional().describe('Existing connection to label or resume; never rebinds its identity'),
@@ -65,18 +66,24 @@ export const adminTools: AdminToolDef[] = [
     handler(args, auth) {
       assertSteward(currentToolAuth(db, auth, 'read'));
       const input=connectionPreparationSchema.parse(args);
-      const agent=db.query('SELECT id FROM agents WHERE workspace_id=? AND name=? AND active=1').get(auth.workspace_id,input.agent_name) as {id:string}|null;
-      const rows=db.query(`SELECT c.id,c.agent_id,c.surface,c.access_mode,c.state,c.verified_at FROM client_connections c
+      // Names are unique case-insensitively (createAgent), so 'Aaron' is the existing 'aaron', not a new agent.
+      // Compared in JS: SQLite lower() folds ASCII only, so 'Ассистент' would miss 'ассистент'.
+      const agent=(db.query('SELECT id,name FROM agents WHERE workspace_id=? AND active=1').all(auth.workspace_id) as {id:string;name:string}[])
+        .find(a=>sameAgentName(a.name,input.agent_name))??null;
+      const rows=(db.query(`SELECT c.id,c.agent_id,c.surface,c.access_mode,c.state,c.verified_at,a.name FROM client_connections c
         JOIN agents a ON a.id=c.agent_id AND a.workspace_id=c.workspace_id AND a.active=1
-        WHERE c.workspace_id=? AND c.state!='revoked' AND ${input.connection_id?'c.id=?':'a.name=?'}`)
-        .all(auth.workspace_id,input.connection_id??input.agent_name) as {id:string;agent_id:string;surface:string;access_mode:string;state:string;verified_at:string|null}[];
+        WHERE c.workspace_id=? AND c.state!='revoked'`)
+        .all(auth.workspace_id) as {id:string;agent_id:string;surface:string;access_mode:string;state:string;verified_at:string|null;name:string}[])
+        .filter(c=>input.connection_id?c.id===input.connection_id:sameAgentName(c.name,input.agent_name)).map(({name:_name,...c})=>c);
       if(input.connection_id&&!rows.length)throw new QoopiaError('NOT_FOUND','Connection unavailable in this workspace');
       if(rows.length>1)throw new QoopiaError('CONFLICT','Select an exact connection_id');
       const existing=rows[0];
       if(agent&&(!existing||agent.id!==existing.agent_id))throw new QoopiaError('CONFLICT','This agent already has access; reuse its existing client or select its exact connection');
       if(existing&&(existing.access_mode!==input.access_mode||existing.surface!==input.surface&&![existing.surface,input.surface].every(s=>s==='muse_app'||s==='muse_code')))
         throw new QoopiaError('CONFLICT','This connection has a different application or access. Resume its actual settings; changing access requires a separate owner-reviewed connection.');
-      const url=new URL('/dashboard',env.PUBLIC_URL);
+      // The owner reviews in this installation's dashboard: an installed Qoopia serves it on loopback even when
+      // a tunnel set PUBLIC_URL, and the tunnel edge never publishes /dashboard.
+      const url=new URL('/dashboard',localServiceOrigin());
       for(const [key,value] of Object.entries({connect:input.surface,agent:input.agent_name,access:input.access_mode,workspace:auth.workspace_id}))url.searchParams.set(key,value);
       if(existing)url.searchParams.set('connection',existing.id);
       url.hash='connections';
@@ -239,7 +246,7 @@ export const adminTools: AdminToolDef[] = [
     handler(args, auth) {
       assertSteward(auth);
 
-      const targetName = args.name as string;
+      const targetName = normalizeAgentName(args.name as string);
 
       // Self-guard: steward cannot deactivate itself
       if (targetName === auth.agent_name) {
@@ -330,7 +337,7 @@ export const adminTools: AdminToolDef[] = [
     handler(args, auth) {
       assertSteward(auth);
 
-      const targetName = args.name as string;
+      const targetName = normalizeAgentName(args.name as string);
       const newProfile = args.tool_profile as
         | "read-only"
         | "no-destructive"

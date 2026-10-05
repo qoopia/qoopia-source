@@ -14,3 +14,10 @@ test('the shared locale runtime is explicitly served, without exposing arbitrary
  expect(brandAsset('/brand/../identity/broker.ts')).toBeUndefined();
  expect(brandAsset('/brand/i18n.ru.json')).toBeUndefined();
 });
+test('server sentences the dashboard shows verbatim for device-code sign-in and another-computer memory are translated',async()=>{
+ // loginError and the memory settings status line show the server's error text through the catalog.
+ const {DEVICE_CODE_UNSUPPORTED}=await import('../src/identity/local.ts');
+ const setup=readFileSync(new URL('../src/services/memory-setup.ts',import.meta.url),'utf8');
+ const notReady=/QoopiaError\('NOT_READY','([^']+)'/.exec(setup)![1]!;
+ for(const sentence of [DEVICE_CODE_UNSUPPORTED,notReady])expect(ru[sentence],sentence).toBeString();
+});

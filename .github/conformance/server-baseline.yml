@@ -1,0 +1,35 @@
+# Expected failures of @modelcontextprotocol/conformance (server suite) against Qoopia's /mcp.
+# Why each one fails: docs/qa/mcp-oauth-conformance.md. The suite targets its own reference
+# server: these scenarios call fixture tools, prompts and resources Qoopia does not have, or
+# optional capabilities it does not advertise. A scenario that starts passing fails CI until
+# it is removed here (stale baseline); a new failure fails CI as a regression.
+server:
+  # Optional capabilities Qoopia does not advertise: -32601 Method not found is the correct answer.
+  - logging-set-level
+  - completion-complete
+  - tools-call-with-logging
+  - resources-list
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  - resources-subscribe
+  - resources-unsubscribe
+  - prompts-list
+  - prompts-get-simple
+  - prompts-get-with-args
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
+  # Reference fixture tools (test_image_content, test_audio_content, ...) Qoopia does not ship.
+  - tools-call-image
+  - tools-call-audio
+  - tools-call-embedded-resource
+  - tools-call-mixed-content
+  - tools-call-with-progress
+  # Qoopia's tools never ask the client for sampling or elicitation.
+  - tools-call-sampling
+  - tools-call-elicitation
+  - elicitation-sep1034-defaults
+  - elicitation-sep1330-enums
+  # Only a WARNING (counted as a failure by --expected-failures): Qoopia's Streamable HTTP is
+  # stateless and mints no Mcp-Session-Id, which the specification leaves optional (MAY).
+  - server-sse-multiple-streams

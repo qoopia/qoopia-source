@@ -81,12 +81,12 @@ class ReleaseConsistencyTests(unittest.TestCase):
             name: {'version': '5.0.9'} for name in
             ('release', 'auth', 'memory', 'public_package', 'public_release')
         }
-        self.data['release'].update(tag='v5.0.9', schema_version=46, packages={'mac': {'url': 'https://example.test/app.dmg', 'bytes': 123}})
+        self.data['release'].update(tag='v5.0.9', schema_version=46, packages={'mac': {'url': 'https://example.test/app.dmg', 'bytes': 123, 'requirements': 'Apple Silicon Mac, macOS 15.0 or newer.'}})
         self.data['public_release'].update(package_source='a' * 40, schema_version=46)
         self.data.update(
             downloads_tag='https://github.com/qoopia/qoopia-downloads/releases/tag/v5.0.9',
             source_tag='https://github.com/qoopia/qoopia-source/releases/tag/v5.0.9',
-            appcast='<rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><s:shortVersionString>5.0.9</s:shortVersionString><enclosure url="https://example.test/app.dmg" length="123"/></item></channel></rss>',
+            appcast='<rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><s:version>1790000000</s:version><s:shortVersionString>5.0.9</s:shortVersionString><s:minimumSystemVersion>15.0</s:minimumSystemVersion><enclosure url="https://example.test/app.dmg" length="123" s:edSignature="' + 'A' * 86 + '=="/></item></channel></rss>',
             ios={'version': '5.0.8', 'build': '3', 'status': 'review'})
 
     def issues(self):
@@ -107,6 +107,14 @@ class ReleaseConsistencyTests(unittest.TestCase):
                 original = self.data['appcast']
                 self.data['appcast'] = original.replace(old, new)
                 self.assertIn('appcast:package_mismatch', self.issues())
+                self.data['appcast'] = original
+
+    def test_appcast_an_installed_app_would_skip_fails(self):
+        for old, new in [('<s:version>1790000000', '<s:version>'), (' s:edSignature="' + 'A' * 86 + '=="', ''), ('>15.0<', '>26.0<')]:
+            with self.subTest(old=old):
+                original = self.data['appcast']
+                self.data['appcast'] = original.replace(old, new)
+                self.assertEqual(self.issues(), ['appcast:not_installable'])
                 self.data['appcast'] = original
 
     def test_schema_and_provenance_are_not_just_version_labels(self):

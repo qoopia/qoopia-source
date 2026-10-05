@@ -3,7 +3,7 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
-import { canReadRow, readLevel, visibleRowSql } from "../auth/principal.ts";
+import { assertCanModifyNote, canReadRow, readLevel, visibleRowSql } from "../auth/principal.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, holdSaveForOwner, type MemoryOrigin } from "./memory-policy.ts";
 import { upsertNoteEmbedding } from "./embedding-store.ts";
@@ -642,8 +642,10 @@ export interface NoteUpdateInput {
   workspace_id: string;
   agent_id: string;
   /**
-   * QTHIRD-001 / ADR-020: true for the steward and the owner. A caller can
-   * change only a note it can read (getNote's rule).
+   * QTHIRD-001 / ADR-020: true for the steward and the owner. A note the
+   * caller cannot read answers NOT_FOUND; one it reads only through shared
+   * context answers FORBIDDEN (OWNER DECISION 2026-10-04: author, steward
+   * and owner change notes).
    */
   is_admin: boolean;
   id: string;
@@ -674,6 +676,8 @@ export function updateNote(input: NoteUpdateInput) {
   if (!canReadRow(existing, input.agent_id, readLevel(input.agent_id, input.is_admin))) {
     throw new QoopiaError("NOT_FOUND", `note ${input.id} not found`);
   }
+  // OWNER DECISION 2026-10-04: a note read through shared context is read-only.
+  assertCanModifyNote(existing, input.agent_id, input.is_admin);
 
   if (input.metadata && input.metadata_replace) {
     throw new QoopiaError(
@@ -835,7 +839,8 @@ export function updateNote(input: NoteUpdateInput) {
 /**
  * QTHIRD-001 / ADR-020: deleteNote enforces the visibility boundary.
  * A caller cannot delete a note it cannot read; the call surfaces
- * NOT_FOUND (not FORBIDDEN) to avoid leaking existence.
+ * NOT_FOUND (not FORBIDDEN) to avoid leaking existence. A note read only
+ * through shared context answers FORBIDDEN (OWNER DECISION 2026-10-04).
  */
 export function deleteNote(
   workspace_id: string,
@@ -866,6 +871,7 @@ export function deleteNote(
     // Match the read-side error to avoid leaking existence.
     throw new QoopiaError("NOT_FOUND", `note ${id} not found`);
   }
+  assertCanModifyNote(existing, agent_id, isAdmin);
 
   // H6 fix: wrap soft-delete + logActivity atomically
   // M12 fix: remove from FTS index on soft-delete to prevent monotonic index growth

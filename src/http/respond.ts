@@ -59,6 +59,8 @@ export function json(res: ServerResponse, status: number, body: unknown, req?: I
     "content-length": String(Buffer.byteLength(payload)),
     "x-content-type-options": "nosniff",
   };
+  // RFC 7235 §3.1: every 401 names its scheme. Routes with a richer challenge (MCP's resource_metadata) set their own.
+  if (status === 401 && !res.hasHeader("www-authenticate")) headers["www-authenticate"] = 'Bearer realm="qoopia"';
   if (req) {
     const origin = getAllowedOrigin(req);
     if (origin) {

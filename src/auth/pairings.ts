@@ -1,3 +1,4 @@
+import { lookalikeAgents } from "../utils/agent-name.ts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
@@ -12,7 +13,7 @@ import { randomToken } from "../utils/fs.ts";
 import { generateApiKey } from "./api-keys.ts";
 
 export const pairingSchema = z.object({
-  name: z.string().min(1).max(120), runtime_id: z.string().min(1).max(200),
+  name: z.string().trim().min(1).max(120).transform(n => n.normalize("NFC")), runtime_id: z.string().min(1).max(200),
   profile: z.enum(["memory-reader", "memory-worker", "skill-author", "skill-reviewer", "runtime-reporter"]),
   target_agent_id: z.string().min(1).max(200).optional(), expected_revision: z.number().int().positive(),
   idempotency_key: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
@@ -39,7 +40,7 @@ export function issuePairing(auth: AuthContext, input: unknown, database: Databa
       if ((a.profile === "runtime-reporter") !== !!a.target_agent_id) {
         throw new QoopiaError("INVALID_INPUT", "Only a reporter pairing requires a target agent");
       }
-      if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(p.workspace_id, a.name)) {
+      if (nameTaken(database, p.workspace_id, a.name)) {
         throw new QoopiaError("CONFLICT", "Principal name already exists");
       }
       const pairingId = randomUUID();
@@ -70,7 +71,7 @@ export function redeemPairing(code: string, database: Database = db) {
       type: owner.type, source: "api-key", policy_epoch: pair.policy_epoch, session_version: owner.session_version };
     authorize(database, ownerAuth, "owner");
     if (pair.target_agent_id) requireAgent(database, pair.workspace_id, pair.target_agent_id);
-    if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(pair.workspace_id, pair.name)) {
+    if (nameTaken(database, pair.workspace_id, pair.name)) {
       throw new QoopiaError("CONFLICT", "Name was claimed after the pairing was issued");
     }
     const agentId = randomUUID(), apiKey = generateApiKey(), now = Date.now();
@@ -120,8 +121,9 @@ export function revokePrincipal(auth: AuthContext, input: unknown, database: Dat
 }
 
 /** Explicit local OS bootstrap only; never exposed by HTTP/MCP and never infers a human from an old role. */
-export function bootstrapOwner(database: Database, name: string, workspaceName?: string, workspaceId?: string) {
+export function bootstrapOwner(database: Database, rawName: string, workspaceName?: string, workspaceId?: string) {
   assertInstanceWriteAllowed("admin", "local owner bootstrap");
+  const name = rawName.normalize("NFC").trim();
   if (!name.trim() || name.length > 120 || (!!workspaceName === !!workspaceId) || (workspaceName !== undefined && !workspaceName.trim())) {
     throw new QoopiaError("INVALID_INPUT", "Owner name and exactly one workspace name (fresh instance) or existing workspace ID required");
   }
@@ -133,7 +135,7 @@ export function bootstrapOwner(database: Database, name: string, workspaceName?:
       throw new QoopiaError("CONFLICT", "Existing instance requires an explicit --workspace-id local owner decision");
     }
     const workspace = workspaceId ?? randomUUID(), agent = randomUUID(), now = Date.now(), apiKey = generateApiKey();
-    if (database.query("SELECT 1 FROM agents WHERE workspace_id=? AND lower(name)=lower(?)").get(workspace, name)) throw new QoopiaError("CONFLICT", "Principal name already exists; use a new human owner name");
+    if (nameTaken(database, workspace, name)) throw new QoopiaError("CONFLICT", "Principal name already exists; use a new human owner name");
     if (!workspaceId) database.query("INSERT INTO workspaces(id,name,slug) VALUES (?,?,?)").run(workspace, workspaceName!, `local-${workspace}`);
     database.query(`INSERT INTO agents(id,workspace_id,name,type,api_key_hash,principal_kind,authority_profile,tool_profile)
       VALUES (?,?,?,'owner',?,'human','owner','full')`).run(agent, workspace, name, digest(apiKey));
@@ -141,4 +143,9 @@ export function bootstrapOwner(database: Database, name: string, workspaceName?:
       .run(randomUUID(), workspace, agent, now);
     return { workspace_id: workspace, agent_id: agent, api_key: apiKey };
   }).immediate();
+}
+
+/** Any principal, active or not, already reads as `name` (case, NFC and Cyrillic look-alikes included). */
+function nameTaken(database: Database, workspace: string, name: string): boolean {
+  return lookalikeAgents(database.query("SELECT name FROM agents WHERE workspace_id=?").all(workspace) as { name: string }[], name).length > 0;
 }

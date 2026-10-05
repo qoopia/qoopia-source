@@ -7,7 +7,7 @@ import { getNote } from "./notes.ts";
 import { nextNoteWriteTimestamp, supersedePathExists } from "./note-temporal.ts";
 import { logActivity } from "./activity.ts";
 import { recordConflict } from "../utils/observability.ts";
-import { assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
+import { assertCanModifyNote, assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
 
 export const NOTE_RELATION_TYPES = [
   "supersedes",
@@ -51,6 +51,21 @@ function normalizedEndpoints(
   return sourceNoteId < targetNoteId
     ? [sourceNoteId, targetNoteId]
     : [targetNoteId, sourceNoteId];
+}
+
+/**
+ * A supersedes edge rewrites both notes' metadata and archives the target, so both must be the
+ * caller's to change (OWNER DECISION 2026-10-04). Other relation types leave the notes as they are.
+ */
+function assertSupersedeAllowed(
+  auth: AuthContext,
+  relationType: NoteRelationType,
+  source: { id: string; agent_id: string | null },
+  target: { id: string; agent_id: string | null },
+): void {
+  if (relationType !== "supersedes") return;
+  assertCanModifyNote(source, auth.agent_id, seesWholeWorkspace(auth));
+  assertCanModifyNote(target, auth.agent_id, seesWholeWorkspace(auth));
 }
 
 function assertRelationType(value: string): asserts value is NoteRelationType {
@@ -203,6 +218,7 @@ export function createNoteRelation(input: {
   ) {
     throw new QoopiaError("NOT_FOUND", "relation endpoint not found");
   }
+  assertSupersedeAllowed(input.auth, input.relation_type, source, target);
 
   if (
     input.relation_type === "supersedes" &&
@@ -239,6 +255,7 @@ export function createNoteRelation(input: {
     ) {
       throw new QoopiaError("NOT_FOUND", "relation endpoint not found");
     }
+    assertSupersedeAllowed(input.auth, input.relation_type, currentSource, currentTarget);
     if (
       input.relation_type === "supersedes" &&
       supersedePathExists(input.auth.workspace_id, targetNoteId, sourceNoteId)

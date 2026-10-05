@@ -10,7 +10,9 @@ export const transportConfigSchema=z.object({format:z.literal('qoopia-transport/
   identity:publicIdentity.extend({signPrivate:publicIdentity.shape.sign.extend({d:coordinate}),encryptPrivate:publicIdentity.shape.encrypt.extend({d:coordinate})}).strict(),
   tunnel_secret:z.string().regex(/^[A-Za-z0-9+/]{43}=$/),enabled:z.boolean(),device:publicDevice.optional(),
   tunnel:z.object({id:z.string().uuid(),account:z.string().regex(/^[a-f0-9]{32}$/)}).strict().optional(),
-  flow:z.object({id:coordinate,verifier:coordinate,expires:z.number()}).strict().optional(),grant:coordinate.optional(),grant_expires:z.number().optional()}).strict();
+  flow:z.object({id:coordinate,verifier:coordinate,expires:z.number(),
+    // A device-code sign-in: what the owner types on another device, and where.
+    user_code:z.string().regex(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/).optional(),verification_uri:z.string().url().optional()}).strict().optional(),grant:coordinate.optional(),grant_expires:z.number().optional()}).strict();
 export type TransportConfig=z.infer<typeof transportConfigSchema>&{identity:Identity};
 function file(root:string){return safePath(path.join(root,'config/transport.json'));}
 export function readTransport(root:string):TransportConfig|null {
@@ -27,4 +29,11 @@ export function readTransport(root:string):TransportConfig|null {
 }
 export function writeTransport(root:string,value:TransportConfig) {
   privateDirectory(path.join(root,'config'));durableWrite(file(root),JSON.stringify(transportConfigSchema.parse(value)));
+}
+/** A remote connection still bound to a tunnel origin this installation no longer has: its device was revoked,
+ * or replaced by a new registration. Such a client must be connected again at the current address. */
+export function retiredRemoteOrigin(root:string|undefined,origin:string|null|undefined) {
+  if(!root||!origin?.startsWith('https:'))return false;
+  let c:TransportConfig|null;try{c=readTransport(root);}catch{return false;}
+  return !!c&&(!c.device||c.device.state==='revoked'||c.device.public_origin!==origin);
 }

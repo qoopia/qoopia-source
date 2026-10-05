@@ -6,17 +6,18 @@ import {z} from 'zod';
 import {db} from '../db/connection.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {authorize} from '../auth/policy.ts';
-import {privateDirectory,durableWrite,hash,preflightSpace,hasNulOrNewline,readJson} from '../utils/fs.ts';
+import {privateDirectory,durableWrite,preflightSpace,hasNulOrNewline,readJson} from '../utils/fs.ts';
 import {nativePackagePreview,nativeRuntimeEnvironment,unpackNativePackage,verifyInstalledNativeAsync,vendorDownload} from '../delivery/native-provision.ts';
 import {prepareNativeKeychain,nativeOwnerHome} from '../delivery/native-keychain.ts';
 import {RUNTIMES} from '../delivery/runtime-versions.ts';
 import {createAgent} from '../admin/agents.ts';
 import {sha256Hex} from '../auth/api-keys.ts';
 import {embeddingCoverage} from './embedding-store.ts';
-import {memoryProfile,memoryRoot,memoryModelStatus,memoryText,selectMemoryProfile,type MemoryProfile} from './memory-model.ts';
+import {memoryClientConnectionPath,memoryProfile,memoryRoot,memoryModelStatus,memoryText,selectMemoryProfile,type MemoryProfile} from './memory-model.ts';
 import {QoopiaError} from '../utils/errors.ts';
+import {localServiceOrigin} from '../utils/standalone.ts';
 import {env} from '../utils/env.ts';
-import {installMemoryClient} from '../delivery/memory-client.ts';
+import {installMemoryClient,relocateMemoryClient} from '../delivery/memory-client.ts';
 import {selectedNativeDirectory} from '../delivery/native-client-paths.ts';
 
 const actions=z.discriminatedUnion('action',[
@@ -25,7 +26,8 @@ const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('cancel-login')}).strict(),
   z.object({action:z.literal('login-code'),code:z.string().trim().min(1).max(8192).refine(s=>!hasNulOrNewline(s))}).strict(),
   z.object({action:z.literal('check')}).strict(),
-  z.object({action:z.literal('connect-agent'),runtime:z.enum(['claude_code','codex'])}).strict(),
+  // another_computer: a file for an agent on a different machine, served through this installation's external address.
+  z.object({action:z.literal('connect-agent'),runtime:z.enum(['claude_code','codex']),target:z.enum(['this_computer','another_computer']).optional()}).strict(),
 ]);
 type Login={state:'waiting'|'completed'|'failed'|'cancelled';url?:string;code?:string;submit?:(code:string)=>void;cancel?:()=>void};
 const logins=new Map<string,Login>(),busy=new Set<string>();
@@ -82,6 +84,40 @@ async function login(workspace:string,profile:MemoryProfile) {
   const finish=(success:boolean)=>{clearTimeout(timer);clearTimeout(hard);clearTimeout(cancellation);pending='';if(logins.get(workspace)===state){logins.set(workspace,{state:state.state==='cancelled'?'cancelled':success?'completed':'failed'});busy.delete(workspace);}};
   child.once('error',()=>finish(false));child.once('close',code=>finish(code===0));
 }
+type StoredConnection={format:'qoopia-memory-connection/1';url:string;agent_id:string;key:string;runtime:'codex'|'claude_code'};
+/** The stored memory connection while its agent is active with that key. 5.0.16 stored the tunnel
+ * origin, which never serves /memory/continuity: the same agent moves to loopback. */
+function reusableConnection(workspace:string,file:string,origin=localServiceOrigin()):StoredConnection|undefined {
+  if(!fs.existsSync(file))return undefined;
+  const stored=readJson(file) as StoredConnection;
+  const agent=db.query('SELECT active,api_key_hash FROM agents WHERE id=? AND workspace_id=?').get(stored.agent_id,workspace) as {active:number;api_key_hash:string}|null;
+  if(agent?.active&&agent.api_key_hash===sha256Hex(stored.key)){
+    // 5.0.16 stored the tunnel origin for local clients; a remote file follows the current external address.
+    if(process.env.QOOPIA_STANDALONE!=='true'||stored.url===origin)return stored;
+    const moved={...stored,url:origin};durableWrite(file,JSON.stringify(moved));return moved;
+  }
+  // A rotated key may now be held elsewhere: never replace that live agent from here.
+  if(agent?.active)throw new QoopiaError('CONFLICT','The key of this memory agent was rotated; deactivate that agent, then connect again');
+  // Revoked: the old agent stays inactive; an explicit connect issues a new one.
+  return undefined;
+}
+/** Start of a standalone server: a local hook binding that 5.0.16 linked to the tunnel origin moves to
+ * loopback for the same agent and key, so capture resumes without reconnecting the client. */
+export function migrateMemoryOrigins() {
+  const results:{runtime:'codex'|'claude_code';state:string;reason?:string}[]=[];
+  if(process.env.QOOPIA_STANDALONE!=='true')return results;
+  for(const {id:workspace} of db.query('SELECT id FROM workspaces').all() as {id:string}[])for(const runtime of ['claude_code','codex'] as const) {
+    try {
+      const connection=reusableConnection(workspace,memoryClientConnectionPath(workspace,runtime));
+      const binding=path.join(memoryRoot(),'memory-clients',runtime,'connection.json');
+      if(!connection||!fs.existsSync(binding))continue;
+      const linked=readJson(binding) as StoredConnection;
+      if(linked.agent_id!==connection.agent_id||linked.key!==connection.key)continue;
+      results.push(relocateMemoryClient(memoryRoot(),runtime,connection.url,nativeOwnerHome()));
+    } catch(error) {results.push({runtime,state:'refused',reason:error instanceof Error?error.message:'unknown'});}
+  }
+  return results;
+}
 export async function memorySetupAction(ownerId:string,raw:unknown) {
   const auth=owner(ownerId),input=actions.parse(raw),workspace=auth.workspace_id;
   if(input.action==='cancel-login'){logins.get(workspace)?.cancel?.();return {state:'cancelled'};}
@@ -97,25 +133,23 @@ export async function memorySetupAction(ownerId:string,raw:unknown) {
       db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);
       return memorySetupState(ownerId);}
     if(input.action==='connect-agent') {
-      const name=input.runtime==='codex'?'Qoopia Codex memory':'Qoopia Claude memory';
-      const folder=privateDirectory(path.join(memoryRoot(),'config','memory-clients',hash(workspace))),file=path.join(folder,input.runtime+'.json');
-      let connection: {format:'qoopia-memory-connection/1';url:string;agent_id:string;key:string;runtime:'codex'|'claude_code'}|undefined;
-      if(fs.existsSync(file)) {
-        const stored=readJson(file) as NonNullable<typeof connection>;
-        const agent=db.query('SELECT active,api_key_hash FROM agents WHERE id=? AND workspace_id=?').get(stored.agent_id,workspace) as {active:number;api_key_hash:string}|null;
-        if(agent?.active&&agent.api_key_hash===sha256Hex(stored.key))connection=stored;
-        // A rotated key may now be held elsewhere: never replace that live agent from here.
-        else if(agent?.active)throw new QoopiaError('CONFLICT','The key of this memory agent was rotated; deactivate that agent, then connect again');
-        // Revoked: the old agent stays inactive; this explicit owner action issues a new one and overwrites the file below.
-      }
+      // An installed Qoopia links its own computer over loopback. Another computer reaches it only through the
+      // external (tunnel) address, with its own agent and key so either side can be revoked alone.
+      const remote=input.target==='another_computer'&&process.env.QOOPIA_STANDALONE==='true';
+      if(remote&&!env.PUBLIC_URL.startsWith('https://'))throw new QoopiaError('NOT_READY','Enable external access first: another computer reaches this installation only through its external address',
+        {next_action:'Open Connections, enable external access, then download the file for another computer again.'});
+      const origin=remote?new URL(env.PUBLIC_URL).origin:localServiceOrigin();
+      const name=(input.runtime==='codex'?'Qoopia Codex memory':'Qoopia Claude memory')+(remote?' remote':'');
+      const local=memoryClientConnectionPath(workspace,input.runtime),file=remote?local.replace(/\.json$/,'-remote.json'):local;privateDirectory(path.dirname(file));
+      let connection=reusableConnection(workspace,file,origin);
       if(!connection) {
         const ws=db.query('SELECT slug FROM workspaces WHERE id=?').get(workspace) as {slug:string};
         const created=createAgent({name,workspaceSlug:ws.slug,type:'standard'});
         db.query("UPDATE agents SET tool_profile='no-destructive',legacy_skill_access=0 WHERE id=?").run(created.id);
-        connection={format:'qoopia-memory-connection/1',url:new URL(env.PUBLIC_URL).origin,agent_id:created.id,key:created.api_key,runtime:input.runtime};
+        connection={format:'qoopia-memory-connection/1',url:origin,agent_id:created.id,key:created.api_key,runtime:input.runtime};
         durableWrite(file,JSON.stringify(connection));
       }
-      if(process.env.QOOPIA_STANDALONE==='true')return installMemoryClient(connection,memoryRoot(),process.execPath,nativeOwnerHome(),selectedNativeDirectory(connection.runtime));
+      if(process.env.QOOPIA_STANDALONE==='true'&&!remote)return installMemoryClient(connection,memoryRoot(),process.execPath,nativeOwnerHome(),selectedNativeDirectory(connection.runtime));
       // Returned only to the human owner's same-origin download action. Never log.
       return {state:'download_connection',connection};
     }

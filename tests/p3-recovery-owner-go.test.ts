@@ -21,14 +21,14 @@ function fixture() {
   const current:Current={format:'qoopia-installation/1',generation:'generation-'+randomUUID(),bundle:b.digest,bundle_digest:b.digest,instance,port:3737};
   const db=dataFile(root,current);privateDirectory(path.dirname(db));durableWrite(db,f.database.serialize());f.database.close();
   durableWrite(path.join(root,'current.json'),JSON.stringify(current));
-  const ops=operationsDirectory(root,current),original=opsFile(ops),delivery=new Delivery(root,b.trust,true,()=>{throw new Error('Migration must not run');});
+  const ops=operationsDirectory(root,current),original=opsFile(ops),migrated:string[]=[],delivery=new Delivery(root,b.trust,true,(_bundle,gen)=>{migrated.push(gen);});
   recordMaintenance(ops,instance,'BACKUP_FAILED',1000);
   const saved=readOps(ops),backup=path.join(outer,'good-backup');delivery.backup(backup);
   // Newer local knowledge is deliberately unavailable after corruption, never claimed merged.
   const damaged=Buffer.from('{"private newer delivery knowledge":\u0000broken');durableWrite(original,damaged);
   const pointer=fs.readFileSync(path.join(root,'current.json')),dbBytes=fs.readFileSync(db),backupInventory=inventory(backup);
   const unchanged=()=>{expect(fs.readFileSync(original)).toEqual(damaged);expect(fs.readFileSync(db)).toEqual(dbBytes);expect(inventory(backup)).toEqual(backupInventory);};
-  return {outer,root,trust:b.trust,delivery,current,instance,ops,original,saved,backup,damaged,pointer,db,dbBytes,unchanged,cleanup:()=>fs.rmSync(outer,{recursive:true,force:true})};
+  return {outer,root,trust:b.trust,delivery,migrated,current,instance,ops,original,saved,backup,damaged,pointer,db,dbBytes,unchanged,cleanup:()=>fs.rmSync(outer,{recursive:true,force:true})};
 }
 const destination={id:'fixture',url:'https://receiver.example.test/alerts',allowed_hosts:['receiver.example.test'],signing_key:new Uint8Array(32).fill(17)};
 
@@ -49,7 +49,10 @@ test('owner recovery preserves exact damage and database, restores held intent; 
   await deliverOpsAlerts(selected,[destination],transport,3000);expect(sends).toBe(0);
   expect(opsSummary(selected,f.instance)).toMatchObject({status:'degraded',delivery_hold:RECOVERY_DELIVERY_HOLD,pending:2});
   const heldBackup=path.join(f.outer,'held-backup');f.delivery.backup(heldBackup);expect(verifyBackup(heldBackup).operations).toBeDefined();
+  // Recovery never migrates; restore brings the copied backup to the installed schema.
+  expect(f.migrated).toEqual([]);
   const restored=f.delivery.restore(f.backup);const restoredDir=operationsDirectory(f.root,restored.current);
+  expect(f.migrated).toEqual([path.join(f.root,'generations',restored.current.generation)]);
   expect(readOps(restoredDir).delivery_hold).toBe(RECOVERY_DELIVERY_HOLD);
   await deliverOpsAlerts(restoredDir,[destination],transport,3000);expect(sends).toBe(0);
   expect(()=>f.delivery.authorizeOpsReplay()).toThrow('REPLAY_CONFIRMATION_REQUIRED');
@@ -88,6 +91,16 @@ test('no confirmation, wrong token, changed bytes, replaced inode, pointer drift
  }
 },15000); // Seven independent signed-backup fixtures can exceed 5s on shared CI disks.
 
+test('a reviewed recovery preview survives a Mac restart that renumbers the volume (st_dev)',()=>{
+ const f=fixture();try{
+  const p=f.delivery.previewOpsRecovery(f.backup),lstat=fs.lstatSync;
+  // APFS assigns st_dev at mount time; inode, size, times and bytes of the same journal do not change.
+  const spy=spyOn(fs,'lstatSync').mockImplementation(((file:fs.PathLike,options?:fs.StatSyncOptions)=>{
+    const s=lstat(file,options as never) as fs.Stats|undefined;if(!s)return s;
+    const moved=Object.create(Object.getPrototypeOf(s));Object.assign(moved,s,{dev:s.dev+7});return moved;}) as typeof fs.lstatSync);
+  try{expect(f.delivery.recoverOps(f.backup,p.confirmation).history_merged).toBe(false);}finally{spy.mockRestore();}
+ }finally{f.cleanup();}
+});
 test('invalid or legacy backup, foreign instance, healthy/missing/oversized/unsafe local journal and lock contention refuse',()=>{
  for(const change of ['backup','backup-journal','legacy','foreign-backup','foreign-local','healthy','missing','oversized','symlink','hardlink','busy']){
   const f=fixture();try{

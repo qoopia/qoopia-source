@@ -5,6 +5,14 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { buildLinuxLauncher } from '../scripts/build-linux-launcher.ts';
 
+test('START-HERE names the launcher as a file and gives Linux its glibc check and terminal fallback', () => {
+  const bundle = fs.readFileSync('scripts/build-bundle.ts', 'utf8');
+  // "Open Open Qoopia to open Qoopia." read as a typo; an old glibc makes the double-click fail silently.
+  expect(bundle).not.toContain("'Open '+graphicalLauncher+' to");
+  expect(bundle).toContain(`Open "'+graphicalLauncher+'" to start Qoopia.`);
+  expect(bundle).toContain('glibc 2.34 or newer (check with ldd --version); if double-clicking does nothing, run ./qoopia open in a terminal.');
+});
+
 if (process.platform === 'linux' && process.arch === 'x64') {
   test('graphical launcher opens its own adjacent bundle with literal arguments', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qoopia-launcher-'));

@@ -87,6 +87,32 @@ export function canReadRow(row: { agent_id: string | null; visibility?: string |
 }
 
 /**
+ * OWNER DECISION 2026-10-04 (ADR-020, F-335): shared context is read-only. Only the note's
+ * author, the steward and the owner change it (update, tags, supersede/archive) or delete it;
+ * a sibling that reads it through shared context gets FORBIDDEN with the next action. Call it
+ * after the read check, so a note the caller cannot see still answers NOT_FOUND.
+ * `wholeWorkspace` is seesWholeWorkspace(auth), or true for a trusted server-side caller.
+ */
+export function assertCanModifyNote(
+  row: { id: string; agent_id: string | null },
+  agentId: string,
+  wholeWorkspace: boolean,
+  database: Database = db,
+): void {
+  if (wholeWorkspace || row.agent_id === agentId) return;
+  const author = row.agent_id
+    ? (database.query("SELECT name FROM agents WHERE id = ?").get(row.agent_id) as { name: string } | null)?.name
+    : undefined;
+  const who = author ?? "another agent";
+  const next_action = `Ask ${who} or the steward to change it, or add your own note.`;
+  throw new QoopiaError(
+    "FORBIDDEN",
+    `note ${row.id} belongs to ${who}; shared context is read-only. ${next_action}`,
+    { next_action, author_agent_id: row.agent_id },
+  );
+}
+
+/**
  * Reject an OAuth caller whose granted scope does not cover a write-low
  * operation. API-key callers carry no granted scope and are governed by
  * their tool profile instead, so they pass through untouched.

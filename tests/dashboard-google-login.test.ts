@@ -9,7 +9,7 @@ function harness(popup:any=null){
  let reply:any={googleUrl:'https://auth.qoopia.ai/google?request=synthetic'};
  const context:any={$,QI:{msg:(x:string)=>x,resolve:(x:string)=>x,language:'en'},AbortController,AbortSignal,window:{open:()=>popup},document:{createElement:(type:string)=>{const e:any={type,clicks:0,click(){this.clicks++;}};created.push(e);return e;}},fetch:async(_url:string,options:any)=>{requests.push(options);return {ok:true,json:async()=>reply};},BASE:'',setTimeout:(fn:()=>void)=>timers.push(fn),consumeSafeNext:()=>false,showApp(){},boot(){}};
  runInNewContext(source+'\nglobalThis.start=startEmailLogin;',context);
- return {...context,created,timers,requests,reply:(v:any)=>reply=v};
+ return {...context,context,created,timers,requests,reply:(v:any)=>reply=v};
 }
 test('native/blocked popup opens the real Google URL and keeps recovery link and cancellation',async()=>{
  const h=harness();const login=h.start('google');await new Promise(r=>setTimeout(r,0));
@@ -28,4 +28,16 @@ test('cancelled polling cannot re-enable buttons during a newer sign-in',async()
  const h=harness();const first=h.start('google');await new Promise(r=>setTimeout(r,0));h.created.find((x:any)=>x.textContent==='Cancel sign-in').onclick();
  const second=h.start('google');await new Promise(r=>setTimeout(r,0));h.timers.shift()!();await first;expect(h.$('#googleLoginBtn').disabled).toBe(true);
  h.created.filter((x:any)=>x.textContent==='Cancel sign-in').at(-1).onclick();h.timers.shift()!();await second;
+});
+test('a poll dropped while the phone shows Google or Mail keeps waiting and still signs in',async()=>{
+ const h=harness();let calls=0,signedIn=false;h.context.showApp=()=>{signedIn=true;};
+ Object.assign(h.context,{URL,location:{href:'https://workspace.example/dashboard'},history:{replaceState(){}}});
+ h.context.fetch=async()=>{calls++;
+  if(calls===1)return {ok:true,json:async()=>({googleUrl:'https://auth.qoopia.ai/google?request=synthetic'})};
+  if(calls===2)throw Object.assign(new Error('Load failed'),{name:'TypeError'});
+  if(calls===3)return {ok:false,json:async()=>{throw Object.assign(new Error('Unexpected token <'),{name:'SyntaxError'});}};
+  return {ok:true,json:async()=>({ok:true})};};
+ const login=h.start('google');
+ for(let i=0;i<3;i++){await new Promise(r=>setTimeout(r,0));h.timers.shift()!();await new Promise(r=>setTimeout(r,0));}
+ await login;expect(calls).toBe(4);expect(signedIn).toBe(true);expect(h.$('#loginErr').style.display).not.toBe('block');
 });

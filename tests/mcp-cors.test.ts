@@ -55,6 +55,12 @@ describe("Claude.ai MCP OAuth discovery CORS", () => {
     expect(r.headers.get("www-authenticate") || "").toContain("resource_metadata=");
   });
 
+  test("a trailing-slash /mcp/ challenge names the root metadata the tunnel publishes", async () => {
+    const r = await fetch(`${baseUrl}/mcp/`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(r.status).toBe(401);
+    expect(r.headers.get("www-authenticate") || "").toMatch(/resource_metadata="[^"]+\/\.well-known\/oauth-protected-resource"/);
+  });
+
   test("preflight allows MCP protocol version header from https://claude.ai", async () => {
     const r = await fetch(`${baseUrl}/mcp`, {
       method: "OPTIONS",

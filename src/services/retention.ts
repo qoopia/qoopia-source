@@ -1,8 +1,9 @@
 import { retainManagedLogs } from "../utils/managed-logs.ts";
-import { recordMaintenance, opsSummary } from "../delivery/ops-state.ts";
+import { recordMaintenance, opsSummary, readOps } from "../delivery/ops-state.ts";
 import { deliverOpsAlerts, readOwnerAlertChannels } from "./ops-alerts.ts";
 import { backupUnified, verifyBackup, backupMembers, unifiedSnapshotSchema } from "../delivery/snapshot.ts";
 import { safePath, syncDirectory } from "../utils/fs.ts";
+import { standaloneRoot } from "../utils/standalone.ts";
 import { createVerifiedBackup } from "./backup.ts";
 import { expireRecallTraceBatch } from "../db/v4-trace-retention.ts";
 import fs from "node:fs";
@@ -48,9 +49,17 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
   let stage = 'DATABASE', installation = 'local';
   try {
     installation = (db.query("SELECT instance_id FROM authority_instance WHERE id='local'").get() as {instance_id:string} | null)?.instance_id ?? 'local';
-    stage = 'LOG_RETENTION';
-    report.application_logs = retainManagedLogs(env.LOG_DIR);
-    stage = 'DATABASE';
+    // A log retention failure is reported, but must not stop the daily backup below.
+    let logFailure: string | null = null;
+    try { report.application_logs = retainManagedLogs(env.LOG_DIR); }
+    catch { logFailure = 'LOG_RETENTION_FAILED'; logger.error("Maintenance log retention failed", { error_code: logFailure }); }
+    // Up to 5.0.16 a server started with --root naming the default root (the autostart unit, setup's next
+    // step) logged to <root>/logs. Nothing writes there now, so only this keeps those files to 14 days.
+    const legacyLogs = standaloneRoot() === undefined ? undefined : path.join(standaloneRoot()!, 'logs');
+    if (legacyLogs && path.resolve(legacyLogs) !== path.resolve(env.LOG_DIR) && fs.existsSync(path.join(legacyLogs, 'application'))) {
+      try { report.legacy_application_logs = retainManagedLogs(legacyLogs); }
+      catch { report.legacy_application_logs = { status: 'failed' }; logger.error("Maintenance legacy log retention failed", { error_code: 'LEGACY_LOG_RETENTION_FAILED' }); }
+    }
     // 1. Task-bound purge
     const closed = db
       .prepare(
@@ -206,10 +215,11 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     report.backups_kept = keep.size; report.backups_deleted = deleted;
 
     stage = 'STATUS';
-    const state = recordMaintenance(env.OPS_STATE_DIR, installation, purgeFailure);
+    const failure = purgeFailure ?? logFailure;
+    const state = recordMaintenance(env.OPS_STATE_DIR, installation, failure);
     report.operations = opsSummary(env.OPS_STATE_DIR);
-    if (purgeFailure) report.error = purgeFailure;
-    report.ok = state.last_run?.ok === true && !purgeFailure;
+    if (failure) report.error = failure;
+    report.ok = state.last_run?.ok === true && !failure;
     report.finished_at = nowIso();
     logger.info("Maintenance complete", report);
     return { ok: report.ok === true, report };
@@ -228,6 +238,23 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
 
 let maintenanceEnabled = false;
 let maintenanceTimer: ReturnType<typeof setTimeout> | null = null;
+let catchUpTimer: ReturnType<typeof setInterval> | null = null;
+let maintenanceRunning: Promise<unknown> | null = null, lastAttemptAt = 0;
+
+/** Scheduled runs never overlap: a run already in progress is joined, not repeated. */
+function runScheduled() {
+  if (maintenanceRunning) return maintenanceRunning;
+  lastAttemptAt = Date.now();
+  return maintenanceRunning = runOperationalMaintenance().finally(() => { maintenanceRunning = null; });
+}
+
+/** Long timers do not follow the wall clock on a sleeping laptop (and miss clock or timezone changes):
+ * once the last successful run is a day old and this process has not tried for a day, run now.
+ * Returns the started run, or null. A failing run is retried by the daily timer, not hourly. */
+export function maintenanceCatchUp(now = Date.now()) {
+  if (maintenanceRunning || now - lastAttemptAt < 86_400_000 || !maintenanceOverdue(now)) return null;
+  return runScheduled();
+}
 
 function msUntilNextMaintenance(): number {
   const next = new Date();
@@ -240,23 +267,33 @@ function msUntilNextMaintenance(): number {
 // Prevents hammering the DB on rapid restarts while still respecting the window.
 const BOOT_GRACE_MS = 5 * 60 * 1000;
 
+/** No successful run in the last day. An unreadable journal keeps the configured window. */
+export function maintenanceOverdue(now = Date.now()): boolean {
+  let state;
+  try { state = readOps(env.OPS_STATE_DIR); } catch { return false; }
+  const at = state.last_run?.ok ? Date.parse(state.last_run.at) : NaN;
+  return !(now - at < 86_400_000);
+}
+
 export function startMaintenance() {
   if (maintenanceEnabled) return;
   maintenanceEnabled = true;
   // Schedule the first run at the next configured maintenance window (MAINTENANCE_HOUR:00),
   // but never sooner than BOOT_GRACE_MS from now. This prevents repeated restarts from
   // postponing cleanup indefinitely (the old "1 hour from boot" approach had that problem).
-  const msToWindow = msUntilNextMaintenance();
-  const firstRun = Math.max(msToWindow, BOOT_GRACE_MS);
+  // A desktop is rarely running at the window: a run older than a day is caught up after the grace period.
+  const firstRun = maintenanceOverdue() ? BOOT_GRACE_MS : Math.max(msUntilNextMaintenance(), BOOT_GRACE_MS);
 
   maintenanceTimer = setTimeout(() => {
     if (!maintenanceEnabled) return;
-    return runOperationalMaintenance().finally(scheduleDaily);
+    return runScheduled().finally(scheduleDaily);
   }, firstRun);
   // Fire-and-forget: don't block event loop shutdown
   if (maintenanceTimer && typeof (maintenanceTimer as any).unref === "function") {
     (maintenanceTimer as any).unref();
   }
+  catchUpTimer = setInterval(() => { if (maintenanceEnabled) void maintenanceCatchUp(); }, 3_600_000);
+  catchUpTimer.unref();
   const hoursUntil = Math.round(firstRun / 1000 / 60);
   logger.info(`Maintenance scheduled: first run in ~${hoursUntil}m (window=${env.MAINTENANCE_HOUR}:00)`);
 }
@@ -266,7 +303,7 @@ function scheduleDaily() {
   const ms = msUntilNextMaintenance();
   maintenanceTimer = setTimeout(() => {
     if (!maintenanceEnabled) return;
-    return runOperationalMaintenance().finally(scheduleDaily);
+    return runScheduled().finally(scheduleDaily);
   }, ms);
   if (maintenanceTimer && typeof (maintenanceTimer as any).unref === "function") {
     (maintenanceTimer as any).unref();
@@ -279,6 +316,7 @@ export function stopMaintenance() {
     clearTimeout(maintenanceTimer);
     maintenanceTimer = null;
   }
+  if (catchUpTimer) { clearInterval(catchUpTimer); catchUpTimer = null; }
 }
 
 /** The CLI and daily timer share this callback; no receiver is enabled implicitly. */

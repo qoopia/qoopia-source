@@ -14,6 +14,20 @@ test('native iPhone client does not install a competing web app or service worke
  for(const link of settings)expect(link.hidden).toBe(false);
 });
 
+test('a loopback dashboard does not promise a Home Screen icon a phone could never open',()=>{
+ const steps=[{hidden:false},{hidden:false}],loopback=[{hidden:true}];
+ const guide:any={hidden:true,focus(){},querySelectorAll:(s:string)=>s==='[data-install-steps]'?steps:s==='[data-install-loopback]'?loopback:[]};
+ const install:any={hidden:false,focus(){}},listeners:Record<string,Function>={};
+ vm.runInNewContext(readFileSync(new URL('../src/public/brand/app.js',import.meta.url),'utf8'),{
+  navigator:{userAgent:'Mozilla/5.0 Safari',onLine:true},location:{hostname:'127.0.0.1',search:''},matchMedia:()=>({matches:false}),isSecureContext:false,URLSearchParams,
+  addEventListener:(name:string,fn:Function)=>listeners[name]=fn,
+  document:{querySelector:(id:string)=>({'#installApp':install,'#installGuide':guide} as any)[id]??null,querySelectorAll:()=>[]},
+ });
+ for(const p of steps)expect(p.hidden).toBe(true);expect(loopback[0]!.hidden).toBe(false);
+ let prompted=false;listeners.beforeinstallprompt!({preventDefault(){},prompt:async()=>{prompted=true;}});
+ install.onclick();expect(prompted).toBe(false);expect(guide.hidden).toBe(false);
+});
+
 test('installable shell stays on its own workspace and exposes only explicit public assets',()=>{
  const manifest=JSON.parse(webAppAsset('/manifest.webmanifest')!.body);
  expect(manifest.start_url).toBe('/dashboard?app=1');expect(manifest.display).toBe('standalone');expect(manifest.id).toBe('/dashboard');

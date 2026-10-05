@@ -656,8 +656,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     // Some OAuth clients derive RFC 8414 metadata from the protected resource
     // path and request /.well-known/oauth-authorization-server/mcp. The issuer
     // is still the host root, so serve the same metadata instead of 404.
+    // A connection's metadata answers at its issuer path (/oauth/c/<id>) and, for clients that insert
+    // the MCP resource path instead (the SDK's discoverOAuthMetadata(serverUrl)), at /mcp/c/<id>.
     if (!read) return methodNotAllowed(res, "GET, HEAD", req);
-    const connection=/^\/\.well-known\/oauth-authorization-server\/oauth\/c\/([a-f0-9-]{36})$/.exec(url)?.[1];
+    const connection=/^\/\.well-known\/oauth-authorization-server\/(?:oauth|mcp)\/c\/([a-f0-9-]{36})$/.exec(url)?.[1];
     if(connection)publicConnection(connection);
     return json(res, 200, wellKnownAuthorizationServer(connection), req);
   }
@@ -675,7 +677,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     const root=ownerIdentityRoot();if(!root)return json(res,503,{error:'Owner account setup required'},req);
     if(connectionConsentHandler?.root!==root)connectionConsentHandler={root,handler:remoteConnectionConsent(root,db)};
     const body=method==='POST'?await readBodyLimited(req,2048):undefined;
-    const response=await connectionConsentHandler.handler(nodeReqToFetchRequest(req,body),clientIp);
+    // The sign-in service binds the confirmation to the browser's network. Behind the tunnel edge clientIp
+    // is the rate-limit key `edge:<address>`; send the address itself, or the link never counts.
+    const browserIp=clientIp.startsWith('edge:')?clientIp.slice(5).replace(/^unknown$/,''):clientIp;
+    const response=await connectionConsentHandler.handler(nodeReqToFetchRequest(req,body),browserIp);
     res.writeHead(response.status,Object.fromEntries(response.headers));res.end(await response.text());return;
   }
   // ADR-017: /oauth/authorize is now a thin redirect target. It validates

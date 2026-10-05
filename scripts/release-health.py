@@ -124,11 +124,17 @@ def consistency_issues(data, version, schema, package_source, ios_version, ios_b
             item = ET.fromstring(data['appcast']).find('channel/item')
             if item is None:
                 raise ValueError('Missing item')
-            actual = item.findtext('{http://www.andymatuschak.org/xml-namespaces/sparkle}shortVersionString')
+            sparkle = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
+            actual = item.findtext(sparkle + 'shortVersionString')
             enclosure = item.find('enclosure')
             mac = release.get('packages', {}).get('mac', {})
             if actual != version or enclosure is None or enclosure.get('url') != mac.get('url') or enclosure.get('length') != str(mac.get('bytes')):
                 issues.append('appcast:package_mismatch')
+            # Installed apps skip an item silently: no build number, no Ed25519 signature, or a newer
+            # minimum macOS than the download page promises strands them on the old release.
+            minimum = re.search(r'macOS (\d+\.\d+)', mac.get('requirements', ''))
+            if not (item.findtext(sparkle + 'version') or '').isdigit() or enclosure is None or not re.fullmatch(r'[A-Za-z0-9+/]{86}==', enclosure.get(sparkle + 'edSignature', '')) or not minimum or item.findtext(sparkle + 'minimumSystemVersion') != minimum.group(1):
+                issues.append('appcast:not_installable')
         except (ET.ParseError, ValueError, TypeError, AttributeError):
             issues.append('appcast:invalid')
     if 'ios' in data:

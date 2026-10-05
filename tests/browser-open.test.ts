@@ -47,6 +47,9 @@ test('open without a desktop browser keeps serving and prints the address and an
   expect(output).toContain('ssh -L 37335:127.0.0.1:37335');
   expect(output).toContain('qoopia owner-login');
   expect(output).not.toContain(code);
+  // An installation selected with --root names it, or owner-login would address the default root.
+  printed.length=0;presentWorkspace(37335,code,env,linux,line=>printed.push(line),'/srv/my qoopia');
+  expect(printed.join('\n')).toContain('qoopia owner-login --root "/srv/my qoopia"');
   // A desktop opener still receives the single-use setup URL and no headless hint is printed.
   write('xdg-open');printed.length=0;
   expect(presentWorkspace(37335,code,env,linux,line=>printed.push(line))).toBe(true);

@@ -6,7 +6,7 @@ import {memoryText,memoryProfile,memoryModelBusy} from './memory-model.ts';
 import {pendingNoteEmbeddings,upsertNoteEmbedding} from './embedding-store.ts';
 import {autoEmbedEnabled} from './embeddings.ts';
 import {QoopiaError,safeJsonParse} from '../utils/errors.ts';
-import {redactSensitive} from '../utils/secret-guard.ts';
+import {redactMemory} from '../utils/secret-guard.ts';
 import {backgroundFailure} from '../utils/logger.ts';
 import {scrubTelegramTransit} from './telegram-store.ts';
 import {duringManual,expireSaveRequests,hasManualHistory,LIVE_SESSION_MS,memoryPolicy,memoryPolicyUnchanged} from './memory-policy.ts';
@@ -65,6 +65,25 @@ function refusedInManual(workspace:string,agent:string,session:string,messages:{
   return found;
 }
 
+/** Ids already stored in this session's predecessor chain. A resumed conversation can be written to
+ * a new transcript that starts with the earlier history under its original record ids; storing it
+ * again would double every earlier turn in search and summaries. Bounded like restoreContext. */
+function inPredecessors(workspace:string,agent:string,first:unknown,messages:{id:string}[]) {
+  const chain:string[]=[],found=new Set<string>();
+  for(let id=first;typeof id==='string'&&chain.length<8&&!chain.includes(id);) {
+    chain.push(id);
+    const row=db.query('SELECT metadata FROM sessions WHERE id=? AND workspace_id=? AND agent_id=?').get(id,workspace,agent) as {metadata:string}|null;
+    id=row?safeJsonParse(row.metadata,{} as Record<string,any>).continuity_previous:undefined;
+  }
+  if(!chain.length||!messages.length)return found;
+  for(let i=0;i<messages.length;i+=400) {
+    const page=messages.slice(i,i+400);
+    const rows=db.query(`SELECT ingest_uuid FROM session_messages WHERE workspace_id=? AND agent_id=? AND session_id IN (${chain.map(()=>'?').join(',')})
+      AND ingest_uuid IN (${page.map(()=>'?').join(',')})`).all(workspace,agent,...chain,...page.map(m=>m.id)) as {ingest_uuid:string}[];
+    for(const row of rows)found.add(row.ingest_uuid);
+  }
+  return found;
+}
 export function continuityEvent(workspace:string,agent:string,raw:unknown) {
   const event=continuityEventSchema.parse(raw);
   // Manual keeps reading and restoring available while recording nothing new: the hook
@@ -108,13 +127,14 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
     // whole session whenever its start event was not the first delivery to land.
     db.query('INSERT OR IGNORE INTO sessions(id,workspace_id,agent_id,created_at,last_active) VALUES(?,?,?,?,?)')
       .run(event.session_id,workspace,agent,new Date().toISOString(),new Date().toISOString());
-    let previous=event.previous_session_id;
-    if(previous)assertSession(workspace,agent,previous);
+    const previous=event.previous_session_id;
     // A client supplies a predecessor only after checking that its native process ended.
     // Same project alone cannot distinguish a continuation from a parallel task.
-    if(!existing&&previous&&previous!==event.session_id) {
-      const prior=safeJsonParse(assertSession(workspace,agent,previous).metadata,{} as Record<string,any>);
-      if(prior.continuity_successor&&prior.continuity_successor!==event.session_id)throw new QoopiaError('CONFLICT','Predecessor already continued in another session');
+    // It is still a local guess: one this server never recorded (a manual period, an outage) or one
+    // another session already continued stays unlinked. Refusing would fail this start and its restore.
+    let predecessor:Record<string,any>|undefined;
+    if(!existing&&previous&&previous!==event.session_id)try{predecessor=safeJsonParse(assertSession(workspace,agent,previous).metadata,{} as Record<string,any>);}catch{predecessor=undefined;}
+    if(predecessor&&previous&&(!predecessor.continuity_successor||predecessor.continuity_successor===event.session_id)) {
       db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_previous',?) WHERE id=?").run(previous,event.session_id);
       db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_successor',?) WHERE id=?").run(event.session_id,previous);
     }
@@ -125,8 +145,10 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
       .run(event.project,event.runtime,event.event==='end'?1:0,
         ['precompact','end'].includes(event.event)||contextGrowth?1:(metadata.continuity_priority??0),event.context_percent??metadata.continuity_percent??0,
         new Date().toISOString(),event.session_id);
+    const copied=inPredecessors(workspace,agent,metadata.continuity_previous,fresh);
     for(const message of fresh) {
-      const content=redactSensitive(message.content).text;
+      if(copied.has(message.id))continue;
+      const content=redactMemory(message.content).text;
       if(content.trim())saveMessage({workspace_id:workspace,agent_id:agent,session_id:event.session_id,role:message.role,content,
         ingest_uuid:message.id,metadata:{native_timestamp:message.timestamp??null}});
     }
@@ -144,6 +166,40 @@ function excerpt(text:string,budget:number) {
   }
   return cut;
 }
+/** The summarizer sees a large tool output as its head and tail with the middle named by size: the
+ * outcome sits at the end and the command at the start, while a 7 MB log would otherwise cost
+ * ~150 model calls. The journal keeps every character [F-341]. */
+const TOOL_HEAD=2000,TOOL_TAIL=1000;
+const toolView=(head:string,tail:string,total:number)=>{
+  if(total<=TOOL_HEAD+TOOL_TAIL)return head;
+  const h=head.slice(0,TOOL_HEAD),t=tail.slice(-TOOL_TAIL);
+  return h+`\n[… ${total-h.length-t.length} characters omitted …]\n`+t;
+};
+/** Clients split one output into 12k-char rows whose ingest ids share a prefix ("<record>:<start>"). */
+const outputOf=(uuid:string|null)=>uuid?.match(/^(.+):\d+$/)?.[1];
+type JournalRow={id:number;role:string;content:string;ingest_uuid:string|null};
+/** Rows as summarizer events: each tool output, however many rows it spans, becomes one trimmed
+ * event carrying the id of its last row. An output cut by the fetch limit is followed to its end
+ * (only sizes and its final tail are read), so its middle is never summarised piecemeal. */
+function summaryEvents(workspace:string,agent:string,session:string,rows:JournalRow[],more:boolean) {
+  const events:Array<{id:number;role:string;content:string}>=[];
+  for(let i=0;i<rows.length;i++) {
+    const first=rows[i]!;
+    if(first.role!=='tool'){events.push({id:first.id,role:first.role,content:first.content});continue;}
+    const key=outputOf(first.ingest_uuid);let last=first,total=first.content.length,tail=first.content;
+    while(key&&rows[i+1]?.role==='tool'&&outputOf(rows[i+1]!.ingest_uuid)===key){last=rows[++i]!;total+=last.content.length;tail=last.content;}
+    if(key&&more&&last===rows.at(-1)) {
+      // .all() with a bound, not .iterate() with break: a cached statement left mid-step keeps the table locked.
+      for(const next of db.query(`SELECT id,role,ingest_uuid,length(content) AS size,substr(content,-${TOOL_TAIL}) AS tail FROM session_messages
+        WHERE session_id=? AND workspace_id=? AND agent_id=? AND id>? ORDER BY id LIMIT 4096`).all(session,workspace,agent,last.id) as {id:number;role:string;ingest_uuid:string|null;size:number;tail:string}[]) {
+        if(next.role!=='tool'||outputOf(next.ingest_uuid)!==key)break;
+        last={...last,id:next.id};total+=next.size;tail=next.tail;
+      }
+    }
+    events.push({id:last.id,role:'tool',content:toolView(first.content,tail,total)});
+  }
+  return events;
+}
 /** New messages stay in the journal until a checkpoint and its source cursor
  * commit together. Retries after a crash cannot skip or duplicate a revision. */
 export async function checkpointSession(workspace:string,agent:string,session:string,summarize=memoryText) {
@@ -153,18 +209,19 @@ export async function checkpointSession(workspace:string,agent:string,session:st
   if(policy.mode==='manual')throw new QoopiaError('APPROVAL_REQUIRED','Automatic memory is off for this agent');
   const sess=assertSession(workspace,agent,session),meta=safeJsonParse(sess.metadata,{} as Record<string,any>);
   const note=noteFor(workspace,agent,session),old=note?safeJsonParse(note.metadata,{} as Record<string,any>):{};
-  const rows=db.query('SELECT id,role,content FROM session_messages WHERE session_id=? AND workspace_id=? AND agent_id=? AND id>? ORDER BY id LIMIT 100')
-    .all(session,workspace,agent,old.through_message_id??0) as Array<{id:number;role:string;content:string}>;
+  const rows=db.query('SELECT id,role,content,ingest_uuid FROM session_messages WHERE session_id=? AND workspace_id=? AND agent_id=? AND id>? ORDER BY id LIMIT 100')
+    .all(session,workspace,agent,old.through_message_id??0) as JournalRow[];
   if(!rows.length)return {state:'unchanged'};
+  const more=rows.length===100,events=summaryEvents(workspace,agent,session,rows,more);
   const predecessor=!note?(meta.continuity_previous?restoreContext(workspace,agent,meta.continuity_previous):dashboardPredecessor(meta)):null;
   // memoryText refuses a prompt over 140k chars after JSON escaping, so the source is budgeted in
   // that escaped form: quotes, newlines or binary output can multiply a message's size.
   const previous=excerpt(note?.text??predecessor?.context??'',SOURCE_BUDGET/4);
-  let previousTail=predecessor?.tail??[];
+  let previousTail=(predecessor?.tail??[]).map(m=>m.role==='tool'?{...m,content:toolView(m.content,m.content,m.content.length)}:m);
   while(previousTail.length&&JSON.stringify({previous,previous_tail:previousTail}).length>SOURCE_BUDGET/2)previousTail=previousTail.slice(1);
-  let size=0,room=SOURCE_BUDGET-JSON.stringify({previous,previous_tail:previousTail}).length;const batch:typeof rows=[];
+  let size=0,room=SOURCE_BUDGET-JSON.stringify({previous,previous_tail:previousTail}).length;const batch:typeof events=[];
   const batchLimit=Number.isInteger(meta.continuity_batch_limit)?Math.max(1,Math.min(100,meta.continuity_batch_limit)):100;
-  for(const row of rows){
+  for(const row of events){
     if(batch.length>=batchLimit||(batch.length&&size+row.content.length>50_000))break;
     const cost=JSON.stringify(row).length+1;
     // A message too large on its own is summarised from an excerpt; the journal keeps it whole and
@@ -173,7 +230,7 @@ export async function checkpointSession(workspace:string,agent:string,session:st
     batch.push(row);size+=row.content.length;room-=cost;
   }
   // Only a small remainder waits; a batch cut short by the limit or the budget has a backlog behind it.
-  if(note&&!meta.continuity_priority&&batch.length===rows.length&&size<4000&&Date.now()-(old.updated_at_ms??0)<300_000)return {state:'waiting'};
+  if(note&&!meta.continuity_priority&&!more&&batch.length===events.length&&size<4000&&Date.now()-(old.updated_at_ms??0)<300_000)return {state:'waiting'};
   let result:Awaited<ReturnType<typeof summarize>>;
   try {result=await summarize(workspace,
     'Update a concise working-state note, in the user language, at most 6000 characters. Preserve the goal, latest constraints, decisions with reasons, completed work and evidence, paths/links, unresolved issues and next step. Clearly record superseded/cancelled decisions. Distinguish requested/planned work from verified results. Do not invent facts. Keep useful prior facts unless new source evidence changes them. Return the full updated note in result.',
@@ -186,7 +243,7 @@ export async function checkpointSession(workspace:string,agent:string,session:st
         .run(...(batch.length>1?['$.continuity_batch_limit',Math.ceil(batch.length/2)]:['$.continuity_backoff',(meta.continuity_backoff??0)+1]),session,workspace,agent);
     throw error;
   }
-  let text=redactSensitive(result.text).text;
+  let text=redactMemory(result.text).text;
   // The model is asked for 6000 chars; a longer answer is cut at a line end rather than wasted.
   if(text.length>8000){const end=text.lastIndexOf('\n',8000);text=text.slice(0,end>4000?end:8000).trimEnd();}
   return db.transaction(()=>{
@@ -245,8 +302,9 @@ export async function processMemoryMaintenance() {
       let profile=null,invalid=false;
       try{profile=memoryProfile(session.workspace_id);}catch{invalid=true;}
       if(!profile) {
-        db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',?${invalid?",'$.continuity_error','INVALID_PROFILE'":''}) WHERE id=?`)
-          .run(Date.now()+300_000,session.id);
+        // Recorded either way: without a code the agent card read «catching up» while nothing could ever be summarised.
+        db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',?,'$.continuity_error',?) WHERE id=?`)
+          .run(Date.now()+300_000,invalid?'INVALID_PROFILE':'MODEL_NOT_CONNECTED',session.id);
         continue;
       }
       try {const result=await checkpointSession(session.workspace_id,session.agent_id,session.id);if(result.state==='saved')break;}

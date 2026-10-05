@@ -257,8 +257,15 @@ export function redactSecretSpans(text: string, seen?: Set<string>): string {
   return clean;
 }
 
-/** Capture-only redaction. Existing note/session writes continue to refuse secrets. */
-export function redactSensitive(text: string): { text: string; categories: string[] } {
+/** A local path whose file is itself a credential or holds them: key material, cloud and package
+ * credentials, `.env` files, keychains. Memory keeps every other path. */
+const CREDENTIAL_PATH = /[\\/](?:\.ssh|\.gnupg|\.aws|\.azure|\.kube|\.docker|keychains?|credentials?|secrets?)(?:[\\/.]|$)|[\\/](?:\.netrc|\.pgpass|\.npmrc|\.pypirc|\.git-credentials|\.env(?:\.[\w-]+)?|id_(?:rsa|dsa|ecdsa|ed25519))$|\.(?:pem|key|p12|pfx|keystore|jks)$/i;
+
+/** Capture-only redaction. Existing note/session writes continue to refuse secrets.
+ * Operational text (logs, errors, support output, skills) also loses absolute paths; memory content
+ * (`keepPaths`) keeps them, because a summary is useless without the files it is about, and only
+ * paths of credential files are hidden. */
+export function redactSensitive(text: string, options: { keepPaths?: boolean } = {}): { text: string; categories: string[] } {
   const categories = new Set<string>();
   const clean = redactSecretSpans(text, categories).replace(/\b(?:password|api_key|secret|token)\s*[:=]\s*["']?[^\s"',;]{8,}/gi, () => {
     categories.add('credential-assignment'); return '[REDACTED:credential-assignment]';
@@ -276,7 +283,16 @@ export function redactSensitive(text: string): { text: string; categories: strin
     // arbitrary suffix. Internal Windows separators and their following bytes
     // remain redacted; unquoted trailing separators are removed as before.
     const escapes = source[offset + path.length] === '"' ? path.match(/\\+$/)?.[0] ?? '' : '';
+    if (options.keepPaths) {
+      // Sentence punctuation after the path stays outside the redaction.
+      const core = path.slice(0, path.length - escapes.length), trail = core.match(/[.,:;!?)\]}>]+$/)?.[0] ?? '';
+      if (!CREDENTIAL_PATH.test(core.slice(0, core.length - trail.length))) return path;
+      categories.add('credential-path'); return '[REDACTED:credential-path]' + trail + escapes;
+    }
     categories.add('absolute-path'); return '[LOCAL_PATH]' + escapes;
   });
   return { text: clean, categories: [...categories].sort() };
 }
+
+/** Redaction for stored memory: secrets go, file paths stay (credential files excepted). */
+export const redactMemory = (text: string) => redactSensitive(text, { keepPaths: true });

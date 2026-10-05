@@ -1,6 +1,15 @@
 /** Pure predicates of the dynamic-client-registration policy. No request, response or
  * database here: the HTTP layer decides what to do with the answers. */
 export const CLAUDE_AI_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback";
+/** Anthropic asks servers that allowlist callbacks to accept the claude.com form too, which the hosted
+ * Claude apps may move to (Claude help center, "Building custom connectors via remote MCP servers"). */
+const CLAUDE_REDIRECT_URIS = [CLAUDE_AI_REDIRECT_URI, "https://claude.com/api/mcp/auth_callback"];
+
+/** One or both Claude hosted-app callbacks, exactly and without repeats. */
+export function isClaudeRedirectArray(actual: unknown): boolean {
+  return Array.isArray(actual) && actual.length > 0 && new Set(actual).size === actual.length &&
+    actual.every((value) => typeof value === "string" && CLAUDE_REDIRECT_URIS.includes(value));
+}
 
 const CHATGPT_DCR_REDIRECT_HOSTS = new Set([
   "chat.openai.com",
@@ -75,7 +84,7 @@ export function connectionRedirectsAllowed(surface: string, redirectUris: unknow
     case "chatgpt_desktop":
       return isChatGptRedirectArray(redirectUris);
     case "claude_web":
-      return stringArrayEquals(redirectUris, [CLAUDE_AI_REDIRECT_URI]);
+      return isClaudeRedirectArray(redirectUris);
     case "codex":
     case "claude_code":
       return isLoopbackRedirectArray(redirectUris);

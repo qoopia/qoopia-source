@@ -73,7 +73,7 @@ h1,h2,h3{text-wrap:balance;scroll-margin-top:96px}
 .q-consent .quiet button{background:transparent;color:var(--qoopia-ivory)}
 .q-consent dd{margin:8px 0 24px;overflow-wrap:anywhere}
 .q-consent small{color:var(--qoopia-smoke);overflow-wrap:anywhere}
-.q-auth button:hover:not(:disabled),.q-auth .btn:hover{background:var(--qoopia-smoke);color:var(--qoopia-graphite)}
+@media(hover:hover){.q-auth button:hover:not(:disabled),.q-auth .btn:hover{background:var(--qoopia-smoke);color:var(--qoopia-graphite)}}
 .q-guide{margin:0;background:var(--qoopia-graphite);color:var(--qoopia-ivory);font:17px/1.5 var(--qoopia-font-ui)}
 .q-guide main{max-width:850px;margin:0 auto;padding:40px 24px 96px}
 .q-guide h1{font:500 clamp(32px,5vw,40px)/1.2 var(--qoopia-font-ui);margin:40px 0 24px}
@@ -91,6 +91,8 @@ h1,h2,h3{text-wrap:balance;scroll-margin-top:96px}
 @media(pointer:coarse){.q-language button{min-width:44px;min-height:44px}.q-auth button,.q-auth .btn,.q-guide nav a{min-height:44px}}
 
 .q-consent .languages{margin-top:24px;text-align:right}
+.q-consent a.btn{display:block;box-sizing:border-box;width:100%;text-align:center;text-decoration:none}
+.q-consent .languages a{display:inline-block;min-width:44px;min-height:44px;line-height:44px;text-align:center}
 
 @media(max-width:700px){.q-profile .profile-grid:has(#signin-form)>.profile-panel{grid-row:1}}
 
