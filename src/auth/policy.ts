@@ -93,11 +93,17 @@ export function currentToolAuth(database: Database, auth: AuthContext, risk: Ris
   }
   return { ...auth, type: p.type, tool_profile: p.tool_profile };
 }
+export const AGENTCOMM_TOOLS: readonly string[] = [
+  "agent_send", "agent_inbox", "agent_reply", "agent_status", "agent_session_create", "agent_session_close",
+];
 export function bootstrapToolAllowed(name: string, profile?: string): boolean {
   if (!profile) return true; // named legacy full connection, during compatibility window
   if (profile === "runtime-reporter") return false;
   if (["recall", "note_get", "skill_search", "skill_get", "operation_get"].includes(name)) return true;
   if (profile === "memory-worker" && ["note_create", "note_update", "session_save"].includes(name)) return true;
+  // AgentComm: a memory worker may talk to other agents of its workspace. Tool profile and OAuth
+  // scope still gate each call, so a read-only connection keeps inbox/status and cannot send.
+  if (profile === "memory-worker" && AGENTCOMM_TOOLS.includes(name)) return true;
   if (profile === "skill-author" && ["skill_upsert", "entity_upsert", "skill_mark_tested"].includes(name)) return true;
   return profile === "owner" && ["connection_prepare", "agent_list", "agent_onboard", "agent_deactivate", "skill_upsert", "skill_mark_tested"].includes(name);
 }

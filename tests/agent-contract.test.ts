@@ -77,11 +77,10 @@ test('each mechanism reports one of five states with a reason and an action',()=
   const standard=of(agents.standard!),reader=of(agents.reader!);
   expect(standard['memory.notes']).toMatchObject({status:'available',reason:null});
   expect(standard.management).toMatchObject({status:'forbidden',tools:[],action:'Ask the steward or the owner to do it.'});
-  // A memory worker's AgentComm is withheld by its connection profile, which no switch widens:
-  // the contract must not send the owner to a card control or agent_set_profile that cannot help.
+  // A memory worker's connection profile includes AgentComm: it may message agents of its workspace.
   const worker=of(agents.worker!);
-  expect(worker.agentcomm).toMatchObject({status:'forbidden',tools:[]});
-  expect(worker.agentcomm!.action).toContain('agent_set_profile cannot add them');
+  expect(worker.agentcomm).toMatchObject({status:'available',reason:null});
+  expect(worker.agentcomm!.tools).toEqual(expect.arrayContaining(['agent_send','agent_inbox','agent_reply','agent_status']));
   expect(of(agents.steward!).management!.tools).toContain('memory_policy_list');
   expect(of(agents.steward!).management!.tools).not.toContain('memory_policy_set');
   expect(of(owner).management!.tools).toContain('memory_policy_set');
