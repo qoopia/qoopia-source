@@ -1,5 +1,34 @@
 # Changelog
 
+## 5.0.18 — 2026-10-06
+
+- Autosave out of the box on every runtime. ChatGPT, Claude.ai, Grok bots and Muse have no lifecycle hooks
+  and saved a conversation only when the model happened to. While an agent's Autosave switch is on, Qoopia
+  now asks the model to save every turn — in its connection instructions and, while no turn was saved
+  lately, in tool results — and `session_save` takes the turn in one call (`{user, assistant}`, no session
+  id needed, a retried turn is not stored twice). Switching Autosave off stops the request and the save at
+  once; on brings both back without reconnecting. Agents Qoopia already captures (Claude Code/Codex hooks,
+  the built-in agent), read-only connections and agents that save every message are never asked. The
+  dashboard shows "Saving automatically" only for agents that really save their conversations, no longer
+  for a once-a-day save. Agent kit revision 12.
+- External access (user report): Claude.ai adds a trailing slash to a connection URL; `/mcp/c/<id>/`
+  now is that connection (metadata, audience, the tunnel edge) instead of a 404 that fell back to the
+  general sign-in on this computer's dashboard. A general sign-in through the tunnel is refused with the
+  advice to use the connection address.
+- Session memory (user report): a memory file for another computer linked on the installation's own
+  computer binds Codex and its MCP entry to loopback, not the tunnel address; existing bindings move at
+  start.
+- Security: on a shared Linux host another OS user could start a device-code sign-in from the owner's
+  loopback dashboard and receive an owner dashboard session once the owner approved the code; it now needs
+  the launcher's owner claim. Entity pages are changed only by their author, the steward or the owner. The
+  memory file for another computer says it is a key to memory.
+- `qoopia doctor` says when Codex waits for the owner to trust the Qoopia hooks again; a full disk reads
+  "The disk is full: free some space, then retry. Your saved memory is safe." instead of `ENOSPC`.
+- MCP: `/mcp` speaks protocol 2026-07-28 (server SDK 2, zod 4); 2025-era clients keep the initialize
+  handshake. The Claude Desktop stdio adapter stays on 2025-11-25.
+- Dependencies: proxy-addr 2.0.8 (GHSA-jqcg-44mw-7w3h) and argparse 2 for mammoth's CLI, which drops
+  sprintf-js (GHSA-hp3w-g68c-fv3c, no fixed release); `bun audit` is clean.
+
 ## 5.0.17 — 2026-10-04
 
 - External access (user report): ChatGPT and Claude.ai connect to a Mac/Linux install behind the managed
