@@ -147,6 +147,8 @@ export function oauthResource(): string { return new URL("/mcp", env.PUBLIC_URL)
 /** Every connection has a pinned MCP audience; never accept a caller-selected destination. */
 export function validateOAuthResource(resource?: string | null): string {
   const expected = oauthResource();
+  // Claude.ai derives the resource from a connector URL with a trailing slash; one slash names the same resource.
+  if (resource?.endsWith("/")) resource = resource.slice(0, -1);
   if (resource === undefined || resource === null || resource === expected) return expected;
   try { const id=resourceConnection(resource); if(id){publicConnection(id);return resource;} } catch { /* Unknown or revoked connection resource: invalid_target below (fail closed). */ }
   throw new Error("invalid_target");

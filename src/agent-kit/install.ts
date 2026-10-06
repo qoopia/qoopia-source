@@ -8,7 +8,7 @@ import {QoopiaError,type QoopiaErrorCode} from '../utils/errors.ts';
 import {nativeOwnerHome} from '../delivery/native-keychain.ts';
 const BEGIN='<!-- qoopia:protocol:start -->',END='<!-- qoopia:protocol:end -->';
 const referenceDirectorySchema=z.string().startsWith('/').max(2048).refine(value=>!hasNulOrNewline(value),'Invalid runtime instruction path');
-const receiptSchema=z.object({reference_directory:referenceDirectorySchema.optional(),format:z.literal('qoopia-instructions/1'),files:z.record(z.object({before:z.string().nullable(),after:z.string()})),blocks:z.array(z.string()),role:z.enum(['client','steward']).optional(),language:z.enum(['ru','en']).optional(),state:z.enum(['pending','installed','removed'])});
+const receiptSchema=z.object({reference_directory:referenceDirectorySchema.optional(),format:z.literal('qoopia-instructions/1'),files:z.record(z.string(), z.object({before:z.string().nullable(),after:z.string()})),blocks:z.array(z.string()),role:z.enum(['client','steward']).optional(),language:z.enum(['ru','en']).optional(),state:z.enum(['pending','installed','removed'])});
 type Change={file:string;before:string|null;after:string;kind:'document'|'instructions'};
 /** A refusal names its cause and file so the owner can fix it; the client still has qoopia_protocol over MCP. */
 function refuse(code:QoopiaErrorCode,message:string,file:string):never{throw new QoopiaError(code,message+': '+file,{file});}

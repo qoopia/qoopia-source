@@ -2,6 +2,9 @@ import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { db, DB_PATH } from '../src/db/connection.ts';
 import { runMigrations } from '../src/db/migrate.ts';
@@ -9,6 +12,8 @@ import { createWorkspace } from '../src/admin/workspaces.ts';
 import { createAgent } from '../src/admin/agents.ts';
 import { startHttpServer } from '../src/http.ts';
 import { recordStorageWriteFailure, resetStorageDegradationForTests, storageDegradation } from '../src/utils/storage-degradation.ts';
+import { fail } from '../src/mcp/tools.ts';
+import { apiError } from '../src/api/authority.ts';
 
 let server:Server,base='',key='';
 function parseMcp(text:string){try{return JSON.parse(text);}catch{/* SSE body: parse data frames below. */}for(const line of text.split('\n').reverse())if(line.startsWith('data:'))try{return JSON.parse(line.slice(5).trim());}catch{/* Try the previous frame. */}throw new Error('invalid MCP response');}
@@ -22,6 +27,23 @@ test('T27 does not degrade from spoofed SQLITE_FULL text or code',()=>{
  expect(recordStorageWriteFailure(textSpoof)).toBe(false);
  expect(recordStorageWriteFailure({code:'SQLITE_FULL',message:'database or disk is full'})).toBe(false);
  expect(storageDegradation().degraded).toBe(false);
+});
+
+test('a full disk reads in plain words on MCP, the API and the CLI, never as the raw ENOSPC, and does not stop writes',()=>{
+ const plain='The disk is full: free some space, then retry. Your saved memory is safe.';
+ for(const error of [Object.assign(new Error('ENOSPC: no space left on device, write'),{code:'ENOSPC'}),Object.assign(new Error('EDQUOT: disk quota exceeded, write'),{code:'EDQUOT'}),new Error('STAGING_SPACE_INSUFFICIENT')]) {
+  expect(fail(error).content[0]!.text).toBe('STORAGE_FULL: '+plain);
+  expect(apiError(error)).toMatchObject({status:507,error:{code:'STORAGE_FULL',message:plain}});
+ }
+ // Unlike SQLITE_FULL there is no restart: freeing space is enough.
+ expect(storageDegradation().degraded).toBe(false);
+ // The CLI refusal line the Mac app shows: here its output is a file on a full disk.
+ const preload=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-enospc-')),'full.ts');
+ fs.writeFileSync(preload,'console.log=()=>{throw Object.assign(new Error("ENOSPC: no space left on device, write"),{code:"ENOSPC"});};\n');
+ try {
+  const run=spawnSync(process.execPath,['--preload',preload,'src/delivery/entry.ts','help'],{encoding:'utf8',env:{PATH:process.env.PATH}});
+  expect(run.stderr.trim()).toBe('Qoopia operation refused: STORAGE_FULL: '+plain);expect(run.status).toBe(1);
+ } finally {fs.rmSync(path.dirname(preload),{recursive:true,force:true});}
 });
 
 // The fault mutates SQLite's page limit and the process-wide write latch.

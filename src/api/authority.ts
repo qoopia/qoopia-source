@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { db } from "../db/connection.ts";
 import { authenticate, type AuthContext } from "../auth/middleware.ts";
 import { authorize, type AuthorityAction } from "../auth/policy.ts";
@@ -13,7 +12,7 @@ import { reviseDraft, reviseSchema, compileDraft, compileSchema, reviewSkill, re
 import { canonical, digest } from "../skills/commands.ts";
 import { COMPILER, RENDERER, NATIVE_RENDERER, renderRunbook, type SkillContent } from "../skills/format.ts";
 import { QoopiaError } from "../utils/errors.ts";
-import { recordStorageWriteFailure } from "../utils/storage-degradation.ts";
+import { diskFull, recordStorageWriteFailure } from "../utils/storage-degradation.ts";
 import { readPackage } from "../skills/legacy/archive.ts";
 import { addToolRisk, annotationsFor, labelUntrustedContent, type RiskClass } from "../mcp/tools.ts";
 import { getV4FeatureFlags } from "../utils/health-metadata.ts";
@@ -30,7 +29,7 @@ const identifier = z.string().min(1).max(200);
 const searchSchema = z.object({ query: z.string().max(1000).default(""), limit: z.number().int().min(1).max(100).default(25), cursor: z.string().max(2000).optional() }).strict();
 const getSchema = z.object({ id: identifier.optional(), slug: identifier.optional(), version_id: identifier.optional() }).strict();
 type Handler = (auth: AuthContext, args: unknown, database: Database) => unknown;
-interface Operation { name: string; method: string; path: string; action: AuthorityAction; schema: z.AnyZodObject; handler: Handler; description: string; humanOnly?: boolean; }
+interface Operation { name: string; method: string; path: string; action: AuthorityAction; schema: z.ZodObject; handler: Handler; description: string; humanOnly?: boolean; }
 
 export function searchSkills(auth: AuthContext, raw: unknown, database: Database = db) {
   const a = searchSchema.parse(raw), p = authorize(database, auth, "read");
@@ -165,7 +164,7 @@ export function effectiveAuthority(auth?: AuthContext, database: Database = db, 
     if (mcpTaken.has(op.name)) return false;
     try { authorize(database, auth, op.action); return true; } catch { return false; }
   }).map((op) => ({ name: op.name, method: op.method, path: `/api/v1${op.path}`, risk: op.action,
-    input_schema: toJsonSchemaCompat(op.schema, { target: "jsonSchema7" }) }));
+    input_schema: z.toJSONSchema(op.schema, { target: "draft-7", io: "input" }) }));
   // Part of the digest on purpose: a client comparing digests notices that the owner changed the mode.
   const memory_policy = { mode: row.memory_mode, revision: row.memory_mode_revision,
     automatic_capture: row.memory_mode === "auto" ? "allowed" : "refused_with_APPROVAL_REQUIRED", managed_by: "workspace owner" };
@@ -194,6 +193,7 @@ export function agentCoverage(auth: AuthContext | null, target: string, database
 export function apiError(error: unknown, requestId = randomUUID()) {
   if (error instanceof URIError) error = new QoopiaError("INVALID_INPUT", "Malformed percent-encoding in the request path");
   if (recordStorageWriteFailure(error)) error = new QoopiaError("STORAGE_FULL", "SQLite storage capacity exhausted; writes are disabled. Free storage capacity, then restart Qoopia and verify /ready before resuming writes.");
+  error = diskFull(error) ?? error;
   const code = error instanceof QoopiaError ? error.code : error instanceof z.ZodError ? "INVALID_INPUT" : "INTERNAL";
   const statuses: Record<string, number> = { INVALID_INPUT: 400, UNAUTHENTICATED: 401, UNAUTHORIZED: 401, FORBIDDEN: 403, APPROVAL_REQUIRED: 403,
     NOT_FOUND: 404, MANUAL_DRIFT: 409, CONFLICT: 409, STALE_REVISION: 409, IDEMPOTENCY_MISMATCH: 409, EXPIRED: 410, REVOKED: 410, SIZE_LIMIT: 413,

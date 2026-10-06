@@ -1,6 +1,6 @@
 import {z} from 'zod';
 import qr from 'qrcode-generator';
-import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import type {McpServer} from '@modelcontextprotocol/server';
 import type {AuthContext} from '../auth/middleware.ts';
 import {db} from '../db/connection.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';

@@ -1,6 +1,6 @@
 /** F-255: free-form MCP write fields are bounded, and note_list is a preview list. */
 import {afterAll, beforeAll, expect, test} from 'bun:test';
-import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import {McpServer} from '@modelcontextprotocol/server';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {runMigrations} from '../src/db/migrate.ts';

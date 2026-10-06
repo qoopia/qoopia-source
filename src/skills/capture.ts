@@ -15,7 +15,7 @@ export const captureSchema = z.object({
   title: z.string().min(1).max(300), slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
   text: z.string().max(100_000).optional(), source_id: z.string().max(200).optional(),
   first_message_id: z.number().int().positive().optional(), last_message_id: z.number().int().positive().optional(),
-  filename: z.string().max(400).optional(), metadata: z.record(z.string().max(1000)).default({}),
+  filename: z.string().max(400).optional(), metadata: z.record(z.string(), z.string().max(1000)).default({}),
   content: contentSchema.optional(), choice: z.enum(['new','update','fork']).default('new'),
   draft_id: z.string().max(200).optional(), skill_id:z.string().max(200).optional(), parent_skill_id: z.string().max(200).optional(),
   expected_revision: z.number().int().nonnegative(), idempotency_key: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),

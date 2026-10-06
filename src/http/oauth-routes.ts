@@ -266,6 +266,9 @@ export function handleAuthorizeRedirect(
 
   if(assignedConnection && resource !== connectionResource(assignedConnection.id))return fail("invalid_target");
   const resourceId=resourceConnection(resource);
+  // The general flow consents on this computer's own dashboard with every scope. Through the tunnel that
+  // page is someone else's loopback, so a remote client must use its connection address instead.
+  if(!resourceId&&edgeClientKey(req))return fail("invalid_target","Use the connection address from Qoopia (Connections → the agent → its /mcp/c/… URL), not the general /mcp address");
   if(resourceId){
     const connection=publicConnection(resourceId);
     if(client.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id)return fail("invalid_target");

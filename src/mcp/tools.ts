@@ -1,11 +1,11 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { AuthContext } from "../auth/middleware.ts";
 import type { OAuthScope } from "../auth/oauth.ts";
 import { grantedScopeAllowsRisk } from "../auth/oauth.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
-import { recordStorageWriteFailure } from "../utils/storage-degradation.ts";
+import { diskFull, recordStorageWriteFailure } from "../utils/storage-degradation.ts";
 import { NOTE_TYPES } from "../services/notes.ts";
 import {
   createNote,
@@ -18,6 +18,7 @@ import { recall } from "../services/recall.ts";
 import { brief } from "../services/brief.ts";
 import {
   saveMessage,
+  saveTurn,
   sessionRecent,
   sessionSearch,
   sessionSummarize,
@@ -37,13 +38,13 @@ import { adminTools } from "./admin-tools.ts";
 import { entityTools } from "./entity_tools.ts";
 import { skillTools } from "./skill_tools.ts";
 import { fileList, fileGet, filePut } from "../services/files.ts";
-import { assertInstanceWriteAllowed } from "../utils/instance-role.ts";
+import { assertInstanceWriteAllowed, isReadOnlyInstance } from "../utils/instance-role.ts";
 import { enabledV4Tools } from "./v4-tools.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
 import { db } from "../db/connection.ts";
 import { bootstrapToolAllowed, currentToolAuth } from "../auth/policy.ts";
 import { levelOf, seesWholeWorkspace } from "../auth/principal.ts";
-import { canManagePolicy } from "../services/memory-policy.ts";
+import { autosaveReminder, canManagePolicy } from "../services/memory-policy.ts";
 import { boundedMetadata, boundedTags, isToolAllowedForProfile, type AgentToolProfile, type RiskClass } from "./profiles.ts";
 
 export {
@@ -97,6 +98,7 @@ function ok(data: unknown, toolName?: string) {
 
 export function fail(err: unknown, log = "MCP tool") {
   let msg: string;
+  err = diskFull(err) ?? err;
   if (recordStorageWriteFailure(err)) {
     msg = "STORAGE_FULL: SQLite storage capacity exhausted; writes are disabled. Free storage capacity, then restart Qoopia and verify /ready before resuming writes.";
   } else
@@ -132,7 +134,7 @@ export function toolCallback(
   authProvider: () => AuthContext | null,
   risk: RiskClass,
   handler: ToolDef["handler"],
-  o: { writeLabel: string; forbids: string; await: boolean; untrusted?: string; log?: string },
+  o: { writeLabel: string; forbids: string; await: boolean; untrusted?: string; log?: string; autosave?: boolean },
 ) {
   return async (args: unknown) => {
     try {
@@ -143,7 +145,10 @@ export function toolCallback(
         return fail(new QoopiaError("FORBIDDEN", `OAuth token scope forbids MCP tool ${o.forbids}`), o.log);
       }
       const result = handler((args as Record<string, unknown>) || {}, currentToolAuth(db, auth, risk));
-      return ok(o.await ? await result : result, o.untrusted);
+      const data = o.await ? await result : result;
+      // Autosave asks a client without lifecycle hooks to save the turn; session_save itself is that save.
+      const reminder = o.autosave && o.writeLabel !== "session_save" ? autosaveReminder(auth.workspace_id, auth.agent_id) : undefined;
+      return ok(reminder && data && typeof data === "object" && !Array.isArray(data) ? { ...data, autosave: reminder } : data, o.untrusted);
     } catch (err) {
       return fail(err, o.log);
     }
@@ -428,17 +433,26 @@ const tools: ToolDef[] = [
     name: "session_save",
     risk: "write-low",
     description:
-      "Append one message to a session. Call after every user message AND every assistant response. Use a unique session_id such as a UUID; an id that is already taken is refused as unavailable. Supply message_id to make a retry return the original row instead of appending again; reusing it for a different message is a CONFLICT.",
+      "Save the conversation. Autosave: at the end of every reply call it once with {user, assistant}, the user's message and your reply; session_id is optional (the day's turns share one session) and a retried turn is not stored twice. To append one message pass {session_id, role, content}. Use a unique session_id such as a UUID; an id that is already taken is refused as unavailable. Supply message_id to make a retry return the original row instead of appending again; reusing it for a different message is a CONFLICT.",
     rawSchema: {
-      session_id: z.string().min(1).max(100),
-      role: z.enum(["user", "assistant", "system", "tool"]),
-      content: z.string().min(1).max(100_000),
+      session_id: z.string().min(1).max(100).optional(),
+      user: z.string().min(1).max(100_000).optional(),
+      assistant: z.string().min(1).max(100_000).optional(),
+      role: z.enum(["user", "assistant", "system", "tool"]).optional(),
+      content: z.string().min(1).max(100_000).optional(),
       metadata: boundedMetadata().optional(),
       token_count: z.number().int().positive().optional(),
       message_id: z.string().min(1).max(128).optional(),
     },
-    handler: (args, auth) =>
-      saveMessage({
+    handler: (args, auth) => {
+      if (args.user !== undefined || args.assistant !== undefined) {
+        if (args.role !== undefined || args.content !== undefined) throw new QoopiaError("INVALID_INPUT", "Pass either user/assistant or role/content, not both");
+        return saveTurn({ workspace_id: auth.workspace_id, agent_id: auth.agent_id, session_id: args.session_id as string | undefined,
+          user: args.user as string | undefined, assistant: args.assistant as string | undefined, metadata: args.metadata as Record<string, unknown> | undefined });
+      }
+      if (args.session_id === undefined || args.role === undefined || args.content === undefined)
+        throw new QoopiaError("INVALID_INPUT", "Pass user and assistant (one turn), or session_id, role and content (one message)");
+      return saveMessage({
         workspace_id: auth.workspace_id,
         agent_id: auth.agent_id,
         session_id: String(args.session_id),
@@ -447,7 +461,8 @@ const tools: ToolDef[] = [
         metadata: args.metadata as Record<string, unknown> | undefined,
         token_count: args.token_count as number | undefined,
         message_id: args.message_id as string | undefined,
-      }),
+      });
+    },
   },
   {
     name: "session_recent",
@@ -871,6 +886,14 @@ export function annotationsFor(risk: RiskClass) {
   return { readOnlyHint: risk === "read", destructiveHint: risk === "write-destructive" || risk === "admin" };
 }
 
+/** Whether this registration offers session_save: the same gates as the loop below, so Autosave never
+ * asks a model for a tool it does not have (a read-only connection, a reader profile, a follower instance). */
+export function sessionSaveOffered(profile: ToolProfile, opts?: { agentToolProfile?: AgentToolProfile; grantedScope?: OAuthScope[]; bootstrapProfile?: string }) {
+  const risk = findTool("session_save")!.risk;
+  return bootstrapToolAllowed("session_save", opts?.bootstrapProfile) && (profile !== "memory" || MEMORY_TOOLS.has("session_save"))
+    && isToolAllowedForProfile(risk, opts?.agentToolProfile ?? "full") && grantedScopeAllowsRisk(opts?.grantedScope, risk) && !isReadOnlyInstance();
+}
+
 export function registerTools(
   server: McpServer,
   authProvider: () => AuthContext | null,
@@ -888,6 +911,7 @@ export function registerTools(
   // computes this from auth.tool_profile via normalizeAgentProfile.
   const agentProfile: AgentToolProfile = opts?.agentToolProfile ?? "full";
   const grantedScope = opts?.grantedScope;
+  const autosave = sessionSaveOffered(profile, opts);
 
   for (const tool of tools) {
     if (!bootstrapToolAllowed(tool.name, opts?.bootstrapProfile)) continue;
@@ -906,7 +930,7 @@ export function registerTools(
         inputSchema: z.object({...effectiveToolSchema(tool),
         ...(tool.name==='note_create'&&authProvider()?.connection_id?{idempotency_key:z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).describe('Use a stable unique key for this write. Reuse it only to retry the exact same note after an interrupted request.')}:{})}).strict() },
       toolCallback(authProvider, tool.risk, tool.handler, {
-        writeLabel: tool.name, forbids: `'${tool.name}'`, await: true, untrusted: tool.name,
+        writeLabel: tool.name, forbids: `'${tool.name}'`, await: true, untrusted: tool.name, autosave,
       }),
     );
   }

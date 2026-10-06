@@ -73,7 +73,7 @@ export function nativeModelStatus(expected:string,evidence?:NativeModelEvidence)
 }
 export const evaluatorSchema=z.object({
   kind:z.literal('json-artifacts/1'), objective:z.string().min(1).max(2000),
-  cases:z.array(z.object({name:identifier,path:z.string().regex(/^[a-zA-Z0-9_-]+\.json$/),expected:z.record(z.unknown()),absent:z.array(z.string().regex(/^[a-zA-Z0-9_-]+\.json$/)).max(10).default([])}).strict()).min(1).max(10),
+  cases:z.array(z.object({name:identifier,path:z.string().regex(/^[a-zA-Z0-9_-]+\.json$/),expected:z.record(z.string(), z.unknown()),absent:z.array(z.string().regex(/^[a-zA-Z0-9_-]+\.json$/)).max(10).default([])}).strict()).min(1).max(10),
   comparison:z.object({baseline_run_id:identifier,hypothesis:z.string().min(1).max(1000),dimensions_digest:hash}).strict().optional(),
   native:nativeOptionsSchema.optional(),
 }).strict();
@@ -161,7 +161,7 @@ export function observeRuntime(auth:AuthContext,input:unknown,database:Database=
 }
 export const outcomeSchema=z.object({...mutation,run_id:identifier,version_id:identifier,evidence_class:z.enum(['self_report','verified_outcome']),
   reported_status:z.enum(['succeeded','failed','partial','unknown','cancelled']).optional(),
-  artifacts:z.record(z.string().max(100_000)).default({}),outside_writes:z.enum(['none','detected','unknown']).default('unknown'),
+  artifacts:z.record(z.string(), z.string().max(100_000)).default({}),outside_writes:z.enum(['none','detected','unknown']).default('unknown'),
   execution_observation_id:identifier.optional(),supersedes_id:identifier.optional()}).strict();
 export function evaluateArtifacts(evaluator:z.infer<typeof evaluatorSchema>,artifacts:Record<string,string>,outside:string){
   const assertions=evaluator.cases.map(c=>{let matches=false;try{matches=canonical(JSON.parse(artifacts[c.path]??''))===canonical(c.expected);}catch{/* Invalid or missing artifact is a failed assertion. */}

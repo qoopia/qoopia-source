@@ -1,5 +1,5 @@
 import {beforeAll,expect,test} from 'bun:test';
-import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import type {McpServer} from '@modelcontextprotocol/server';
 import {runMigrations} from '../src/db/migrate.ts';
 import {db} from '../src/db/connection.ts';
 import {createWorkspace} from '../src/admin/workspaces.ts';
@@ -13,6 +13,7 @@ import {agentMemoryStatus,noteAgentWork} from '../src/services/memory-policy.ts'
 import fs from 'node:fs';
 import path from 'node:path';
 import {continuityEvent} from '../src/services/continuity.ts';
+import {saveMessage,saveTurn} from '../src/services/sessions.ts';
 import {memoryClientConnectionPath} from '../src/services/memory-model.ts';
 import {setMemoryPolicy} from '../src/services/memory-policy.ts';
 import type {AuthContext} from '../src/auth/middleware.ts';
@@ -93,10 +94,11 @@ test('each mechanism reports one of five states with a reason and an action',()=
 
 test('automatic capture is reported as it really is, not as it is wished',()=>{
   const state=()=>agentContractFor(db,workspace,agents.standard!,authorityOperations)!.mechanisms.find(m=>m.id==='memory.continuity')!;
-  expect(state()).toMatchObject({status:'needs_setup'});
+  // Without hooks Autosave is the agent's own part: available, with the instruction to save each turn.
+  expect(state()).toMatchObject({status:'available',tools:['session_save']});expect(state().action).toContain('session_save');
   db.query(`INSERT INTO client_connections(id,workspace_id,owner_id,agent_id,surface,access_mode,request_key,state,challenge_hash,challenge_expires_at,created_at)
     VALUES('00000000-0000-4000-8000-00000000c0de',?,?,?,'chatgpt_web','read_write','contract-test','verified','x','2999-01-01','2026-01-01')`).run(workspace,owner,agents.standard!);
-  expect(state()).toMatchObject({status:'client_unsupported'});expect(state().action).toContain('note_create');
+  expect(state()).toMatchObject({status:'available'});expect(state().action).toContain('session_save');
   continuityEvent(workspace,agents.standard!,{session_id:'claude_code:contract',project:'/contract',runtime:'claude_code',event:'progress',messages:[{id:'c1',role:'user',content:'Синтетическое сообщение.'}]});
   expect(state()).toMatchObject({status:'available',reason:null});
   setMemoryPolicy({workspace_id:workspace,agent_id:agents.standard!,mode:'manual',actor_id:owner});
@@ -141,8 +143,10 @@ test('a linked runtime agent reads the capture of its separate memory agent, and
   continuityEvent(workspace,memory,{session_id:'claude_code:served',project:'/served',runtime:'claude_code',event:'progress',messages:[{id:'s1',role:'user',content:'Синтетическое сообщение.'}]});
   expect(state(linked)).toMatchObject({status:'available',served_by:'Qoopia Claude memory',reason:'Sessions of this runtime are captured and restored by its separate Qoopia memory agent.'});
   const at=(ms:number)=>new Date(Date.now()-ms).toISOString();
-  db.query('UPDATE session_messages SET created_at=? WHERE agent_id=?').run(at(3*3600_000),memory);
-  db.query('UPDATE sessions SET created_at=? WHERE agent_id=?').run(at(3*3600_000),memory);
+  // One instant for both: a session created a millisecond after the last capture reads as hooks still registering.
+  const captured=at(3*3600_000);
+  db.query('UPDATE session_messages SET created_at=? WHERE agent_id=?').run(captured,memory);
+  db.query('UPDATE sessions SET created_at=? WHERE agent_id=?').run(captured,memory);
   // Idle since its last capture: nothing is wrong.
   db.query('UPDATE agents SET last_seen=? WHERE id=?').run(at(3*3600_000-60_000),memory);
   expect(state(memory)).toMatchObject({status:'available'});
@@ -162,12 +166,13 @@ test('a linked runtime agent reads the capture of its separate memory agent, and
 
 test('an agent without hooks whose last save is old is not shown as saving automatically',()=>{
   const bot=createAgent({name:'contract-chat-client',workspaceSlug:'agent-contract-check'}).id;
-  db.query(`INSERT INTO sessions(id,workspace_id,agent_id,metadata) VALUES('contract-explicit-save',?,?,'{}')`).run(workspace,bot);
-  db.query(`INSERT INTO session_messages(session_id,workspace_id,agent_id,role,content,created_at) VALUES('contract-explicit-save',?,?,'user','Синтетика.',?)`)
-    .run(workspace,bot,new Date(Date.now()-30*86400_000).toISOString());
+  // A one-off or scheduled save (LIA's daily task) is not autosave, however fresh.
+  saveMessage({workspace_id:workspace,agent_id:bot,session_id:'contract-explicit-save',role:'assistant',content:'Синтетика.'});
   expect(agentMemoryStatus(workspace,bot).state).toBe('waiting');
-  db.query('UPDATE session_messages SET created_at=? WHERE agent_id=?').run(new Date().toISOString(),bot);
-  expect(agentMemoryStatus(workspace,bot).state).toBe('working');
+  saveTurn({workspace_id:workspace,agent_id:bot,user:'Синтетика?',assistant:'Синтетика.'});
+  expect(agentMemoryStatus(workspace,bot).state).not.toBe('waiting');
+  db.query('UPDATE sessions SET last_active=? WHERE agent_id=?').run(new Date(Date.now()-30*86400_000).toISOString(),bot);
+  expect(agentMemoryStatus(workspace,bot).state).toBe('waiting');
 });
 
 test('a memory client linked in settings that has not delivered yet is waiting for setup, not a model error',()=>{

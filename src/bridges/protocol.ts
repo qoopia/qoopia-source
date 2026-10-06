@@ -28,7 +28,7 @@ export async function newIdentity():Promise<Identity> {
     signPrivate:await exportJWK(sign.privateKey) as Identity['signPrivate'],encryptPrivate:await exportJWK(encrypt.privateKey) as Identity['encryptPrivate']};
 }
 
-const rpcSchema=z.object({op:z.string().regex(/^[a-z-]{1,32}$/),body:z.record(z.unknown())}).strict();
+const rpcSchema=z.object({op:z.string().regex(/^[a-z-]{1,32}$/),body:z.record(z.string(), z.unknown())}).strict();
 export async function signRPC(keys:Identity,relay:string,op:string,body:Record<string,unknown>) {
   const signature=await new SignJWT(rpcSchema.parse({op,body})).setProtectedHeader({alg:'Ed25519',typ:'qoopia-bridge-rpc+jwt'})
     .setIssuer(peerId(keys)).setAudience(relay).setIssuedAt().setExpirationTime('60s').setJti(randomUUID())
@@ -55,7 +55,7 @@ export async function ownerStatement(signature:string,owner:PublicIdentity,relay
 
 export const catalogueItem=z.object({id,version:fingerprint,title:label,description:z.string().max(400)}).strict();
 export const packetSchema=z.object({id,group:id,from:fingerprint,to:fingerprint,created:z.number().int().positive(),
-  kind:z.enum(['catalogue-request','catalogue','request','material','skipped','ack']),body:z.record(z.unknown())}).strict();
+  kind:z.enum(['catalogue-request','catalogue','request','material','skipped','ack']),body:z.record(z.string(), z.unknown())}).strict();
 export type Packet=z.infer<typeof packetSchema>;
 export async function sealPacket(keys:Identity,recipient:PublicIdentity,packet:Packet):Promise<string> {
   if(packet.from!==peerId(keys)||packet.to!==peerId(recipient))throw new Error('Packet identity mismatch');

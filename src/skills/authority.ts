@@ -23,7 +23,7 @@ export const reviseSchema = z.object({
 }).strict();
 export const compileSchema = z.object({
   draft_id: id, expected_revision: z.number().int().positive(), version_label: z.string().min(1).max(100),
-  license: z.string().min(1).max(200), native_name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional(), members: z.record(z.string().max(4 * 1024 * 1024)).default({}), idempotency_key: key,
+  license: z.string().min(1).max(200), native_name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional(), members: z.record(z.string(), z.string().max(4 * 1024 * 1024)).default({}), idempotency_key: key,
 }).strict();
 export const reviewSchema = z.object({
   version_id: id, expected_digest: hash, expected_revision: z.number().int().nonnegative(),

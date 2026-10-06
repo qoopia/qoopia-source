@@ -24,6 +24,7 @@ import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { buildFtsMatch } from "./fts-query.ts";
 import { upsertEntityEmbedding } from "./embedding-store.ts";
 import type { AuthContext } from "../auth/middleware.ts";
+import { seesWholeWorkspace } from "../auth/principal.ts";
 import { legacySkillUpsert } from "../skills/compatibility.ts";
 
 const MAX_TITLE = 300;
@@ -148,6 +149,21 @@ export interface UpsertResult {
 }
 
 /**
+ * OWNER DECISION 2026-10-04 (ADR-020), applied to pages: anyone with write access creates a page;
+ * only its author (authority_owner_id), the steward and the owner change it. A page with no
+ * recorded author (written before 5.0.18 or by a trusted server-side caller) is steward/owner-only.
+ */
+function assertCanModifyPage(row: { slug: string; authority_owner_id: string | null }, auth: AuthContext): void {
+  if (seesWholeWorkspace(auth) || row.authority_owner_id === auth.agent_id) return;
+  const author = row.authority_owner_id
+    ? (db.query("SELECT name FROM agents WHERE id = ?").get(row.authority_owner_id) as { name: string } | null)?.name
+    : undefined;
+  const next_action = `Ask ${author ? `${author} or ` : ""}the steward to change it, or write your own page under a new slug.`;
+  throw new QoopiaError("FORBIDDEN", `entity page ${row.slug} belongs to ${author ?? "the steward and the owner"}. ${next_action}`,
+    { next_action, author_agent_id: row.authority_owner_id });
+}
+
+/**
  * Insert a new entity, or update the existing one keyed by
  * (workspace_id, slug). Idempotent: re-running with identical input
  * touches updated_at but is otherwise a no-op (caller cannot
@@ -208,11 +224,12 @@ export function upsertEntity(input: UpsertInput, auth?: AuthContext): UpsertResu
 
   const existing = db
     .prepare(
-      `SELECT id FROM entity_pages WHERE workspace_id = ? AND slug = ? LIMIT 1`,
+      `SELECT id, slug, authority_owner_id FROM entity_pages WHERE workspace_id = ? AND slug = ? LIMIT 1`,
     )
-    .get(input.workspace_id, input.slug) as { id: string } | undefined;
+    .get(input.workspace_id, input.slug) as { id: string; slug: string; authority_owner_id: string | null } | undefined;
 
   if (existing) {
+    if (auth) assertCanModifyPage(existing, auth);
     db.prepare(
       `UPDATE entity_pages
          SET type = ?, title = ?, summary = ?, status = ?, metadata = ?, updated_at = ?
@@ -246,8 +263,8 @@ export function upsertEntity(input: UpsertInput, auth?: AuthContext): UpsertResu
   const id = ulid();
   db.prepare(
     `INSERT INTO entity_pages
-       (id, workspace_id, type, slug, title, summary, status, metadata, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, workspace_id, type, slug, title, summary, status, metadata, created_at, updated_at, authority_owner_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.workspace_id,
@@ -259,6 +276,7 @@ export function upsertEntity(input: UpsertInput, auth?: AuthContext): UpsertResu
     metadataJson,
     now,
     now,
+    auth?.agent_id ?? null,
   );
   fireAndForgetEmbed(
     id,

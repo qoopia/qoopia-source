@@ -9,6 +9,7 @@ import {installMemoryClient} from '../src/delivery/memory-client.ts';
 import {hash} from '../src/utils/fs.ts';
 import fs from 'node:fs';import path from 'node:path';
 import {env} from '../src/utils/env.ts';import {bindNativeOwnerHome} from '../src/delivery/native-keychain.ts';
+import {writeTransport,type TransportConfig} from '../src/delivery/transport-config.ts';import {newIdentity} from '../src/bridges/protocol.ts';
 
 let owner:ReturnType<typeof bootstrapOwner>,slug:string;
 type Connected={state:string;connection:{agent_id:string;key:string;runtime:string}};
@@ -87,6 +88,32 @@ test('the server moves a binding 5.0.16 left on the tunnel origin to loopback at
     expect(JSON.parse(fs.readFileSync(record,'utf8')).url).toBe(loopback);
     expect(fs.readFileSync(path.join(home,'.claude/settings.json'))).toEqual(settings);
     expect(migrateMemoryOrigins()).toEqual([{state:'current',runtime:'claude_code'}]);
+  } finally {
+    env.ROOT_DIR=prior.root;
+    if(prior.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=prior.standalone;
+    fs.rmSync(root,{recursive:true,force:true});
+  }
+});
+
+// Олжасбек, 5.0.17: the file for another computer, memory-linked on the installation's own computer, left Codex's
+// hooks and MCP entry on the tunnel address. At start they move to loopback, with the same agent and key.
+test('a binding to this installation\'s own tunnel address moves to loopback at start, MCP entry included',async()=>{
+  const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-memory-own-tunnel-')),home=path.join(root,'home');fs.mkdirSync(home,{mode:0o700});
+  const prior={root:env.ROOT_DIR,standalone:process.env.QOOPIA_STANDALONE};env.ROOT_DIR=root;bindNativeOwnerHome(home);
+  try {
+    const installation=randomUUID(),workspace=randomUUID(),origin='https://c-own.qoopia.ai';
+    writeTransport(root,{format:'qoopia-transport/1',owner_id:randomUUID(),workspace_id:workspace,installation_id:installation,identity:await newIdentity(),
+      tunnel_secret:Buffer.alloc(32).toString('base64'),enabled:true,device:{id:randomUUID(),installation_id:installation,workspace_id:workspace,label:'Mac',
+      public_origin:origin+'/',state:'active',created_at:Date.now(),revoked_at:null}} as TransportConfig);
+    const created=createAgent({name:'Remote fixture '+randomUUID(),workspaceSlug:slug,type:'standard'});
+    const remote={format:'qoopia-memory-connection/1' as const,url:origin,agent_id:created.id,key:created.api_key,runtime:'codex' as const};
+    installMemoryClient(remote,root,process.execPath,home);
+    process.env.QOOPIA_STANDALONE='true';
+    expect(migrateMemoryOrigins()).toEqual([{state:'relocated',runtime:'codex'}]);
+    const loopback='http://127.0.0.1:'+env.PORT;
+    expect(JSON.parse(fs.readFileSync(path.join(root,'memory-clients/codex/connection.json'),'utf8'))).toMatchObject({url:loopback,agent_id:created.id,key:created.api_key});
+    expect(fs.readFileSync(path.join(home,'.codex/config.toml'),'utf8')).toContain('url = '+JSON.stringify(loopback+'/mcp'));
+    expect(migrateMemoryOrigins()).toEqual([]);
   } finally {
     env.ROOT_DIR=prior.root;
     if(prior.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=prior.standalone;

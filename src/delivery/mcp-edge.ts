@@ -49,7 +49,7 @@ const routes: Record<string, readonly string[]> = {
 const bearerRequired = new Set(['/memory/continuity']);
 const routeBodyLimit: Record<string, number> = {'/memory/continuity': CONTINUITY_MAX_BODY_BYTES};
 // Explicit allowlists also remove proxy credentials, cookies and spoofed identity headers.
-const requestHeaders = ['authorization', 'accept', 'accept-language', 'content-type', 'origin', 'mcp-protocol-version', 'mcp-session-id',
+const requestHeaders = ['authorization', 'accept', 'accept-language', 'content-type', 'origin', 'mcp-protocol-version', 'mcp-method', 'mcp-name', 'mcp-session-id',
   'last-event-id', 'access-control-request-method', 'access-control-request-headers'];
 // The upstream's own security headers pass on every route: /brand/* and /oauth/authorize can be HTML/CSS/SVG.
 const responseHeaders = ['content-type', 'www-authenticate', 'mcp-session-id', 'mcp-protocol-version', 'retry-after',
@@ -72,8 +72,9 @@ export function edgeClientKey(req: IncomingMessage): string | undefined {
 export function mcpEdgeRoute(raw: string, method: string): 'allowed' | 'not_found' | 'method_not_allowed' {
   // Do not let URL normalization turn a forbidden path into an allowed one.
   const pathname = raw.split('?')[0]!;
-  const methods = routes[pathname] ?? (/^\/mcp\/c\/[a-f0-9-]{36}$/.test(pathname) ? routes["/mcp"] :
-    /^\/\.well-known\/(?:oauth-protected-resource\/mcp|oauth-authorization-server\/(?:oauth|mcp))\/c\/[a-f0-9-]{36}$/.test(pathname) ? ["GET","OPTIONS"] : undefined);
+  // A connection path may carry Claude.ai's trailing slash; the installation canonicalizes it.
+  const methods = routes[pathname] ?? (/^\/mcp\/c\/[a-f0-9-]{36}\/?$/.test(pathname) ? routes["/mcp"] :
+    /^\/\.well-known\/(?:oauth-protected-resource\/mcp|oauth-authorization-server\/(?:oauth|mcp))\/c\/[a-f0-9-]{36}\/?$/.test(pathname) ? ["GET","OPTIONS"] : undefined);
   return !methods ? 'not_found' : methods.includes(method) ? 'allowed' : 'method_not_allowed';
 }
 

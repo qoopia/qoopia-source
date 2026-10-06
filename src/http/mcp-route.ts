@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { Readable, pipeline } from "node:stream";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import { createMcpServer } from "../mcp/server.ts";
 import { normalizeAgentProfile, riskOf } from "../mcp/tools.ts";
 import { authenticate, type AuthContext } from "../auth/middleware.ts";
@@ -64,9 +66,12 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
   );
 
   // Access log: parse JSON-RPC method/tool name from body for debugging.
+  let initialize = false;
   if (body && body.length > 0) {
     try {
       const parsed = JSON.parse(body.toString("utf8"));
+      // 2026-07-28 has no initialize: server/discover returns the instructions.
+      initialize = parsed.method === "initialize" || parsed.method === "server/discover";
       const rpcMethod = ["initialize","notifications/initialized","tools/list","tools/call","ping"].includes(parsed.method) ? parsed.method : "unknown";
       let detail = "";
       if (rpcMethod === "tools/call" && parsed.params?.name) {
@@ -95,22 +100,6 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
   auth.bootstrap_profile = bootstrapProfile ?? null;
 
   await authStorage.run(auth, async () => {
-    const server = createMcpServer(() => getCurrentAuth(), "full", {
-      isSteward: isAdmin(auth),
-      bootstrapProfile,
-      agentToolProfile: agentProfile,
-      grantedScope: auth.granted_scope,
-    });
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
-    res.on("close", () => {
-      // Best-effort teardown on client disconnect; nothing to report to a closed response.
-      try { transport.close(); } catch { /* see above */ }
-      try { server.close(); } catch { /* see above */ }
-    });
-
-    await server.connect(transport);
     let parsedBody: unknown;
     if (body && body.length > 0) {
       try {
@@ -120,6 +109,22 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse) {
         return json(res, 400, { jsonrpc: "2.0", error: { code: -32700, message: "Parse error: Invalid JSON" }, id: null }, req);
       }
     }
-    await transport.handleRequest(req, res, parsedBody);
+    // One server per request, as before: protocol 2026-07-28 requests take the SDK's modern path,
+    // 2025-era clients (initialize handshake) its stateless fallback.
+    const handler = createMcpHandler(() => createMcpServer(() => getCurrentAuth(), "full", {
+      isSteward: isAdmin(auth),
+      bootstrapProfile,
+      agentToolProfile: agentProfile,
+      grantedScope: auth.granted_scope,
+      initialize,
+    }));
+    // A client disconnect aborts the request, which tears its server down.
+    const disconnect = new AbortController();
+    res.on("close", () => disconnect.abort());
+    const response = await handler.fetch(new Request(nodeReqToFetchRequest(req), { signal: disconnect.signal }), { parsedBody });
+    res.writeHead(response.status, Object.fromEntries(response.headers));
+    // A stream cut by the disconnect has no one left to report to.
+    if (response.body) pipeline(Readable.fromWeb(response.body as NodeReadableStream), res, () => {});
+    else res.end();
   });
 }

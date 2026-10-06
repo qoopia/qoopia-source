@@ -11,7 +11,7 @@ describe('generated third-party notice coverage', () => {
     const provenance=JSON.parse(fs.readFileSync('scripts/vendor/licenses/isarray-1.0.0.json','utf8'));
     const readme=fs.readFileSync('node_modules/isarray/README.md','utf8');
     expect(result).toMatchObject({
-      status:'NOTICE_COVERAGE_CHECK',dependencies:122,covered:122,missing:[],
+      status:'NOTICE_COVERAGE_CHECK',dependencies:123,covered:123,missing:[],
       runtime_notice:{version:'1.3.11',source_commit:'a04817ce2b7f1a1e8b7cbf8af8f2c027ab072f1d',license_file:'LICENSE.md',license_source:'https://raw.githubusercontent.com/oven-sh/bun/a04817ce2b7f1a1e8b7cbf8af8f2c027ab072f1d/LICENSE.md',license_sha256:'7068a9711ef8196d654e143447ed7976b3678ce21145b9da16e1f786528f15bb',third_party_licenses:'INTEGRATED_IN_CANONICAL_LICENSE_MD'},
     });
     // Nested copies (body-parser/node_modules/*) are separate resolved versions.

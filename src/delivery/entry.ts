@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import {agentProtocol} from '../agent-kit/index.ts';
 import { redactSensitive } from "../utils/secret-guard.ts";
+import { diskFull } from "../utils/storage-degradation.ts";
 // This entry has no domain imports before an explicit isolated root is configured.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,6 +31,8 @@ const arg=(name:string)=>{const i=argv.indexOf('--'+name);return i<0?undefined:a
 const flag=(name:string)=>argv.includes('--'+name);
 const need=(name:string)=>{const v=arg(name);if(!v||v.startsWith('--'))throw new Error('--'+name+' required');return v;};
 const emit=(v:unknown)=>console.log(JSON.stringify(v));
+/** What the owner reads about a failure: a full disk in plain words, anything else redacted. */
+const failureText=(error:unknown,limit:number)=>String(diskFull(error)??redactSensitive(error instanceof Error?error.message:'Unknown error').text.slice(0,limit));
 function configure(root:string,bundle:string,port=3737,layout?:ReturnType<typeof platformPaths>,instance?:string) {
   bindNativeOwnerHome(os.homedir());
   bindNativeClientDirectories(process.env);
@@ -126,18 +129,20 @@ async function main(){
    emit(flag('commit')?configureNativeClient(clientRoot,input,'apply',undefined,arg('config-directory')):plan);return;
  }
  if(cmd==='memory-link'){
-   const {installMemoryClient,parseMemoryConnection}=await import('./memory-client.ts');
+   const {installMemoryClient,parseMemoryConnection,ownTunnelOrigin}=await import('./memory-client.ts');
    const file=safePath(need('file')),bytes=readJsonBytes(file),input=JSON.parse(bytes.toString('utf8'));
    const root=platformPaths(arg('root')).root,server=readServerWorkspace(root);
    if(server&&new URL(server).origin!==new URL(input.url).origin)throw new Error('Connection belongs to another workspace; select that server explicitly before connecting');
    // A connection file is untrusted until its address is reviewed, as with client-link: the plain command only
    // previews, and --commit links exactly the reviewed bytes into the reviewed profile.
-   const connection=parseMemoryConnection(input),directory=arg('config-directory');
+   const directory=arg('config-directory');let connection=parseMemoryConnection(input);
+   const current=fs.existsSync(path.join(root,'current.json'))?readCurrent(root):undefined;
+   if(current&&ownTunnelOrigin(root)===new URL(connection.url).origin)connection={...connection,url:'http://127.0.0.1:'+current.port};
    const digest=hash(JSON.stringify({file:hash(bytes),config_directory:directory??null}));
    if(!flag('commit')){emit({state:'planned',code:'MEMORY_LINK_APPLY_REQUIRED',url:new URL(connection.url).origin,runtime:connection.runtime,agent_id:connection.agent_id,
-     plan_digest:digest,writes:false,next_action:'Check that this is the address of your own Qoopia, then run: qoopia memory-link --file '+JSON.stringify(file)+(directory?' --config-directory '+JSON.stringify(directory):'')+' --commit --approve '+digest}); return;}
+     plan_digest:digest,writes:false,warning:'This file contains a key to your Qoopia memory: whoever has it can save sessions and search memory, including all workspace notes while shared context is on. Keep it private; if it leaks, ask your Qoopia agent to deactivate its memory agent.',next_action:'Check that this is the address of your own Qoopia, then run: qoopia memory-link --file '+JSON.stringify(file)+(directory?' --config-directory '+JSON.stringify(directory):'')+' --commit --approve '+digest}); return;}
    if(need('approve')!==digest)throw new Error('Memory connection file changed after review; create a fresh memory-link plan');
-   const linked=installMemoryClient(input,root,process.execPath,undefined,directory);
+   const linked=installMemoryClient(connection,root,process.execPath,undefined,directory);
    // Without a local installation the hooks run this binary itself: the Mac app keeps its path across
    // updates, an extracted package folder is replaced by the next download.
    emit(fs.existsSync(path.join(root,'current.json'))||process.execPath.includes('.app/Contents/')?linked:{...linked,
@@ -473,7 +478,7 @@ async function main(){
      catch(error){
        // The exact commands: apply needs the saved plan and its digest, and an explicit --root must be repeated.
        const review=JSON.stringify(path.join(self,'qoopia'))+' update --bundle '+JSON.stringify(self)+(arg('root')?' --root '+JSON.stringify(root):'');
-       console.error(JSON.stringify({state:'update_not_applied',reason:redactSensitive(error instanceof Error?error.message:'unknown').text.slice(0,300),
+       console.error(JSON.stringify({state:'update_not_applied',reason:failureText(error,300),
        next_action:'This package was not installed and the installed Qoopia opens instead. Stop any running Qoopia (close its terminal, or service uninstall --commit) and run ./qoopia open from this package again, or review it explicitly: '+review+' > "$HOME/qoopia-update-plan.json", then apply it with '+review+' --plan "$HOME/qoopia-update-plan.json" --approve PLAN_DIGEST --commit (PLAN_DIGEST is the plan_digest in that file).'}));}
    }
  }
@@ -557,4 +562,4 @@ async function main(){
    }else throw new Error('Unknown command');
  }finally{release();}
 }
-if(import.meta.main)main().catch((error:unknown)=>{console.error('Qoopia operation refused: '+redactSensitive(error instanceof Error?error.message:'Unknown error').text.slice(0,1000));process.exitCode=1;});
+if(import.meta.main)main().catch((error:unknown)=>{console.error('Qoopia operation refused: '+failureText(error,1000));process.exitCode=1;});

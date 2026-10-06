@@ -30,6 +30,9 @@ test('edge rejects admin routes, path normalization tricks, and unsupported meth
   expect(mcpEdgeRoute('/mcp?profile=full','POST')).toBe('allowed');
   // A client that adds a trailing slash reaches the same MCP endpoint, and its challenge names the published root metadata.
   for(const method of ['GET','POST','DELETE','OPTIONS'])expect(mcpEdgeRoute('/mcp/',method)).toBe('allowed');
+  const c='/mcp/c/'+'0'.repeat(8)+'-0000-4000-8000-'+'0'.repeat(12);
+  expect(mcpEdgeRoute(c+'/','POST')).toBe('allowed');expect(mcpEdgeRoute('/.well-known/oauth-protected-resource'+c+'/','GET')).toBe('allowed');
+  for(const url of [c+'//',c+'/x','/.well-known/oauth-protected-resource'+c+'//'])expect(mcpEdgeRoute(url,'GET')).toBe('not_found');
 });
 // The isolated consent page is served through the edge: every brand asset it references (head, lockup and
 // the stylesheet's imports) must be published there, or the browser gets a 404 (apple-touch-icon did).
@@ -49,9 +52,9 @@ test('edge preserves local authorization, strips identity/cookie headers, and ne
   }).listen(0,'127.0.0.1');
   const edge=startMcpEdge({publicOrigin:'https://synthetic.example',upstreamPort:await ready(upstream)}), port=await ready(edge);
   try {
-    const response=await request(port,'/mcp',{method:'POST',body:'{}',headers:{authorization:'Bearer synthetic','accept-language':'ru-RU',cookie:'owner=private','x-qoopia-owner':'forged','x-forwarded-for':'forged'}});
+    const response=await request(port,'/mcp',{method:'POST',body:'{}',headers:{authorization:'Bearer synthetic','accept-language':'ru-RU','mcp-method':'tools/call','mcp-name':'recall',cookie:'owner=private','x-qoopia-owner':'forged','x-forwarded-for':'forged'}});
     expect(response.status).toBe(401);expect(response.headers['www-authenticate']).toContain('synthetic.example');
-    expect(seen?.authorization).toBe('Bearer synthetic');expect(seen?.['accept-language']).toBe('ru-RU');expect(seen?.cookie).toBeUndefined();expect(seen?.['x-qoopia-owner']).toBeUndefined();
+    expect(seen?.authorization).toBe('Bearer synthetic');expect([seen?.['mcp-method'],seen?.['mcp-name']]).toEqual(['tools/call','recall']);expect(seen?.['accept-language']).toBe('ru-RU');expect(seen?.cookie).toBeUndefined();expect(seen?.['x-qoopia-owner']).toBeUndefined();
     expect(seen?.['x-forwarded-for']).toBeUndefined();expect(seen?.host).toBe('127.0.0.1:'+await ready(upstream));
     expect(response.headers['set-cookie']).toBeUndefined();expect(response.headers['x-debug-secret']).toBeUndefined();
     expect((await request(port,'/dashboard')).status).toBe(404);

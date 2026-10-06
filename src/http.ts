@@ -223,6 +223,8 @@ export async function shutdownHttpServer(server:Server,deadlineMs=5000):Promise<
 /** The request pathname (never the query string) the router, logs and audit all use. An
  * origin-form target is joined to the base as text: resolved against it, `//host/x` would turn
  * `host` into an authority and route as `/x`. Absolute-form (RFC 9112 §3.2.2) still parses. */
+const CONNECTION_SLASH = /^\/(?:mcp|\.well-known\/oauth-(?:protected-resource\/mcp|authorization-server\/(?:oauth|mcp)))\/c\/[a-f0-9-]{36}\/(?:\?|$)/;
+
 function requestPath(req: IncomingMessage): string {
   const raw = req.url || "/";
   try { return new URL(raw.startsWith("/") ? `http://local${raw}` : raw, "http://local").pathname; }
@@ -278,10 +280,10 @@ export function startHttpServer() {
           json(res, err.status, err.status === 413 ? { error: err.message, max_bytes: err.maxBytes } : { error: err.message }, req);
         } else {
           // Client-input errors (unknown connection, malformed id or %-encoding) keep their 4xx;
-          // only a 5xx is logged, and its body stays generic.
+          // only a 5xx is logged, and its body stays generic unless it is a full disk the owner can act on.
           const mapped = apiError(err);
           if (mapped.status >= 500) logger.error("Request handler failed", { ...where, error: String(err) });
-          json(res, mapped.status, mapped.status >= 500 ? { error: "internal_error" }
+          json(res, mapped.status, mapped.status >= 500 && mapped.error.code !== "STORAGE_FULL" ? { error: "internal_error" }
             : { error: mapped.error.code.toLowerCase(), error_description: mapped.error.message }, req);
         }
       }
@@ -342,6 +344,9 @@ function rateLimit429(
 }
 
 async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
+  // Claude.ai adds a trailing slash to connector URLs (19facaa). Canonicalize the connection paths once,
+  // so MCP, its 401 resource_metadata and discovery all see the connection instead of the general flow.
+  if (req.url && CONNECTION_SLASH.test(req.url)) req.url = req.url.replace(/\/(?=\?|$)/, "");
   const rawUrl = req.url || "/";
   // Route by pathname, not the full URL. Browser OAuth consent bounces through
   // /dashboard?next=...; matching against req.url made that valid dashboard
@@ -382,7 +387,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     const origin = getAllowedOrigin(req);
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
-      "access-control-allow-headers": "authorization, content-type, idempotency-key, if-match, mcp-session-id, mcp-protocol-version",
+      "access-control-allow-headers": "authorization, content-type, idempotency-key, if-match, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name",
       "access-control-max-age": "86400",
     };
     if (origin) {
@@ -886,6 +891,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         role: role as "user" | "assistant",
         content,
         ingest_uuid: uuid,
+        capture: "ingest",
         metadata: { ingest_cwd: payload.cwd ?? "", ingest_ts: payload.timestamp ?? "", ...payload.metadata },
       });
       return json(res, 200, result, req);

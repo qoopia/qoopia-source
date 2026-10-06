@@ -2,10 +2,11 @@ import {agentProtocol,MCP_INSTRUCTIONS} from '../agent-kit/index.ts';
 import {z} from "zod";
 import {verifyClientConnection,observeClientProtocol} from "../services/client-connections.ts";
 import {QoopiaError} from "../utils/errors.ts";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import {
   fail,
   registerTools,
+  sessionSaveOffered,
   type ToolProfile,
   type AgentToolProfile,
   toolNames,
@@ -16,14 +17,18 @@ import { PRODUCT_VERSION } from "../utils/product-version.ts";
 import { registerAuthorityTools } from "../api/authority.ts";
 import { bootstrapToolAllowed } from "../auth/policy.ts";
 import {registerBridgeTools} from '../bridges/api.ts';
+import {autosaveInstruction} from '../services/memory-policy.ts';
 
 /** SDK-level tool failures (schema validation, unknown tool) in the '<CODE>: <message>' shape of
  * every Qoopia tool error. The detail is bounded: it can quote a caller-chosen key or tool name. */
 function sdkToolError(message: string) {
-  const detail = message.replace(/^MCP error -?\d+: /, '').replace(/^Input validation error: Invalid arguments for tool [^:]*: /, '');
-  const code = /^Tool .* (?:not found|disabled)$/s.test(detail) ? 'NOT_FOUND' : message.startsWith('MCP error -32602') ? 'INVALID_INPUT' : 'INTERNAL';
+  const detail = message.replace(/^Input validation error: Invalid arguments for tool [^:]*: /, '');
+  const code = /^Tool .* (?:not found|disabled)$/s.test(detail) ? 'NOT_FOUND' : /^(?:Input validation error|Invalid arguments)/.test(message) ? 'INVALID_INPUT' : 'INTERNAL';
   return {isError: true, content: [{type: 'text' as const, text: `${code}: ${detail.replace(/\s+/g, ' ').slice(0, 500)}`}]};
 }
+
+/** The Autosave switch reaches every client at connect time; tool results repeat it while turns go unsaved. */
+function autosaveLine(auth:AuthContext|null,canSave:boolean){try{return auth?autosaveInstruction(auth.workspace_id,auth.agent_id,canSave):'';}catch{return '';}}
 
 export function createMcpServer(
   authProvider: () => AuthContext | null,
@@ -33,12 +38,17 @@ export function createMcpServer(
     agentToolProfile?: AgentToolProfile;
     grantedScope?: OAuthScope[];
     bootstrapProfile?: string;
+    /** initialize (2025 era) or server/discover (2026-07-28): only they return the instructions, so only they
+     * pay for the per-agent Autosave line. */
+    initialize?: boolean;
   },
 ): McpServer {
+  // listChanged:false is the truth for a per-request catalogue, and a 2026-07-28 subscriptions/listen
+  // then closes at once instead of idling (the F-261 rule for the old GET stream).
   const server = new McpServer({
     name: "qoopia",
     version: PRODUCT_VERSION,
-  },{instructions:MCP_INSTRUCTIONS});
+  },{instructions:[MCP_INSTRUCTIONS,opts?.initialize?autosaveLine(authProvider(),sessionSaveOffered(profile,opts)):''].filter(Boolean).join(' '),capabilities:{tools:{listChanged:false}}});
   // ponytail: replaces the SDK's private error formatter (its only funnel for these failures);
   // tests/mcp-error-shape.test.ts fails if an SDK upgrade renames it.
   (server as unknown as {createToolError:(message:string)=>unknown}).createToolError=sdkToolError;
@@ -65,5 +75,11 @@ export function createMcpServer(
   registerTools(server, authProvider, profile, opts);
   registerAuthorityTools(server, authProvider, new Set(toolNames(profile).filter((name) => bootstrapToolAllowed(name, opts?.bootstrapProfile))));
   registerBridgeTools(server,authProvider);
+  // ponytail: the SDK answers an unknown tool with a JSON-RPC error echoing the whole name; this
+  // keeps it a bounded NOT_FOUND tool result through its private handler map (same test guards it).
+  const handlers=(server.server as unknown as {_requestHandlers:Map<string,(request:unknown,ctx:unknown)=>Promise<unknown>>})._requestHandlers;
+  const call=handlers.get('tools/call')!;
+  handlers.set('tools/call',async(request,ctx)=>{try{return await call(request,ctx);}catch(error){
+    if(error instanceof Error&&/^Tool .* (?:not found|disabled)$/s.test(error.message))return sdkToolError(error.message);throw error;}});
   return server;
 }

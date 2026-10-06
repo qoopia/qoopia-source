@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {dashboardPage,dashboardScript} from './helpers/dashboard-source.ts';
-import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import {McpServer} from '@modelcontextprotocol/server';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {registerAuthorityTools,handleAuthorityRequest,effectiveAuthority,getOperation} from '../src/api/authority.ts';

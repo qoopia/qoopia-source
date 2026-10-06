@@ -11,6 +11,14 @@ export function recordStorageWriteFailure(error:unknown):boolean {
   return full;
 }
 
+/** A file write that found the disk or the owner's quota full (STAGING_SPACE_INSUFFICIENT is our own check
+ * before writing), in plain words. Writes are staged and SQLite rolls back, so what was saved stays. */
+export function diskFull(error:unknown):QoopiaError|undefined {
+  const value=error as {code?:unknown,message?:unknown}|null|undefined;
+  return value?.code==='ENOSPC'||value?.code==='EDQUOT'||value?.message==='STAGING_SPACE_INSUFFICIENT'
+    ?new QoopiaError('STORAGE_FULL','The disk is full: free some space, then retry. Your saved memory is safe.'):undefined;
+}
+
 export function storageDegradation(){
   return fullSince?{degraded:true,reason:'SQLITE_FULL',since:fullSince,action:ACTION}:{degraded:false as const};
 }
