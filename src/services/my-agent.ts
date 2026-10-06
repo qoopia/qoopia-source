@@ -182,7 +182,7 @@ function finish(session:Live,state:string,error:string|null=null) {
     const run=session.run;if(session.rawAnswer!==undefined)run.answer=safeAgentAnswer(session.rawAnswer);
     run.state=state;run.error=error;updateRun(run);
     db.query('UPDATE qoopia_telegram_inbox SET state=? WHERE run_id=?').run(state==='completed'?'done':state==='interrupted'?'cancelled':'failed',run.id);
-    if(run.answer&&keeps(run))try{for(let i=0;i<run.answer.length;i+=90_000)saveMessage({...run.memory!,session_id:run.conversation_id,role:'assistant',content:run.answer.slice(i,i+90_000),ingest_uuid:run.id+':answer:'+i});}catch{run.error='Conversation saved; memory indexing needs attention.';updateRun(run);}
+    if(run.answer&&keeps(run))try{for(let i=0;i<run.answer.length;i+=90_000)saveMessage({...run.memory!,session_id:run.conversation_id,role:'assistant',content:run.answer.slice(i,i+90_000),ingest_uuid:run.id+':answer:'+i,capture:'qoopia_agent'});}catch{run.error='Conversation saved; memory indexing needs attention.';updateRun(run);}
   }
   session.run=undefined;session.rawAnswer='';session.lastActivityAt=undefined;session.approvals.clear();session.progress='';
 }
@@ -322,7 +322,7 @@ const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('select-conversation'),conversation:z.string().uuid()}).strict(),
   z.object({action:z.literal('send'),conversation:z.string().uuid(),requestId:z.string().min(1).max(128),text:z.string().trim().min(1).max(16_000)}).strict(),
   z.object({action:z.literal('stop')}).strict(),z.object({action:z.literal('disconnect')}).strict(),
-  z.object({action:z.literal('approve'),id:z.string().uuid(),accept:z.boolean(),answers:z.record(z.string().max(4000)).optional()}).strict(),
+  z.object({action:z.literal('approve'),id:z.string().uuid(),accept:z.boolean(),answers:z.record(z.string(), z.string().max(4000)).optional()}).strict(),
   z.object({action:z.literal('channel'),channel:z.enum(['dashboard','telegram'])}).strict(),
 ]);
 export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{generation:string;updateId:number}):Promise<any> {
@@ -449,7 +449,8 @@ export async function myAgentAction(ownerId:string,raw:unknown,telegram?:{genera
         // The queued message was transit state; once the turn is submitted a manual agent keeps no copy.
         if(!run.memory)db.query("UPDATE qoopia_telegram_inbox SET prompt='' WHERE owner_id=? AND generation=? AND update_id=?").run(ownerId,telegram.generation,telegram.updateId);
       }
-      if(run.memory)saveMessage({...run.memory,session_id:c.id,role:'user',content:input.text,ingest_uuid:run.id+':prompt'});
+      // Qoopia saves this conversation itself, like the hooks: Autosave must not ask its model to save it too.
+      if(run.memory)saveMessage({...run.memory,session_id:c.id,role:'user',content:input.text,ingest_uuid:run.id+':prompt',capture:'qoopia_agent'});
       db.query('UPDATE sessions SET title=? WHERE id=? AND workspace_id=?').run(c.title,c.id,settings.workspace_id);
     }).immediate();if(!run.memory)holdUnsaved(run);session.run=run;session.rawAnswer='';session.lastActivityAt=Date.now();
     try {

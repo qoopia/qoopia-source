@@ -6,6 +6,7 @@ import { readLevel, visibleTranscriptSql } from "../auth/principal.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, type MemoryOrigin } from "./memory-policy.ts";
 import { parseTimeBound } from "../utils/temporal.ts";
+import { hash } from "../utils/fs.ts";
 
 const MAX_CONTENT = 100_000;
 const MAX_SUMMARY = 50_000;
@@ -28,9 +29,30 @@ export interface SessionSaveInput {
   /** F-160: client retry key from MCP session_save. Deduplicated like ingest_uuid, but a
    * reuse with a different message is a CONFLICT instead of a silent drop. */
   message_id?: string;
+  /** Capture Qoopia does itself (the built-in agent, the session tailer): recorded as continuity_runtime so
+   * Autosave never asks that agent's model to save the same turns again. Set by the server, never a request. */
+  capture?: "qoopia_agent" | "ingest";
   /** Defaults to "automatic": anything not proven to be a confirmed owner action obeys
    * the agent memory policy. Set by the server at the call site, never from a request body. */
   origin?: MemoryOrigin;
+}
+
+/** One conversation turn in one call: the Autosave form for clients without lifecycle hooks. Without a
+ * session_id the agent's turns of the (UTC) day share one session, named from the agent's key hash so no
+ * colleague can take it first; a turn equal to the session's last one is the retry of a lost reply. */
+export function saveTurn(input: Pick<SessionSaveInput, "workspace_id" | "agent_id" | "metadata"> & { session_id?: string; user?: string; assistant?: string }) {
+  if (!input.user && !input.assistant) throw new QoopiaError("INVALID_INPUT", "Pass user and assistant (one turn), or role and content (one message)");
+  const roles = (["user", "assistant"] as const).filter((role) => input[role]);
+  return db.transaction(() => {
+    const key = db.query("SELECT api_key_hash FROM agents WHERE id=? AND workspace_id=?").get(input.agent_id, input.workspace_id) as { api_key_hash: string } | null;
+    if (!key) throw unavailable();
+    const session_id = input.session_id ?? `autosave-${hash(key.api_key_hash + ":" + nowIso().slice(0, 10)).slice(0, 32)}`;
+    const last = (db.query("SELECT role, content FROM session_messages WHERE session_id=? AND agent_id=? ORDER BY id DESC LIMIT ?")
+      .all(session_id, input.agent_id, roles.length) as { role: string; content: string }[]).reverse();
+    if (last.length === roles.length && last.every((m, i) => m.role === roles[i] && m.content === input[roles[i]!])) return { saved: false, duplicate: true, session_id };
+    const messages = roles.map((role) => saveMessage({ workspace_id: input.workspace_id, agent_id: input.agent_id, session_id, role, content: input[role]!, metadata: input.metadata }));
+    return { saved: true, session_id, messages };
+  })();
 }
 
 export function saveMessage(input: SessionSaveInput) {
@@ -131,6 +153,7 @@ export function saveMessage(input: SessionSaveInput) {
 
     const id = Number(info.lastInsertRowid);
     db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_enabled',1) WHERE id=?").run(input.session_id);
+    if (input.capture) db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_runtime',?) WHERE id=?").run(input.capture, input.session_id);
 
     const seqRow = db
       .prepare(

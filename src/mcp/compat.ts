@@ -20,7 +20,7 @@
  * its V3 handler. tests/compat-aliases.test.ts exercises every alias.
  */
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { AuthContext } from "../auth/middleware.ts";
 import type { OAuthScope } from "../auth/oauth.ts";
 import { grantedScopeAllowsRisk } from "../auth/oauth.ts";
@@ -484,10 +484,9 @@ export function registerCompatTools(
     grantedScopeAllowsRisk(grantedScope, risk);
 
   // Generic CRUD with `entity` discriminator
-  if (allow("write-low")) server.tool(
+  if (allow("write-low")) server.registerTool(
     "create",
-    "[V2 compat] Create entity by type. entity ∈ tasks|deals|contacts|finances|projects|activity. Use note_create for V3-native API.",
-    {
+    { description: "[V2 compat] Create entity by type. entity ∈ tasks|deals|contacts|finances|projects|activity. Use note_create for V3-native API.", inputSchema: z.object({
       entity: z.enum(["tasks", "deals", "contacts", "finances", "projects", "activity"]),
       title: z.string().optional(),
       description: z.string().optional(),
@@ -522,7 +521,7 @@ export function registerCompatTools(
       timeline: z.array(z.unknown()).optional(),
       notes: z.string().optional(),
       tags: boundedTags().optional(),
-    },
+    }) },
     wrap(v2Create, "write-low"),
   );
 
@@ -530,10 +529,9 @@ export function registerCompatTools(
   // overwrite text and (with metadata_replace) wipe metadata. Audit log
   // records field names but not prior values, so the change is not
   // recoverable from audit alone — promote to write-destructive.
-  if (allow("write-destructive")) server.tool(
+  if (allow("write-destructive")) server.registerTool(
     "update",
-    "[V2 compat] Update entity by id. Provide entity + id + fields to change.",
-    {
+    { description: "[V2 compat] Update entity by id. Provide entity + id + fields to change.", inputSchema: z.object({
       entity: z.enum(["tasks", "deals", "contacts", "finances", "projects"]),
       id: z.string(),
       title: z.string().optional(),
@@ -564,24 +562,22 @@ export function registerCompatTools(
       color: z.string().optional(),
       notes: z.string().optional(),
       tags: boundedTags().optional(),
-    },
+    }) },
     wrap(v2Update, "write-destructive"),
   );
 
-  if (allow("write-destructive")) server.tool(
+  if (allow("write-destructive")) server.registerTool(
     "delete",
-    "[V2 compat] Soft-delete an entity. entity ∈ tasks|deals|contacts|finances|projects.",
-    {
+    { description: "[V2 compat] Soft-delete an entity. entity ∈ tasks|deals|contacts|finances|projects.", inputSchema: z.object({
       entity: z.enum(["tasks", "deals", "contacts", "finances", "projects"]),
       id: z.string(),
-    },
+    }) },
     wrap(v2Delete, "write-destructive"),
   );
 
-  if (allow("read")) server.tool(
+  if (allow("read")) server.registerTool(
     "list",
-    "[V2 compat] List entities by type. Supported filters: project_id, status, entity_type (for activity), limit.",
-    {
+    { description: "[V2 compat] List entities by type. Supported filters: project_id, status, entity_type (for activity), limit.", inputSchema: z.object({
       entity: z.enum([
         "tasks",
         "deals",
@@ -594,31 +590,29 @@ export function registerCompatTools(
       status: z.string().optional(),
       entity_type: z.string().optional(),
       limit: z.number().int().optional(),
-    },
+    }) },
     wrap(v2List, "read"),
   );
 
-  if (allow("read")) server.tool(
+  if (allow("read")) server.registerTool(
     "get",
-    "[V2 compat] Get a single entity by id.",
-    {
+    { description: "[V2 compat] Get a single entity by id.", inputSchema: z.object({
       entity: z.string(),
       id: z.string(),
-    },
+    }) },
     wrap(v2Get, "read"),
   );
 
-  if (allow("write-low")) server.tool(
+  if (allow("write-low")) server.registerTool(
     "note",
-    "[V2 compat] Record a memory note. Maps to note_create with type=memory by default.",
-    {
+    { description: "[V2 compat] Record a memory note. Maps to note_create with type=memory by default.", inputSchema: z.object({
       text: z.string().min(1).max(100_000),
       project: z.string().optional(),
       agent_name: z.string().optional(),
       session_id: z.string().optional(),
       entities_hint: z.array(z.string()).optional(),
       type: z.enum(["rule", "memory", "knowledge", "context"]).optional(),
-    },
+    }) },
     wrap(v2Note, "write-low"),
   );
 

@@ -13,6 +13,7 @@ import {CONTINUITY_MAX_BODY_BYTES,readBoundedText} from '../utils/http-json.ts';
 const BATCH_BYTES=CONTINUITY_MAX_BODY_BYTES-128*1024;
 import {selectedNativeDirectory} from './native-client-paths.ts';
 import {installationLauncher} from './launcher.ts';
+import {readTransport} from './transport-config.ts';
 
 const memoryConnectionSchema=z.object({format:z.literal('qoopia-memory-connection/1'),url:z.string().url(),
   agent_id:z.string().min(1).max(200),key:z.string().regex(/^q_[A-Za-z0-9_-]+$/),runtime:z.enum(['claude_code','codex'])}).strict();
@@ -145,6 +146,11 @@ export function migrateMemoryHooks(root:string,binary:string) {
     } catch(error) {results.push({runtime,state:'refused',reason:error instanceof Error?error.message:'unknown'});}
   }
   return results;
+}
+/** This installation's own tunnel address. The dashboard's file for another computer names it; used on
+ * this same computer it must link over loopback like the local hooks: the same server, without the tunnel. */
+export function ownTunnelOrigin(root:string) {
+  try{const origin=readTransport(root)?.device?.public_origin;return origin?new URL(origin).origin:undefined;}catch{return undefined;}
 }
 /** The same agent and key at a new address of this server (5.0.16 linked local hooks to the tunnel
  * origin, which never serves /memory/continuity): the binding and our MCP entry move, nothing else. */
@@ -377,6 +383,7 @@ const FAILURES={
   WRONG_ADDRESS:'This address does not serve Qoopia memory: the owner reconnects this client in Qoopia memory settings.',
   TRANSCRIPT_UNREADABLE:'A native transcript could not be read: the owner checks that its file is a regular file owned by this user.',
   SERVER_UNAVAILABLE:'The owner checks that Qoopia is running and reachable from this computer.',
+  CODEX_HOOKS_UNTRUSTED:'Open Codex, run /hooks and trust the Qoopia hooks once. Codex asks again whenever Qoopia rewrites their command (a link or an update) and runs none of them until then.',
 } as const;
 function failureCode(error:string):keyof typeof FAILURES {
   return /HTTP 401\b/.test(error)?'KEY_REJECTED':/HTTP 40[03]\b/.test(error)?'REFUSED':/HTTP 404\b/.test(error)?'WRONG_ADDRESS'
@@ -389,13 +396,17 @@ export function memoryClientHealth(root:string) {
   return (['claude_code','codex'] as const).flatMap(runtime=>{
     const folder=path.join(root,'memory-clients',runtime),cursors=path.join(folder,'cursors');
     if(!fs.existsSync(path.join(folder,'connection.json')))return [];
-    let sessions=0,failing=0,delivered=0,failed=0,code:keyof typeof FAILURES|undefined;
+    let sessions=0,failing=0,delivered=0,failed=0,ran=0,code:keyof typeof FAILURES|undefined;
     for(const name of fs.existsSync(cursors)?fs.readdirSync(cursors).filter(f=>f.endsWith('.json')):[]) {
       let state:ClientState,mtime:number;
       try{state=readJson(path.join(cursors,name)) as ClientState;mtime=fs.statSync(path.join(cursors,name)).mtimeMs;}catch{continue;}
-      sessions++;const sync=Date.parse(state.last_sync??'');if(sync>delivered)delivered=sync;
+      sessions++;ran=Math.max(ran,mtime);const sync=Date.parse(state.last_sync??'');if(sync>delivered)delivered=sync;
       if(typeof state.error==='string'){failing++;if(mtime>failed){failed=mtime;code=failureCode(state.error);}}
     }
+    // Every hook run writes its cursor. A hooks.json newer than all of them (a link, or the move onto the
+    // launcher at start) is one Codex has not run: it waits for the owner to trust the new command.
+    const hooks=runtime==='codex'?fs.statSync(path.join((readJson(path.join(folder,'connection.json')) as LocalConnection).native_root,'hooks.json'),{throwIfNoEntry:false})?.mtimeMs??0:0;
+    if(hooks>ran){code='CODEX_HOOKS_UNTRUSTED';failed=hooks;}
     const broken=!!code&&failed>delivered;
     return [{runtime,status:broken?'fail' as const:'pass' as const,reason:broken?code!:sessions?'DELIVERING':'NO_SESSION_YET',
       action:broken?FAILURES[code!]:'No repair needed.',sessions,failing_sessions:failing,

@@ -13,7 +13,8 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { loginBroker, signInNetwork } from "../src/identity/broker.ts";
-import { localIdentityLogin, LOGIN_ORIGIN } from "../src/identity/local.ts";
+import { DEVICE_CODE_LAUNCHER_ONLY, localIdentityLogin, LOGIN_ORIGIN, ownerIdentity } from "../src/identity/local.ts";
+import { issueLocalLogin } from "../src/delivery/local-login.ts";
 import { db } from "../src/db/connection.ts";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
@@ -182,12 +183,19 @@ test("a sign-in network is the public IPv4 address or the IPv6 /64; private addr
   expect(signInNetwork("2001:db8:abcd:12::1")).not.toBe(signInNetwork("2001:db8:abcd:13::1"));
 });
 
-// A headless installation shows a device code; the owner confirms it on a phone that is signed in to the
-// account, on any network. A broker without device codes gives a clear refusal, never a hang.
+// A device code is confirmed on a phone signed in to the account, on any network, and signs in whoever started
+// it: only the launcher's claim, the owner's OS capability, may start one. A broker without device codes gives a
+// clear refusal, never a hang.
 describe("device code: the dashboard of a headless installation", () => {
-  test("the code confirmed on another network signs the owner in to this dashboard", async () => {
+  const launcher = async (transport: typeof fetch) => {
+    const unlinked = fs.mkdtempSync(path.join(root, "device-"));
+    const owner = dashboardClient(localIdentityLogin(unlinked, db, transport));
+    expect((await owner("/setup", { code: issueLocalLogin(OWNER_ID) })).data).toEqual({ linked: false, setup: true });
+    return { owner, unlinked };
+  };
+  test("the code confirmed on another network links the account and signs the owner in", async () => {
     const { broker, transport, link } = brokerFixture();
-    const owner = dashboardClient(localIdentityLogin(root, db, transport));
+    const { owner, unlinked } = await launcher(transport);
     const started = await owner("/start", { method: "device" });
     expect(started.status).toBe(200);
     expect(started.data).toMatchObject({ verificationUri: LOGIN_ORIGIN + "/device", expiresIn: 600 });
@@ -213,31 +221,26 @@ describe("device code: the dashboard of a headless installation", () => {
     const poll = await owner("/poll");
     expect(poll.status).toBe(200);
     expect(checkDashboardAuth({ headers: { cookie: "qoopia_dash=" + poll.cookie } } as IncomingMessage)?.agent_id).toBe(OWNER_ID);
+    expect(ownerIdentity(unlinked)).toEqual({ ownerId: OWNER_ID, email: "owner@example.com" });
   });
 
-  test("another account's approval cannot sign in as the linked owner", async () => {
-    const { broker, transport, link } = brokerFixture();
-    const owner = dashboardClient(localIdentityLogin(root, db, transport));
-    const code = String((await owner("/start", { method: "device" })).data.userCode);
-    const jar: Record<string, string> = {};
-    const phone = async (route: string, body: unknown) => {
-      const response = await broker(new Request(LOGIN_ORIGIN + route, { method: "POST", headers: { cookie: Object.entries(jar).map(([k, v]) => k + "=" + v).join("; "), origin: LOGIN_ORIGIN, "content-type": "application/json" }, body: JSON.stringify(body) }), "203.0.113.51");
-      for (const c of response.headers.getSetCookie()) { const [k, ...v] = c.split(";")[0]!.split("="); jar[k!] = v.join("="); }
-      return response;
-    };
-    await phone("/profile/start", { method: "email", email: "stranger@example.com" });
-    await broker(new Request(LOGIN_ORIGIN + "/confirm", { method: "POST", headers: { origin: LOGIN_ORIGIN, "content-type": "application/json" }, body: JSON.stringify({ token: link().hash.slice(1) }) }), "203.0.113.51");
-    await phone("/profile/poll", {});
-    expect((await phone("/profile/device/approve", { code })).status).toBe(200);
-    const poll = await owner("/poll");
+  test("another OS user of a shared host gets no code to phish the owner with", async () => {
+    // Any local account reaches the owner's loopback dashboard with its Host, Origin and CSRF header. Its code,
+    // approved on a page naming this very host and network, handed it the linked owner's dashboard session.
+    const { transport } = brokerFixture();
+    let calls = 0;
+    const intruder = dashboardClient(localIdentityLogin(root, db, ((...args: Parameters<typeof fetch>) => { calls++; return transport(...args); }) as typeof fetch));
+    const started = await intruder("/start", { method: "device" });
+    expect(started).toMatchObject({ status: 400, data: { error: DEVICE_CODE_LAUNCHER_ONLY } });
+    expect(calls).toBe(0);
+    const poll = await intruder("/poll");
     expect(poll.status).toBe(400);
-    expect(String(poll.data.error)).toContain("already linked to this workspace");
     expect(poll.cookie).toBeUndefined();
   });
 
   test("a sign-in service without device codes gets a clear refusal", async () => {
     const legacy = (async () => Response.json({ error: "Invalid sign-in request" }, { status: 400 })) as unknown as typeof fetch;
-    const owner = dashboardClient(localIdentityLogin(root, db, legacy));
+    const { owner } = await launcher(legacy);
     const started = await owner("/start", { method: "device" });
     expect(started.status).toBe(400);
     expect(String(started.data.error)).toContain("does not offer code sign-in yet");

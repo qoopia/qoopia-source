@@ -33,6 +33,7 @@ export function ownerIdentity(root:string): Binding | null {
 export function installationLabel(){return 'Qoopia '+(process.platform==='darwin'?'Mac':'Linux')+' · '+os.hostname().slice(0,48);}
 /** A broker that predates device codes answers a device request as an invalid sign-in request. */
 export const DEVICE_CODE_UNSUPPORTED='The Qoopia sign-in service does not offer code sign-in yet. Sign in with email or Google from a browser on this network, or try again after the service is updated.';
+export const DEVICE_CODE_LAUNCHER_ONLY='Sign-in on another device only links an installation opened from the Qoopia launcher. Sign in with Google or email, or on a server run qoopia owner-login and enter its one-time owner code.';
 /** Only a code-shaped value and a verification page on the sign-in origin are ever shown to the owner. */
 export function deviceCodeStep(data:Record<string,unknown>,origin=LOGIN_ORIGIN){
   const code=data.user_code,uri=data.verification_uri,complete=data.verification_uri_complete;
@@ -76,6 +77,10 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         if(!['google','email','account','device'].includes(String(body.method)))throw new Error('Choose Google or email');
         const binding=ownerIdentity(root),claim=claims.get(hash(cookie(req)));
         if(!binding&&!claim)throw new Error('Open Qoopia from its launcher once to link this workspace');
+        // An approved device code signs in whoever started it, with no network binding, and any OS user of a
+        // shared host (any visitor of a hosted dashboard) reaches this page: only the launcher's setup claim,
+        // a capability of the owner's OS account, may start one. A linked server signs in with owner-login.
+        if(body.method==='device'&&!claim)throw new Error(DEVICE_CODE_LAUNCHER_ONLY);
         // /poll would refuse any other address anyway; refusing here spends no e-mail on it.
         if(body.method==='email'&&binding&&loginEmail(body.email)!==binding.email)throw new Error('Use the email or Google account already linked to this workspace');
         if(body.method==='account'&&(!binding||!isHttps(req)))throw new Error('Sign in with email to connect this workspace');

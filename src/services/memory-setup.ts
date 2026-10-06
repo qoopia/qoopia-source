@@ -17,7 +17,7 @@ import {memoryClientConnectionPath,memoryProfile,memoryRoot,memoryModelStatus,me
 import {QoopiaError} from '../utils/errors.ts';
 import {localServiceOrigin} from '../utils/standalone.ts';
 import {env} from '../utils/env.ts';
-import {installMemoryClient,relocateMemoryClient} from '../delivery/memory-client.ts';
+import {installMemoryClient,ownTunnelOrigin,relocateMemoryClient} from '../delivery/memory-client.ts';
 import {selectedNativeDirectory} from '../delivery/native-client-paths.ts';
 
 const actions=z.discriminatedUnion('action',[
@@ -106,6 +106,13 @@ function reusableConnection(workspace:string,file:string,origin=localServiceOrig
 export function migrateMemoryOrigins() {
   const results:{runtime:'codex'|'claude_code';state:string;reason?:string}[]=[];
   if(process.env.QOOPIA_STANDALONE!=='true')return results;
+  const tunnel=ownTunnelOrigin(memoryRoot());
+  for(const runtime of ['claude_code','codex'] as const)try{
+    // The file for another computer, linked on this one, names our own tunnel address (5.0.17).
+    const binding=path.join(memoryRoot(),'memory-clients',runtime,'connection.json');
+    if(tunnel&&fs.existsSync(binding)&&new URL((readJson(binding) as StoredConnection).url).origin===tunnel)
+      results.push(relocateMemoryClient(memoryRoot(),runtime,localServiceOrigin(),nativeOwnerHome()));
+  }catch(error){results.push({runtime,state:'refused',reason:error instanceof Error?error.message:'unknown'});}
   for(const {id:workspace} of db.query('SELECT id FROM workspaces').all() as {id:string}[])for(const runtime of ['claude_code','codex'] as const) {
     try {
       const connection=reusableConnection(workspace,memoryClientConnectionPath(workspace,runtime));
@@ -145,7 +152,8 @@ export async function memorySetupAction(ownerId:string,raw:unknown) {
       if(!connection) {
         const ws=db.query('SELECT slug FROM workspaces WHERE id=?').get(workspace) as {slug:string};
         const created=createAgent({name,workspaceSlug:ws.slug,type:'standard'});
-        db.query("UPDATE agents SET tool_profile='no-destructive',legacy_skill_access=0 WHERE id=?").run(created.id);
+        // A memory client's model reads over the same key while its hooks capture: Autosave never asks it.
+        db.query("UPDATE agents SET tool_profile='no-destructive',legacy_skill_access=0,metadata=json_set(metadata,'$.memory_client',?) WHERE id=?").run(input.runtime,created.id);
         connection={format:'qoopia-memory-connection/1',url:origin,agent_id:created.id,key:created.api_key,runtime:input.runtime};
         durableWrite(file,JSON.stringify(connection));
       }

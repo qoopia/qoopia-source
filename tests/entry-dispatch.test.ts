@@ -117,6 +117,8 @@ test('memory-link previews by default and links only with --commit --approve of 
   expect(plan).toMatchObject({ state: 'planned', code: 'MEMORY_LINK_APPLY_REQUIRED', url: 'https://attacker.example', runtime: 'claude_code' });
   expect(plan.plan_digest).toMatch(/^[a-f0-9]{64}$/);
   expect(plan.next_action).toContain('--commit --approve ' + plan.plan_digest);
+  // The file is a memory key: the preview says what its holder can do before anything is linked.
+  expect(plan.warning).toContain('whoever has it can save sessions and search memory, including all workspace notes');
   // The plain command, and an approval without --commit, write nothing: no hooks, no MCP entry, no binding.
   untouched();
   expect(JSON.parse(entry('memory-link', '--file', file, '--root', root, '--approve', plan.plan_digest).stdout).state).toBe('planned');

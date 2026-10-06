@@ -2,7 +2,7 @@
 import {afterAll, beforeAll, expect, test} from 'bun:test';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
-import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import type {McpServer} from '@modelcontextprotocol/server';
 import {runMigrations} from '../src/db/migrate.ts';
 import {createWorkspace} from '../src/admin/workspaces.ts';
 import {createAgent} from '../src/admin/agents.ts';

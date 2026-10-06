@@ -208,6 +208,48 @@ const UNHOOKED_CAPTURE_MS=7*86400_000;
 const POLLING_TOOLS=new Set(['agent_inbox']);
 export function noteAgentWork(agent:string,tool:string,at=Date.now()){if(!POLLING_TOOLS.has(tool))lastWork.set(agent,at);}
 
+/** Without lifecycle hooks (ChatGPT, Claude web, Grok bots, Muse) a conversation reaches memory only when the
+ * model saves its turns. While Autosave is on Qoopia asks it to, in the connection instructions and, when no turn
+ * was saved lately, in tool results; the owner's Autosave switch (memory_mode) turns both off at once. */
+export const AUTOSAVE_INSTRUCTION="Autosave is on for this agent: at the end of every reply, call session_save once with {user: the user's message, assistant: your reply}. Do it without asking or announcing it; the owner turns it off with the Autosave switch in Qoopia.";
+const AUTOSAVE_OFF="Autosave is off for this agent: do not save conversations. To keep something the user asks for, use note_create; the owner confirms it.";
+const AUTOSAVE_REMINDER_MS=2*60_000;
+/** hooked: capture Qoopia does itself (the Claude Code/Codex hooks, the built-in agent, the session tailer), the
+ * only writers of continuity_runtime; hooks: the Claude Code/Codex hooks among them, which `qoopia doctor` repairs.
+ * native: a Claude Code/Codex client whose hooks deliver, or will once trusted. turns: the last conversation turn
+ * (a user and an assistant message) saved this week. recent: any save in the last two minutes. */
+function autosaveFacts(workspace:string,agent:string,database:Database,now=Date.now()) {
+  return database.query(`SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1
+      AND json_extract(s.metadata,'$.continuity_runtime') IS NOT NULL) AS hooked,
+    EXISTS(SELECT 1 FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1 AND json_extract(s.metadata,'$.continuity_runtime') IN ('claude_code','codex')) AS hooks,
+    EXISTS(SELECT 1 FROM client_connections c WHERE c.workspace_id=?1 AND c.agent_id=?2 AND c.surface IN ('claude_code','codex'))
+      OR EXISTS(SELECT 1 FROM agents a WHERE a.id=?2 AND json_extract(a.metadata,'$.memory_client') IS NOT NULL) AS native,
+    (SELECT MAX(s.last_active) FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1 AND s.last_active>=?3
+      AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.role='user')
+      AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.role='assistant')) AS turns,
+    EXISTS(SELECT 1 FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1 AND s.last_active>=?4) AS recent`)
+    .get(workspace,agent,new Date(now-UNHOOKED_CAPTURE_MS).toISOString(),new Date(now-AUTOSAVE_REMINDER_MS).toISOString()) as
+    {hooked:number;hooks:number;native:number;turns:string|null;recent:number};
+}
+/** Whether saving this agent's turns is its model's part: Qoopia captures nothing of it itself and no
+ * Claude Code/Codex hooks will (the mode is checked by the callers). */
+export function autosaveIsModels(workspace:string,agent:string,database:Database=db){
+  const facts=autosaveFacts(workspace,agent,database);return !facts.hooked&&!facts.native;
+}
+/** The line appended to this agent's MCP instructions; empty when Qoopia captures its conversations itself
+ * or the agent cannot call session_save. */
+export function autosaveInstruction(workspace:string,agent:string,canSave:boolean,database:Database=db):string {
+  if(!canSave)return '';
+  if(memoryPolicy(workspace,agent,database).mode==='manual')return AUTOSAVE_OFF;
+  return autosaveIsModels(workspace,agent,database)?AUTOSAVE_INSTRUCTION:'';
+}
+/** The reminder a tool result carries while Autosave is on and this agent saved nothing lately. */
+export function autosaveReminder(workspace:string,agent:string,database:Database=db):string|undefined {
+  if(memoryPolicy(workspace,agent,database).mode==='manual')return undefined;
+  const facts=autosaveFacts(workspace,agent,database);
+  return facts.hooked||facts.native||facts.recent?undefined:AUTOSAVE_INSTRUCTION;
+}
+
 type MemoryChannelState='working'|'manual'|'waiting'|'behind'|'sign_in'|'error';
 interface AgentMemoryStatus {mode:MemoryMode;revision:number;state:MemoryChannelState;last_capture_at:string|null;last_summary_at_ms:number|null;pending_sessions:number;pending_saves:number;error_code:string|null}
 
@@ -231,17 +273,20 @@ export function agentMemoryStatus(workspace:string,agent:string,database:Databas
   // never, and not one whose hooks still register sessions after its last capture: they run, and what
   // they could not send (a transcript the runtime never writes, as `claude -p --no-session-persistence`,
   // or one it cannot read) is reported by `qoopia doctor` on that computer, where the transcript is.
+  // Only Qoopia's own capture sets continuity_runtime; session_save also enables summaries, so continuity_enabled
+  // cannot tell hooks from a model that saved once (LIA's daily task looked like autosave in 5.0.17).
   const seen=database.query(`SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2
-      AND json_extract(s.metadata,'$.continuity_enabled')=1) AS hooked,
-    EXISTS(SELECT 1 FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1
-      AND s.created_at>?3) AS registered`).get(workspace,agent,capture.at??'') as {hooked:number;registered:number};
-  const work=lastWork.get(agent),captured=Date.parse(capture.at??'');
-  const stopped=!!capture.at&&!!seen.hooked&&!seen.registered&&work!==undefined&&work-captured>CAPTURE_STALE_MS&&Date.now()-captured>CAPTURE_STALE_MS;
-  const error=backlog.error??(stopped?'CAPTURE_STOPPED':null);
+      AND s.created_at>?3 AND json_extract(s.metadata,'$.continuity_runtime') IS NOT NULL) AS registered`).get(workspace,agent,capture.at??'') as {registered:number};
+  const facts=autosaveFacts(workspace,agent,database);
+  // Without Qoopia's own capture only saved conversation turns count: a one-message save (LIA's daily task) is not autosave.
+  const at=facts.hooked?capture.at:facts.turns;
+  const work=lastWork.get(agent),captured=Date.parse(at??'');
+  const stopped=!!at&&!seen.registered&&work!==undefined&&work-captured>CAPTURE_STALE_MS&&Date.now()-captured>CAPTURE_STALE_MS;
+  // Only the Claude Code/Codex hooks can stop between turns; the built-in agent saves when a run ends.
+  const error=backlog.error??(stopped&&facts.hooks?'CAPTURE_STOPPED':null);
   const state:MemoryChannelState=policy.mode==='manual'?'manual':error?(signIn.includes(error)?'sign_in':'error')
-    // Without lifecycle hooks (ChatGPT, Claude web, a bot) a conversation arrives only when the agent saves
-    // one itself: an old save is not "saving automatically", it is a connected client that sends nothing.
-    :!capture.at||!seen.hooked&&Date.now()-captured>UNHOOKED_CAPTURE_MS?'waiting':backlog.pending>1?'behind':'working';
+    // Without hooks an agent whose model stopped saving its turns, or saved none lately, is not saving automatically.
+    :!at||!facts.hooked&&(stopped||Date.now()-captured>UNHOOKED_CAPTURE_MS)?'waiting':backlog.pending>1?'behind':'working';
   const saves={n:pendingSavesFor(workspace,agent).length};
   return {mode:policy.mode,revision:policy.revision,state,last_capture_at:capture.at,last_summary_at_ms:summary.at,
     pending_sessions:backlog.pending,pending_saves:saves.n,error_code:policy.mode==='auto'?error:null};

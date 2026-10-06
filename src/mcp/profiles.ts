@@ -8,7 +8,7 @@ import { logger } from "../utils/logger.ts";
 /** F-255: every MCP metadata argument, bounded as serialized JSON like the 100k text cap bounds text.
  * A fresh schema per field: a shared instance would publish as a JSON-schema $ref. */
 const METADATA_MAX_BYTES = 16_384;
-export const boundedMetadata = () => z.record(z.unknown()).refine(
+export const boundedMetadata = () => z.record(z.string(), z.unknown()).refine(
   (m) => Buffer.byteLength(JSON.stringify(m)) <= METADATA_MAX_BYTES,
   `metadata exceeds ${METADATA_MAX_BYTES} bytes as JSON`,
 );

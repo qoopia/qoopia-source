@@ -231,14 +231,42 @@ test('doctor reports a memory client whose deliveries fail, from the local curso
   const hook={session_id:'doctor',cwd:'/project',transcript_path:transcript,hook_event_name:'Stop'};
   await runMemoryHook(file,hook);
   // This computer opens a server workspace: the hooks still deliver from here, so doctor inspects them here.
-  selectServerWorkspace(root,'https://mcp.qoopia.ai');
+  // A reserved .invalid name never resolves: the test does not depend on the network or on production (a slow
+  // first answer from the live server once added SERVER_UNREACHABLE and failed CI).
+  selectServerWorkspace(root,'https://qoopia-server.invalid');
   const run=spawnSync(process.execPath,['src/delivery/entry.ts','doctor','--root',root],{encoding:'utf8'}),report=JSON.parse(run.stdout);
-  expect(report).toMatchObject({ok:false,findings:['memory_clients:KEY_REJECTED'],memory_clients:{status:'fail',reason:'KEY_REJECTED',
+  expect(report.findings).toEqual(['SERVER_UNREACHABLE','memory_clients:KEY_REJECTED']);
+  expect(report).toMatchObject({ok:false,server:'unreachable',memory_clients:{status:'fail',reason:'KEY_REJECTED',
     runtimes:[{runtime:'claude_code',status:'fail',sessions:1,failing_sessions:1,last_delivery_at:null}]}});
   expect(report.memory_clients.action).toContain('reconnects this client');
   expect(run.stdout).not.toContain('PRIVATE-TRANSCRIPT-TEXT');expect(run.stdout).not.toContain(root);
   status=200;await runMemoryHook(file,hook);
   expect(memoryClientsCheck(root)).toMatchObject({status:'pass',reason:'DELIVERING',runtimes:[{failing_sessions:0}]});
+ } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('doctor says to trust the Qoopia hooks in Codex /hooks after they were written and until Codex runs them',async()=>{
+ const {memoryClientsCheck}=await import('../src/delivery/memory-client.ts');
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-codex-trust-')),home=path.join(root,'home'),sessions=path.join(home,'.codex/sessions');
+ fs.mkdirSync(sessions,{recursive:true,mode:0o700});
+ const server=Bun.serve({port:0,async fetch(req){const event=await req.json() as any;return Response.json({accepted:event.messages.map((m:any)=>m.id),session_id:event.session_id,tail:[]});}});
+ try {
+  installMemoryClient({format:'qoopia-memory-connection/1',url:`http://127.0.0.1:${server.port}`,agent_id:'fixture',key:'q_fixturekey',runtime:'codex'},root,process.execPath,home);
+  const file=path.join(root,'memory-clients/codex/connection.json'),settings=path.join(home,'.codex/hooks.json'),transcript=path.join(sessions,'trust.jsonl');
+  const untrusted={status:'fail',reason:'CODEX_HOOKS_UNTRUSTED',runtimes:[{runtime:'codex',status:'fail'}]};
+  expect(memoryClientsCheck(root)).toMatchObject(untrusted);
+  expect(memoryClientsCheck(root).action).toStartWith('Open Codex, run /hooks and trust the Qoopia hooks once.');
+  fs.writeFileSync(transcript,'');
+  const run=()=>runMemoryHook(file,{session_id:'trust',cwd:'/project',transcript_path:transcript,hook_event_name:'Stop'});
+  await run();expect(memoryClientsCheck(root)).toMatchObject({status:'pass',reason:'DELIVERING'});
+  // What an older version wrote, then the move onto this binary at start: the command changed, Codex asks again.
+  const legacy=JSON.parse(fs.readFileSync(settings,'utf8'));
+  for(const groups of Object.values(legacy.hooks) as any[])groups[0].hooks[0].command=groups[0].hooks[0].command.replace(/^'[^']+'/,"'/opt/old/qoopia'");
+  fs.writeFileSync(settings,JSON.stringify(legacy));await run();
+  await Bun.sleep(20); // Coarse file clocks: the rewrite must land after the last hook run.
+  expect(migrateMemoryHooks(root,process.execPath)).toEqual([{runtime:'codex',state:'migrated'}]);
+  expect(memoryClientsCheck(root)).toMatchObject(untrusted);
+  await run();expect(memoryClientsCheck(root)).toMatchObject({status:'pass',reason:'DELIVERING'});
  } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
 });
 

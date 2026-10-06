@@ -5,6 +5,7 @@ import {db} from '../src/db/connection.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {myAgentState,myAgentAction,recoverMyAgentRuns,agentDirectory,agentArtifact,readAgentArtifact,safeAgentAnswer} from '../src/services/my-agent.ts';
 import {createAgent} from '../src/admin/agents.ts';
+import {autosaveReminder} from '../src/services/memory-policy.ts';
 import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
@@ -129,6 +130,9 @@ test('managed turn approval, answer persistence and duplicate send are one trans
     expect(myAgentState(owner.agent_id).runs[0]?.answer).toBe('Synthetic approved result');
     expect((await myAgentAction(owner.agent_id,request)).id).toBe(first.id);expect(myAgentState(owner.agent_id).runs.length).toBe(1);
     const messages=db.query('SELECT role FROM session_messages WHERE session_id=? ORDER BY created_at').all(c.id);expect(messages.length).toBe(2);
+    // Qoopia saved the turn itself: Autosave does not ask the built-in agent's model to save it again.
+    const agentId=(db.query('SELECT agent_id FROM sessions WHERE id=?').get(c.id) as {agent_id:string}).agent_id;
+    expect(autosaveReminder(owner.workspace_id,agentId)).toBeUndefined();
     await expect(myAgentAction(owner.agent_id,{action:'approve',id:approval.id,accept:true})).rejects.toThrow('expired');
 
     // «Only on request»: the chat keeps working, but the turn's text exists in this process only.

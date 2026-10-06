@@ -18,11 +18,11 @@ export const isNativeRenderer = (renderer: string) => renderer === NATIVE_RENDER
 const text = z.string().max(100_000);
 const strings = z.array(text).max(100);
 const json: z.ZodType<JcsValue> = z.lazy(() => z.union([
-  z.string(), z.number().finite(), z.boolean(), z.null(), z.array(json), z.record(json),
+  z.string(), z.number().finite(), z.boolean(), z.null(), z.array(json), z.record(z.string(), json),
 ]));
 export const contentSchema = z.object({
   title: z.string().min(1).max(300), purpose: text.default(""), trigger: strings.default([]),
-  inputs_schema: z.record(json).default({}), outputs_schema: z.record(json).default({}),
+  inputs_schema: z.record(z.string(), json).default({}), outputs_schema: z.record(z.string(), json).default({}),
   procedure: strings.default([]), verification: strings.default([]), failure_modes: strings.default([]),
   rollback: text.default(""), compatibility: strings.default([]), requested_capabilities: strings.default([]),
   secret_refs: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(100).default([]),
@@ -35,7 +35,7 @@ const descriptorSchema = z.object({
   license: z.string().min(1).max(200), compatibility: strings, requested_capabilities: strings,
   secret_placeholders: strings, compiler: z.literal(COMPILER),
   renderer: z.enum([RENDERER, NATIVE_RENDERER, "qoopia-markdown/1", FROZEN_NATIVE_RENDERER]),
-  members: z.record(z.object({ size: z.number().int().nonnegative(), sha256: sha }).strict()),
+  members: z.record(z.string(), z.object({ size: z.number().int().nonnegative(), sha256: sha }).strict()),
 }).strict();
 export type Descriptor = z.infer<typeof descriptorSchema>;
 
@@ -139,7 +139,7 @@ export function parsePackage(bytes: Buffer, expectedDigest: string, publicKey: s
   if (digest(bytes) !== expectedDigest) throw new QoopiaError("CHECKSUM_MISMATCH", "Transport digest mismatch");
   const parsed = z.object({
     format: z.literal("qoopia-skill-package/1"), signature_profile: z.literal("qoopia-skill-signature/1"),
-    descriptor: descriptorSchema, members: z.record(z.string()), signature: z.string().max(4096),
+    descriptor: descriptorSchema, members: z.record(z.string(), z.string()), signature: z.string().max(4096),
   }).strict().safeParse(parseJsonStrict(utf8Decode(bytes)));
   if (!parsed.success) throw new QoopiaError("QUARANTINED", "Invalid package profile or descriptor");
   const p = parsed.data;

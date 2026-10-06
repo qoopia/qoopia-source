@@ -71,7 +71,7 @@ export function vendorPackage(runtime:NativePackage['runtime'],target:string,met
   const a=matches[0]!;return nativePackageSchema.parse({runtime,target,version:v,size:a.size,sha256:sha.parse(a.digest.replace(/^sha256:/,'')),
    binary:'bin/codex',url:`https://github.com/openai/codex/releases/download/rust-v${v}/${name}`});
  }
- const m=z.object({version,platforms:z.record(z.object({checksum:sha,size}))}).parse(metadata),a=m.platforms[target];
+ const m=z.object({version,platforms:z.record(z.string(), z.object({checksum:sha,size}))}).parse(metadata),a=m.platforms[target];
  if(!a)throw new Error('Native package unavailable for selected target');
  return nativePackageSchema.parse({runtime,target,version:m.version,size:a.size,sha256:a.checksum,binary:'claude',
   url:`https://downloads.claude.ai/claude-code-releases/${m.version}/${target}/claude`});

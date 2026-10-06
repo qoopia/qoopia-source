@@ -257,3 +257,48 @@ test('a consent page reached through the tunnel edge speaks the browser language
     expect(last.status).toBe(429);expect(text).toContain('TOO_MANY_SIGN_INS');expect(text).toContain('Google');
   }finally{spy.mockRestore();edge.close();env.PUBLIC_URL=prior;env.ROOT_DIR=priorRoot;server.closeAllConnections();server.close();registry.close();fs.rmSync(root,{recursive:true,force:true});}
 });
+
+// Олжасбек, 5.0.17 tunnel install: Claude.ai adds a trailing slash to the connector URL. /mcp/c/<id>/ was a
+// 404 and its metadata fell back to the general flow, whose consent is this computer's loopback dashboard
+// with mcp:admin. The slashed connection now answers as itself; the general flow is refused at the edge.
+test('through the tunnel a slashed connection URL is that connection, and the general flow is refused',async()=>{
+  runMigrations();const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-edge-slash-'));
+  const origin='https://c-slash.example',prior=env.PUBLIC_URL,priorRoot=env.ROOT_DIR;env.PUBLIC_URL=origin;env.ROOT_DIR=root;
+  const owner=bootstrapOwner(db,'Slash owner',undefined,createWorkspace({name:'Slash space',slug:randomUUID()}).id);
+  privateDirectory(path.join(root,'config'));durableWrite(path.join(root,'config/owner-identity.json'),JSON.stringify({ownerId:owner.agent_id,email:'owner@example.test'}));
+  const server=startHttpServer();if(!server.listening)await once(server,'listening');
+  const edge=startMcpEdge({publicOrigin:origin,upstreamPort:(server.address() as AddressInfo).port});if(!edge.listening)await once(edge,'listening');
+  const viaEdge=(url:string,method='GET',body?:string)=>new Promise<{status:number;headers:http.IncomingHttpHeaders;body:string}>((resolve,reject)=>{
+    const r=http.request({port:(edge.address() as AddressInfo).port,path:url,method,headers:{host:new URL(origin).host,'content-type':'application/json'}},x=>{
+      let text='';x.on('data',d=>text+=d);x.on('end',()=>resolve({status:x.statusCode!,headers:x.headers,body:text}));});r.on('error',reject);r.end(body);});
+  const authorizeQuery=(client:{client_id:string;redirect_uris:string[]},extra:Record<string,string>)=>new URLSearchParams({client_id:client.client_id,
+    redirect_uri:client.redirect_uris[0]!,response_type:'code',code_challenge:createHash('sha256').update('v'.repeat(43)).digest('base64url'),code_challenge_method:'S256',state:'s',...extra});
+  try{
+    authLimiter.resetForTests();
+    const connection=(connectionAction(owner.agent_id,{action:'apply',surface:'claude_web',access_mode:'read_write',request_key:randomUUID()}) as any).connection;
+    const slashed=new URL(connection.mcp_url).pathname+'/';
+    const challenge=await viaEdge(slashed,'POST','{}');expect(challenge.status).toBe(401);
+    const metadataUrl=String(challenge.headers['www-authenticate']).match(/resource_metadata="([^"]+)"/)![1]!;
+    expect(metadataUrl).toBe(origin+'/.well-known/oauth-protected-resource'+new URL(connection.mcp_url).pathname);
+    const metadata=JSON.parse((await viaEdge(new URL(metadataUrl).pathname+'/')).body);
+    expect(metadata.resource).toBe(connection.mcp_url);expect(metadata.authorization_servers[0]).toBe(origin+'/oauth/c/'+connection.id);
+    expect(JSON.parse((await viaEdge('/.well-known/oauth-authorization-server/oauth/c/'+connection.id+'/')).body).issuer).toBe(origin+'/oauth/c/'+connection.id);
+    const redirect_uris=['https://claude.ai/api/mcp/auth_callback'];
+    const client=registerClient({client_name:'Claude',redirect_uris},connectionRegistrationAuth(connection.id,redirect_uris));
+    const consent=await viaEdge('/oauth/authorize?'+authorizeQuery(client,{resource:connection.mcp_url+'/'}));
+    expect(consent.status).toBe(302);const target=new URL(consent.headers.location!);
+    expect(target.origin+target.pathname).toBe(origin+'/oauth/consent');
+    expect(getConsentTicket(target.searchParams.get('ticket')!)?.resource).toBe(connection.mcp_url);
+    // A client registered on the general /oauth/register would consent on this computer's own dashboard.
+    const general=registerClient({client_name:'Claude',redirect_uris},{agent_id:owner.agent_id,agent_name:'Slash owner',workspace_id:owner.workspace_id,type:'steward',source:'api-key'} as any);
+    for(const extra of [{},{resource:origin+'/mcp/'}] as Record<string,string>[]){
+      const refused=await viaEdge('/oauth/authorize?'+authorizeQuery(general,extra));
+      expect(refused.status).toBe(302);const answer=new URL(refused.headers.location!);
+      expect(answer.origin+answer.pathname).toBe(redirect_uris[0]!);expect(answer.searchParams.get('error')).toBe('invalid_target');
+      expect(answer.searchParams.get('error_description')).toContain('connection address');
+    }
+    // On this computer itself the general flow keeps its local consent.
+    const local=await fetch('http://127.0.0.1:'+(server.address() as AddressInfo).port+'/oauth/authorize?'+authorizeQuery(general,{}),{redirect:'manual'});
+    expect(new URL(local.headers.get('location')!).pathname).toBe('/api/dashboard/oauth-consent');
+  }finally{env.PUBLIC_URL=prior;env.ROOT_DIR=priorRoot;edge.closeAllConnections();edge.close();server.closeAllConnections();server.close();fs.rmSync(root,{recursive:true,force:true});}
+});

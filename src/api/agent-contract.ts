@@ -6,7 +6,7 @@ import {isAdmin} from '../auth/principal.ts';
 import {isToolAllowedForProfile,normalizeAgentProfile,ownerAllowed,toolCatalog,toolNames,type RiskClass} from '../mcp/tools.ts';
 import {assertInstanceWriteAllowed} from '../utils/instance-role.ts';
 import {BRIDGE_READ_TOOLS,BRIDGE_TOOL_NAMES,bridgeRefusal} from '../bridges/api.ts';
-import {agentMemoryStatus} from '../services/memory-policy.ts';
+import {agentMemoryStatus,AUTOSAVE_INSTRUCTION,autosaveIsModels} from '../services/memory-policy.ts';
 import {memoryClientAgent} from '../services/memory-model.ts';
 import {AGENT_KIT_REVISION} from '../agent-kit/index.ts';
 
@@ -30,7 +30,6 @@ const MECHANISMS:{id:string;title:string;match:RegExp;flag?:string}[]=[
   {id:'transfer',title:'Export and import',match:/^(export_|import_)/},
   {id:'management',title:'Agents, access and memory policy',match:/^(connection_prepare$|agent_(onboard|list|deactivate|set_profile|set_shared_context)$|memory_(policy|save)_)/},
 ];
-const MCP_ONLY_SURFACES=['chatgpt_web','chatgpt_desktop','claude_web','claude_desktop','muse_code','muse_app','grok_bot'];
 
 /** What this connection really got, when the transport recorded it; otherwise the default rule. */
 const bootstrapOf=(auth:AuthContext)=>auth.bootstrap_profile!==undefined?(auth.bootstrap_profile??undefined)
@@ -72,12 +71,15 @@ function channelMechanism(base:ContinuityBase,memory:ReturnType<typeof agentMemo
   return {...base,status:'faulty',reason:memory.state==='behind'?'Conversations wait for a summary.':'The memory model reported an error.',
     action:memory.state==='sign_in'?'The owner signs in to the memory subscription in Qoopia, or checks its quota.':'Accepted messages are kept. The owner checks the memory model in Qoopia; summaries resume by themselves.'};
 }
-function continuity(database:Database,auth:AuthContext):Mechanism {
+function continuity(database:Database,auth:AuthContext,canSave:boolean):Mechanism {
   const base={id:'memory.continuity',title:'Automatic session capture and restore',tools:[] as string[],withheld:[] as string[]};
   const memory=agentMemoryStatus(auth.workspace_id,auth.agent_id,database);
   const surface=currentConnection(database,auth.workspace_id,auth.agent_id)?.surface;
   if(memory.state!=='waiting')return channelMechanism(base,memory);
-  if(surface&&MCP_ONLY_SURFACES.includes(surface))return {...base,status:'client_unsupported',reason:'This client has no session lifecycle hooks, so nothing is captured automatically.',action:'Save what matters with note_create. Full coverage needs a client with the Qoopia memory adapter (Claude Code, Codex).'};
+  // Without lifecycle hooks Autosave is this agent's own part: Qoopia asks it to save every turn.
+  if(surface!=='claude_code'&&surface!=='codex'&&autosaveIsModels(auth.workspace_id,auth.agent_id,database))return !canSave?{...base,withheld:['session_save'],status:'forbidden',
+    reason:'Not included in this agent\'s access profile.',action:widenAction(auth,['session_save'])}:{...base,status:'available',tools:['session_save'],
+    reason:'This client has no lifecycle hooks: its conversation is saved when you save each turn.',action:AUTOSAVE_INSTRUCTION};
   // The Qoopia memory client of a runtime delivers under its own memory agent, never under this
   // OAuth/linked identity: that agent's channel is this runtime's capture. Memory settings record it.
   const served=surface==='claude_code'||surface==='codex'?memoryClientAgent(auth.workspace_id,surface):null;
@@ -126,7 +128,7 @@ export function agentContract(database:Database,auth:AuthContext,operations:read
       withheld:other.filter(name=>!tools.includes(name)),reason:tools.length?null:'Not included in this agent\'s access profile.',
       action:tools.length?null:widenAction(auth,other)});
   }
-  mechanisms.splice(2,0,continuity(database,auth));
+  mechanisms.splice(2,0,continuity(database,auth,granted.includes('session_save')));
   const connection=currentConnection(database,auth.workspace_id,auth.agent_id);
   return {contract:'qoopia-agent-contract/1',
     protocol:{kit:'qoopia-agent-kit/1',revision:AGENT_KIT_REVISION,read_with:'qoopia_protocol',evidence:'A protocol file on disk does not prove that a session loaded it.'},

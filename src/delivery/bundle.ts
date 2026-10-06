@@ -11,7 +11,7 @@ export const bundleSchema = z.object({
   schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43),z.literal(44),z.literal(45),z.literal(46),z.literal(47),z.literal(48)]),
   signing: z.enum(['test-fixture', 'publisher']), publisher_key_sha256: hex,
   platform_signing: z.enum(['NOT_RUN', 'externally_verified']),
-  members: z.record(z.object({ size: z.number().int().nonnegative(), sha256: hex, mode: z.union([z.literal(0o600),z.literal(0o644),z.literal(0o700),z.literal(0o755)]) }).strict()),
+  members: z.record(z.string(), z.object({ size: z.number().int().nonnegative(), sha256: hex, mode: z.union([z.literal(0o600),z.literal(0o644),z.literal(0o700),z.literal(0o755)]) }).strict()),
 }).strict();
 // An inventory member keeps the existing signed manifest envelope compatible.
 // Absence is NOT evidence that an old binary understands holds or journal pointers.

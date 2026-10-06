@@ -1,7 +1,7 @@
 import {afterAll,beforeAll,expect,spyOn,test} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
-import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import type {McpServer} from '@modelcontextprotocol/server';
 import type {AuthContext} from '../src/auth/middleware.ts';
 
 // src/bridges/api.ts binds its singleton to the production relay and captures fetch on first import.

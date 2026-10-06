@@ -44,6 +44,7 @@ import {
 import { recall } from "../src/services/recall.ts";
 import { createNote } from "../src/services/notes.ts";
 import { QoopiaError } from "../src/utils/errors.ts";
+import type { AuthContext } from "../src/auth/middleware.ts";
 import { principalAuth } from "./helpers/p1-fixtures.ts";
 
 let WORKSPACE_A = "";
@@ -173,6 +174,28 @@ describe("upsertEntity", () => {
         summary: "leaked q_EXAMPLE_PLACEHOLDER_KEY",
       }),
     ).toThrow(QoopiaError);
+  });
+
+  // OWNER DECISION 2026-10-04 (ADR-020), applied to pages: author, steward and owner change a page.
+  test("a neighbour cannot overwrite another agent's page; the author, the steward and the owner can", () => {
+    const [alice, bob, steward, owner] = (["standard", "standard", "steward", "owner"] as const).map((type, i) =>
+      ({ agent_id: createAgent({ name: `ent-page-${i}`, workspaceSlug: "ent-test-a", type }).id, agent_name: `ent-page-${i}`,
+        workspace_id: WORKSPACE_A, type, source: "api-key" }) as AuthContext);
+    const page = (title: string, slug = "authored-page") => ({ workspace_id: WORKSPACE_A, type: "knowledge" as const, slug, title });
+    expect(upsertEntity(page("alice v1"), alice!).created).toBe(true);
+    let caught: unknown;
+    try { upsertEntity(page("bob rewrote it"), bob!); } catch (error) { caught = error; }
+    expect((caught as QoopiaError).code).toBe("FORBIDDEN");
+    expect((caught as QoopiaError).details?.next_action).toBe("Ask ent-page-0 or the steward to change it, or write your own page under a new slug.");
+    expect(getEntity({ workspace_id: WORKSPACE_A, slug: "authored-page" }).title).toBe("alice v1");
+    for (const [who, title] of [[alice, "alice v2"], [steward, "steward v3"], [owner, "owner v4"]] as const) {
+      expect(upsertEntity(page(title), who!).created).toBe(false);
+    }
+    expect(getEntity({ workspace_id: WORKSPACE_A, slug: "authored-page" }).title).toBe("owner v4");
+    // A page with no recorded author is steward/owner-only; a new page is open to any writer.
+    upsertEntity(page("server-written", "unauthored-page"));
+    expect(() => upsertEntity(page("bob", "unauthored-page"), bob!)).toThrow(/belongs to the steward and the owner/);
+    expect(upsertEntity(page("bob's own", "bobs-page"), bob!).created).toBe(true);
   });
 });
 
