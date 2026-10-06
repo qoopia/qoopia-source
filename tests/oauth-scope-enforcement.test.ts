@@ -337,7 +337,7 @@ describe("OAuth scope enforcement at MCP", () => {
     const previous=(db.query("SELECT legacy_skill_access AS n FROM agents WHERE id=?").get(STEWARD_ID) as {n:number}).n;
     try {
       db.query("UPDATE agents SET legacy_skill_access=0 WHERE id=?").run(STEWARD_ID);
-      expect(await mcpList(STEWARD_KEY)).not.toContain("agent_status");
+      expect(await mcpList(STEWARD_KEY)).not.toContain("session_recent");
       db.query("UPDATE agents SET legacy_skill_access=1 WHERE id=?").run(STEWARD_ID);
       const names=await mcpList(STEWARD_KEY);
       expect(names).toContain("agent_status");expect(names).toContain("agent_send");
@@ -347,7 +347,11 @@ describe("OAuth scope enforcement at MCP", () => {
       expect(scoped).toContain("agent_status");expect(scoped).not.toContain("agent_send");
       expect(await mcpCall(accessToken,"agent_status",{})).toHaveProperty("result");
       db.query("UPDATE agents SET legacy_skill_access=0 WHERE id=?").run(STEWARD_ID);
-      expect(await mcpList(STEWARD_KEY)).not.toContain("agent_status");
+      expect(await mcpList(STEWARD_KEY)).not.toContain("session_recent");
+      // A memory worker keeps AgentComm, and a read-only token still cannot send.
+      expect(await mcpList(STEWARD_KEY)).toContain("agent_send");
+      const workerScoped=await mcpList((await issueToken("mcp:read")).accessToken);
+      expect(workerScoped).toContain("agent_inbox");expect(workerScoped).not.toContain("agent_send");
     } finally {db.query("UPDATE agents SET legacy_skill_access=? WHERE id=?").run(previous,STEWARD_ID);}
   });
 
