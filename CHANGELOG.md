@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.0.19 — 2026-10-10 (owner preview)
+
+- Files: simultaneous appends no longer silently overwrite another part or recreate a deleted file. A stale append is refused with a clear retry instruction; the file and its activity entry commit together.
+- Agent conversations: replies without an explicit recipient stay with the caller’s messages in a shared thread. Retrying a message with a multiline topic returns the original message instead of a false conflict.
+- OAuth: repeated form parameters are refused, values containing equals signs are preserved, and connection consent stops reading oversized sign-in responses.
+- Claude Desktop adapter: MCP client SDK 1.31 pins saved tokens and client registration to the selected authorization issuer; older credentials migrate without another sign-in.
+- Release preparation: owner previews are checked separately from the signed public download/feed metadata. Public publication still requires owner acceptance and the strict `--public` gate. Schema remains 48 and agent kit revision remains 12.
+
 ## 5.0.18 — 2026-10-06
 
 - Autosave out of the box on every runtime. ChatGPT, Claude.ai, Grok bots and Muse have no lifecycle hooks
