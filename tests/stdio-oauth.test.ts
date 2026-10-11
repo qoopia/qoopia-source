@@ -1,5 +1,7 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {randomUUID} from 'node:crypto';
+import {auth} from '@modelcontextprotocol/sdk/client/auth.js';
+import {privateDirectory,durableWrite} from '../src/utils/fs.ts';
 import {authorizeStdioClient,stdioAuthStatus,stdioFolder,StdioOAuthProvider,stdioFetch,lockStdioCredentials,type StdioBinding} from '../src/delivery/stdio-oauth.ts';
 import {db} from '../src/db/connection.ts';import {runMigrations} from '../src/db/migrate.ts';
 import {createWorkspace} from '../src/admin/workspaces.ts';import {bootstrapOwner} from '../src/auth/pairings.ts';
@@ -92,4 +94,67 @@ test('local adapter OAuth uses real scoped discovery/PKCE, validates callback st
     await expect(client.callTool({name:'note_get',arguments:{id:note.id}})).rejects.toThrow('Check this connection in Qoopia');
   }finally{await client?.close();env.PUBLIC_URL=previous.url;env.OAUTH_ISSUER=previous.issuer;env.DASHBOARD_ALLOWED_ORIGINS=previous.origins;
     server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));fs.rmSync(root,{recursive:true,force:true});}
+});
+
+// GHSA-6qxp-vccf-f47h: stored credentials are bound to the pinned issuer and never leave the selected installation.
+function issuerFixture(metadata:Record<string,unknown>={}) {
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-stdio-issuer-'))),id=randomUUID(),origin='https://fixture.example';
+  const binding:StdioBinding={format:'qoopia-client-connection/1',connection_id:id,workspace_id:'fixture',surface:'claude_desktop',access_mode:'read',mcp_url:origin+'/mcp/c/'+id};
+  const folder=stdioFolder(root,binding),issuer=origin+'/oauth/c/'+id,seen:string[]=[],bodies:string[]=[];
+  const write=(client:object,tokens:object)=>{privateDirectory(folder);durableWrite(path.join(folder,'oauth.json'),JSON.stringify({format:'qoopia-stdio-oauth/1',binding,redirect_uri:'http://127.0.0.1:1/qoopia/callback',client,tokens}));};
+  const request=(async(input:Request|string|URL,init?:RequestInit)=>{
+    const url=new URL(input instanceof Request?input.url:String(input));seen.push(url.href);
+    if(url.pathname.startsWith('/.well-known/oauth-protected-resource'))return Response.json({resource:binding.mcp_url,authorization_servers:[issuer]});
+    if(url.pathname.startsWith('/.well-known/'))return Response.json({issuer,authorization_endpoint:origin+'/oauth/authorize?connection='+id,token_endpoint:origin+'/oauth/token',
+      registration_endpoint:origin+'/oauth/register?connection='+id,response_types_supported:['code'],code_challenge_methods_supported:['S256'],...metadata});
+    if(url.href===origin+'/oauth/token'){bodies.push(String(init?.body));return Response.json({access_token:'fresh-fixture',token_type:'Bearer',refresh_token:'rotated-fixture',scope:'mcp:read'});}
+    return new Response(null,{status:404});
+  }) as typeof fetch;
+  const refresh=async()=>auth(new StdioOAuthProvider(folder,binding),{serverUrl:binding.mcp_url,scope:'mcp:read',fetchFn:stdioFetch(binding,request),
+    resourceMetadataUrl:new URL(origin+'/.well-known/oauth-protected-resource/mcp/c/'+id)});
+  return {root,binding,folder,issuer,seen,bodies,write,refresh,stored:()=>JSON.parse(fs.readFileSync(path.join(folder,'oauth.json'),'utf8'))};
+}
+const legacyTokens={access_token:'stale-fixture',token_type:'Bearer',refresh_token:'legacy-fixture',scope:'mcp:read'};
+
+test('metadata naming a foreign issuer or token endpoint is refused before any request reaches the foreign origin',async()=>{
+  for(const metadata of [{issuer:'https://foreign.example/oauth/c/x'},{token_endpoint:'https://foreign.example/oauth/token'}]){
+    const f=issuerFixture(metadata);
+    try{
+      f.write({client_id:'fixture-client'},legacyTokens);
+      await expect(f.refresh()).rejects.toThrow('CLIENT_AUTH_REFUSED');
+      expect(f.seen.length).toBeGreaterThan(0);expect(f.seen.filter(u=>new URL(u).origin!=='https://fixture.example')).toEqual([]);
+      expect(f.bodies).toEqual([]);expect(f.stored().tokens.refresh_token).toBe('legacy-fixture');
+    }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+  }
+});
+
+test('legacy credentials without issuer migrate to the pinned issuer and refresh without a new sign-in',async()=>{
+  const f=issuerFixture();
+  try{
+    f.write({client_id:'fixture-client'},legacyTokens);
+    const provider=new StdioOAuthProvider(f.folder,f.binding);
+    expect(provider.tokens()?.issuer).toBe(f.issuer);expect(provider.clientInformation()?.issuer).toBe(f.issuer);
+    expect(await f.refresh()).toBe('AUTHORIZED');
+    expect(f.bodies.length).toBe(1);expect(new URLSearchParams(f.bodies[0]).get('refresh_token')).toBe('legacy-fixture');
+    const stored=f.stored();
+    expect(stored.tokens).toMatchObject({access_token:'fresh-fixture',refresh_token:'rotated-fixture',issuer:f.issuer});
+    expect(stored.client).toEqual({client_id:'fixture-client',issuer:f.issuer});
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('credentials stamped for another issuer are refused, on load and on save',async()=>{
+  const f=issuerFixture(),foreign='https://fixture.example/oauth/c/'+randomUUID();
+  try{
+    for(const [client,tokens] of [[{client_id:'fixture-client'},{...legacyTokens,issuer:foreign}],[{client_id:'fixture-client',issuer:foreign},legacyTokens]] as const){
+      f.write(client,tokens);
+      expect(()=>new StdioOAuthProvider(f.folder,f.binding)).toThrow('CLIENT_AUTH_REFUSED');
+      expect(()=>stdioAuthStatus(f.root,f.binding)).toThrow('CLIENT_AUTH_REFUSED');
+      await expect(f.refresh()).rejects.toThrow('CLIENT_AUTH_REFUSED');
+    }
+    expect(f.seen).toEqual([]);
+    f.write({client_id:'fixture-client'},legacyTokens);const provider=new StdioOAuthProvider(f.folder,f.binding);
+    expect(()=>provider.saveTokens({...legacyTokens,issuer:foreign})).toThrow('CLIENT_AUTH_REFUSED');
+    expect(()=>provider.saveClientInformation({client_id:'fixture-client',issuer:foreign})).toThrow('CLIENT_AUTH_REFUSED');
+    expect(f.stored().tokens.issuer).toBeUndefined();
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });

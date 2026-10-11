@@ -1,6 +1,6 @@
 {
   "name": "qoopia",
-  "version": "5.0.18",
+  "version": "5.0.19",
   "description": "Memory and truth layer for AI agents",
   "type": "module",
   "bin": {
@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@huggingface/tokenizers": "0.2.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "@modelcontextprotocol/server": "2.3.1",
     "dingbat-to-unicode": "file:./scripts/vendor/transpect-fontmap-to-unicode",
     "jose": "6.2.2",

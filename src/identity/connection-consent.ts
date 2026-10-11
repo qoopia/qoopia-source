@@ -7,6 +7,7 @@ import {connectionOrigin,publicConnection,resourceConnection} from '../services/
 import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket,finalizeConsentTicket,replayFinalizeRedirect} from '../auth/oauth.ts';
 import { hash, randomToken } from '../utils/fs.ts';
 import { escapeHtml as escape } from '../utils/html.ts';
+import {readBoundedText} from '../utils/http-json.ts';
 
 const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
 const loginCookie=CONSENT_COOKIE_PREFIX+'login';
@@ -21,7 +22,8 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
   const post=async(route:string,body:unknown)=>{
     const response=await request(loginOrigin+route,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),
       redirect:'error',signal:AbortSignal.timeout(20_000)});
-    const text=await response.text();if(text.length>4096)throw new ConsentError('SIGN_IN_UNAVAILABLE',503);
+    let text:string;
+    try{text=await readBoundedText(response,4096);}catch{throw new ConsentError('SIGN_IN_UNAVAILABLE',503);}
     const data=JSON.parse(text) as Record<string,unknown>;
     // The broker's hourly allowances (emails per address, starts per network) refuse with this text.
     if(!response.ok&&String(data.error).startsWith('Too many sign-in'))throw new ConsentError('TOO_MANY_SIGN_INS',429);

@@ -329,7 +329,7 @@ function assertIdempotentMessageMatches(
     row.parent_message_id !== (input.parent_message_id ?? null) ||
     (input.session_id !== undefined && row.session_id !== input.session_id) ||
     (input.session_id === undefined && input.topic !== undefined &&
-      session?.topic !== String(input.topic).trim()) ||
+      session?.topic !== normalizeTopic(String(input.topic))) ||
     (input.close_after_send === true && session?.status === "open")
   ) {
     throw new QoopiaError("CONFLICT", "idempotency_key was already used for a different AgentComm message");
@@ -836,9 +836,11 @@ export function agentReply(input: {
     const last = db.prepare(
       `SELECT CASE WHEN sender_agent_id != ? THEN sender_agent_id ELSE recipient_agent_id END AS other
          FROM agent_comm_messages
-        WHERE workspace_id = ? AND session_id = ? AND (sender_agent_id != ? OR recipient_agent_id != ?)
+        WHERE workspace_id = ? AND session_id = ?
+          AND (sender_agent_id = ? OR recipient_agent_id = ?)
+          AND (sender_agent_id != ? OR recipient_agent_id != ?)
         ORDER BY created_at DESC, id DESC LIMIT 1`,
-    ).get(input.agent_id, session.workspace_id, input.session_id, input.agent_id, input.agent_id) as
+    ).get(input.agent_id, session.workspace_id, input.session_id, input.agent_id, input.agent_id, input.agent_id, input.agent_id) as
       | { other: string }
       | undefined;
     const targetId = last?.other ?? (session.created_by_agent_id !== input.agent_id ? session.created_by_agent_id : null);

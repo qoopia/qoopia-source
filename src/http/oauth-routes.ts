@@ -139,20 +139,22 @@ export function stopConsentTicketGc(): void {
 // client registration is gated on Bearer api_key + steward/claude-priv type.
 
 function parseForm(body: Buffer): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   const s = body.toString("utf8");
   for (const pair of s.split("&")) {
-    const [k, v = ""] = pair.split("=");
+    const eq = pair.indexOf("=");
+    const k = eq < 0 ? pair : pair.slice(0, eq), v = eq < 0 ? "" : pair.slice(eq + 1);
     if (!k) continue;
     let key: string;
     let val: string;
     try {
-      key = decodeURIComponent(k);
+      key = decodeURIComponent(k.replace(/\+/g, " "));
       val = decodeURIComponent(v.replace(/\+/g, " "));
     } catch {
       // Malformed percent-encoding — throw controlled 400 (caught by callers)
       throw Object.assign(new Error("invalid_request"), { statusCode: 400 });
     }
+    if (Object.hasOwn(out, key)) throw Object.assign(new Error("invalid_request"), { statusCode: 400 });
     out[key] = val;
   }
   return out;

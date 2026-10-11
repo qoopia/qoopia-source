@@ -23,3 +23,12 @@ test('a JSON token request must be an object; an object reaches the grant dispat
   for(const body of ['[{"grant_type":"refresh_token"}]','null','{'])expect(await token(body)).toEqual([400,{error:'invalid_request'}]);
   expect((await token('{"grant_type":"password"}'))[1]).toEqual({error:'unsupported_grant_type'});
 });
+
+test('OAuth forms reject repeated decoded parameters and preserve embedded equals signs',async()=>{
+  const token=(body:string)=>fetch(base+'/oauth/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body}).then(r=>r.json());
+  for(const body of ['grant_type=password&grant_type=refresh_token','grant_type=password&grant%5ftype=password','client_id=a&client_id=b'])
+    expect(await token(body)).toEqual({error:'invalid_request'});
+  // Truncating at the second '=' would dispatch this as a refresh grant instead.
+  expect(await token('grant_type=refresh_token=extra')).toEqual({error:'unsupported_grant_type'});
+  expect(await token('grant_type=%ZZ')).toEqual({error:'invalid_request'});
+});

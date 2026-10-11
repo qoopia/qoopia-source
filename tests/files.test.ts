@@ -48,6 +48,25 @@ function pdf(pages: number, line: string, lines = 1): Buffer {
 }
 
 describe("agents save files with file_put", () => {
+  test("concurrent appends refuse stale bytes, including creation and deletion races", async () => {
+    const put = (filename: string, content: string, append = false) => filePut({ workspace_id: WS, agent_id: OWNER,
+      agent_name: "owner-t", folder: "race", filename, content, append });
+    for (const existing of [true, false]) {
+      const filename = `append-${existing}.txt`;
+      if (existing) await put(filename, "start:");
+      const results = await Promise.allSettled([put(filename, "one", true), put(filename, "two", true)]);
+      expect(results[0].status).toBe("fulfilled");
+      expect(results[1]).toMatchObject({ status: "rejected", reason: { code: "CONFLICT" } });
+      await put(filename, "two", true);
+      expect(fileGet({ workspace_id: WS, folder: "race", filename }).content).toBe((existing ? "start:" : "") + "onetwo");
+    }
+    const original = await put("deleted.txt", "original");
+    const pending = put("deleted.txt", "more", true);
+    fileDelete({ workspace_id: WS, agent_id: OWNER, id: original.id });
+    await expect(pending).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(() => fileGet({ workspace_id: WS, id: original.id })).toThrow();
+  });
+
   test("own folder by default, sub-folders on first use, parts appended, another author's file never replaced", async () => {
     const ws = createWorkspace({ name: "files-put" });
     const kiri = createAgent({ name: "file-put-kiri", workspaceSlug: ws.slug }).id, leo = createAgent({ name: "file-put-leo", workspaceSlug: ws.slug }).id;

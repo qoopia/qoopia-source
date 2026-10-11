@@ -211,6 +211,13 @@ describe("agent-comm replays are decided by the stored request", () => {
     expect((agentSend(input) as any).deduplicated).toBe(true);
   });
 
+  test("a retry uses the same topic normalization as the original send", () => {
+    const input = { workspace_id: WS, agent_id: LIAM, to_agent: "leo-t", body: "retry normalized topic",
+      topic: "Sync\n  today", idempotency_key: "replay-normalized-topic" };
+    const first = agentSend(input);
+    expect(agentSend(input)).toMatchObject({ id: first.id, deduplicated: true });
+  });
+
   test("a retry asking to close what the original left open is a different request", () => {
     const request = agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "leo-t", body: "close drift request" });
     const input = { workspace_id: WS, agent_id: LEO, session_id: request.session_id, reply_to_message_id: request.id, body: "close drift reply", idempotency_key: "replay-close-1" };
@@ -368,6 +375,14 @@ describe("agent-comm parent_message_id names a message of the same thread", () =
     const empty = agentSessionCreate({ workspace_id: WS, agent_id: LIAM, topic: "empty" });
     expect(errorOf(() => agentReply({ workspace_id: WS, agent_id: LIAM, session_id: empty.id, body: "anyone?" })))
       .toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  test("an implicit reply ignores other participants' messages that never addressed the caller", () => {
+    const request = agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: LEO, body: "question for Leo" });
+    agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: CORSAIR, session_id: request.session_id, body: "question for Corsair" });
+    agentReply({ workspace_id: WS, agent_id: CORSAIR, session_id: request.session_id, body: "Corsair's answer" });
+    const reply = agentReply({ workspace_id: WS, agent_id: LEO, session_id: request.session_id, body: "Leo's answer" });
+    expect(row(reply.id).recipient_agent_id).toBe(LIAM);
   });
 
   test("a message to an agent without an inbox is refused, not queued", () => {

@@ -150,6 +150,8 @@ export async function fileUpload(p: {
   bytes: Buffer;
   /** An agent replaces only what it wrote itself; the owner's dashboard upload replaces anything. */
   replace_own_only?: boolean;
+  /** An append must still see the exact file it read before asynchronous extraction. */
+  append_snapshot?: { id: string; sha256: string } | null;
 }) {
   const { folder, filename } = validateFileUpload(p);
   const buf = p.bytes;
@@ -159,20 +161,29 @@ export async function fileUpload(p: {
   const extracted = await parseFileText(mime, filename, buf);
   const text_excerpt = extracted.text ? extracted.text.slice(0, EXCERPT_MAX) : null;
   const ts = nowIso();
-  const written = db.prepare(
-    `INSERT INTO files (id, workspace_id, owner_agent_id, folder, filename, mime, size, sha256, content, text_excerpt, uploaded_by_agent_id, created_at, extraction_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(workspace_id, folder, filename) DO UPDATE SET
-       mime = excluded.mime, size = excluded.size, sha256 = excluded.sha256,
-       content = excluded.content, text_excerpt = excluded.text_excerpt, extraction_status=excluded.extraction_status,
-       uploaded_by_agent_id = excluded.uploaded_by_agent_id, created_at = excluded.created_at
-     WHERE ? = 0 OR files.uploaded_by_agent_id = excluded.uploaded_by_agent_id`,
-  ).run(ulid(), p.workspace_id, p.owner_agent_id, folder, filename, mime, size, sha256, buf, text_excerpt, p.uploaded_by_agent_id, ts, extracted.status, p.replace_own_only ? 1 : 0);
-  // Checked by the write itself, so a file another author saves meanwhile is never replaced.
-  if (!written.changes) throw new QoopiaError("CONFLICT", `${folder}/${filename} was written by someone else; choose another name or folder`);
-  const row = db.prepare(`SELECT * FROM files WHERE workspace_id = ? AND folder = ? AND filename = ?`).get(p.workspace_id, folder, filename) as any;
-  logActivity({ workspace_id: p.workspace_id, agent_id: p.uploaded_by_agent_id, action: "file_upload", entity_type: "file", entity_id: row.id, project_id: null, summary: `Uploaded ${filename} to ${folder}`, details: { folder, filename, mime, size } });
-  return rowMeta(row);
+  return db.transaction(() => {
+    if (p.append_snapshot !== undefined) {
+      const current = db.prepare(`SELECT id, sha256 FROM files WHERE workspace_id = ? AND folder = ? AND filename = ?`)
+        .get(p.workspace_id, folder, filename) as { id: string; sha256: string } | null;
+      if (current?.id !== p.append_snapshot?.id || current?.sha256 !== p.append_snapshot?.sha256) {
+        throw new QoopiaError("CONFLICT", "The file changed while appending; retry this part against the current file");
+      }
+    }
+    const written = db.prepare(
+      `INSERT INTO files (id, workspace_id, owner_agent_id, folder, filename, mime, size, sha256, content, text_excerpt, uploaded_by_agent_id, created_at, extraction_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(workspace_id, folder, filename) DO UPDATE SET
+         mime = excluded.mime, size = excluded.size, sha256 = excluded.sha256,
+         content = excluded.content, text_excerpt = excluded.text_excerpt, extraction_status=excluded.extraction_status,
+         uploaded_by_agent_id = excluded.uploaded_by_agent_id, created_at = excluded.created_at
+       WHERE ? = 0 OR files.uploaded_by_agent_id = excluded.uploaded_by_agent_id`,
+    ).run(ulid(), p.workspace_id, p.owner_agent_id, folder, filename, mime, size, sha256, buf, text_excerpt, p.uploaded_by_agent_id, ts, extracted.status, p.replace_own_only ? 1 : 0);
+    // Checked by the write itself, so a file another author saves meanwhile is never replaced.
+    if (!written.changes) throw new QoopiaError("CONFLICT", `${folder}/${filename} was written by someone else; choose another name or folder`);
+    const row = db.prepare(`SELECT * FROM files WHERE workspace_id = ? AND folder = ? AND filename = ?`).get(p.workspace_id, folder, filename) as any;
+    logActivity({ workspace_id: p.workspace_id, agent_id: p.uploaded_by_agent_id, action: "file_upload", entity_type: "file", entity_id: row.id, project_id: null, summary: `Uploaded ${filename} to ${folder}`, details: { folder, filename, mime, size } });
+    return rowMeta(row);
+  })();
 }
 
 export function fileDelete(p: { workspace_id: string; id: string; agent_id: string }) {
@@ -224,12 +235,13 @@ export async function filePut(p: { workspace_id: string; agent_id: string; agent
   const part = Buffer.from(p.content, p.encoding === "base64" ? "base64" : "utf8");
   // A part may be empty; a whole new file may not.
   const { folder, filename } = validateFileUpload({ folder: p.folder?.trim() || p.agent_name, filename: p.filename, bytes: p.append ? Buffer.alloc(1) : part });
-  const before = p.append ? db.prepare(`SELECT content FROM files WHERE workspace_id = ? AND folder = ? AND filename = ? AND uploaded_by_agent_id = ?`)
-    .get(p.workspace_id, folder, filename, p.agent_id) as { content: Uint8Array } | null : null;
+  const before = p.append ? db.prepare(`SELECT id, sha256, content FROM files WHERE workspace_id = ? AND folder = ? AND filename = ? AND uploaded_by_agent_id = ?`)
+    .get(p.workspace_id, folder, filename, p.agent_id) as { id: string; sha256: string; content: Uint8Array } | null : null;
   const bytes = before ? Buffer.concat([Buffer.from(before.content), part]) : part;
   if (bytes.length > MAX_FILE_BYTES) throw new QoopiaError("SIZE_LIMIT", "A file in Qoopia is at most 100 MB");
   return fileUpload({ workspace_id: p.workspace_id, owner_agent_id: p.agent_id, uploaded_by_agent_id: p.agent_id, folder, filename,
-    mime: p.mime || Bun.file(filename).type, bytes, replace_own_only: true });
+    mime: p.mime || Bun.file(filename).type, bytes, replace_own_only: true,
+    append_snapshot: p.append ? before && { id: before.id, sha256: before.sha256 } : undefined });
 }
 
 // ---- MCP read tools (any fleet agent) ----
