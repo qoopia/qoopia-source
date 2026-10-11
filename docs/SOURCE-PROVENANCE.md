@@ -1,12 +1,12 @@
-# Source provenance — Qoopia 5.0.19
+# Source provenance — Qoopia 5.0.20
 
 This repository has an independent public source history. Private development ancestry and customer data are excluded. Operator state is excluded by the export allowlist from 5.0.15 on: earlier releases carried some one-off operator scripts, host paths and internal identifiers, which this release removes from main (they remain in earlier history and tags).
 
-- Product version: **5.0.19**; database schema **48**; instruction kit **12**.
-- Reviewed source snapshot: `406216c24e64ad02fe1fb8721917998e4002f4b5` (runtime, migrations and SDK byte-identical to the package source).
-- Signed Mac/Linux package source: `11e2b03b95e223275c7d75376057fd9230689c1c`.
-- Installers: [v5.0.19](https://github.com/qoopia/qoopia-downloads/releases/tag/v5.0.19).
-- Native iOS: **5.0.8 build 3**, separate TestFlight channel. This release does not replace Apple's pending native build.
+- Product version: **5.0.20**; database schema **49**; instruction kit **13**.
+- Reviewed source snapshot: `aa34cf89d28be7a81975a22409bb1feb113d11fd` (runtime, migrations and SDK byte-identical to the package source).
+- Signed Mac/Linux package source: `f9a554ed3589f33d44740f3e99d04fa3ca8d7c20`.
+- Installers: [v5.0.20](https://github.com/qoopia/qoopia-downloads/releases/tag/v5.0.20).
+- Native iOS: **5.0.8**, separate TestFlight channel (public group: build 3; build 4 in Apple beta review). This release does not replace Apple's native builds.
 
 Runtime source is byte-identical to the signed package source. Later commits update publication metadata and acceptance records. SOURCE-MANIFEST.json records every distributed file and equality to the reviewed snapshot; RELEASE.json identifies the release for monitoring.
 
