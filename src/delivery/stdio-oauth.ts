@@ -27,6 +27,8 @@ function ownedFile(file:string) {
   if(s.uid!==process.getuid!()||(s.mode&0o077)||bytes.length>65_536)throw new StdioAccessError('CLIENT_AUTH_REFUSED');
   return bytes;
 }
+/** The authorization server this binding pins; SDK 1.31 stamps it as `issuer` on stored tokens and client information. */
+export const stdioIssuer=(binding:StdioBinding)=>new URL(binding.mcp_url).origin+'/oauth/c/'+binding.connection_id;
 export function stdioFolder(root:string,binding:StdioBinding) {return safePath(path.join(root,'client-configs',binding.connection_id));}
 /** Separate OS-backed lock, never the workspace database. A crashed adapter cannot retain it. */
 export function lockStdioCredentials(folder:string) {
@@ -41,6 +43,8 @@ function load(folder:string,binding:StdioBinding):Stored|undefined {
   const file=path.join(folder,'oauth.json');if(!fs.existsSync(file))return;
   const value=storedSchema.parse(JSON.parse(ownedFile(file).toString()));
   if(JSON.stringify(value.binding)!==JSON.stringify(binding))throw new StdioAccessError('CLIENT_AUTH_REFUSED');
+  // Saved before SDK 1.31 without a stamp: bound to the pinned issuer, persisted by the next locked save. A foreign stamp is refused.
+  const issuer=stdioIssuer(binding);for(const v of [value.client,value.tokens])if(v&&(v.issuer??=issuer)!==issuer)throw new StdioAccessError('CLIENT_AUTH_REFUSED');
   const redirect=new URL(value.redirect_uri);
   if(redirect.origin!=='http://127.0.0.1:'+redirect.port||!redirect.port||redirect.username||redirect.password||redirect.pathname!=='/qoopia/callback'||redirect.search||redirect.hash)
     throw new StdioAccessError('CLIENT_AUTH_REFUSED');
@@ -72,7 +76,7 @@ export class StdioOAuthProvider implements OAuthClientProvider {
   constructor(readonly folder:string,readonly binding:StdioBinding,redirect?:string,readonly onAuthorization?:(url:URL)=>void) {
     this.stored=load(folder,binding)??{format:'qoopia-stdio-oauth/1',binding,redirect_uri:redirect??'http://127.0.0.1:1/qoopia/callback'};
     if(redirect&&redirect!==this.stored.redirect_uri)throw new StdioAccessError('CLIENT_AUTH_REFUSED');
-    this.issuer=new URL(binding.mcp_url).origin+'/oauth/c/'+binding.connection_id;
+    this.issuer=stdioIssuer(binding);
   }
   get redirectUrl(){return this.stored.redirect_uri;}
   get clientMetadata(){return {client_name:'Qoopia local adapter for Claude Desktop',redirect_uris:[this.redirectUrl],
@@ -81,13 +85,13 @@ export class StdioOAuthProvider implements OAuthClientProvider {
   state(){return this.nonce;}
   clientInformation(){return this.stored.client;}
   saveClientInformation(value:OAuthClientInformationMixed){
-    if(value.client_secret)throw new StdioAccessError('CLIENT_AUTH_REFUSED');
+    if(value.client_secret||value.issuer!==this.issuer)throw new StdioAccessError('CLIENT_AUTH_REFUSED');
     this.stored.client=OAuthClientInformationSchema.parse(value);this.save();
   }
   tokens(){return this.stored.tokens;}
   saveTokens(value:OAuthTokens){
     const token=OAuthTokensSchema.parse(value),allowed=new Set(this.clientMetadata.scope.split(' '));
-    if(token.token_type.toLowerCase()!=='bearer'||token.scope?.split(' ').some(s=>!allowed.has(s)))throw new StdioAccessError('CLIENT_AUTH_REFUSED');
+    if(token.issuer!==this.issuer||token.token_type.toLowerCase()!=='bearer'||token.scope?.split(' ').some(s=>!allowed.has(s)))throw new StdioAccessError('CLIENT_AUTH_REFUSED');
     this.stored.tokens=token;this.stored.saved_at=Date.now();this.save();
   }
   saveCodeVerifier(value:string){this.verifier=value;}

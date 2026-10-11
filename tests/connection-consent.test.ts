@@ -26,7 +26,10 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     (async(_input,init)=>{emails.push(JSON.parse(String(init?.body)).text);return Response.json({id:'sent'});}) as typeof fetch);
   // F-125: the consent page runs on loopback here, so its sign-in belongs to the network the broker
   // sees the installation call from ('synthetic'); a confirmation from anywhere else counts for nothing.
-  const network=(async(input,init)=>broker(new Request(String(input),init),'synthetic')) as typeof fetch;
+  let oversized=false,cancelled=false;
+  const network=(async(input,init)=>oversized?new Response(new ReadableStream({
+    pull(controller){controller.enqueue(new Uint8Array(2048));},cancel(){cancelled=true;}
+  })):broker(new Request(String(input),init),'synthetic')) as typeof fetch;
   let handler=remoteConnectionConsent(root,db,network,loginOrigin);
   const server=startHttpServer();if(!server.listening)await once(server,'listening');
   const base='http://127.0.0.1:'+(server.address() as AddressInfo).port;
@@ -65,6 +68,11 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     expect((await send('synthetic')).status).toBe(200);
   };
   try{
+    const bounded=make(),boundedBrowser=await session(bounded);
+    oversized=true;
+    expect((await boundedBrowser.post('start',{method:'email',email:binding.email})).result.status).toBe(503);
+    expect(cancelled).toBe(true);expect(getConsentTicket(bounded.ticket.id)!.approved_by_agent_id).toBeNull();
+    oversized=false;
     const first=make(),browser=await session(first,'ru');
     // A Russian phone opens consent without ?lang (ChatGPT redirects to the bare ticket URL): it follows Accept-Language.
     const phone=make(),phoneHtml=await (await handler(new Request(origin+'/oauth/consent?ticket='+phone.ticket.id,{headers:{'accept-language':'ru-RU,ru;q=0.9'}}))).text();

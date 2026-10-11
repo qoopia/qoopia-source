@@ -1,7 +1,7 @@
 {
   "format": "qoopia-public-source/1",
-  "source_snapshot": "14e948829d22696b232795df27d0c04fe653026d",
-  "product_version": "5.0.18",
+  "source_snapshot": "406216c24e64ad02fe1fb8721917998e4002f4b5",
+  "product_version": "5.0.19",
   "runtime_files_identical": true,
   "files": [
     {
@@ -24,8 +24,8 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "86cdd3642aaa8770784ca893ccd43f7b4b9c98bf2d9ddd511fd62bd970e79053",
-      "bytes": 7717,
+      "sha256": "5bd981bfa146c9ba90c807dfb02f70c58399974656abbcfd22e67b76311d151c",
+      "bytes": 7734,
       "source_snapshot_identical": false
     },
     {
@@ -48,8 +48,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "911430b45abfbadb9f57759dcc875efaa91b45363f8ffde89be398189f344458",
-      "bytes": 26081,
+      "sha256": "76c05f56274b19a7dfddc1ec97db60b7c53ca0f7cee542923dc8e18c9d1fbb3a",
+      "bytes": 27126,
       "source_snapshot_identical": true
     },
     {
@@ -96,7 +96,7 @@
     },
     {
       "path": "RELEASE.json",
-      "sha256": "81d07900160cce010ce36d4c16e05071ab1e44f9b58644e9cd90964a2e35144f",
+      "sha256": "091d02443041fde51dfc91e26bd1b21d95d2d9cb8e437eaa573e5d62c355b881",
       "bytes": 179,
       "source_snapshot_identical": false
     },
@@ -156,7 +156,7 @@
     },
     {
       "path": "bun.lock",
-      "sha256": "1dc0ca460c0fd5823aea376098e35ffa15df5a1a84280a96d3c01955a13e8418",
+      "sha256": "7659b027274f14fd763c3870296f967821fb959172c72659ed9737d2f17a7907",
       "bytes": 34972,
       "source_snapshot_identical": true
     },
@@ -336,8 +336,8 @@
     },
     {
       "path": "docs/operations/release-consistency.md",
-      "sha256": "0320ca489ba6b050ea38e44374a22f05e840bdb54af03b56a8a91fc3112ada9e",
-      "bytes": 7001,
+      "sha256": "1fe04baa891ad515af124a77f6b8b0de3d6e659c7546bbee825e961551c6b48d",
+      "bytes": 7273,
       "source_snapshot_identical": true
     },
     {
@@ -822,14 +822,14 @@
     },
     {
       "path": "marketing-site/release.json",
-      "sha256": "fc65e16575a5925139579a01131f10dca69f57746644ad76037b0f7303eeac94",
+      "sha256": "3417315508192301dbd91cd998af831cefbb79d3018ee99cd63cac64ba3b14cc",
       "bytes": 1127,
       "source_snapshot_identical": true
     },
     {
       "path": "marketing-site/releases.html",
-      "sha256": "c7dc9dd4787677bca4e7cba1f220b3a274887403ab635e7efeea6f8bd72bedef",
-      "bytes": 25487,
+      "sha256": "8602473468b527949f3467cbde3f333917249352f33d34630dd0170d00282507",
+      "bytes": 26846,
       "source_snapshot_identical": true
     },
     {
@@ -870,7 +870,7 @@
     },
     {
       "path": "marketing-site/updates/macos/appcast.xml",
-      "sha256": "29edb76ab41da877eb4f082fd26db03db718d6b966a4fb222f35b806c9bbee83",
+      "sha256": "7c60b51bc53d0fad2adcbabb85a882bc8f283ab8827646d270ac9806210b3b71",
       "bytes": 769,
       "source_snapshot_identical": true
     },
@@ -1254,7 +1254,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "1282ee32d39fafb39467069125d4ec83ce092b6091b8c7976614a3d3809e1b33",
+      "sha256": "ccc17536f46e66a65919ebe27bf149b0a31ee29d714871c0074478c6aa826908",
       "bytes": 3107,
       "source_snapshot_identical": true
     },
@@ -1386,8 +1386,8 @@
     },
     {
       "path": "scripts/check-release-metadata.py",
-      "sha256": "8116ead3c5612006cd232be476341c7fc72ecc6dc617b331ca92225d86d8cbaa",
-      "bytes": 3585,
+      "sha256": "3cd709a7ae50851577d328bca07fbe7f5e5314ed36f3b5a66014b81154e24190",
+      "bytes": 4956,
       "source_snapshot_identical": true
     },
     {
@@ -2490,8 +2490,8 @@
     },
     {
       "path": "src/delivery/stdio-oauth.ts",
-      "sha256": "6a6539bc29868efc82e7e5452cb1d950c4b4e4492b23e3ac2a78226b5dc9dfee",
-      "bytes": 12863,
+      "sha256": "e09688585229eecf4bdbde5b0e0699ac3def8fc7b115ea2905d98788e8940fe2",
+      "bytes": 13413,
       "source_snapshot_identical": true
     },
     {
@@ -2538,8 +2538,8 @@
     },
     {
       "path": "src/http/oauth-routes.ts",
-      "sha256": "51e08e167cb91a7bcac80086139bbdb9fbabfad2cfd9260f41c9399cf9545313",
-      "bytes": 53041,
+      "sha256": "e953c318ee00358645483f2efc49c054099f4b8cdecedac3806c9a02b045453b",
+      "bytes": 53263,
       "source_snapshot_identical": true
     },
     {
@@ -2586,8 +2586,8 @@
     },
     {
       "path": "src/identity/connection-consent.ts",
-      "sha256": "84e1b164a2500d36104627dd1f7ca1a44d05807a276f2e90e8706c18af1994e3",
-      "bytes": 18307,
+      "sha256": "da8b7338457e26e4bdd545ce72b09efd37a139c23c523b3d9c357f77e1055c7c",
+      "bytes": 18384,
       "source_snapshot_identical": true
     },
     {
@@ -2958,8 +2958,8 @@
     },
     {
       "path": "src/services/agent-comm.ts",
-      "sha256": "8689cbb8527c782357a427e6708f4f89ac128c1099be9dcc80dade837e6d0f4e",
-      "bytes": 36935,
+      "sha256": "9e8e12fc81f5c2a06abbe9685662c6384c04e3fc01bbbf3112791d001ae095b8",
+      "bytes": 37048,
       "source_snapshot_identical": true
     },
     {
@@ -3078,8 +3078,8 @@
     },
     {
       "path": "src/services/files.ts",
-      "sha256": "9f6238b8df2719fee1a18f2ee4252bbd5b8f64b42fd22a47974564084f8a5da6",
-      "bytes": 16258,
+      "sha256": "145af792435714e2114f96f367194207981560fe3c455c202c3c20ac13f58a39",
+      "bytes": 17097,
       "source_snapshot_identical": true
     },
     {
@@ -3618,8 +3618,8 @@
     },
     {
       "path": "tests/agentcomm-ack-routing.test.ts",
-      "sha256": "326fd916b30d53de6260df413adccb1226dff69083620e591f75c810cd863231",
-      "bytes": 20012,
+      "sha256": "e796e7bfc5574da9fecefdea1e34b8475e176dc156a690e8162859065afe317b",
+      "bytes": 21048,
       "source_snapshot_identical": true
     },
     {
@@ -3810,8 +3810,8 @@
     },
     {
       "path": "tests/connection-consent.test.ts",
-      "sha256": "16d2335738de223d5f62cb2c772b63854ba2ed0805c7ed6a67980b26721e358a",
-      "bytes": 30916,
+      "sha256": "bd6551f6daab4571e62af07115e34abd1bbd3dce3c70d5add80f791026e3f4fb",
+      "bytes": 31422,
       "source_snapshot_identical": true
     },
     {
@@ -4056,8 +4056,8 @@
     },
     {
       "path": "tests/files.test.ts",
-      "sha256": "5615b667a4fbd1afe42c0dbdd0016c93466e9a7c97b43489b51d7e518bae8ded",
-      "bytes": 12452,
+      "sha256": "79e17958be8df025ae5c2a53e1d765c44f0e5f92f139c49b58a450ba26d58e97",
+      "bytes": 13647,
       "source_snapshot_identical": true
     },
     {
@@ -4512,8 +4512,8 @@
     },
     {
       "path": "tests/json-object-body.test.ts",
-      "sha256": "3aa44229e5593734977022885f822c36c5b56886dfdd82253b5d9f5ff8ba7416",
-      "bytes": 1465,
+      "sha256": "65c3cd311fae7147fa264710514c048f0c919858c355248056b88267fcc2e4bb",
+      "bytes": 2190,
       "source_snapshot_identical": true
     },
     {
@@ -5376,8 +5376,8 @@
     },
     {
       "path": "tests/stdio-oauth.test.ts",
-      "sha256": "bb95dba8dee4b32ac6339cdf1e2de3c9c224bdf4104de856a53c57d0fa1567e0",
-      "bytes": 9332,
+      "sha256": "0c088ef138810799bda18433e4c3dbda504aeea2b9c943a8569ff7532d0c847f",
+      "bytes": 14436,
       "source_snapshot_identical": true
     },
     {
@@ -5460,8 +5460,8 @@
     },
     {
       "path": "tests/test_release_metadata.py",
-      "sha256": "1229ec96430b25a13ea7d12b254856663983416bc8dfb0ab6259729d698bfab0",
-      "bytes": 2806,
+      "sha256": "8b3a5bc5f37de4d10fb62836c374826ac5068d853379ebeab5f6f500498695a4",
+      "bytes": 4529,
       "source_snapshot_identical": true
     },
     {

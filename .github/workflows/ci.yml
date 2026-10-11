@@ -5,6 +5,7 @@ on:
   # ever touched; a branch allow-list is how that happened.
   push:
     branches: ["**"]
+    tags: ["v*"]
   pull_request:
   # A new advisory against unchanged main must surface without waiting for a push.
   schedule:

@@ -13,6 +13,28 @@ spec.loader.exec_module(metadata)
 
 
 class MetadataGateTests(unittest.TestCase):
+    def test_owner_preview_preserves_public_delivery_and_cannot_pass_public_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            for path in ['package.json', 'CHANGELOG.md', 'marketing-site/release.json', 'marketing-site/ios-release.json', 'marketing-site/updates/macos/appcast.xml', 'marketing-site/releases.html', 'ios/Qoopia.xcodeproj/project.pbxproj']:
+                destination = fixture / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(root / path, destination)
+            shutil.copytree(root / 'migrations', fixture / 'migrations')
+            preview = {'format': 'qoopia-owner-preview/1', 'version': '99.0.0', 'schema_version': 48,
+                       'status': 'awaiting_owner_acceptance', 'branch': 'release/99.0.0', 'base_source': 'a' * 40}
+            package = json.loads((fixture / 'package.json').read_text())
+            package['version'] = preview['version']
+            (fixture / 'package.json').write_text(json.dumps(package))
+            (fixture / 'CHANGELOG.md').write_text('## 99.0.0\nOwner preview\n')
+            manifest = fixture / 'LOCAL-RELEASE.json'
+            manifest.write_text(json.dumps(preview))
+            self.assertEqual(metadata.check(fixture), [])
+            self.assertIn('local_release:owner_acceptance_pending', metadata.check(fixture, public=True))
+            for field, value in [('version', '98.0.0'), ('status', 'public'), ('schema_version', 0), ('base_source', 'bad')]:
+                manifest.write_text(json.dumps({**preview, field: value}))
+                self.assertIn('local_release:invalid_preview', metadata.check(fixture))
+
     def test_published_metadata_and_version_bump_without_delivery(self):
         self.assertEqual(metadata.check(root), [])
         with tempfile.TemporaryDirectory() as directory:
