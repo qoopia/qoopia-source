@@ -3,7 +3,7 @@
 This repository has an independent public source history. Private development ancestry and customer data are excluded. Operator state is excluded by the export allowlist from 5.0.15 on: earlier releases carried some one-off operator scripts, host paths and internal identifiers, which this release removes from main (they remain in earlier history and tags).
 
 - Product version: **5.0.20**; database schema **49**; instruction kit **13**.
-- Reviewed source snapshot: `aa34cf89d28be7a81975a22409bb1feb113d11fd` (runtime, migrations and SDK byte-identical to the package source).
+- Reviewed source snapshot: `b7c2bb063777a5cc83e258d99ef4ff7ec08e58da` (runtime, migrations and SDK byte-identical to the package source).
 - Signed Mac/Linux package source: `f9a554ed3589f33d44740f3e99d04fa3ca8d7c20`.
 - Installers: [v5.0.20](https://github.com/qoopia/qoopia-downloads/releases/tag/v5.0.20).
 - Native iOS: **5.0.8**, separate TestFlight channel (public group: build 3; build 4 in Apple beta review). This release does not replace Apple's native builds.

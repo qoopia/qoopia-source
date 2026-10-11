@@ -259,6 +259,8 @@ class ReleaseStageTests(unittest.TestCase):
         self.assertEqual(self.run_main()[1]['issues'], ['memory:unexpected_state'])
 
 
+# project-status.py is the private operator view; the public source export does not ship it.
+@unittest.skipUnless((Path(__file__).resolve().parents[1] / 'scripts/project-status.py').exists(), 'private operator script')
 class ProjectStatusTests(unittest.TestCase):
     def test_recorded_services_must_run_their_own_recorded_image(self):
         script = Path(__file__).resolve().parents[1] / 'scripts/project-status.py'
