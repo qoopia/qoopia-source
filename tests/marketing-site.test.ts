@@ -11,6 +11,8 @@ import {browserEvent} from '../src/analytics/events.ts';
 const site=new URL('../marketing-site/',import.meta.url);
 const read=(name:string)=>readFileSync(new URL(name,site),'utf8');
 const pages=readdirSync(site).filter(f=>f.endsWith('.html')&&!f.startsWith('understand'));
+// The Russian copies are generated from these pages by scripts/build-site-languages.ts.
+const russianPages=readdirSync(new URL('ru/',site)).map(f=>'ru/'+f);
 const scripts=readdirSync(site).filter(f=>f.endsWith('.js'));
 const ru=JSON.parse(readFileSync(new URL('../src/public/brand/i18n.ru.json',import.meta.url),'utf8')) as Record<string,string>;
 const decode=(s:string)=>s.replaceAll('&quot;','"').replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&');
@@ -43,6 +45,8 @@ test('every page is served with HSTS covering the qoopia.ai subdomains (F-127)',
 test('the site CSP refuses form posts, lists only live style hashes, and a Permissions-Policy is sent (F-187)',()=>{
  const headers=read('_headers'),csp=headers.split('Content-Security-Policy: ')[1]!.split('\n')[0]!;
  expect(csp).toContain("form-action 'none'");
+ // The Cloudflare-injected beacon and challenge loader stay blocked: opt-in first-party statistics only (surfaces-and-versions.md).
+ expect(csp).toContain("; script-src 'self';");
  expect(headers).toContain('\n  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()\n');
  const inline=new Set<string>(),walk=(dir:URL)=>{for(const entry of readdirSync(dir)){const file=new URL(entry,dir);
   if(statSync(file).isDirectory())walk(new URL(entry+'/',dir));
@@ -58,14 +62,14 @@ test('the site serves the same generated locale runtime as the dashboard',()=>{
 });
 
 test('cache-busting hashes match the referenced files',()=>{
- for(const page of pages)for(const m of read(page).matchAll(/(?:src|href)="\/?([^"?#]+)\?v=([0-9a-f]+)"/g))
+ for(const page of [...pages,...russianPages])for(const m of read(page).matchAll(/(?:src|href)="\/?([^"?#]+)\?v=([0-9a-f]+)"/g))
   expect(createHash('sha256').update(readFileSync(new URL(m[1],site))).digest('hex').slice(0,12),page+' '+m[1]).toBe(m[2]);
 });
 
 test('each sitemap page shares its own card: og:url is the canonical and descriptions are not copied',()=>{
  const seen=new Map<string,string>();
- for(const [,url,path] of read('sitemap.xml').matchAll(/<loc>(https:\/\/qoopia\.ai\/([a-z-]*))<\/loc>/g)){
-  const html=read((path||'index')+'.html'),meta=(re:RegExp)=>re.exec(html)?.slice(1).find(Boolean);
+ for(const [,url,path] of read('sitemap.xml').matchAll(/<loc>(https:\/\/qoopia\.ai\/([a-z/-]*))<\/loc>/g)){
+  const html=read((path===''||path.endsWith('/')?path+'index':path)+'.html'),meta=(re:RegExp)=>re.exec(html)?.slice(1).find(Boolean);
   expect(meta(/<meta content="([^"]+)" property="og:url"|<meta property="og:url" content="([^"]+)"/),url).toBe(url);
   expect(meta(/<link href="([^"]+)" rel="canonical"|<link rel="canonical" href="([^"]+)"/),url).toBe(url);
   for(const [name,re] of [['description',/<meta content="([^"]+)"[^>]*name="description"|<meta name="description" content="([^"]+)"/],['og:title',/<meta content="([^"]+)"[^>]*property="og:title"|<meta property="og:title" content="([^"]+)"/],['og:description',/<meta content="([^"]+)"[^>]*property="og:description"|<meta property="og:description" content="([^"]+)"/]] as const){
@@ -73,7 +77,7 @@ test('each sitemap page shares its own card: og:url is the canonical and descrip
    expect(seen.get(name+value),url+' copies '+name).toBeUndefined();seen.set(name+value,url);
   }
  }
- expect(seen.size).toBe(18);
+ expect(seen.size).toBe(30);
 });
 
 // Runs site.js's download card against browser stubs for one visitor device.
@@ -134,7 +138,7 @@ test('download clicks are counted without opt-in; page views wait for it',()=>{
 test('opted-in page views carry a page label the event service accepts',async()=>{
  for(const [file,label] of [['index.html','home'],['docs.html','docs'],['releases.html','releases'],['mobile.html','mobile']]){
   expect(read(file)).toContain('analytics.js');
-  for(const path of ['/'+file,'/'+file.replace(/(index)?\.html$/,'')]){
+  for(const path of ['/'+file,'/'+file.replace(/(index)?\.html$/,''),'/ru/'+file.replace(/(index)?\.html$/,'')]){
    const [view]=runAnalytics(path,'allow').sent;
    expect(view?.page,path).toBe(label);
    const request=new Request('https://auth.qoopia.ai/analytics/events',{method:'POST',headers:{origin:'https://qoopia.ai','content-type':'application/json'},body:JSON.stringify(view)});
@@ -144,7 +148,7 @@ test('opted-in page views carry a page label the event service accepts',async()=
 });
 
 test('one working skip link per page, unique ids and no duplicate attributes',()=>{
- for(const page of readdirSync(site).filter(f=>f.endsWith('.html'))){
+ for(const page of [...readdirSync(site).filter(f=>f.endsWith('.html')),...russianPages]){
   const html=read(page),ids=new Set<string>();
   for(const [tag] of html.matchAll(/<[a-z][a-z0-9]*\b[^>]*>/g)){
    const names=[...tag.matchAll(/\s([a-z-]+)(?==)/g)].map(m=>m[1]);
@@ -167,7 +171,7 @@ test('release notes show one language: each block is translated, or marked lang 
 });
 
 test('internal links use the canonical extensionless URLs, not .html redirects',()=>{
- const sources=[...pages.map(read),...scripts.map(read),readFileSync(new URL('../src/identity/profile-view.ts',import.meta.url),'utf8')];
+ const sources=[...pages.map(read),...russianPages.map(read),...scripts.map(read),readFileSync(new URL('../src/identity/profile-view.ts',import.meta.url),'utf8')];
  const redirects=sources.flatMap(text=>[...text.matchAll(/href="(?!https?:)[^"]*\.html[^"]*"|qoopia\.ai\/[a-z-]+\.html/g)].map(m=>m[0]));
  expect(redirects).toEqual([]);
 });
@@ -175,16 +179,19 @@ test('internal links use the canonical extensionless URLs, not .html redirects',
 test('every published site file is referenced by the site or is an intentional public file',()=>{
  const files=(readdirSync(site,{recursive:true}) as string[]).filter(f=>!f.split('/').some(part=>part.startsWith('.'))&&statSync(new URL(f,site)).isFile());
  const texts=files.filter(f=>/\.(html|js|css|json|xml)$/.test(f)).map(f=>[f,read(f)]);
- const intentional=['_headers','_redirects','robots.txt','sitemap.xml','release.json','candidate-release.json','ios-release.json','updates/macos/appcast.xml','brand/Manrope-OFL.txt'];
+ const intentional=['_headers','_redirects','robots.txt','sitemap.xml','release.json','candidate-release.json','ios-release.json','updates/macos/appcast.xml','brand/Manrope-OFL.txt','llms.txt'];
  const orphans=files.filter(f=>!f.endsWith('.html')&&!intentional.includes(f)&&!texts.some(([other,text])=>other!==f&&text.includes(f.split('/').pop()!)));
  expect(orphans).toEqual([]);
 });
 
-test('the 404 page works at any depth: every reference is root-absolute or external',()=>{
- // Pages serves 404.html at the missing URL, so a relative path resolves under /a/b/.
- const refs=[...read('404.html').matchAll(/\s(?:src|href)="([^"]*)"/g)].map(m=>m[1]);
- expect(refs.length).toBeGreaterThan(5);
- expect(refs.filter(ref=>!/^(\/|https:\/\/|#)/.test(ref))).toEqual([]);
+test('pages work at any depth: every reference and script fetch is root-absolute or external',()=>{
+ // Pages serves 404.html at the missing URL and the Russian copies under /ru/, so a relative path would resolve under them.
+ for(const page of [...pages,...russianPages]){
+  const refs=[...read(page).matchAll(/\s(?:src|href)="([^"]*)"/g)].map(m=>m[1]);
+  expect(refs.length,page).toBeGreaterThan(5);
+  expect(refs.filter(ref=>!/^(\/|https:\/\/|#)/.test(ref)),page).toEqual([]);
+ }
+ for(const file of scripts)expect([...read(file).matchAll(/fetch\('([^']*)'/g)].map(m=>m[1]).filter(ref=>!ref.startsWith('/')),file).toEqual([]);
 });
 
 test('every shipped surface gives the same dated ChatGPT status and no stale qualification claim [F-246]',()=>{
@@ -228,4 +235,56 @@ test('the agent task and the package say how to check manifest.sig and where the
   const ok=run(command!.split(' ').slice(1));expect(ok.status).toBe(0);expect(ok.stdout).toContain('Signature Verified Successfully');
   writeFileSync(join(dir,'manifest.json'),'{"format":"tampered"}');expect(run(command!.split(' ').slice(1)).status).not.toBe(0);
  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('each page has a server-rendered Russian copy that is current, self-canonical and linked by hreflang',async()=>{
+ const {render,routes}=await import('../scripts/build-site-languages.ts');
+ for(const [file,content] of render())expect(read(file)===content,file+' is stale: run bun scripts/build-site-languages.ts').toBe(true);
+ expect(russianPages.sort()).toEqual(routes.map(([file])=>'ru/'+file+'.html').sort());
+ const head=(html:string)=>({lang:/<html lang="([a-z]+)"/.exec(html)?.[1],canonical:/<link href="([^"]+)" rel="canonical"/.exec(html)?.[1],
+  alternates:[...html.matchAll(/<link href="([^"]+)" hreflang="([a-z-]+)" rel="alternate"\/>/g)].map(m=>m[2]+' '+m[1]),locale:/<meta content="([a-zA-Z_]+)" property="og:locale"\/>/.exec(html)?.[1]});
+ const russian=(key:string)=>ru[decode(key)];
+ for(const [file,en,path] of routes){
+  const alternates=['en https://qoopia.ai'+en,'ru https://qoopia.ai'+path,'x-default https://qoopia.ai'+en];
+  expect(head(read(file+'.html'))).toEqual({lang:'en',canonical:'https://qoopia.ai'+en,alternates,locale:'en_US'});
+  expect(head(read('ru/'+file+'.html'))).toEqual({lang:'ru',canonical:'https://qoopia.ai'+path,alternates,locale:'ru_RU'});
+  // What a crawler reads is Russian: the title, every catalog text and the structured data, not the English source.
+  const html=read('ru/'+file+'.html');
+  for(const [,key,text] of html.matchAll(/\sdata-i18n="([^"]*)"[^>]*>([^<]*)</g))expect(decode(text!),file).toBe(russian(key!)!);
+  for(const [,json] of html.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g))
+   for(const node of JSON.parse(json!)['@graph'])if(node.inLanguage)expect([node.inLanguage,node.url]).toEqual(['ru','https://qoopia.ai'+path]);
+ }
+ expect(read('sitemap.xml').match(/<loc>/g)?.length).toBe(10);
+ expect(read('llms.txt')).toContain('(https://qoopia.ai/ru/docs)');
+});
+
+test('the iPhone page states the current TestFlight availability without JavaScript',()=>{
+ const ios=JSON.parse(read('ios-release.json')),block=/<div data-ios-install>([\s\S]*?)<\/div>/.exec(read('mobile.html'))![1]!;
+ if(ios.status==='available')expect(block).toContain(`href="${ios.public_url}"`);
+ else expect(block).toContain('role="status"');
+ expect(read('mobile.html')).not.toContain('Once the public beta opens');
+});
+
+// Runs the shared locale runtime head-first, as the browser does, against stubs.
+function runtimeOn(page:{lang:string;fixed:boolean;search?:string;stored?:string}):{replaced:string[];stored?:string;language:string}{
+ const replaced:string[]=[],stored:Record<string,string>={};if(page.stored)stored['qoopia.language']=page.stored;
+ const alternates:Record<string,string>={en:'https://qoopia.ai/docs',ru:'https://qoopia.ai/ru/docs'};
+ const document={documentElement:{lang:page.lang,dataset:page.fixed?{staticLanguage:''}:{}},cookie:'',addEventListener(){},
+  querySelector:(selector:string)=>{const lang=/hreflang="([a-z]+)"/.exec(selector)?.[1];return page.fixed&&lang?{href:alternates[lang]}:null;}};
+ const window:Record<string,unknown>={addEventListener(){},stop(){replaced.push('stop');}};
+ new Function('document','window','location','localStorage','navigator',read('brand/i18n.js'))(document,window,
+  {search:page.search??'',hash:'#install',hostname:'127.0.0.1',replace:(url:string)=>replaced.push(url)},
+  {getItem:(key:string)=>stored[key]??null,setItem:(key:string,value:string)=>{stored[key]=value;}},{language:'ru-RU'});
+ return {replaced,stored:stored['qoopia.language'],language:(window.QI as {language:string}).language};
+}
+
+test('a fixed-language page keeps its language and sends an explicit other choice to its translation',()=>{
+ // A Russian browser without a choice reads the English page it opened: no redirect by guess.
+ expect(runtimeOn({lang:'en',fixed:true})).toEqual({replaced:[],stored:undefined,language:'en'});
+ expect(runtimeOn({lang:'en',fixed:true,stored:'ru'})).toEqual({replaced:['stop','/ru/docs#install'],stored:'ru',language:'en'});
+ // Older ?lang= links land on the right page and are remembered, so the stored choice cannot bounce back.
+ expect(runtimeOn({lang:'en',fixed:true,search:'?lang=ru',stored:'en'})).toEqual({replaced:['stop','/ru/docs#install'],stored:'ru',language:'en'});
+ expect(runtimeOn({lang:'ru',fixed:true,search:'?lang=ru',stored:'en'})).toEqual({replaced:[],stored:'ru',language:'ru'});
+ // The dashboard has no fixed language: it still follows the stored choice in place.
+ expect(runtimeOn({lang:'en',fixed:false,stored:'ru'})).toEqual({replaced:[],stored:'ru',language:'ru'});
 });

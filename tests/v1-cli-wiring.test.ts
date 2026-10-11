@@ -46,6 +46,17 @@ test('setup accepts explicit test-fixture trust as a boolean while retaining str
   const unknown=spawnSync(process.execPath,['src/delivery/entry.ts','setup','--root',root,'--unknown'],{cwd:path.resolve(import.meta.dir,'..'),encoding:'utf8',env:{PATH:process.env.PATH}});
   expect(unknown.status).toBe(1);
   expect(unknown.stderr).toContain('Invalid setup option');
+  // connections on a root without an installation says so, not "start Qoopia" [F-520-connections-cause].
+  const empty=path.join(parent,'empty');fs.mkdirSync(empty,{mode:0o700});
+  const connections=spawnSync(process.execPath,['src/delivery/entry.ts','connections','status','--root',empty],{cwd:path.resolve(import.meta.dir,'..'),encoding:'utf8',env:{PATH:process.env.PATH,HOME:parent}});
+  expect(connections.status).toBe(1);
+  expect(JSON.parse(connections.stdout)).toMatchObject({code:'INSTALL_REQUIRED'});
+  // A trailing --root never falls back to the default installation [F-520-root-value].
+  for(const command of [['doctor','--root'],['memory-unlink','--runtime','codex','--root']]){
+    const trailing=spawnSync(process.execPath,['src/delivery/entry.ts',...command],{cwd:path.resolve(import.meta.dir,'..'),encoding:'utf8',env:{PATH:process.env.PATH,HOME:parent}});
+    expect(trailing.status).toBe(1);
+    expect(trailing.stderr).toContain('--root requires a value');
+  }
   const setup=entry.slice(entry.indexOf("if(cmd==='setup')"),entry.indexOf("const delivery=",entry.indexOf("if(cmd==='setup')")));
   expect(setup).toContain("if(option==='--allow-test-fixture')continue");
   expect(setup).toContain('dispatchInstalled()');

@@ -3,7 +3,8 @@
  const privacySignal=()=>navigator.globalPrivacyControl===true||navigator.doNotTrack==='1';
  let enabled=false,viewSent=false;
  try{enabled=localStorage.getItem(key)==='allow'&&!privacySignal();}catch{}
- const page=({'/':'home','/index.html':'home','/docs':'docs','/docs.html':'docs','/releases':'releases','/releases.html':'releases','/mobile':'mobile','/mobile.html':'mobile'})[location.pathname]||'404';
+ // /ru/docs is the Russian copy of /docs: one page label, the language is sent separately.
+ const page=({'/':'home','/index.html':'home','/docs':'docs','/docs.html':'docs','/releases':'releases','/releases.html':'releases','/mobile':'mobile','/mobile.html':'mobile'})[location.pathname.replace(/^\/ru(?=\/)/,'')]||'404';
  const language=()=>window.QI?.language==='ru'?'ru':'en';
  const viewport=()=>innerWidth<600?'small':innerWidth<1024?'medium':'large';
  const referral=()=>{
@@ -26,7 +27,7 @@
  const render=()=>{
   const msg=text=>window.QI?.msg(text)||text;
   summary.textContent=msg('Website statistics');
-  description.textContent=msg('Download button clicks are counted anonymously: platform, version and page only. Optional: also share page views, language, screen size category and loading times. No cookies, persistent visitor ID, full referrer address or page content are sent.');
+  description.textContent=msg('Download button clicks are counted anonymously: platform, version, page and the kind of referring source only. Optional: also share page views, language, screen size category and loading times. No cookies, persistent visitor ID, full referrer address or page content are sent.');
   labelText.textContent=msg(privacySignal()?'Your browser privacy signal has disabled website statistics.':'Allow technical website statistics');
  };
  render();document.querySelector('footer')?.append(details);window.addEventListener('qoopia:language',render);

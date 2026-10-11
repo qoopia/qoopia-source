@@ -83,6 +83,28 @@ test('only confirmed PKCE login issues a device grant and the confirmation binds
   expect((await post('/devices',await signRPC(keys,origin+'/devices','enroll',body))).status).toBe(200);db.close();
 });
 
+test('a device-enrolling sign-in is bound to the network the service sees, whatever the caller reports [F-520-device-bind]',async()=>{
+  const db=new Database(':memory:'),origin='https://auth.example.test',keys=await newIdentity();let mail='';
+  const handler=loginBroker(db,{origin,resendKey:'test',from:'test@example.test',googleClientId:'test',googleClientSecret:'test',
+    devices:{domain:'example.test',provider:{ensure:async()=>({id:randomUUID(),account:'b'.repeat(32)}),remove:async()=>{}}}},
+    (async(_url,init)=>{mail=JSON.parse(String(init?.body)).text;return Response.json({id:'test'});}) as typeof fetch);
+  const post=(route:string,body:unknown,ip:string)=>handler(new Request(origin+route,{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify(body)}),ip);
+  for(const extra of [{},{bind:'network',starter_ip:'203.0.113.9'}]){
+    const verifier=secret(),challenge=createHash('sha256').update(verifier).digest('hex');
+    // The attacker's own request for the victim's address: no binding, or the victim's network claimed as the start.
+    const start=await(await post('/requests',{method:'email',email:'victim@example.test',challenge,device_peer:peerId(keys),...extra},'198.51.100.7')).json() as any;
+    const token=new URL(mail.match(/https:\/\/[^\s]+/)![0]).hash.slice(1);
+    // The victim clicks the genuine email on their own network: refused, and nothing becomes redeemable.
+    const click=await post('/confirm',{token},'203.0.113.9');
+    expect(click.status).toBe(400);expect((await click.json() as any).same_device).toBe(true);
+    expect(await(await post('/redeem',{id:start.id,verifier},'198.51.100.7')).json()).toEqual({pending:true});
+    // The same click from the network that really started it still works.
+    expect((await post('/confirm',{token},'198.51.100.7')).status).toBe(200);
+    expect((await(await post('/redeem',{id:start.id,verifier},'198.51.100.7')).json() as any).device_grant).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  }
+  db.close();
+});
+
 test('Cloudflare provisioning reconciles a lost create response and refuses foreign DNS without leaking operator credentials',async()=>{
   const device=randomUUID(),tunnel=randomUUID(),account='a'.repeat(32),zone='b'.repeat(32),operator=secret();
   let exists=false,dns=false,wrong=false,createCount=0;

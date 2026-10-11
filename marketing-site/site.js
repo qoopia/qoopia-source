@@ -3,7 +3,7 @@ if(platform){
  if(/Linux/.test(navigator.platform)&&!/Android/.test(navigator.userAgent))platform.value='linux';
  // Windows, phones, tablets and ARM Linux cannot run either package; say so instead of offering one as theirs.
  const os=navigator.platform||'',foreign=/Win/.test(os)||/Android|iPhone|iPad|iPod/.test(navigator.userAgent+os)||(os==='MacIntel'&&navigator.maxTouchPoints>1)||(/Linux/.test(os)&&!/x86_64|amd64/i.test(os));
- fetch('release.json').then(r=>{if(!r.ok)throw Error();return r.json();}).then(release=>{
+ fetch('/release.json').then(r=>{if(!r.ok)throw Error();return r.json();}).then(release=>{
   function render(){
    const pkg=release.packages[platform.value];
    document.querySelector('#release-meta').textContent=QI.msg(pkg.requirements)+' '+pkg.format+' · '+QI.number(pkg.bytes/1000000)+' '+QI.msg('MB')+' · '+QI.date(release.date+'T12:00:00Z',{dateStyle:'medium'});
@@ -18,14 +18,6 @@ if(platform){
   platform.addEventListener('change',render);window.addEventListener('qoopia:language',render);render();
  }).catch(()=>{document.querySelector('#release-state').textContent=QI.msg('Release information could not be loaded. Please reload or read the release notes.');});
 }
-
-function renderGuideLinks(){
- const primary=document.querySelector('#fit-guide'),alternate=document.querySelector('#fit-alternate');
- if(!primary||!alternate)return;
- const ru=QI.language==='ru';primary.href=ru?'/understand-ru':'/understand';
- alternate.href=ru?'/understand':'/understand-ru';alternate.lang=ru?'en':'ru';alternate.textContent=ru?'Read in English':'Читать по-русски';
-}
-window.addEventListener('qoopia:language',renderGuideLinks);renderGuideLinks();
 
 // Public installation stays unavailable until the external build is approved by Apple.
 const iosInstall=document.querySelector('[data-ios-install]');

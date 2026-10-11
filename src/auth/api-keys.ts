@@ -27,6 +27,7 @@ export interface AgentRecord {
   policy_epoch?: number;
   session_version?: number;
   authority_profile?: string;
+  principal_kind?: string;
   legacy_skill_access?: number;
 }
 

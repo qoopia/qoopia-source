@@ -9,4 +9,6 @@ export const dashboardPage=read('dashboard.html');
  * markup or text use this; a test that PARSES JavaScript must use dashboardScript, because the
  * script is no longer wrapped in a <script> tag and a tag-based search would silently match
  * nothing. */
+/** send(): every dashboard request goes through it, so harnesses that run request code include it. */
+export const dashboardSend=dashboardScript.slice(dashboardScript.indexOf('  async function send('),dashboardScript.indexOf('  // An answer without a human sentence'));
 export const dashboardSource=[dashboardPage,dashboardStyles,read('brand/agent-chat.js'),dashboardScript].join('\n');

@@ -124,3 +124,19 @@ test('Claude Desktop config adds a private launcher and an explicit OAuth handof
     expect(JSON.parse(fs.readFileSync(file,'utf8'))).toEqual(config);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+// Bun's TOML parser accepts a table appended to an inline mcp_servers; Codex does not [F-520-codex-inline].
+test('a Codex config with inline mcp_servers is refused before any write, not turned into invalid TOML',()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-inline-config-')),home=path.join(root,'home'),id=randomUUID();
+  try{
+    privateDirectory(path.join(home,'.codex'));
+    const file=path.join(home,'.codex/config.toml'),before='model = "fixture"\nmcp_servers = { existing = { url = "https://existing.example/mcp" } }\n';
+    durableWrite(file,before);
+    const binding={format:'qoopia-client-connection/1',connection_id:id,workspace_id:'fixture',surface:'codex',access_mode:'read',mcp_url:'http://127.0.0.1:3737/mcp/c/'+id};
+    expect(()=>configureNativeClient(root,binding,'apply',home)).toThrow('defines mcp_servers inline');
+    expect(fs.readFileSync(file,'utf8')).toBe(before);
+    // The ordinary table form, and an mcp_servers key inside another table, still work.
+    durableWrite(file,'model = "fixture"\n[profiles.p]\nmcp_servers = { x = 1 }\n[mcp_servers.existing]\nurl = "https://existing.example/mcp"\n');
+    expect(configureNativeClient(root,binding,'apply',home).code).toBe('CLIENT_AUTH_REQUIRED');
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

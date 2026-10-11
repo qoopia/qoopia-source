@@ -11,7 +11,7 @@ import {readBoundedText} from '../utils/http-json.ts';
 
 const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
 const loginCookie=CONSENT_COOKIE_PREFIX+'login';
-type Flow={ticket:string;nonce:string;expires:number;owner:string;version:number;verified:boolean;busy:boolean;
+type Flow={ticket:string;nonce:string;expires:number;owner:string;version:number;verified:boolean;busy:boolean;ip:string;
   approvalNonce?:string;binding?:string;login?:{id:string;verifier:string;method:'email'|'google'};language:'en'|'ru'};
 class ConsentError extends Error {constructor(readonly code:string,readonly status=400){super(code);}}
 
@@ -75,9 +75,11 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
       let newCookie=false;
       if(req.method==='GET'){
         if(!flow&&!ticket.approved_by_agent_id){
-          if(flows.size>=100||[...flows.values()].filter(f=>f.ticket===ticketId).length>=5)throw new ConsentError('TOO_MANY_ATTEMPTS',429);
+          // Anyone can mint tickets for a public client, so one network may not hold the whole table and lock the owner out.
+          const open=[...flows.values()];
+          if(flows.size>=100||open.filter(f=>f.ticket===ticketId).length>=5||open.filter(f=>f.ip===clientIp).length>=10)throw new ConsentError('TOO_MANY_ATTEMPTS',429);
           token=randomToken();flow={ticket:ticketId,nonce:randomToken(),expires:Math.min(Date.parse(ticket.expires_at),Date.now()+600_000),
-            owner:owner.agent_id,version:owner.session_version!,verified:false,busy:false,language:requested};
+            owner:owner.agent_id,version:owner.session_version!,verified:false,busy:false,ip:clientIp,language:requested};
           const identityCookies=(req.headers.get('cookie')??'').split(';').map(s=>s.trim()).filter(s=>s.startsWith(loginCookie+'='));
           const proof=identityCookies.length===1?proofs.get(hash(identityCookies[0]!.slice(loginCookie.length+1))):undefined;
           if(proof?.owner===owner.agent_id&&proof.version===owner.session_version&&proof.binding===hash(JSON.stringify(binding))){

@@ -324,14 +324,15 @@ export function skillRenderRunbook(p: SkillGetParams): SkillRunbook {
   const s = skillGet(p);
   const m = s.metadata;
   const r = s.review_state;
-  const declared = r.state === "sealed" && !r.draft_newer_than_sealed ? "" : " (author-declared)";
+  // Only the sealed label is server-attested; the metadata string is whatever the author typed.
+  const version = r.state === "sealed" && !r.draft_newer_than_sealed ? `\`${r.sealed_version_label}\`` : `\`${m.skill_version}\` (author-declared)`;
 
   const lines: string[] = [];
   lines.push(`# ${mdLine(s.title)}`);
   lines.push("");
   lines.push(skillReviewLine(r));
   lines.push(
-    `*skill_version:* \`${m.skill_version}\`${declared} &middot; *owner:* \`${m.owner_agent}\` &middot; *status:* \`${s.status}\``,
+    `*skill_version:* ${version} &middot; *owner:* \`${m.owner_agent}\` &middot; *status:* \`${s.status}\``,
   );
   if (m.last_tested) {
     lines.push(

@@ -13,5 +13,7 @@
   <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
   <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
   <key>ITSAppUsesNonExemptEncryption</key><false/>
+  <key>NSCameraUsageDescription</key><string>Take a photo or video to upload to your Qoopia workspace.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Record sound with a video you upload to your Qoopia workspace.</string>
   <key>NSLocalNetworkUsageDescription</key><string>Connect to the Qoopia workspace you choose on your computer or private network.</string>
 </dict></plist>

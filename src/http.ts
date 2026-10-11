@@ -23,7 +23,7 @@ import {
 import { authenticate, type AuthContext } from "./auth/middleware.ts";
 import { getAllowlist } from "./admin/claude-agents.ts";
 import { saveMessage } from "./services/sessions.ts";
-import { fileUpload, fileDelete, validateFileUpload } from "./services/files.ts";
+import { fileUploadBatch, fileDelete, validateFileUpload } from "./services/files.ts";
 import {
   wellKnownAuthorizationServer,
   wellKnownProtectedResource,
@@ -47,6 +47,7 @@ import {
 } from "./utils/rate-limit.ts";
 import { audit } from "./utils/audit.ts";
 import { isReadOnlyInstance } from "./utils/instance-role.ts";
+import { WAKE_REPLY_MAX_BYTES, WAKE_REPLY_PATH, wakeReply } from "./services/wake-reply.ts";
 import { getVerifiedReleaseBaseline } from "./utils/release-baseline.ts";
 import { PRODUCT_VERSION } from "./utils/product-version.ts";
 import { apiError, handleAuthorityRequest } from "./api/authority.ts";
@@ -159,21 +160,19 @@ async function handleFileUpload(req: IncomingMessage, res: ServerResponse) {
   }
   if (!entries.length) return json(res, 400, { error: "no_file", detail: "expected a 'file' field" }, req);
   try {
-    // All or nothing: every entry is checked before the first one is written.
+    // All or nothing: every entry is checked and parsed before one transaction writes them all.
     const batch = [];
     for (const file of entries) {
       const bytes = Buffer.from(await file.arrayBuffer());
       validateFileUpload({ folder, filename: file.name || "file", bytes });
       batch.push({ filename: file.name || "file", mime: file.type || "application/octet-stream", bytes });
     }
-    const uploaded = [];
-    for (const file of batch) {
-      uploaded.push(await fileUpload({ workspace_id: auth.workspace_id, owner_agent_id: auth.agent_id, uploaded_by_agent_id: auth.agent_id, folder, ...file }));
-    }
+    const uploaded = await fileUploadBatch(batch.map(file => ({ workspace_id: auth.workspace_id, owner_agent_id: auth.agent_id, uploaded_by_agent_id: auth.agent_id, folder, ...file })));
     return json(res, 200, { uploaded }, req);
   } catch (e) {
     const er = e as { code?: string; message?: string; details?: Record<string, unknown> };
     if (er.code === "INVALID_INPUT") return json(res, 400, { error: "invalid_input", detail: er.message, ...er.details }, req);
+    if (er.code === "RATE_LIMITED") return json(res, 429, { error: "busy", detail: er.message, retryable: true }, req);
     throw e;
   }
 }
@@ -490,10 +489,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       return serveDashboard(req,res);
     }
     if (url === '/api/dashboard/local-login') {
-      if (method !== 'POST' || req.headers.origin !== `http://${host}`) return json(res,403,{error:'Same-origin POST required'},req);
-      let code: string;try {code=parseLocalLoginBody(await readBodyLimited(req,1024),req.headers['content-type']);}catch{return json(res,400,{error:'Invalid login request'},req);}
+      if (method !== 'POST' || req.headers.origin !== `http://${host}`) return json(res,403,{error:'forbidden',error_description:'Same-origin POST required'},req);
+      let code: string;try {code=parseLocalLoginBody(await readBodyLimited(req,1024),req.headers['content-type']);}catch{return json(res,400,{error:'invalid_request',error_description:'Invalid login request'},req);}
       const ownerId=consumeLocalLogin(code);
-      if(!ownerId)return json(res,401,{error:'Login code expired or invalid'},req);
+      if(!ownerId)return json(res,401,{error:'invalid_code',error_description:'Login code expired or invalid'},req);
       const form=req.headers['content-type']?.split(';',1)[0]?.trim().toLowerCase()==='application/x-www-form-urlencoded';
       localOwnerLoginHandler(req,res,ownerId,form?'/dashboard':undefined);return;
     }
@@ -524,6 +523,15 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       source:dash.source === "cookie" ? "api-key" : dash.source,granted_scope:dash.granted_scope};
     const response = await handleAuthorityRequest(new Request(`http://local${rawUrl.replace("/api/dashboard/authority/","/api/v1/")}`,{method:read?"GET":method,headers,body}),undefined,auth);
     res.writeHead(response.status,{...Object.fromEntries(response.headers),"cache-control":"no-store","x-content-type-options":"nosniff"});res.end(await response.text());return;
+  }
+  if (url === WAKE_REPLY_PATH) {
+    if (method !== "POST") return methodNotAllowed(res, "POST", req);
+    if (isReadOnlyInstance()) return json(res, 503, { error: "read_only_instance", error_description: "This instance does not accept writes" }, req);
+    let raw: Buffer;
+    try { raw = await readBodyLimited(req, WAKE_REPLY_MAX_BYTES); }
+    catch { return json(res, 413, { error: "payload_too_large", error_description: "Reply body is too large" }, req); }
+    const result = wakeReply(raw, req.headers);
+    return json(res, result.status, result.body, req);
   }
   if (url.startsWith("/api/v1/")) {
     const headers = new Headers();
@@ -735,10 +743,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         publicDcr = selectedConnection ? {auth:connectionRegistrationAuth(selectedConnection,redirectUris),detail:"owner-provisioned connection registration"} : resolveTrustedUnauthenticatedDcrAuth(body);
       } catch (err) {
         if (!(err instanceof QoopiaError)) throw err;
-        // F-130: an unknown connection, a foreign callback or a full connection is the caller's error.
+        // F-130: an unknown connection or a foreign callback is the caller's error.
         audit({ event: "oauth_register", result: "deny", ip: clientIp, scope: "/oauth/register", detail: `connection registration refused: ${err.code}` });
-        return json(res, err.code === "RATE_LIMITED" ? 429 : 400, {
-          error: err.code === "RATE_LIMITED" ? "too_many_requests" : err.code === "INVALID_INPUT" ? "invalid_redirect_uri" : "invalid_request",
+        return json(res, 400, {
+          error: err.code === "INVALID_INPUT" ? "invalid_redirect_uri" : "invalid_request",
           error_description: err.message,
         });
       }
@@ -892,6 +900,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         content,
         ingest_uuid: uuid,
         capture: "ingest",
+        recorded_at: payload.timestamp,
         metadata: { ingest_cwd: payload.cwd ?? "", ingest_ts: payload.timestamp ?? "", ...payload.metadata },
       });
       return json(res, 200, result, req);

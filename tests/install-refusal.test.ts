@@ -52,3 +52,30 @@ exit 1
     expect(none.stdout).toContain('No LaunchAgent installed');
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }, 30_000);
+
+test('LaunchAgent values are written as XML text, literally [F-520-plist-escape]', async () => {
+  const { fillPlist } = await import('../src/admin/install.ts');
+  const template = fs.readFileSync(path.resolve(import.meta.dir, '../templates/com.qoopia.mcp.plist'), 'utf8');
+  const plist = fillPlist(template, { QOOPIA_ROOT: "/Users/example/a&b/<x>/$&/it's", QOOPIA_PUBLIC_URL: 'https://example.test/?a=1&b=2' });
+  expect(plist).toContain("<string>/Users/example/a&amp;b/&lt;x&gt;/$&amp;/it&apos;s</string>");
+  expect(plist).toContain('<string>https://example.test/?a=1&amp;b=2</string>');
+  expect(plist).toContain('{{BUN_PATH}}'); // a value not given stays as it was
+});
+
+test('an admin command that cannot run exits non-zero, as status does when nothing answers [F-520-cli-exit]', () => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cli-exit-'))), home = path.join(directory, 'home');
+  fs.mkdirSync(home, { mode: 0o700 });
+  const env = { PATH: path.dirname(process.execPath), HOME: home, TMPDIR: os.tmpdir(), NODE_ENV: 'test', QOOPIA_ROOT: path.join(directory, 'root'),
+    QOOPIA_PORT: '9', BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
+  const run = (...args: string[]) => spawnSync(process.execPath, args, { cwd: path.resolve(import.meta.dir, '..'), encoding: 'utf8', env });
+  try {
+    expect(run('scripts/migrate.ts').status).toBe(0);
+    const missing = run('src/cli.ts', 'admin', 'create-workspace');
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain('Missing workspace name');
+    expect(run('src/cli.ts', 'admin', 'no-such-subcommand').status).toBe(2);
+    const status = run('src/cli.ts', 'status');
+    expect(status.stdout).toContain('stopped');
+    expect(status.status).toBe(1);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+}, 30_000);

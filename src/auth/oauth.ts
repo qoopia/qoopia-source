@@ -435,6 +435,20 @@ export function assertCanRegisterOAuth(auth: AuthContext): void {
   }
 }
 
+const REGISTRATION_LIMIT = 20;
+/** A client that retries a failed connect registers again each time, and the Claude and ChatGPT
+ * callbacks register without credentials. Registrations that never received a code or token and
+ * outlived a consent ticket are dead: reclaim them. Fresh or used ones still count. */
+function reserveRegistration(agentId: string): void {
+  const registered = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?").get(agentId) as { n: number }).n;
+  if (registered() < REGISTRATION_LIMIT) return;
+  db.query(`DELETE FROM oauth_clients WHERE agent_id=? AND created_at<=?
+    AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
+    AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`)
+    .run(agentId, plusSec(-CONSENT_TICKET_TTL_SEC));
+  if (registered() >= REGISTRATION_LIMIT) throw new QoopiaError("RATE_LIMITED", "Client registration limit reached; finish or cancel a pending connection first");
+}
+
 /**
  * RFC 7591 dynamic client registration (ADR-017 multi-tenant variant).
  *
@@ -465,15 +479,16 @@ export function registerClient(
   response_types: string[];
   token_endpoint_auth_method: string;
 } {
-  if (input.client_name != null && typeof input.client_name !== "string") {
-    throw new QoopiaError("INVALID_INPUT", "client_name must be a string");
+  // Public DCR is unauthenticated and a row lives on, so its size is bounded like the rest of the input.
+  if (input.client_name != null && (typeof input.client_name !== "string" || input.client_name.length > 200)) {
+    throw new QoopiaError("INVALID_INPUT", "client_name must be a string of at most 200 characters");
   }
-  if (!Array.isArray(input.redirect_uris) || input.redirect_uris.length === 0) {
-    throw new QoopiaError("INVALID_INPUT", "redirect_uris must be a non-empty array");
+  if (!Array.isArray(input.redirect_uris) || input.redirect_uris.length === 0 || input.redirect_uris.length > 10) {
+    throw new QoopiaError("INVALID_INPUT", "redirect_uris must be an array of 1 to 10 URIs");
   }
   for (const uri of input.redirect_uris) {
-    if (typeof uri !== "string") {
-      throw new QoopiaError("INVALID_INPUT", `Invalid redirect URI: must be a string`);
+    if (typeof uri !== "string" || uri.length > 2048) {
+      throw new QoopiaError("INVALID_INPUT", `Invalid redirect URI: must be a string of at most 2048 characters`);
     }
     let parsed: URL;
     try {
@@ -501,6 +516,7 @@ export function registerClient(
     throw new QoopiaError("INVALID_INPUT", "token_endpoint_auth_method must be 'none', 'client_secret_post', or 'client_secret_basic'");
   }
   const isPublic = authMethod === "none";
+  reserveRegistration(auth.agent_id);
 
   const client_id = `qc_${crypto.randomBytes(16).toString("base64url")}`;
   let client_secret: string | undefined;

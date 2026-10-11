@@ -25,22 +25,38 @@
   document.body.insertAdjacentHTML('afterbegin', '<p class="loading" id="sessionCheck" role="status">' + QI.msg('Checking your session…') + '</p>');
 
   // ---------- API ----------
+  // fetch rejects in the browser's own English ("Failed to fetch", "Load failed", "signal timed out"). Every request
+  // goes through send(), so a request that got no answer reads as one sentence in the owner's language.
+  async function send(url, init = {}) {
+    try { return await fetch(url, init); }
+    catch (e) {
+      if (e?.name === 'AbortError') throw e; // Cancelled on purpose; the caller ignores it.
+      const write = !!init.method && !['GET', 'HEAD'].includes(init.method);
+      throw Object.assign(new Error(QI.resolve(QI.msg(e?.name === 'TimeoutError' && write ? 'The server has not confirmed this action yet. Check its status before trying again.' : 'Could not reach the server. Check your connection.'))), { offline: true });
+    }
+  }
+  // An answer without a human sentence names the failure in words, never as "HTTP 502" or a snake_case code.
+  function failure(r, data) {
+    const error = Object.assign(new Error(''), { status: r.status, code: data.code, retryAfter: Number(r.headers.get('retry-after')) || 0 });
+    error.message = data.error_description || data.error?.message || (typeof data.error === 'string' && data.error.includes(' ') ? data.error : QI.resolve(errReason(error)));
+    return error;
+  }
   async function api(path) {
-    const r = await fetch(BASE + path, { credentials: 'same-origin', signal: AbortSignal.timeout(15000) });
+    const r = await send(BASE + path, { credentials: 'same-origin', signal: AbortSignal.timeout(15000) });
     if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw Object.assign(new Error(data.error_description || data.error?.message || data.error || ('HTTP ' + r.status)), { status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 });
+    if (!r.ok) throw failure(r, data);
     return data;
   }
   async function apiWrite(path, body) {
-    const r = await fetch(BASE + path, {
+    const r = await send(BASE + path, {
       method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(45000),
       headers: { 'content-type': 'application/json', 'X-Qoopia-CSRF': '1' },
       body: JSON.stringify(body),
     });
     if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw Object.assign(new Error(data.error_description || ('HTTP ' + r.status)), { status: r.status, code: data.code });
+    if (!r.ok) throw failure(r, data);
     return data;
   }
 
@@ -55,8 +71,10 @@
     error.scrollIntoView({block:'nearest'});
   };
   async function identityPost(route,body={}){
-    const r=await fetch(BASE+'/api/dashboard/identity/'+route,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body),signal:AbortSignal.any([AbortSignal.timeout(25000),...(loginAbort?[loginAbort.signal]:[])])});
-    const data=await r.json();if(!r.ok)throw new Error(data.error||(QI.msg("Sign-in is temporarily unavailable")));return data;
+    const r=await send(BASE+'/api/dashboard/identity/'+route,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body),signal:AbortSignal.any([AbortSignal.timeout(25000),...(loginAbort?[loginAbort.signal]:[])])});
+    // A page that is not JSON (a proxy while the server restarts) counts as no answer: the sign-in poll keeps waiting.
+    const data=await r.json().catch(()=>null);if(!data)throw Object.assign(new Error(QI.resolve(QI.msg("Sign-in is temporarily unavailable"))),{offline:true});
+    if(!r.ok)throw new Error(data.error||(QI.msg("Sign-in is temporarily unavailable")));return data;
   }
   function finishAccountSignIn(){const url=new URL(location.href);url.searchParams.delete('signin');history.replaceState(null,'',url.pathname+url.search+url.hash);$('#loginView').classList.remove('account-connecting');}
   async function startAccountLogin(){
@@ -79,7 +97,7 @@
       // A phone drops the request while the Google tab or Mail is in front, or on a flaky network:
       // keep waiting instead of failing a sign-in the owner may already have confirmed.
       let data;try{data=await identityPost('poll',code?{accountCode:code}:{});}
-      catch(e){if(poll!==loginPoll)return;if(['TypeError','SyntaxError','TimeoutError'].includes(e?.name))continue;throw e;}
+      catch(e){if(poll!==loginPoll)return;if(e?.offline)continue;throw e;}
       if(poll!==loginPoll)return;
       if(data.ok){finishAccountSignIn();$('#emailLoginStatus').textContent='';if(consumeSafeNext())return;showApp();boot();return;}
     }
@@ -126,11 +144,12 @@
     if (!code) return;
     btn.disabled=true; btn.textContent=(QI.msg("Checking…")); $('#loginErr').style.display='none';
     try {
-      const r=await fetch(BASE+'/api/dashboard/local-login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({code})});
-      const data=await r.json().catch(()=>({}));
-      if (!r.ok) throw new Error(data.error || (QI.msg("Code expired or invalid")));
+      const r=await send(BASE+'/api/dashboard/local-login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({code})});
+      // The server's own words are English; only a 401 means the code itself was refused.
+      if (r.status === 401) throw new Error(QI.resolve(QI.msg("Code expired or invalid")+QI.msg(". Run qoopia owner-login locally for a new code.")));
+      if (!r.ok) throw failure(r, {});
       form.reset(); if (consumeSafeNext()) return; showApp(); boot();
-    } catch (e) { $('#loginErr').textContent=e.message+(QI.msg(". Run qoopia owner-login locally for a new code.")); $('#loginErr').style.display='block'; inp.focus(); }
+    } catch (e) { $('#loginErr').textContent=e.message; $('#loginErr').style.display='block'; inp.focus(); }
     finally { btn.disabled=false; btn.textContent=(QI.msg("Sign in as owner")); }
   };
   $('#loginBtn').onclick = async () => {
@@ -138,15 +157,16 @@
     if (!t) return;
     btn.disabled = true; btn.textContent = (QI.msg("Checking…"));
     try {
-      const r = await fetch(BASE + '/api/dashboard/login', {
+      const r = await send(BASE + '/api/dashboard/login', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Authorization': 'Bearer ' + t },
       });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (r.status === 401 || r.status === 403) throw new Error(QI.resolve(QI.msg("This agent key was not accepted. Check that it is active.")));
+      if (!r.ok) throw failure(r, {});
       inp.value = '';
       if (consumeSafeNext()) return;
       showApp(); boot();
-    } catch (e) { $('#loginErr').textContent=e.message+(QI.msg(". Check that this agent key is active.")); $('#loginErr').style.display='block'; inp.focus(); }
+    } catch (e) { $('#loginErr').textContent=e.message; $('#loginErr').style.display='block'; inp.focus(); }
     finally { btn.disabled = false; btn.textContent = (QI.msg("Sign in with API key")); }
   };
   $('#tokenInput').addEventListener('keydown', (e) => {
@@ -156,7 +176,7 @@
   $('#logoutBtn').onclick = async () => {
     loginPoll++;
     try {
-      const r=await fetch(BASE + '/api/dashboard/logout', { method: 'POST', credentials: 'same-origin', headers: { 'X-Qoopia-CSRF': '1' } });
+      const r=await send(BASE + '/api/dashboard/logout', { method: 'POST', credentials: 'same-origin', headers: { 'X-Qoopia-CSRF': '1' } });
       if(!r.ok)throw new Error((QI.msg("Could not sign out. Please try again.")));
       showLogin();
     }catch(e){alert(e.message||(QI.msg("Could not sign out. Please try again.")));}
@@ -431,7 +451,7 @@
   function filesUpload(fileList) {
     if (!fileList || !fileList.length) return;
     const folder = filesPath || 'inbox';
-    const prog = $('#fProg'); if (prog) prog.textContent = (QI.msg("Uploading") + " ") + fileList.length + (" " + QI.msg("file(s)…"));
+    const prog = $('#fProg'); if (prog) prog.textContent = QI.msg("Uploading") + " " + QI.count(fileList.length, 'file') + "…";
     // Bun's multipart parser drops an empty file's name, so name it here before sending.
     const empty = [].find.call(fileList, f => !f.size);
     if (empty) { if (prog) prog.textContent = uploadRefusal({ reason: 'empty_file', file: empty.name }); return; }
@@ -450,6 +470,7 @@
         if (prog) prog.textContent = (QI.msg("Uploaded ✓"));
         filesNew = filesNew.filter(f => f !== folder); filesPath = folder; void filesLoadFolders();
       } else if (xhr.status === 413) { if (prog) prog.textContent = QI.msg('File too large (maximum 100 MB).'); }
+      else if (xhr.status === 429) { if (prog) prog.textContent = QI.msg('Qoopia is reading other files right now. Nothing was saved; try again in a minute.'); }
       else { var d = ''; try { var j = JSON.parse(xhr.responseText); d = ' — ' + (j.detail || j.error || ''); } catch { /* Non-JSON error body; the status code is shown alone. */ } if (prog) prog.textContent = uploadRefusal(j) || QI.msg('Could not load (') + xhr.status + ')' + d; }
     };
     xhr.onerror = () => { if (prog) prog.textContent = (QI.msg("Upload error.")); };
@@ -458,9 +479,10 @@
   async function filesDelete(id) {
     if(!window.confirm(QI.resolve(QI.msg('Delete this file? This cannot be undone.'))))return;
     try {
-      const r = await fetch(BASE + '/api/dashboard/files/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin', headers: { 'X-Qoopia-CSRF': '1' } });
+      const r = await send(BASE + '/api/dashboard/files/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin', headers: { 'X-Qoopia-CSRF': '1' } });
       if (r.status === 401) { showLogin(); return; }
       if (r.status === 403) { alert((QI.msg("Only the owner can delete."))); return; }
+      if (!r.ok) throw failure(r, await r.json().catch(() => ({})));
       await filesLoadFolders();
     } catch (e) { alert((QI.msg("Delete failed:") + " ") + e.message + (QI.msg(". The file list was not changed."))); }
   }
@@ -567,6 +589,21 @@
       '<span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
   }
 
+  // Server summaries are English and carry raw ids ("Created note 01M4…"). Events Qoopia itself records read as
+  // a sentence in the page language, with names and topics kept verbatim; anything else (a summary an agent
+  // wrote itself) is shown as written. The original summary stays in the row's tooltip.
+  const NOTE_EVENTS = { created: 'Note saved', updated: 'Note updated', deleted: 'Note deleted', note_superseded: 'Note replaced by a newer version' };
+  function activityText(it) {
+    const s = it.summary || '', x = re => s.match(re);let m;
+    if (it.entity_type === 'note' && NOTE_EVENTS[it.action]) return QI.msg(NOTE_EVENTS[it.action]);
+    if (it.action === 'relation_created') return QI.msg('Notes linked');
+    if (it.action === 'file_upload' && (m = x(/^Uploaded (.+) to (.+)$/))) return QI.msg('File {name} uploaded to {folder}', { name: m[1], folder: m[2] });
+    if (it.action === 'file_delete' && (m = x(/^Deleted (.+) from (.+)$/))) return QI.msg('File {name} deleted from {folder}', { name: m[1], folder: m[2] });
+    if (it.action === 'agent_session_create' && (m = x(/^Created agent session: (.*)$/))) return QI.msg('Agent conversation started: {topic}', { topic: m[1] });
+    if (it.action === 'agent_session_close') return QI.msg('Agent conversation closed');
+    if (it.action === 'agent_send' && (m = x(/^Agent message \S+ to (.+)$/))) return QI.msg('Message to {name}', { name: m[1] });
+    return s || it.action + (it.entity_type ? ' · ' + it.entity_type : '');
+  }
   // One line per event: when, who, what. The agent's name opens the agent. The same event repeated
   // in a row (a summary rewritten again and again) is one line with a count, at its latest time.
   function paintFeed(items, el) {
@@ -575,12 +612,11 @@
     const today = new Date().toDateString(), rows = [];
     for (const it of items) { const last = rows[rows.length - 1]; if (last && last.agent_id === it.agent_id && last.action === it.action && last.summary === it.summary) last.n++; else rows.push({ ...it, n: 1 }); }
     patch(el, rows.map(it => {
-      const st = actionStyle(it.action), who = it.agent_name || (it.agent_id ? it.agent_id.slice(0, 8) : 'system');
-      const what = it.action + (it.entity_type ? ' · ' + it.entity_type : '');
-      return '<div class="frow" title="' + esc(fmtTimeFull(it.created_at) + ' · ' + what + (it.origin_host ? ' @' + it.origin_host : '')) + '">' +
+      const st = actionStyle(it.action), who = it.agent_name || (it.agent_id ? it.agent_id.slice(0, 8) : QI.msg('System'));
+      return '<div class="frow" title="' + esc(fmtTimeFull(it.created_at) + ' · ' + (it.summary || it.action) + (it.origin_host ? ' @' + it.origin_host : '')) + '">' +
         '<span class="ftime">' + QI.date(it.created_at, { ...(new Date(it.created_at).toDateString() === today ? {} : { day: 'numeric', month: 'short' }), hour: '2-digit', minute: '2-digit' }) + '</span><span class="fic">' + st.icon + '</span>' +
         (it.agent_id ? '<button type="button" class="chip click" data-aid="' + esc(it.agent_id) + '" data-id="' + esc(it.id || '') + '">' + esc(who) + '</button>' : '<span class="chip">' + esc(who) + '</span>') +
-        '<span class="fline">' + esc(it.summary || what) + (it.n > 1 ? ' <span class="fcount">×' + it.n + '</span>' : '') + '</span></div>';
+        '<span class="fline">' + esc(activityText(it)) + (it.n > 1 ? ' <span class="fcount">×' + it.n + '</span>' : '') + '</span></div>';
     }).join(''));
     el.querySelectorAll('[data-aid]').forEach(c => {
       c.onclick = () => drillAgentById(c.getAttribute('data-aid'));
@@ -780,7 +816,7 @@
         return '<button type="button" class="sess-item" data-id="' + esc(s.id) + '"><div class="sess-info">' +
           '<div class="sess-title">' + esc(s.title || QI.msg('(untitled)')) + '</div>' +
           '<div class="sess-id">' + esc(s.id) + '</div></div>' +
-          '<div class="sess-badges"><span class="sess-badge">' + s.message_count + (" " + QI.msg("msgs") + "</span>") +
+          '<div class="sess-badges"><span class="sess-badge">' + QI.count(s.message_count, 'message') + "</span>" +
           '<span class="sess-badge">' + fmtTime(s.last_active) + liveStatus(s.last_active) + '</span></div><div class="sess-chev">›</div></button>';
       }).join('') + '</div>';
       body.querySelectorAll('.sess-item').forEach(el => el.onclick = () => {
@@ -817,9 +853,9 @@
     const items = sorted.length ? sorted.map(n => '<div class="note t-' + esc(QI.code(n.type)) + '"><div class="note-head">' +
       '<span class="note-type">' + esc(noteTypeLabel(n.type)) + '</span><span>' + fmtTimeFull(n.created_at) + '</span>' +
       (n.updated_at && n.updated_at !== n.created_at ? ("<span>" + QI.msg("· upd") + " ") + fmtTime(n.updated_at) + '</span>' : '') +
-      '<span style="flex:1"></span><span class="copyable mono" data-copy="' + esc(n.id) + '" title="copy id">' + esc(String(n.id).slice(0, 12)) + '</span></div>' +
+      '<span style="flex:1"></span><button type="button" class="copyable mono" data-copy="' + esc(n.id) + '" aria-label="' + esc(QI.msg('Copy note ID')) + '" title="' + esc(QI.msg('Copy note ID')) + '">' + esc(String(n.id).slice(0, 12)) + '</button></div>' +
       '<div class="note-text">' + esc(n.text) + '</div>' +
-      (n.tags && n.tags.length ? '<div class="note-meta">tags: ' + n.tags.map(esc).join(', ') + '</div>' : '') + '</div>').join('') : ("<div class=\"empty\">" + QI.msg("No notes matching filter.") + "</div>");
+      (n.tags && n.tags.length ? '<div class="note-meta">' + QI.msg('Tags:') + ' ' + n.tags.map(esc).join(', ') + '</div>' : '') + '</div>').join('') : ("<div class=\"empty\">" + QI.msg("No notes matching filter.") + "</div>");
     body.innerHTML = '<div class="note-filters">' + filters + '</div>' + sortToggle + '<div class="note-list" tabindex="-1">' + items + '</div>' +
       (list.next ? '<button type="button" class="btn-more" id="notesMore">' + QI.msg("Load more") + '</button>' : '');
     body.querySelectorAll('[data-t]').forEach(el => el.onclick = () => { d.noteType = el.getAttribute('data-t') || null; renderMemory(); });
@@ -829,7 +865,7 @@
   }
   async function renderAgentSearch() {
     const a = state.drill.agent; const body = $('#tabBody'); const q = state.drill.searchQuery || '';
-    body.innerHTML = '<div style="margin-bottom:16px"><input type="text" id="searchInp" aria-label="Search this agent’s messages" data-i18n-aria-label="Search this agent’s messages" class="input-text" placeholder="Search this agent\'s messages…" value="' + esc(q) + '"></div><div id="searchResults"></div>';
+    body.innerHTML = '<div style="margin-bottom:16px"><input type="text" id="searchInp" aria-label="Search this agent’s messages" data-i18n-aria-label="Search this agent’s messages" class="input-text" placeholder="' + esc(QI.msg("Search this agent's messages…")) + '" value="' + esc(q) + '"></div><div id="searchResults"></div>';
     const inp = $('#searchInp'); inp.focus(); let dbnc;
     inp.addEventListener('input', () => { clearTimeout(dbnc); state.drill.searchQuery = inp.value; dbnc = setTimeout(doSearch, 300); });
     if (q) await doSearch();
@@ -843,7 +879,8 @@
         if (!data.items.length) { results.innerHTML = ("<div class=\"empty\">" + QI.msg("Nothing found.") + "</div>"); return; }
         results.innerHTML = '<div class="transcript">' + data.items.map(m => '<button type="button" class="msg search-result" data-role="' + esc(m.role) + '" data-session="' + esc(m.session_id) + '"><div class="msg-head">' + roleIcon(m.role) +
           '<span class="msg-role ' + esc(m.role) + '">' + esc(QI.code(m.role)) + '</span><span>' + fmtTimeFull(m.created_at) + '</span><span style="flex:1"></span>' +
-          ("<span class=\"copyable mono\" title=\"" + QI.msg("copy session_id") + "\">") + esc(String(m.session_id).slice(0, 16)) + '…</span></div>' +
+          // Inside the result's own button a nested button is invalid; the session page has the keyboard copy button.
+          ("<span class=\"copyable mono\" title=\"" + QI.msg("Copy session ID") + "\">") + esc(String(m.session_id).slice(0, 16)) + '…</span></div>' +
           '<div class="msg-content">' + esc(m.content) + '</div></button>').join('') + '</div>';
         results.querySelectorAll('.copyable').forEach((el, i) => { const sid = data.items[i].session_id; el.onclick = (ev) => { ev.stopPropagation(); copyText(el, sid); }; });
         results.querySelectorAll('.msg').forEach(el => { el.onclick = () => { state = { page: 'agents', drill: { kind: 'session', agent: a, session: { id: el.getAttribute('data-session'), title: null } } }; route(); }; });
@@ -855,7 +892,7 @@
     setCrumb(("<a data-go=\"agents\">" + QI.msg("Agents") + "</a><span class=\"crumb-sep\">›</span><a data-route id=\"bkAgent\">") + esc(a.name) + '</a><span class="crumb-sep">›</span>' + esc(String(s.id).slice(0, 12)));
     main.innerHTML = '<div class="detail-head"><div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
       '<div style="flex:1; min-width:0"><h1 class="detail-title">' + esc(s.title || QI.msg('(untitled session)')) + '</h1>' +
-      ("<div class=\"detail-sub mono\"><span class=\"copyable\" id=\"sidCopy\" title=\"" + QI.msg("copy") + "\">") + esc(s.id) + '</span></div></div></div>' +
+      ("<div class=\"detail-sub mono\"><button type=\"button\" class=\"copyable\" id=\"sidCopy\" aria-label=\"" + QI.msg("Copy session ID") + "\" title=\"" + QI.msg("Copy session ID") + "\">") + esc(s.id) + '</button></div></div></div>' +
       ("<div id=\"tabBody\"><div class=\"loading\">" + QI.msg("Loading transcript…") + "</div></div>");
     const bk = $('#bkAgent'); if (bk) bk.onclick = () => { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'sessions', noteType: null } }; route(); };
     const sidEl = $('#sidCopy'); if (sidEl) sidEl.onclick = () => copyText(sidEl, s.id);
@@ -866,7 +903,7 @@
       if (!data.messages.length) { body.innerHTML = ("<div class=\"empty\">" + QI.msg("No messages.") + "</div>"); return; }
       body.innerHTML = '<div class="transcript">' + data.messages.map(m => '<div class="msg ' + esc(m.role) + '"><div class="msg-head">' + roleIcon(m.role) +
         '<span class="msg-role ' + esc(m.role) + '">' + esc(QI.code(m.role)) + '</span><span>' + fmtTimeFull(m.created_at) + '</span>' +
-        (m.token_count != null ? '<span>· ' + m.token_count + (" " + QI.msg("tok") + "</span>") : '') + '</div><div class="msg-content">' + esc(m.content) + '</div></div>').join('') + '</div>';
+        (m.token_count != null ? '<span>· ' + QI.count(m.token_count, 'token') + "</span>" : '') + '</div><div class="msg-content">' + esc(m.content) + '</div></div>').join('') + '</div>';
     } catch (e) { errBox(body, QI.msg("Failed to load transcript."), renderSession, e); }
   }
 
@@ -960,7 +997,7 @@
       acState.hasMore = !!d.has_more;
       acState.nextBefore = d.next_before;
       const sub = $('#acSub');
-      if (sub) sub.textContent = fmtNum(d.total) + (" " + QI.msg("messages · showing") + " ") + fmtNum(acState.messages.length);
+      if (sub) sub.textContent = QI.count(d.total, 'message') + " · " + QI.msg("shown: {n}", { n: fmtNum(acState.messages.length) });
       renderAcMessages(first);
     } catch (e) {
       if (first) errBox($('#acBody'), QI.msg("Failed to load conversation."), () => loadAcPage(true), e);
@@ -981,6 +1018,14 @@
 
   // Newest message on top; scrolling down goes back in time and loads older history at the bottom.
   // The page's to-top arrow returns to the latest message.
+  // A read from the inbox is shown as what it is, never as a wake.
+  const AC_DELIVERY = {
+    woken: "Woke the agent",
+    read_without_wake: "Read from the inbox, nobody was woken",
+    waking: "Waking the agent…",
+    no_runtime: "Waiting in the inbox: this agent has no runtime to wake",
+    wake_failed: "Waiting in the inbox: the wake failed",
+  };
   function renderAcMessages(first) {
     const body = $('#acBody'); if (!body) return;
     const p = state.drill.pair;
@@ -1006,8 +1051,9 @@
         (samePrev ? '' : '<div class="tg-from">' + esc(acName({ name: m.sender_name, id: m.sender_agent_id })) + '</div>') +
         '<div class="tg-text">' + esc(m.body) + '</div>' +
         '<div class="tg-meta">' +
-        (m.topic ? '<span class="tg-topic" title="Topic: ' + esc(m.topic) + '">' + esc(m.topic) + '</span>' : '') +
-        '<span title="' + esc(fmtTimeFull(m.created_at)) + '">' + esc(acClock(m.created_at)) + '</span></div>' +
+        (m.topic ? '<span class="tg-topic" title="' + esc(QI.msg('Topic: {topic}', { topic: m.topic })) + '">' + esc(m.topic) + '</span>' : '') +
+        '<span title="' + esc(fmtTimeFull(m.created_at)) + '">' + esc(acClock(m.created_at)) + '</span>' +
+        (AC_DELIVERY[m.delivery] ? '<span class="tg-delivery ' + esc(m.delivery) + '">' + esc(QI.msg(AC_DELIVERY[m.delivery])) + '</span>' : '') + '</div>' +
         '</div></div>';
     }
     html += '</div>';
@@ -1025,25 +1071,22 @@
   let skillContext = null, skillPending = null;
   const loopUrl = '/api/dashboard/authority';
   async function skillApi(path, method = 'GET', body, expected) {
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 15000);
     const key = method === 'GET' ? null : (body.idempotency_key || crypto.randomUUID());
     if (body && key) body.idempotency_key = key;
     if (method !== 'GET') skillPending = {path, method, body: JSON.parse(JSON.stringify(body)), expected};
-    try {
-      const response = await fetch(loopUrl + path, {method, credentials:'same-origin', signal:controller.signal,
-        ...(method === 'GET' ? {} : {headers:{'content-type':'application/json','X-Qoopia-CSRF':'1','Idempotency-Key':key,'If-Match':String(expected)}, body:JSON.stringify(body)})});
-      const value = await response.json();
-      if (!response.ok) { const error = new Error(value.error?.message || (QI.msg("Request failed"))); error.code = value.error?.code || 'HTTP_' + response.status; throw error; }
-      if (method !== 'GET') skillPending = null;
-      return value;
-    } finally { clearTimeout(timer); }
+    const response = await send(loopUrl + path, {method, credentials:'same-origin', signal:AbortSignal.timeout(15000),
+      ...(method === 'GET' ? {} : {headers:{'content-type':'application/json','X-Qoopia-CSRF':'1','Idempotency-Key':key,'If-Match':String(expected)}, body:JSON.stringify(body)})});
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) { const error = failure(response, value); error.code = value.error?.code; throw error; }
+    if (method !== 'GET') skillPending = null;
+    return value;
   }
   function skillStatus(text, error = false) {
     const node = $('#skillStatus'); if (!node) return;
     node.textContent = text; node.className = error ? 'err' : 'meta'; node.setAttribute('role',error ? 'alert' : 'status');
   }
   function skillFailure(e) {
-    skillStatus((e.code || (navigator.onLine ? 'UNKNOWN_RESULT' : (QI.msg("OFFLINE")))) + ': ' + e.message + (QI.msg(". Your edits are kept. Inspect the current state or retry the same request.")),true);
+    skillStatus((e.code ? e.code + ': ' : '') + e.message + QI.resolve(QI.msg(". Your edits are kept. Inspect the current state or retry the same request.")),true);
     const retry=$('#skillRetry'); if(retry){retry.hidden=!skillPending;retry.onclick=async()=>{if(!skillPending)return;const p=skillPending;try{await skillApi(p.path,p.method,p.body,p.expected);await skillReconcile();skillStatus((QI.msg("Request reconciled against current server state.")));retry.hidden=true;}catch(e){skillFailure(e);}};}
   }
   async function skillReconcile() { const id=skillContext?.skill?.skill_id; if(id) await skillDetail(id); else await renderSkillsPage(); }
@@ -1062,7 +1105,7 @@
       $('#skillCards').innerHTML=library.items.length?library.items.map(s=>'<button class="ent skill-card" data-skill="'+esc(s.id)+("\"><span class=\"type-badge tb-skill\">" + QI.msg("Draft") + " ")+esc(String(s.revision))+'</span><strong>'+esc(s.title)+("</strong><span class=\"meta\">" + QI.msg("Open procedure, versions and outcomes →") + "</span></button>")).join(''):("<p class=\"empty\">" + QI.msg("Your library is empty. Create a skill from a procedure or the clearly marked CSV sample.") + "</p>");
       $('#skillCards').querySelectorAll('[data-skill]').forEach(b=>b.onclick=()=>skillDetail(b.dataset.skill));
       const waiting=loop.assignments.filter(a=>a.desired_state==='active');
-      $('#skillAttention').innerHTML=waiting.length?waiting.map(a=>'<p><strong>'+esc(a.slot)+'</strong> — '+(a.readiness?.ready?(QI.msg("Ready for the next session.")):'Blocked: '+esc((a.readiness?.blockers||[(QI.msg("readiness unavailable"))]).join('; ')))+' <button class="btn" data-attention="'+esc(a.version_id)+("\">" + QI.msg("Inspect") + "</button></p>")).join(''):("<p class=\"meta\">" + QI.msg("No pending assignments.") + "</p>");
+      $('#skillAttention').innerHTML=waiting.length?waiting.map(a=>'<p><strong>'+esc(a.slot)+'</strong> — '+(a.readiness?.ready?(QI.msg("Ready for the next session.")):QI.msg('Blocked:')+' '+esc((a.readiness?.blockers||[(QI.msg("readiness unavailable"))]).join('; ')))+' <button class="btn" data-attention="'+esc(a.version_id)+("\">" + QI.msg("Inspect") + "</button></p>")).join(''):("<p class=\"meta\">" + QI.msg("No pending assignments.") + "</p>");
       $('#skillAttention').querySelectorAll('[data-attention]').forEach(b=>b.onclick=()=>skillDetail(loop.versions.find(v=>v.id===b.dataset.attention).skill_id));
       skillStatus((QI.msg("Library is current. Native loading and useful outcomes are separate facts.")));
     } catch(e){body.innerHTML=("<button class=\"btn\" id=\"skillReload\">" + QI.msg("Reload library") + "</button>");$('#skillReload').onclick=renderSkillsPage;skillFailure(e);}
@@ -1097,7 +1140,7 @@
       $('#skVersions').innerHTML=loop.versions.length?loop.versions.map(v=>'<button class="btn" data-version="'+esc(v.id)+'">'+esc(v.version_label)+' · '+esc(v.status)+'</button>').join(''):("<p class=\"meta\">" + QI.msg("No compiled versions. Complete the draft, then inspect its final instructions.") + "</p>");
       $('#skVersions').querySelectorAll('[data-version]').forEach(b=>b.onclick=()=>skillPreview(b.dataset.version));
       if(c)$('#skCompile').onsubmit=async event=>{event.preventDefault();try{const result=await skillApi('/skills/drafts/'+skill.draft_id+'/compile','POST',{expected_revision:skill.revision,version_label:$('#skVersionLabel').value,license:$('#skLicense').value,native_name:skill.slug},skill.revision);await skillPreview(result.data.version_id);}catch(e){skillFailure(e);}};
-      $('#skAssignments').innerHTML=loop.assignments.length?loop.assignments.map(a=>'<div class="panel"><strong>'+esc(a.slot)+'</strong><p>Desired: '+esc(a.desired_state)+(" " + QI.msg("· revision") + " ")+a.revision+(" " + QI.msg("· next-session changes") + "</p><button class=\"btn\" data-pause=\"")+esc(a.id)+("\">" + QI.msg("Pause") + "</button> <button class=\"btn\" data-rollback=\"")+esc(a.id)+("\">" + QI.msg("Choose rollback version") + "</button></div>")).join(''):("<p class=\"meta\">" + QI.msg("No assignments.") + "</p>");
+      $('#skAssignments').innerHTML=loop.assignments.length?loop.assignments.map(a=>'<div class="panel"><strong>'+esc(a.slot)+'</strong><p>'+QI.msg('Desired state:')+' '+esc(QI.code(a.desired_state))+(" " + QI.msg("· revision") + " ")+a.revision+(" " + QI.msg("· next-session changes") + "</p><button class=\"btn\" data-pause=\"")+esc(a.id)+("\">" + QI.msg("Pause") + "</button> <button class=\"btn\" data-rollback=\"")+esc(a.id)+("\">" + QI.msg("Choose rollback version") + "</button></div>")).join(''):("<p class=\"meta\">" + QI.msg("No assignments.") + "</p>");
       $('#skAssignments').querySelectorAll('[data-pause]').forEach(b=>b.onclick=async()=>{const a=loop.assignments.find(a=>a.id===b.dataset.pause);try{await skillApi('/skill-assignments/'+a.id,'PATCH',{assignment_id:a.id,expected_revision:a.revision,desired_state:'paused',reason:'Owner paused from the library'},a.revision);await skillDetail(id);}catch(e){skillFailure(e);}});
       $('#skAssignments').querySelectorAll('[data-rollback]').forEach(b=>b.onclick=()=>{skillStatus((QI.msg("Select an earlier version above, then assign it to the same runtime with Rollback selected.")));$('#skVersions').querySelector('button')?.focus();});
       $('#skOutcomes').innerHTML=loop.runs.length?loop.runs.map(run=>{const outcomes=loop.outcomes.filter(o=>o.run_id===run.id);return '<article class="panel"><strong>'+esc(run.objective)+("</strong><p>" + QI.msg("Run") + " ")+esc(run.id)+(" " + QI.msg("· exact version") + " ")+esc(run.version_id)+'</p>'+(outcomes.length?outcomes.map(o=>'<p>'+esc(o.status)+' · '+esc(o.evidence_class)+(" " + QI.msg("· revision") + " ")+o.revision+(o.stale?(" " + QI.msg("· late fact after revoke")):'')+("</p><details><summary>" + QI.msg("Evaluator assertions") + "</summary><pre>")+esc(JSON.stringify(JSON.parse(o.assertions_json),null,2))+'</pre></details>').join(''):("<p>" + QI.msg("Unknown — nothing reported.") + "</p>"))+'</article>';}).join(''):("<p class=\"empty\">" + QI.msg("No runtime task has been reported. Installing files does not prove execution.") + "</p>");
@@ -1112,7 +1155,7 @@
       let previousBytes='',previousLabel=(QI.msg("Empty native projection"));
       if(previous){const old=await skillApi('/skills/'+v.skill_id+'/versions/'+previous.id);const oldMembers=JSON.parse(old.members_json||'{}');previousBytes=oldMembers['SKILL.md']?new TextDecoder().decode(Uint8Array.from(atob(oldMembers['SKILL.md']),c=>c.charCodeAt(0))):(QI.msg("Historical version has no compiled native bytes"));previousLabel=(QI.msg("Previous") + " ")+old.version_label+' · '+old.license;}
       const diff=previousBytes===bytes?(QI.msg("No instruction changes. Review license, renderer and full member map below.")):previousBytes.split('\n').map(line=>'- '+line).join('\n')+'\n'+bytes.split('\n').map(line=>'+ '+line).join('\n');
-      const box=$('#skPreview');box.innerHTML=("<section class=\"panel\"><h2>" + QI.msg("Before / after diff") + "</h2><p>")+esc(previousLabel)+' → '+esc(v.version_label)+("</p><pre class=\"skill-diff\" tabindex=\"0\" aria-label=\"" + QI.msg("Before and after native instructions") + "\">")+esc(diff)+'</pre></section>'+("<section class=\"panel\"><h2>" + QI.msg("Review final native bytes") + "</h2><p>" + QI.msg("Version") + " ")+esc(v.version_label)+(" " + QI.msg("· License") + " ")+esc(v.license)+'</p><p>Permissions: '+esc((descriptor.requested_capabilities||[]).join(', ')||'none')+'</p><p>Renderer: '+esc(descriptor.renderer||v.original_format)+("</p><pre class=\"skill-diff\" tabindex=\"0\" aria-label=\"" + QI.msg("Final native instructions") + "\">")+esc(bytes)+("</pre><details><summary>" + QI.msg("Exact member map and digest") + "</summary><pre>")+esc(JSON.stringify(descriptor.members||{},null,2))+'</pre><p>'+esc(v.candidate_digest)+'</p></details><div id="skReviewActions"></div></section>';
+      const box=$('#skPreview');box.innerHTML=("<section class=\"panel\"><h2>" + QI.msg("Before / after diff") + "</h2><p>")+esc(previousLabel)+' → '+esc(v.version_label)+("</p><pre class=\"skill-diff\" tabindex=\"0\" aria-label=\"" + QI.msg("Before and after native instructions") + "\">")+esc(diff)+'</pre></section>'+("<section class=\"panel\"><h2>" + QI.msg("Review final native bytes") + "</h2><p>" + QI.msg("Version") + " ")+esc(v.version_label)+(" " + QI.msg("· License") + " ")+esc(v.license)+'</p><p>'+QI.msg('Permissions:')+' '+esc((descriptor.requested_capabilities||[]).join(', ')||QI.msg('None'))+'</p><p>'+QI.msg('Format:')+' '+esc(descriptor.renderer||v.original_format)+("</p><pre class=\"skill-diff\" tabindex=\"0\" aria-label=\"" + QI.msg("Final native instructions") + "\">")+esc(bytes)+("</pre><details><summary>" + QI.msg("Exact member map and digest") + "</summary><pre>")+esc(JSON.stringify(descriptor.members||{},null,2))+'</pre><p>'+esc(v.candidate_digest)+'</p></details><div id="skReviewActions"></div></section>';
       box.scrollIntoView({block:'start'});
       if(v.status==='candidate'){
         $('#skReviewActions').innerHTML=("<label for=\"skScope\">" + QI.msg("Target scope") + "</label><select id=\"skScope\"><option value=\"project\">" + QI.msg("Project") + "</option><option value=\"personal\">" + QI.msg("Personal") + "</option></select><p>" + QI.msg("Approval covers the bytes shown above. A change to license, instructions, files or renderer needs a new review.") + "</p><button class=\"btn\" id=\"skAccept\">" + QI.msg("Approve for local use") + "</button> <button class=\"btn\" id=\"skReject\">" + QI.msg("Reject") + "</button>");
@@ -1137,7 +1180,7 @@
       if (state.page !== 'search') return; // The user moved on while this loaded.
     }
     main.innerHTML = '<h1 class="sr-only">' + QI.msg("Search") + '</h1>' +
-      ("<div style=\"margin-bottom:18px\"><input type=\"text\" id=\"gSearch\" aria-label=\"Search messages\" data-i18n-aria-label=\"Search messages\" class=\"input-text\" placeholder=\"" + QI.msg("Search messages and notes across all visible agents…") + "\"></div>") +
+      ("<div style=\"margin-bottom:18px\"><input type=\"text\" id=\"gSearch\" aria-label=\"Search messages\" data-i18n-aria-label=\"Search messages\" class=\"input-text\" placeholder=\"" + QI.msg("Search messages and notes…") + "\"></div>") +
       ("<div style=\"font-size:.74rem;color:var(--text3);margin-bottom:14px\">" + QI.msg("Agents you can search:") + " ") + fmtNum((agentsCache || []).length) + "</div>" +
       ("<div id=\"gResults\" aria-live=\"polite\"><div class=\"empty\">" + QI.msg("Type to search…") + "</div></div>");
     const inp = $('#gSearch'); inp.focus(); let dt;
@@ -1161,7 +1204,7 @@
         const first = hits.length;
         hits = hits.concat(data.items || []); next = data.next;
         if (!hits.length) { out.innerHTML = ("<div class=\"empty\">" + QI.msg("Nothing found across any agent.") + "</div>"); return; }
-        out.innerHTML = '<div style="font-size:.74rem;color:var(--text3);margin-bottom:12px">' + (next ? QI.msg("Showing the newest matches: {n}", { n: hits.length }) : hits.length + " " + QI.msg("results")) + "</div><div class=\"transcript\">" +
+        out.innerHTML = '<div style="font-size:.74rem;color:var(--text3);margin-bottom:12px">' + (next ? QI.msg("Showing the newest matches: {n}", { n: hits.length }) : QI.count(hits.length, 'result')) + "</div><div class=\"transcript\">" +
           // One article per hit with real buttons for the agent and the session; the excerpt is plain text (F-326).
           hits.map((m, i) => '<article class="msg" data-i="' + i + '"><div class="msg-head">' + roleIcon(m.role) +
             '<span class="msg-role' + (m.kind === 'message' ? ' ' + esc(m.role) : '') + '">' + esc(m.kind === 'message' ? QI.msg("Message") : QI.msg("Context note")) + '</span>' +
@@ -1201,7 +1244,7 @@
     const name=(g,peer)=>g?.members?.find(m=>m.peer===peer)?.name||(QI.msg("Member"));
     async function act(action,body={}) {
       if(busy)throw new Error((QI.msg("Please wait for the current action")));busy=true;
-      try {const r=await fetch('/api/dashboard/bridges',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action,...body})});const result=await r.json();if(!r.ok)throw new Error(result.error_description||(QI.msg("Bridge action failed")));return result;}
+      try {const r=await send('/api/dashboard/bridges',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action,...body})});const result=await r.json().catch(()=>({}));if(!r.ok)throw new Error(result.error_description||QI.resolve(QI.msg("Bridge action failed")));return result;}
       finally{busy=false;}
     }
     function show(content){$('#bridgeDialogContent').innerHTML=content;if(!dialog.open)dialog.showModal();}
@@ -1222,7 +1265,8 @@
     function draw() {
       const g=selected(),query=$('#bridgeSearch').value.toLocaleLowerCase(),matches=m=>(m.title+' '+(m.description||'')).toLocaleLowerCase().includes(query),list=$('#bridgeList');
       $('#bridgeInvite').disabled=!g?.creator||g.state!=='active';$('#bridgeRefresh').disabled=g?.state!=='active';$('#bridgeAdd').hidden=section!=='outgoing';
-      $('#bridgeConnection').innerHTML=(g?'<p class="meta">'+esc(g.state==='pending'?(QI.msg("Waiting for the creator to confirm your membership.")):g.state==='creating'?(QI.msg("Creating your bridge…")):g.online?(QI.msg("Connected ·") + " ")+QI.count(g.members.filter(m=>m.state==='active').length,'member'):(QI.msg("Offline · deliveries remain in their owners’ queues.")))+'</p>':'')+(data.pending_controls.length?("<p role=\"status\">" + QI.msg("Access changes are saved locally and waiting for the relay. They will be retried automatically.") + "</p>"):'');
+      $('#bridgeConnection').innerHTML=(g?'<p class="meta">'+esc(g.state==='pending'?(QI.msg("Waiting for the creator to confirm your membership.")):g.state==='creating'?(QI.msg("Creating your bridge…")):g.online?(QI.msg("Connected ·") + " ")+QI.count(g.members.filter(m=>m.state==='active').length,'member'):(QI.msg("Offline · deliveries remain in their owners’ queues.")))+'</p>':'')+(data.pending_controls.length?("<p role=\"status\">" + QI.msg("Access changes are saved locally and waiting for the relay. They will be retried automatically.") + "</p>"):'')+(g?.state==='pending'?'<div class="work-actions"><button id="bridgeWithdraw">'+QI.msg("Withdraw request")+'</button></div>':'');
+      const withdraw=$('#bridgeWithdraw');if(withdraw)withdraw.onclick=()=>{show('<h2>'+esc(QI.msg("Withdraw request"))+'</h2><p>'+esc(QI.msg("The creator will no longer see your request. You can ask again with an invitation."))+'</p><div class="work-actions"><button class="primary" id="bridgeWithdrawConfirm">'+esc(QI.msg("Withdraw request"))+'</button></div>');$('#bridgeWithdrawConfirm').onclick=async()=>{try{await act('membership',{group:g.id,operation:'leave'});dialog.close();await load();}catch(e){status(e.message);}};};
       const empty=text=>'<p class="bridge-empty">'+text+'</p>';
       if(section==='outgoing'||section==='received') {
         const materials=data.materials.filter(m=>m.direction===section&&matches(m));
@@ -1244,7 +1288,7 @@
       list.querySelectorAll('[data-material]').forEach(b=>b.onclick=()=>reviewMaterial(b.dataset.material).catch(e=>status(e.message)));
       list.querySelectorAll('[data-request]').forEach(b=>b.onclick=async()=>{try{await act('request',{id:crypto.randomUUID(),group:g.id,peer:b.dataset.peer,material_id:b.dataset.request,version:b.dataset.version});status((QI.msg("Request queued. The owner decides whether to send this version.")));await load();}catch(e){status(e.message);}});
       list.querySelectorAll('[data-review-request]').forEach(b=>b.onclick=()=>{const r=data.requests.find(r=>r.id===b.dataset.reviewRequest);reviewMaterial(r.material_id,r).catch(e=>status(e.message));});
-      list.querySelectorAll('[data-member]').forEach(b=>b.onclick=()=>{const m=g.members.find(m=>m.peer===b.dataset.member),admit=b.dataset.operation==='admit';show('<h2>'+esc(admit?(QI.msg("Confirm this participant")):(QI.msg("Remove participant")))+'</h2><p>'+esc(m.name)+'</p><p class="bridge-fingerprint">'+esc(m.peer)+'</p><p>'+(admit?(QI.msg("Confirm that this is the person you invited. Membership opens published catalogues; it does not grant file access.")):(QI.msg("This ends new access to the bridge. Previously received copies remain with their recipients.")))+'</p><div class="work-actions"><button class="primary" id="bridgeMemberConfirm">'+(admit?(QI.msg("Admit to bridge")):(QI.msg("Remove from bridge")))+'</button></div>');$('#bridgeMemberConfirm').onclick=async()=>{try{await act('membership',{group:g.id,operation:b.dataset.operation,peer:m.peer});dialog.close();await load();}catch(e){status(e.message);}};});
+      list.querySelectorAll('[data-member]').forEach(b=>b.onclick=()=>{const m=g.members.find(m=>m.peer===b.dataset.member),admit=b.dataset.operation==='admit';show('<h2>'+esc(admit?(QI.msg("Confirm this participant")):(QI.msg("Remove participant")))+'</h2><p>'+esc(m.name)+'</p><p class="bridge-fingerprint">'+esc(m.peer)+'</p><p>'+(admit?(QI.msg("Confirm that this is the person you invited. Membership opens published catalogues; it does not grant file access.")):(QI.msg("This ends new access to the bridge. Previously received copies remain with their recipients.")))+'</p><div class="work-actions"><button class="primary" id="bridgeMemberConfirm">'+(admit?(QI.msg("Admit to bridge")):(QI.msg("Remove from bridge")))+'</button>'+(admit?'<button id="bridgeMemberDecline">'+QI.msg("Decline request")+'</button>':'')+'</div>');const decide=operation=>async()=>{try{await act('membership',{group:g.id,operation,peer:m.peer});dialog.close();await load();}catch(e){status(e.message);}};$('#bridgeMemberConfirm').onclick=decide(b.dataset.operation);if(admit)$('#bridgeMemberDecline').onclick=decide('remove');});
       list.querySelectorAll('[data-end]').forEach(b=>b.onclick=()=>{show('<h2>'+esc(b.textContent)+("</h2><p>" + QI.msg("New access will stop. Your own data and received copies remain in your installation.") + "</p><div class=\"work-actions\"><button class=\"primary\" id=\"bridgeEndConfirm\">")+esc(b.textContent)+'</button></div>');$('#bridgeEndConfirm').onclick=async()=>{try{await act('membership',{group:g.id,operation:b.dataset.end});dialog.close();await load();}catch(e){status(e.message);}};});
     }
     async function reviewMaterial(materialId,transfer) {
@@ -1571,14 +1615,14 @@
   // ---------- Boot ----------
   async function boot() {
     state = { page: 'overview', drill: null }; tickClock();
-    try{const r=await fetch(BASE+'/api/dashboard/profile',{credentials:'same-origin'});const p=r.ok?await r.json():null;serviceOwner=!!p?.service_owner;$('#ownerEmail').textContent=p?.email||'';$('#ownerEmail').hidden=!p?.email;}catch{serviceOwner=false;$('#ownerEmail').hidden=true;}
+    try{const r=await send(BASE+'/api/dashboard/profile',{credentials:'same-origin'});const p=r.ok?await r.json():null;serviceOwner=!!p?.service_owner;$('#ownerEmail').textContent=p?.email||'';$('#ownerEmail').hidden=!p?.email;}catch{serviceOwner=false;$('#ownerEmail').hidden=true;}
     $('#workspaceHost').textContent=location.host;
     try {
-      const response=await fetch(BASE+'/api/dashboard/memory',{credentials:'same-origin'});
+      const response=await send(BASE+'/api/dashboard/memory',{credentials:'same-origin'});
       localWorkspace=response.ok?await response.json():null;
       $('#workspaceName').textContent=localWorkspace?(QI.msg("Owner workspace")):(QI.msg("Agent view"));
     }catch{localWorkspace=null;}
-    chat?.dispose();chat=localWorkspace?window.QoopiaChat({api,esc,humanSize,onUnauthorized:showLogin}):null;
+    chat?.dispose();chat=localWorkspace?window.QoopiaChat({api,send,esc,humanSize,onUnauthorized:showLogin}):null;
     state.page=pageFromHash();
     route();
   }
@@ -1586,7 +1630,7 @@
   $('#uiReload').onclick=()=>location.reload();
   async function checkInterfaceVersion() {
     if(document.hidden)return;
-    try {const r=await fetch(BASE+'/dashboard',{method:'HEAD',cache:'no-store'}),version=r.headers.get('x-qoopia-dashboard-version');
+    try {const r=await send(BASE+'/dashboard',{method:'HEAD',cache:'no-store'}),version=r.headers.get('x-qoopia-dashboard-version');
       if(version&&version!==document.querySelector('meta[name="qoopia-dashboard-version"]').content)$('#uiUpdate').hidden=false;
     }catch{/* Version check is best-effort; retried every 60 s and on visibility change. */}
   }
@@ -1608,7 +1652,7 @@
     try{if(setupCode)await identityPost('setup',{code:setupCode});}catch(e){loginError(e);}
     // Only a 401 means signed out. A phone that drops the request, a restarting server (502/503) or a rate
     // limit (429) used to land on the sign-in page, often without its sign-in buttons: keep checking instead.
-    const get=path=>fetch(BASE+path,{credentials:'same-origin',signal:AbortSignal.timeout(15000)});
+    const get=path=>send(BASE+path,{credentials:'same-origin',signal:AbortSignal.timeout(15000)});
     for(let attempt=0;;attempt++){
       try{
         if(!identityDone){const i=await get('/api/dashboard/identity');if(i.ok){identity=await i.json();$('#emailLogin').hidden=false;identityDone=true;}else{i.body?.cancel().catch(()=>{});identityDone=i.status<500&&i.status!==429;}}

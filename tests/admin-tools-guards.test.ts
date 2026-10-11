@@ -88,3 +88,19 @@ test('agent_onboard bootstrap notes carry the same temporal columns as any note_
     expect(row.updated_at_ms).toBeGreaterThan(before);
   }
 });
+
+test('F-520 agent_onboard refuses an unknown role as invalid input, creates nothing, and reports the stored name',()=>{
+  for(const role of ['no-such-role','constructor','toString'])
+    expect(()=>tool('agent_onboard').handler({name:'guard-role-'+role.toLowerCase(),role},as(steward,'steward'))).toThrow(expect.objectContaining({code:'INVALID_INPUT'}));
+  expect(db.query("SELECT 1 FROM agents WHERE name LIKE 'guard-role-%'").get()).toBeNull();
+  expect(tool('agent_onboard').handler({name:'  guard-padded  ',role:'General'},as(steward,'steward'))).toMatchObject({agent_name:'guard-padded'});
+});
+
+test('F-520 steward tools find an agent by any letter case and deactivation ends its dashboard sessions',()=>{
+  expect(()=>tool('agent_deactivate').handler({name:'GUARD-STEWARD'},as(steward,'steward'))).toThrow('cannot deactivate itself');
+  expect(()=>tool('agent_set_profile').handler({name:'Guard-Steward',tool_profile:'read-only'},as(steward,'steward'))).toThrow('Cannot demote self');
+  const version=()=>(db.query('SELECT session_version FROM agents WHERE id=?').get(bystander.id) as {session_version:number}).session_version,before=version();
+  expect(tool('agent_set_profile').handler({name:'GUARD-BYSTANDER',tool_profile:'no-destructive'},as(steward,'steward'))).toMatchObject({agent_name:'guard-bystander',new_profile:'no-destructive'});
+  expect(tool('agent_deactivate').handler({name:'Guard-Bystander'},as(steward,'steward'))).toMatchObject({deactivated:true,agent_name:'guard-bystander'});
+  expect(active(bystander)).toBe(0);expect(version()).toBe(before+1);expect(active(steward)).toBe(1);
+});

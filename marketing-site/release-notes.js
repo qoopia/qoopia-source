@@ -1,4 +1,4 @@
-fetch('release.json').then(r=>{if(!r.ok)throw Error();return r.json();}).then(r=>{
+fetch('/release.json').then(r=>{if(!r.ok)throw Error();return r.json();}).then(r=>{
  const root=document.querySelector('#packages'),version=document.createElement('p');
  version.textContent=r.tag+' · '+QI.msg('runtime {source}',{source:r.source.slice(0,7)});root.append(version);
  for(const p of Object.values(r.packages)){

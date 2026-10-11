@@ -41,6 +41,42 @@ def expected_schema(value):
 
 
 READINESS = ('memory', 'review')
+# Only the owner's memory server runs an owner preview; every other surface stays on the public stable release.
+PREVIEW_SURFACES = ('memory',)
+PREVIEW_CONFIG = (('version', 'QOOPIA_PREVIEW_VERSION', r'\d+\.\d+\.\d+'), ('source', 'QOOPIA_PREVIEW_RELEASE_SHA', r'[0-9a-f]{40}'),
+                  ('schema_version', 'QOOPIA_PREVIEW_SCHEMA_VERSION', r'[1-9]\d*'))
+
+
+def preview_order_issues(public_version, public_schema, version, schema):
+    """Shared with check-release-metadata.py: an owner preview is strictly newer than the public release
+    and its schema never behind it. A preview equal to public is stale configuration, not a second stage."""
+    key = lambda v: tuple(map(int, v.split('.')))
+    return (['not_newer_than_public'] if key(version) <= key(public_version) else []) + (['schema_behind_public'] if schema < public_schema else [])
+
+
+def preview_stage(version, source, schema, public_version, public_schema):
+    """(expectation, issues). No value set: no preview, the single public stage. Any value set: an owner preview
+    is intended, so a missing, malformed or not-newer value is an issue instead of a silent fall back to public."""
+    given = {key: (str(value).strip() if value is not None else '', env, pattern) for (key, env, pattern), value in zip(PREVIEW_CONFIG, (version, source, schema))}
+    if not any(value for value, _, _ in given.values()):
+        return None, []
+    issues = [('config_missing:' if not value else 'config_invalid:') + env for value, env, pattern in given.values() if not re.fullmatch(pattern, value)]
+    if issues:
+        return None, issues
+    expect = {key: value for key, (value, _, _) in given.items()}
+    expect['schema_version'] = int(expect['schema_version'])
+    return expect, preview_order_issues(public_version, public_schema, expect['version'], expect['schema_version'])
+
+
+def runtime_issues(data, expect):
+    """The memory server's /ready against the stage it belongs to. Without a usable expectation
+    (incomplete preview configuration) only readiness is judged; the configuration issue is reported separately."""
+    checks = data.get('checks')
+    ready = data.get('status') == 'ready' and isinstance(checks, dict) and bool(checks) and all(v == 'ok' for v in checks.values())
+    issues = [] if not expect or data.get('version') == expect['version'] else ['memory:version_mismatch']
+    if not ready or (expect and (data.get('release_sha') != expect['source'] or data.get('schema_version') != expect['schema_version'])):
+        issues.append('memory:unexpected_state')
+    return issues
 
 
 def not_ready(body):
@@ -121,9 +157,12 @@ def consistency_issues(data, version, schema, package_source, ios_version, ios_b
             issues.append(name + ':version_mismatch')
     if 'appcast' in data:
         try:
-            item = ET.fromstring(data['appcast']).find('channel/item')
-            if item is None:
-                raise ValueError('Missing item')
+            # scripts/update-feed.ts writes exactly one item; Sparkle offers the highest build of all
+            # items, so an extra item would be what installed apps get while only the first was checked.
+            items = ET.fromstring(data['appcast']).findall('channel/item')
+            if len(items) != 1:
+                raise ValueError('Expected one item')
+            item = items[0]
             sparkle = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
             actual = item.findtext(sparkle + 'shortVersionString')
             enclosure = item.find('enclosure')
@@ -208,6 +247,9 @@ def main():
     p.add_argument('--version', default=os.environ.get('QOOPIA_RELEASE_VERSION'), help='Expected stable product version; required')
     p.add_argument('--ios-version', default=os.environ.get('QOOPIA_IOS_VERSION'), help='Explicit separately reviewed iOS beta version; required')
     p.add_argument('--ios-build', default=os.environ.get('QOOPIA_IOS_BUILD'), help='Explicit separately reviewed iOS build; required')
+    p.add_argument('--preview-version', default=os.environ.get('QOOPIA_PREVIEW_VERSION'), help='Owner preview version on the memory server; unset when memory runs the public release')
+    p.add_argument('--preview-source', default=os.environ.get('QOOPIA_PREVIEW_RELEASE_SHA'), help='Owner preview runtime release SHA on the memory server')
+    p.add_argument('--preview-schema-version', default=os.environ.get('QOOPIA_PREVIEW_SCHEMA_VERSION'), help='Owner preview database schema on the memory server')
     p.add_argument('--analytics', default='/srv/qoopia-analytics/latest.json')
     p.add_argument('--git-mirror', default='/srv/qoopia/git-mirror')
     p.add_argument('--alert-channels', default=os.environ.get('QOOPIA_OPS_CHANNELS_FILE'), help='Owner qoopia-alert-channels/1 policy that receives OK/ALERT transitions; nothing is sent when unset')
@@ -235,19 +277,33 @@ def main():
                  ('review', 'https://review.qoopia.ai/ready'),
                  ('downloads_tag', 'https://github.com/qoopia/qoopia-downloads/releases/latest'),
                  ('source_tag', 'https://github.com/qoopia/qoopia-source/releases/latest')]
+    preview, preview_problems = preview_stage(a.preview_version, a.preview_source, a.preview_schema_version, a.version, a.schema_version)
+    staged = preview is not None or bool(preview_problems)
+    stage_of = {name: 'owner_preview' if staged and name in PREVIEW_SURFACES else 'public' for name, _ in endpoints}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
         results = dict(pool.map(request, endpoints))
-    issues = request_issues(results)
-    for name, validate in [('release', lambda d: d.get('source') == (a.package_source or a.source)), ('auth', lambda d: d.get('ready') is True and d.get('release_sha') == (a.auth_source or a.source)), ('memory', lambda d: d.get('release_sha') == a.source and d.get('schema_version') == a.schema_version and d.get('status') == 'ready' and bool(d.get('checks')) and all(v == 'ok' for v in d['checks'].values()))]:
-        r = results[name]
-        if r['ok'] and not validate(r['data']):
-            issues.append(name + ':unexpected_state')
-    issues.extend(consistency_issues({name: r['data'] for name, r in results.items() if r['ok']}, a.version, a.schema_version, a.package_source or a.source, a.ios_version, a.ios_build))
-    if results['review']['ok'] and results['review']['data'].get('release_sha') != a.source:
-        issues.append('review:source_mismatch')
-    issues.extend(mirror_issues(a.git_mirror, a.version))
-    for r in results.values():
+    # Each surface is judged only against the expectation of its own stage; issues keep the stage in their name.
+    found = {'public': [], 'owner_preview': list(preview_problems)}
+    for issue in request_issues(results):
+        found[stage_of[issue.split(':', 1)[0]]].append(issue)
+    data = {name: r['data'] for name, r in results.items() if r['ok']}
+    for name, validate in [('release', lambda d: d.get('source') == (a.package_source or a.source)), ('auth', lambda d: d.get('ready') is True and d.get('release_sha') == (a.auth_source or a.source))]:
+        if name in data and not validate(data[name]):
+            found['public'].append(name + ':unexpected_state')
+    found['public'] += consistency_issues({k: v for k, v in data.items() if stage_of[k] == 'public' and k != 'memory'}, a.version, a.schema_version, a.package_source or a.source, a.ios_version, a.ios_build)
+    if 'memory' in data:
+        found[stage_of['memory']] += runtime_issues(data['memory'], preview if staged else {'version': a.version, 'source': a.source, 'schema_version': a.schema_version})
+    if 'review' in data and data['review'].get('release_sha') != a.source:
+        found['public'].append('review:source_mismatch')
+    found['public'] += mirror_issues(a.git_mirror, a.version)
+    issues = found['public'] + ['owner_preview:' + issue for issue in found['owner_preview']]
+    stages = {'public': {'version': a.version, 'schema_version': a.schema_version, 'source': a.source, 'package_source': a.package_source or a.source,
+                         'auth_source': a.auth_source or a.source, 'issues': sorted(found['public'])}}
+    if staged:
+        stages['owner_preview'] = {**(preview or {'version': None, 'source': None, 'schema_version': None}), 'surfaces': list(PREVIEW_SURFACES), 'issues': sorted(found['owner_preview'])}
+    for name, r in results.items():
         r.pop('data', None)
+        r['stage'] = stage_of[name]
     try:
         analytics = json.loads(Path(a.analytics).read_text())
         issues.extend(analytics_issues(analytics, now))
@@ -258,7 +314,8 @@ def main():
     disk = shutil.disk_usage(root)
     if disk.free < max(10 * 1024**3, disk.total * 0.05):
         issues.append('disk:low_space')
-    status = {'at': now.isoformat(), 'status': 'ALERT' if issues else 'OK', 'issues': sorted(issues), 'version': a.version, 'ios': {'version': a.ios_version, 'build': a.ios_build, 'channel': 'separate_beta'}, 'source': a.source, 'package_source': a.package_source or a.source, 'http': results, 'disk_free_bytes': disk.free, 'optional_sources': optional}
+    summary = ('ALERT' if issues else 'OK') + ' — public ' + a.version + (', owner preview ' + (preview['version'] if preview else 'misconfigured') + ' on ' + '/'.join(PREVIEW_SURFACES) if staged else '')
+    status = {'at': now.isoformat(), 'status': 'ALERT' if issues else 'OK', 'summary': summary, 'issues': sorted(issues), 'stages': stages, 'version': a.version, 'ios': {'version': a.ios_version, 'build': a.ios_build, 'channel': 'separate_beta'}, 'source': a.source, 'package_source': a.package_source or a.source, 'http': results, 'disk_free_bytes': disk.free, 'optional_sources': optional}
     current = root / 'status.json'
     try:
         previous = json.loads(current.read_text())

@@ -167,3 +167,17 @@ test('note_create idempotency is settled before the manual hold',()=>{
     setMemoryPolicy({workspace_id:workspace,agent_id:keyed,mode:'auto',actor_id:owner});
   }
 });
+
+test('a confirmation that fails to record its decision writes no note and keeps the request (F-520-decide-atomic)',()=>{
+  const asker=createAgent({name:'save-atomic-decide',workspaceSlug:'save-request-check'}).id;
+  setMemoryPolicy({workspace_id:workspace,agent_id:asker,mode:'manual',actor_id:owner});
+  const text='Синтетика: решение не записалось.';
+  const id=requestId(refused(()=>createNote({workspace_id:workspace,agent_id:asker,text})));
+  db.exec("CREATE TEMP TRIGGER decide_fails BEFORE INSERT ON memory_save_decisions BEGIN SELECT RAISE(ABORT,'synthetic failure'); END");
+  try{expect(refused(()=>decideSaveRequest({workspace_id:workspace,actor_id:owner,id,accept:true})).message).toContain('synthetic failure');}
+  finally{db.exec('DROP TRIGGER decide_fails');}
+  expect(notes(text)).toBe(0);
+  expect(decideSaveRequest({workspace_id:workspace,actor_id:owner,id,accept:true}).state).toBe('saved');
+  expect(notes(text)).toBe(1);
+  setMemoryPolicy({workspace_id:workspace,agent_id:asker,mode:'auto',actor_id:owner});
+});

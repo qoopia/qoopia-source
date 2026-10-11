@@ -155,20 +155,18 @@ export function deleteAgent(name: string, workspaceSlug: string) {
     .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
     .get(normalizeAgentName(name), workspaceId) as { id: string } | undefined;
   if (!agent) throw new QoopiaError("NOT_FOUND", `agent ${name} not found`);
+  return { deactivated: true, tokens_revoked: deactivateAgent(agent.id) };
+}
 
-  // QDASHCOOKIE-002: bump session_version on deactivation as well, so the
-  // sv check kills outstanding dashboard cookies even if the active=0 row
-  // is somehow reactivated later — defense-in-depth, not a real exploit
-  // surface today (cookie auth already rejects active=0 unconditionally).
-  db.prepare(
-    `UPDATE agents
-        SET active          = 0,
-            session_version = session_version + 1
-      WHERE id = ?`,
-  ).run(agent.id);
-
-  // C2 fix: revoke all OAuth tokens on deactivation
-  const revoked = revokeAllAgentTokens(agent.id);
-
-  return { deactivated: true, tokens_revoked: revoked };
+/** The one deactivation every entry point (CLI, steward MCP) shares. Returns the OAuth tokens revoked. */
+export function deactivateAgent(id: string): number {
+  return db.transaction(() => {
+    // QDASHCOOKIE-002: bump session_version on deactivation as well, so the
+    // sv check kills outstanding dashboard cookies even if the active=0 row
+    // is somehow reactivated later — defense-in-depth, not a real exploit
+    // surface today (cookie auth already rejects active=0 unconditionally).
+    db.prepare(`UPDATE agents SET active = 0, session_version = session_version + 1 WHERE id = ? AND active = 1`).run(id);
+    // C2 fix: revoke all OAuth tokens on deactivation
+    return revokeAllAgentTokens(id);
+  })();
 }

@@ -220,8 +220,11 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         // bind the request to the starting network (`bind:'network'`, the starter's address reported by
         // the installation that serves it, or this caller's own); clients up to 5.0.15 still ask for a code.
         const code=body.bind===true?String(randomInt(1_000_000)).padStart(6,'0'):null,confirm_code=code&&hash(id+':'+code);
-        const reported=typeof body.starter_ip==='string'&&body.starter_ip.length<=64?signInNetwork(body.starter_ip):null;
-        const starter_net=body.bind==='network'?reported??signInNetwork(clientIp)??'unknown:'+id:null;
+        // A request that enrolls a device key (device_peer) is always bound to the network this service
+        // itself sees: whoever calls may omit `bind` or report any starter_ip, and the grant it redeems
+        // would list and revoke the account's devices. Installations send device keys from their own network.
+        const reported=typeof body.starter_ip==='string'&&body.starter_ip.length<=64&&body.device_peer===undefined?signInNetwork(body.starter_ip):null;
+        const starter_net=body.bind==='network'||body.device_peer!==undefined?reported??signInNetwork(clientIp)??'unknown:'+id:null;
         db.query('INSERT INTO login_requests(id,challenge,expires,device_peer,language,confirm_code,starter_net) VALUES (?,?,?,?,?,?,?)').run(id,body.challenge,now+lifetime,body.device_peer??null,language,confirm_code,starter_net);
         record({kind:'auth_request',method:body.method,language});
         try {

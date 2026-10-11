@@ -516,8 +516,9 @@ export function handleRegister(
   } catch (err) {
     // Only registerClient's own validation text reaches the caller; anything else is a server fault.
     if (!(err instanceof QoopiaError)) throw err;
-    return json(res, 400, {
-      error: "invalid_request",
+    const limited = err.code === "RATE_LIMITED";
+    return json(res, limited ? 429 : 400, {
+      error: limited ? "too_many_requests" : "invalid_request",
       error_description: err.message,
     });
   }

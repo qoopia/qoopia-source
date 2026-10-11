@@ -88,7 +88,7 @@ Report the version, memory location and dashboard URL, client/profile, separate 
   status.textContent=say('Loading the installation task…','Загружаем задание на установку…');
   try{
    if(!releases[key]){
-    const response=await fetch('release.json');
+    const response=await fetch('/release.json');
     if(!response.ok)throw Error('Release unavailable');
     releases[key]=validate(await response.json());
    }

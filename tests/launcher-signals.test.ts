@@ -31,3 +31,16 @@ test('a computer that opens a server workspace keeps hooks on the opening binary
     expect(installationLauncher(root,process.execPath)).toBe(fs.realpathSync(process.execPath));
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+// Hooks and the Desktop adapter must not name an app that runs from its disk image [F-520-temporary-app].
+test('a server workspace opened from a disk image or translocated app never repoints hooks there',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-launcher-')));
+  try{
+    fs.writeFileSync(path.join(root,'server-workspace.json'),JSON.stringify({format:'qoopia-server-workspace/1',url:'https://example.invalid/dashboard'}));
+    for(const binary of ['/Volumes/Qoopia/Qoopia.app/Contents/Resources/bundle/qoopia','/private/var/folders/x/T/AppTranslocation/0A1B/d/Qoopia.app/Contents/Resources/bundle/qoopia'])
+      expect(()=>installationLauncher(root,binary)).toThrow('Move Qoopia to Applications');
+    // With a local installation the hooks follow current.json, wherever this app was opened from.
+    fs.rmSync(path.join(root,'server-workspace.json'));fs.writeFileSync(path.join(root,'current.json'),JSON.stringify({bundle:'a'.repeat(64)}));
+    expect(installationLauncher(root,'/Volumes/Qoopia/Qoopia.app/Contents/Resources/bundle/qoopia')).toBe(path.join(root,'bin','qoopia'));
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

@@ -45,18 +45,23 @@ function regular(file:string){
 }
 
 export class UserAutostart implements AutostartLifecycle {
-  readonly root:string;readonly configFile:string;readonly ledgerFile:string;
+  readonly root:string;readonly ledgerFile:string;private readonly nativeFile:string;
   constructor(readonly options:{root:string;installation:string;platform:'darwin'|'linux';configFile:string;execute:ServiceExecutor;allowTestFixture?:boolean}) {
-    this.root=safePath(options.root);this.configFile=safePath(clean(options.configFile));this.ledgerFile=path.join(this.root,'config','autostart.json');
+    this.root=safePath(options.root);this.nativeFile=clean(options.configFile);this.ledgerFile=path.join(this.root,'config','autostart.json');
   }
+  // Checked on use, not here: uninstall of an installation that never enabled autostart must not be
+  // refused because ~/.config is a dotfiles link or XDG_CONFIG_HOME is unusable.
+  get configFile(){return safePath(this.nativeFile);}
   // 5.0.16 and earlier wrote the unit without the restart limits; retarget must still recognise it as ours.
   private legacyUnit(executable:string){
     const allow=this.options.allowTestFixture?' --allow-test-fixture':'';
     return `[Unit]\nDescription=Qoopia user service\n[Service]\nExecStart=${systemd(clean(safePath(executable)))} start --root ${systemd(clean(this.root))}${allow}\nRestart=on-failure\n[Install]\nWantedBy=default.target\n`;
   }
-  private bytes(executable:string){
+  // 5.0.19 and earlier wrote the plist without KeepAlive (legacy): a crashed server stayed down until the next login.
+  private bytes(executable:string,legacy=false){
     const binary=clean(safePath(executable)),root=clean(this.root),allow=this.options.allowTestFixture?'--allow-test-fixture':'';
-    if(this.options.platform==='darwin')return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.qoopia.server</string><key>ProgramArguments</key><array><string>${xml(binary)}</string><string>start</string><string>--root</string><string>${xml(root)}</string>${allow?`<string>${allow}</string>`:''}</array><key>RunAtLoad</key><true/></dict></plist>\n`;
+    // As the systemd unit: restart after a failure (not after a clean stop) every 5 s.
+    if(this.options.platform==='darwin')return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.qoopia.server</string><key>ProgramArguments</key><array><string>${xml(binary)}</string><string>start</string><string>--root</string><string>${xml(root)}</string>${allow?`<string>${allow}</string>`:''}</array><key>RunAtLoad</key><true/>${legacy?'':'<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>5</integer>'}</dict></plist>\n`;
     // A start refused while a terminal `qoopia start` holds the port must keep retrying: the default
     // 100 ms restart hits systemd's start limit in a second and the service stays failed after that terminal closes.
     return `[Unit]\nDescription=Qoopia user service\nStartLimitIntervalSec=0\n[Service]\nExecStart=${systemd(binary)} start --root ${systemd(root)}${allow?' '+allow:''}\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n`;
@@ -122,8 +127,10 @@ export class UserAutostart implements AutostartLifecycle {
         const written=plist!==undefined?plist.replaceAll('&quot;','"').replaceAll('&apos;',"'").replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&')
           :unit?.replace(/\\(.)/g,'$1').replaceAll('%%','%').replaceAll('$$','$');
         const pinned=!!written&&path.basename(written)==='qoopia'&&/^[0-9a-f]{64}$/.test(path.basename(path.dirname(written)))&&path.dirname(path.dirname(written))===path.join(this.root,'bundles');
-        const ours=!!written&&(hash(this.bytes(written))===old.config_sha256||this.options.platform==='linux'&&hash(this.legacyUnit(written))===old.config_sha256);
-        if(!pinned||!ours)throw new Error('Autostart native config does not name an installation bundle');
+        const legacy=!!written&&hash(this.options.platform==='linux'?this.legacyUnit(written):this.bytes(written,true))===old.config_sha256;
+        const ours=!!written&&(hash(this.bytes(written))===old.config_sha256||legacy);
+        // A bundle-pinned config moves onto the launcher; a legacy one already on it only gains the current form.
+        if(!ours||!pinned&&!(legacy&&written===safePath(launcher)))throw new Error('Autostart native config does not name an installation bundle');
         durableWrite(this.configFile,bytes);
       }
       durableWrite(this.ledgerFile,JSON.stringify({...old,config_sha256,executable_sha256:hash(regular(launcher).bytes)}));

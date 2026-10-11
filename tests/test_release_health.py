@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('release_health', Path(__file__).resolve().parents[1] / 'scripts/release-health.py')
@@ -136,6 +137,11 @@ class ReleaseConsistencyTests(unittest.TestCase):
         self.data['appcast'] = '<broken'
         self.assertIn('appcast:invalid', self.issues())
 
+    def test_appcast_with_an_unchecked_extra_item_is_reported(self):
+        item = self.data['appcast'].split('<item>')[1].split('</item>')[0]
+        self.data['appcast'] = self.data['appcast'].replace('</channel>', '<item>' + item.replace('1790000000', '1890000000').replace('app.dmg', 'other.dmg') + '</item></channel>')
+        self.assertEqual(self.issues(), ['appcast:invalid'])
+
     def test_nested_invalid_package_is_reported(self):
         self.data['release']['packages'] = []
         self.assertIn('appcast:invalid', self.issues())
@@ -156,6 +162,118 @@ class ReleaseConsistencyTests(unittest.TestCase):
     def test_review_must_be_ready_and_match_schema(self):
         self.data['review'] = {'version': '5.0.9', 'status': 'starting', 'schema_version': 45}
         self.assertIn('review:unexpected_state', self.issues())
+
+
+class ReleaseStageTests(unittest.TestCase):
+    """Public stable vs owner preview on the memory server, through main() with synthetic responses."""
+    PUBLIC, RUNTIME, PREVIEW_SHA = '5.0.19', 'a' * 40, 'b' * 40
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='qoopia-health-stage-')
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root, ignore_errors=True))
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self.analytics = os.path.join(self.root, 'analytics.json')
+        Path(self.analytics).write_text(json.dumps({'source_runs': [{'source': s, 'status': 'ok', 'finished_at': now} for s in health.CORE]}))
+        v, sha = self.PUBLIC, self.RUNTIME
+        mac = {'url': 'https://example.test/app.dmg', 'bytes': 123, 'requirements': 'Apple Silicon Mac, macOS 15.0 or newer.'}
+        ready = {'status': 'ready', 'version': v, 'release_sha': sha, 'schema_version': 48, 'checks': {'schema_version': 'ok', 'storage': 'ok'}}
+        self.data = {
+            'website': '<html></html>', 'release': {'version': v, 'tag': 'v' + v, 'schema_version': 48, 'source': sha, 'packages': {'mac': mac}},
+            'auth': {'version': v, 'ready': True, 'release_sha': sha}, 'memory': ready, 'review': dict(ready),
+            'appcast': '<rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><s:version>1790000000</s:version><s:shortVersionString>' + v + '</s:shortVersionString><s:minimumSystemVersion>15.0</s:minimumSystemVersion><enclosure url="https://example.test/app.dmg" length="123" s:edSignature="' + 'A' * 86 + '=="/></item></channel></rss>',
+            'ios': {'version': '5.0.8', 'build': '3', 'status': 'review'},
+            'public_package': {'version': v}, 'public_release': {'version': v, 'package_source': sha, 'schema_version': 48}, 'public_main': {'version': v},
+            'downloads_release': {'version': v, 'package_source': sha, 'schema_version': 48}, 'downloads_readme': '# Qoopia ' + v + '\n',
+            'pages_release': {'version': v, 'source': sha, 'schema_version': 48},
+            'downloads_tag': 'https://github.com/qoopia/qoopia-downloads/releases/tag/v' + v, 'source_tag': 'https://github.com/qoopia/qoopia-source/releases/tag/v' + v}
+
+    def preview_memory(self, version='5.0.20', sha=PREVIEW_SHA, schema=49):
+        self.data['memory'] = {**self.data['memory'], 'version': version, 'release_sha': sha, 'schema_version': schema}
+
+    def run_main(self, *extra, env=None):
+        argv = ['release-health.py', '--root', self.root, '--source', self.RUNTIME, '--schema-version', '48', '--version', self.PUBLIC, '--ios-version', '5.0.8', '--ios-build', '3',
+                '--analytics', self.analytics, '--alert-channels', '', *extra]
+        clean = {k: v for k, v in os.environ.items() if not k.startswith(('QOOPIA_PREVIEW_', 'QOOPIA_PACKAGE_SOURCE', 'QOOPIA_AUTH_RELEASE_SHA'))}
+        with patch.object(sys, 'argv', argv), patch.dict(os.environ, {**clean, **(env or {})}, clear=True), \
+                patch.object(health, 'request', lambda item: (item[0], {'ok': True, 'data': self.data[item[0]]})), \
+                patch.object(health, 'mirror_issues', return_value=[]), patch.object(health.shutil, 'disk_usage', return_value=SimpleNamespace(total=10**13, free=10**13)), patch('builtins.print'):
+            code = health.main()
+        return code, json.loads(Path(self.root, 'status.json').read_text())
+
+    def preview(self, version='5.0.20', sha=PREVIEW_SHA, schema='49'):
+        return ('--preview-version', version, '--preview-source', sha, '--preview-schema-version', schema)
+
+    def test_single_stage_agreement_is_ok(self):
+        code, status = self.run_main(env={'QOOPIA_PREVIEW_VERSION': '', 'QOOPIA_PREVIEW_RELEASE_SHA': ' '})  # cleared lines = no preview
+        self.assertEqual((code, status['status'], status['issues'], status['summary']), (0, 'OK', [], 'OK — public 5.0.19'))
+        self.assertEqual(list(status['stages']), ['public'])
+        self.assertEqual(status['http']['memory']['stage'], 'public')
+
+    def test_single_stage_newer_memory_is_an_alert(self):
+        self.preview_memory()
+        code, status = self.run_main()
+        self.assertEqual((code, status['status']), (1, 'ALERT'))
+        self.assertEqual(status['issues'], ['memory:unexpected_state', 'memory:version_mismatch'])
+
+    def test_owner_preview_ahead_of_public_is_ok_and_named(self):
+        self.preview_memory()
+        code, status = self.run_main(env={'QOOPIA_PREVIEW_VERSION': '5.0.20', 'QOOPIA_PREVIEW_RELEASE_SHA': self.PREVIEW_SHA, 'QOOPIA_PREVIEW_SCHEMA_VERSION': '49'})
+        self.assertEqual((code, status['status'], status['issues']), (0, 'OK', []))
+        self.assertEqual(status['summary'], 'OK — public 5.0.19, owner preview 5.0.20 on memory')
+        self.assertEqual(status['stages']['owner_preview'], {'version': '5.0.20', 'source': self.PREVIEW_SHA, 'schema_version': 49, 'surfaces': ['memory'], 'issues': []})
+        self.assertEqual((status['http']['memory']['stage'], status['http']['auth']['stage']), ('owner_preview', 'public'))
+
+    def test_owner_preview_mismatch_and_public_drift_stay_alerts_in_their_stage(self):
+        self.preview_memory(sha='c' * 40)
+        self.data['auth'] = {**self.data['auth'], 'version': '5.0.20'}  # the sign-in service is public even during a preview
+        code, status = self.run_main(*self.preview())
+        self.assertEqual((code, status['status']), (1, 'ALERT'))
+        self.assertEqual(status['issues'], ['auth:version_mismatch', 'owner_preview:memory:unexpected_state'])
+        self.assertEqual(status['stages']['public']['issues'], ['auth:version_mismatch'])
+        self.assertEqual(status['stages']['owner_preview']['issues'], ['memory:unexpected_state'])
+        self.preview_memory(version='5.0.19', sha=self.PREVIEW_SHA)
+        self.data['auth']['version'] = '5.0.19'
+        self.assertEqual(self.run_main(*self.preview())[1]['issues'], ['owner_preview:memory:version_mismatch'])
+
+    def test_preview_not_newer_than_public_is_an_alert(self):
+        for version, schema, expected in [('5.0.18', '48', ['owner_preview:not_newer_than_public']), ('5.0.19', '48', ['owner_preview:not_newer_than_public']),
+                                          ('5.0.20', '47', ['owner_preview:schema_behind_public'])]:
+            with self.subTest(version=version, schema=schema):
+                self.preview_memory(version, schema=int(schema))
+                code, status = self.run_main(*self.preview(version, schema=schema))
+                self.assertEqual((code, status['status'], status['issues']), (1, 'ALERT', expected))
+
+    def test_partial_or_malformed_preview_config_is_an_alert_naming_the_variable(self):
+        self.preview_memory()
+        code, status = self.run_main('--preview-version', '5.0.20', '--preview-schema-version', '49')
+        self.assertEqual((code, status['status']), (1, 'ALERT'))
+        self.assertEqual(status['issues'], ['owner_preview:config_missing:QOOPIA_PREVIEW_RELEASE_SHA'])
+        self.assertEqual(status['summary'], 'ALERT — public 5.0.19, owner preview misconfigured on memory')
+        self.assertEqual(status['http']['memory']['stage'], 'owner_preview')
+        self.assertEqual(self.run_main(*self.preview(sha='B' * 40))[1]['issues'], ['owner_preview:config_invalid:QOOPIA_PREVIEW_RELEASE_SHA'])
+        self.data['memory'] = {**self.data['memory'], 'status': 'starting'}
+        self.assertIn('owner_preview:memory:unexpected_state', self.run_main('--preview-version', '5.0.20')[1]['issues'])
+
+    def test_malformed_readiness_checks_are_an_alert_not_a_crash(self):
+        self.data['memory'] = {**self.data['memory'], 'checks': ['ok']}
+        self.assertEqual(self.run_main()[1]['issues'], ['memory:unexpected_state'])
+
+
+class ProjectStatusTests(unittest.TestCase):
+    def test_recorded_services_must_run_their_own_recorded_image(self):
+        script = Path(__file__).resolve().parents[1] / 'scripts/project-status.py'
+        loader = importlib.util.spec_from_file_location('project_status', script)
+        status = importlib.util.module_from_spec(loader)
+        with patch.object(sys, 'argv', [str(script)]), patch('builtins.print'):
+            loader.loader.exec_module(status)  # offline snapshot only: local Git reads, no --live
+        delivery = {'account_service': {'container': 'qoopia-auth', 'image': 'sha256:a'}, 'memory_service': {'container': 'qoopia-corsair', 'image': 'sha256:b'}}
+        line = '/{} {} {} 2026-10-11T00:00:00Z'.format
+        self.assertTrue(status.services_match(line('qoopia-auth', 'sha256:a', 'running') + '\n' + line('qoopia-corsair', 'sha256:b', 'running'), delivery))
+        for raw in [line('qoopia-auth', 'sha256:a', 'running') + '\n' + line('qoopia-corsair', 'sha256:b', 'exited'),
+                    line('qoopia-auth', 'sha256:b', 'running') + '\n' + line('qoopia-corsair', 'sha256:a', 'running'),
+                    line('qoopia-auth', 'sha256:a', 'running') + ' sha256:b']:
+            with self.subTest(raw=raw):
+                self.assertFalse(status.services_match(raw, delivery))
 
 
 class MirrorTests(unittest.TestCase):

@@ -188,15 +188,17 @@ async function main() {
       }
       case "status": {
         try {
-          const res = await fetch(`http://localhost:${env.PORT}/health`);
+          const res = await fetch(`http://localhost:${env.PORT}/health`, { signal: AbortSignal.timeout(5000) });
           if (res.ok) {
             const body = (await res.json()) as Record<string, unknown>;
             console.log(`running  port=${env.PORT}  uptime=${body.uptime}s`);
           } else {
             console.log(`stopped  (HTTP ${res.status})`);
+            process.exitCode = 1;
           }
         } catch {
           console.log(`stopped  (no response on port ${env.PORT})`);
+          process.exitCode = 1;
         }
         return;
       }
@@ -222,7 +224,8 @@ async function main() {
           stdout: "inherit",
           stderr: "inherit",
         });
-        if (child.exitCode !== 0) process.exit(child.exitCode);
+        // A check killed by a signal has no exit code; it must not report success.
+        if (child.exitCode !== 0) process.exit(child.exitCode ?? 1);
         return;
       }
       case "v4-smoke": {
@@ -236,7 +239,8 @@ async function main() {
           stdout: "inherit",
           stderr: "inherit",
         });
-        if (child.exitCode !== 0) process.exit(child.exitCode);
+        // A check killed by a signal has no exit code; it must not report success.
+        if (child.exitCode !== 0) process.exit(child.exitCode ?? 1);
         return;
       }
       case "install":
@@ -279,7 +283,7 @@ async function main() {
         switch (sub) {
           case "create-workspace": {
             const name = argv[2];
-            if (!name) return console.error("Missing workspace name");
+            if (!name) throw new Error("Missing workspace name");
             const ws = createWorkspace({ name, slug: arg("slug") });
             console.log(`Created workspace ${ws.slug} (${ws.id})`);
             return;
@@ -292,7 +296,7 @@ async function main() {
           }
           case "create-agent": {
             const name = argv[2];
-            if (!name) return console.error("Missing agent name");
+            if (!name) throw new Error("Missing agent name");
             const workspace = need("workspace", arg("workspace"));
             const type = (arg("type", "standard") as AgentType);
             const created = createAgent({
@@ -322,7 +326,7 @@ async function main() {
           }
           case "rotate-key": {
             const name = argv[2];
-            if (!name) return console.error("Missing agent name");
+            if (!name) throw new Error("Missing agent name");
             const workspace = need("workspace", arg("workspace"));
             const key = rotateAgentKey(name, workspace);
             console.log(`New API key for ${name}: ${key}`);
@@ -330,7 +334,7 @@ async function main() {
           }
           case "delete-agent": {
             const name = argv[2];
-            if (!name) return console.error("Missing agent name");
+            if (!name) throw new Error("Missing agent name");
             const workspace = need("workspace", arg("workspace"));
             deleteAgent(name, workspace);
             console.log(`Agent ${name} deactivated.`);
@@ -338,7 +342,7 @@ async function main() {
           }
           case "set-type": {
             const name = argv[2];
-            if (!name) return console.error("Missing agent name");
+            if (!name) throw new Error("Missing agent name");
             const workspace = need("workspace", arg("workspace"));
             const type = need("type", arg("type")) as AgentType;
             setAgentType(name, workspace, type);
@@ -347,7 +351,7 @@ async function main() {
           }
           case "promote-steward": {
             const name = argv[2];
-            if (!name) return console.error("Missing agent name");
+            if (!name) throw new Error("Missing agent name");
             const workspace = need("workspace", arg("workspace", "default"));
             setAgentType(name, workspace, "steward");
             console.log(`Agent '${name}' promoted to steward.`);
@@ -356,7 +360,7 @@ async function main() {
           }
           case "register-claude-agent": {
             const agentName = argv[2];
-            if (!agentName) return console.error("Missing agent name");
+            if (!agentName) throw new Error("Missing agent name");
             const workspace = need("workspace", arg("workspace"));
             const cwdPrefix = need("cwd-prefix", arg("cwd-prefix"));
             const noAutosession = argv.includes("--no-autosession");
@@ -400,6 +404,7 @@ async function main() {
           }
           default:
             usage();
+            process.exitCode = 2;
             return;
         }
       }

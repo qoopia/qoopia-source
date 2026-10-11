@@ -11,9 +11,16 @@ class DiscoveryTests(unittest.TestCase):
   text='<title>Qoopia</title><meta name="description" content="Test"><meta name="robots" content="noindex"><link rel="canonical" href="https://qoopia.ai/"><h1>Qoopia</h1>/understand product source repository remains private'
   self.assertEqual({x['code'] for x in m.inspect('home',text,{})},{'FALSE_PRIVATE_SOURCE','NOINDEX'})
  def test_current_pages(self):
-  for key in ('home','docs','releases','understand','understand-ru','mobile'):
-   file='index' if key=='home' else key
+  for key in m.PAGES:
+   path=m.urllib.parse.urlparse(m.URLS[key]).path;file=(path+'index' if path.endswith('/') else path).lstrip('/')
    self.assertEqual(m.inspect(key,(ROOT/f'marketing-site/{file}.html').read_text(),{}),[],key)
+ def test_understand_pages_publish_the_reviewed_answers_as_faq_data(self):
+  import re
+  facts=json.loads((ROOT/'docs/discovery/answers.json').read_text())
+  for lang,file in (('en','understand'),('ru','understand-ru')):
+   faq=json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>',(ROOT/f'marketing-site/{file}.html').read_text()).group(1))
+   self.assertEqual((faq['@type'],faq['inLanguage'],faq['url']),('FAQPage',lang,f'https://qoopia.ai/{file}'))
+   self.assertEqual([(q['name'],q['acceptedAnswer']['text']) for q in faq['mainEntity']],[(i[lang]['question'],i[lang]['answer']) for i in facts['items']])
  def test_current_sitemap_and_unexpected_extra(self):
   xml=(ROOT/'marketing-site/sitemap.xml').read_text()
   self.assertEqual(m.inspect('sitemap',xml,{}),[])

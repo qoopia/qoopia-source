@@ -448,7 +448,8 @@ const tools: ToolDef[] = [
       if (args.user !== undefined || args.assistant !== undefined) {
         if (args.role !== undefined || args.content !== undefined) throw new QoopiaError("INVALID_INPUT", "Pass either user/assistant or role/content, not both");
         return saveTurn({ workspace_id: auth.workspace_id, agent_id: auth.agent_id, session_id: args.session_id as string | undefined,
-          user: args.user as string | undefined, assistant: args.assistant as string | undefined, metadata: args.metadata as Record<string, unknown> | undefined });
+          user: args.user as string | undefined, assistant: args.assistant as string | undefined, metadata: args.metadata as Record<string, unknown> | undefined,
+          message_id: args.message_id as string | undefined });
       }
       if (args.session_id === undefined || args.role === undefined || args.content === undefined)
         throw new QoopiaError("INVALID_INPUT", "Pass user and assistant (one turn), or session_id, role and content (one message)");

@@ -310,3 +310,25 @@ test('through the tunnel a slashed connection URL is that connection, and the ge
     expect(new URL(local.headers.get('location')!).pathname).toBe('/api/dashboard/oauth-consent');
   }finally{env.PUBLIC_URL=prior;env.ROOT_DIR=priorRoot;edge.closeAllConnections();edge.close();server.closeAllConnections();server.close();fs.rmSync(root,{recursive:true,force:true});}
 });
+
+// F-520-consent-flows: tickets for a public client cost nothing, and the consent table is shared. One network
+// opening consent pages used to fill all 100 places and refuse the owner's own page for ten minutes.
+test('one network cannot hold every consent session and lock the owner out',async()=>{
+  runMigrations();const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-consent-flows-'));
+  const origin='https://consent-flows.example',prior=env.PUBLIC_URL,priorRoot=env.ROOT_DIR;env.PUBLIC_URL=origin;env.ROOT_DIR=root;
+  try{
+    const owner=bootstrapOwner(db,'Flows owner',undefined,createWorkspace({name:'Flows space',slug:randomUUID()}).id);
+    privateDirectory(path.join(root,'config'));durableWrite(path.join(root,'config/owner-identity.json'),JSON.stringify({ownerId:owner.agent_id,email:'owner@example.test'}));
+    const connection=(connectionAction(owner.agent_id,{action:'apply',surface:'chatgpt_web',access_mode:'read_write',request_key:randomUUID()}) as any).connection;
+    const redirect_uris=['https://chatgpt.com/connector_platform_oauth_redirect'];
+    const client=registerClient({client_name:'ChatGPT',redirect_uris},connectionRegistrationAuth(connection.id,redirect_uris));
+    const ticket=()=>createConsentTicket({clientId:client.client_id,workspaceId:owner.workspace_id,redirectUri:redirect_uris[0]!,
+      codeChallenge:createHash('sha256').update('v'.repeat(43)).digest('base64url'),codeChallengeMethod:'S256',scope:'mcp:read',state:'s',resource:connection.mcp_url}).id;
+    const handler=remoteConnectionConsent(root,db,(async()=>Response.json({}) ) as unknown as typeof fetch);
+    const open=(ip:string)=>handler(new Request(origin+'/oauth/consent?ticket='+ticket()),ip);
+    const statuses:number[]=[];
+    for(let i=0;i<20;i++)statuses.push((await open('198.51.100.66')).status);
+    expect(statuses.filter(s=>s===200)).toHaveLength(10);expect(statuses.at(-1)).toBe(429);
+    expect((await open('203.0.113.7')).status).toBe(200);
+  }finally{env.PUBLIC_URL=prior;env.ROOT_DIR=priorRoot;fs.rmSync(root,{recursive:true,force:true});}
+});

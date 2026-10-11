@@ -1,15 +1,16 @@
-import { assetPath } from "../utils/assets.ts";
+import fs from "node:fs";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { ulid } from "ulid";
-import { inflateRawSync } from "node:zlib";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
 import { hash } from "../utils/fs.ts";
+import { EXCERPT_MAX, type FileTextStatus } from "./file-text-worker.ts";
 
 // Owner-uploaded files (via dashboard) that any fleet agent can read (via MCP).
 // Bytes live inline as a BLOB in the `files` table (migration 024).
 
-const EXCERPT_MAX = 200_000; // chars of extracted text stored per file
 const GET_MAX = 400_000; // chars returned inline by file_get
 
 const TEXT_EXT = new Set([
@@ -30,82 +31,78 @@ function isTextual(mime: string, filename: string): boolean {
   return TEXT_EXT.has(extOf(filename));
 }
 
-// ponytail: extraction runs in-process. mammoth builds the whole DOM (~2-3 KB RSS
-// per element), so a .docx is refused past these parsed-XML budgets and a PDF stops
-// between pages; a child process with its own memory limit is the upgrade path.
-const DOCX_XML_BYTES = 8 * 1024 * 1024;
-const DOCX_XML_TAGS = 200_000;
-const PDF_MAX_PAGES = 2_000;
-const PDF_BUDGET_MS = 20_000;
+type Extracted = { text: string | null; status: FileTextStatus; reason?: "timeout" | "memory" | "output" | "crashed" };
+const STATUSES = new Set<FileTextStatus>(["extracted", "partial", "empty", "unsupported", "unavailable", "failed"]);
 
-/** mammoth's `file` input over the raw zip: only the parts mammoth reads are
- * inflated, and inflate stops (throws) once their total passes the budget. */
-function boundedDocx(buf: Buffer) {
-  const eocd = buf.lastIndexOf(Buffer.from("PK\x05\x06", "latin1"));
-  if (eocd < 0) throw new Error("not a zip archive");
-  const parts = new Map<string, { method: number; start: number; size: number }>();
-  for (let i = 0, p = buf.readUInt32LE(eocd + 16); i < buf.readUInt16LE(eocd + 10); i++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("bad zip directory");
-    const nameEnd = p + 46 + buf.readUInt16LE(p + 28), local = buf.readUInt32LE(p + 42);
-    parts.set(buf.toString("utf8", p + 46, nameEnd), { method: buf.readUInt16LE(p + 10), size: buf.readUInt32LE(p + 20),
-      start: local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28) });
-    p = nameEnd + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+/** Resident memory of a child in bytes; 0 when it cannot be read (gone, or no ps). */
+async function residentBytes(pid: number) {
+  try {
+    if (process.platform === "linux") return Number(/VmRSS:\s+(\d+)/.exec(await fs.promises.readFile(`/proc/${pid}/status`, "utf8"))?.[1] ?? 0) * 1024;
+    const ps = Bun.spawn(["/bin/ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    return (Number((await new Response(ps.stdout).text()).trim()) || 0) * 1024;
+  } catch { return 0; }
+}
+
+/** Bounded pool of extraction processes (src/services/file-text-worker.ts), one fresh process per
+ * file. Bun Workers ignore resourceLimits and share the server's heap, so a parser that runs away
+ * would stall or OOM the server; a process is killed at timeoutMs or memoryBytes RSS and the OS
+ * reclaims everything. At most `concurrency` run and `queue` wait; past that a RATE_LIMITED
+ * error asks the caller to retry. A killed or broken run is status 'failed' with its reason.
+ * ponytail: RSS is sampled every 200 ms, so a burst inside one sample can overshoot the ceiling. */
+export function fileTextWorkers(command: (kind: "docx" | "pdf") => string[],
+  limits = { timeoutMs: 30_000, memoryBytes: 1024 ** 3, outputBytes: 4 * 1024 * 1024, concurrency: 2, queue: 4 }) {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  async function once(kind: "docx" | "pdf", buf: Buffer): Promise<Extracted> {
+    // Only what the parser needs: no server secrets, and no .env or bunfig picked up from the cwd.
+    const env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin", QOOPIA_FILE_TEXT_WORKER: kind };
+    if (process.env.QOOPIA_BUNDLE_ASSETS) env.QOOPIA_BUNDLE_ASSETS = process.env.QOOPIA_BUNDLE_ASSETS;
+    let child: Bun.Subprocess<Buffer, "pipe", "ignore">;
+    // No process (fork limit, binary gone): the parser is unavailable, the upload still stores the file.
+    try { child = Bun.spawn(command(kind), { cwd: os.tmpdir(), env, stdin: buf, stdout: "pipe", stderr: "ignore" }); }
+    catch { return { text: null, status: "unavailable" }; }
+    let reason: Extracted["reason"];
+    const stop = (why: NonNullable<Extracted["reason"]>) => { reason ??= why; child.kill("SIGKILL"); };
+    const timer = setTimeout(() => stop("timeout"), limits.timeoutMs);
+    const watch = setInterval(() => void residentBytes(child.pid).then(rss => { if (rss > limits.memoryBytes) stop("memory"); }), 200);
+    try {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for await (const chunk of child.stdout) {
+        if ((size += chunk.length) > limits.outputBytes) { stop("output"); break; }
+        chunks.push(chunk);
+      }
+      const code = await child.exited;
+      if (reason) return { text: null, status: "failed", reason };
+      const out = code === 0 ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : null;
+      if (!STATUSES.has(out?.status) || (out.text !== null && typeof out.text !== "string")) return { text: null, status: "failed", reason: "crashed" };
+      return { text: out.text === null ? null : out.text.slice(0, EXCERPT_MAX), status: out.status };
+    } catch {
+      child.kill("SIGKILL");
+      return { text: null, status: "failed", reason: reason ?? "crashed" };
+    } finally { clearTimeout(timer); clearInterval(watch); }
   }
-  let bytes = 0, tags = 0;
-  return {
-    exists: (name: string) => parts.has(name),
-    async read(name: string, encoding?: string) {
-      const part = parts.get(name);
-      if (!part || (part.method !== 0 && part.method !== 8)) throw new Error("unreadable docx part");
-      const raw = buf.subarray(part.start, part.start + part.size);
-      const out = part.method === 0 ? raw : inflateRawSync(raw, { maxOutputLength: DOCX_XML_BYTES - bytes + 1 });
-      if ((bytes += out.length) > DOCX_XML_BYTES) throw new Error("docx exceeds the extraction budget");
-      for (let i = out.indexOf(0x3c); i >= 0 && tags <= DOCX_XML_TAGS; i = out.indexOf(0x3c, i + 1)) tags++;
-      if (tags > DOCX_XML_TAGS) throw new Error("docx exceeds the extraction budget");
-      return encoding ? out.toString(encoding as BufferEncoding) : new Uint8Array(out);
-    },
+  return async function extract(kind: "docx" | "pdf", buf: Buffer): Promise<Extracted> {
+    if (running < limits.concurrency) running++;
+    else if (waiting.length >= limits.queue) throw new QoopiaError("RATE_LIMITED", "File text extraction is busy; retry the upload in a moment", { retryable: true });
+    else await new Promise<void>(resolve => waiting.push(resolve)); // the finishing run hands over its slot
+    try { return await once(kind, buf); }
+    finally { const next = waiting.shift(); if (next) next(); else running--; }
   };
 }
 
-// Best-effort text extraction. Never throws — returns null on any failure so the
-// upload always succeeds (the file is still stored + downloadable). 'partial'
-// means a PDF stopped at its page, time or EXCERPT_MAX limit before the end.
-export async function parseFileText(mime: string, filename: string, buf: Buffer): Promise<{text:string|null;status:'extracted'|'partial'|'empty'|'unsupported'|'unavailable'|'failed'}> {
-  try {
-    if (isTextual(mime, filename)) return {text:buf.toString('utf8'),status:'extracted'};
-    const ext = extOf(filename);
-    const m = (mime || "").toLowerCase();
-    if (ext === "docx" || m.includes("officedocument.wordprocessingml")) {
-      const mammoth: any = await import("mammoth").catch(() => null);
-      if (!mammoth) return {text:null,status:'unavailable'};
-      const r = await (mammoth.default?.extractRawText ?? mammoth.extractRawText)({ file: boundedDocx(buf) });
-      return {text:r?.value?String(r.value):null,status:r?.value?'extracted':'empty'};
-    }
-    if (ext === "pdf" || m === "application/pdf") {
-      const unpdf: any = await import("unpdf").catch(() => null);
-      if (!unpdf) return {text:null,status:'unavailable'};
-      if (process.env.QOOPIA_BUNDLE_ASSETS) await unpdf.definePDFJSModule(() => import(assetPath('vendor/pdfjs.mjs')));
-      const pdf = await unpdf.getDocumentProxy(new Uint8Array(buf));
-      try {
-        // Same text as unpdf.extractText({mergePages:true}), one page at a time.
-        const pages: string[] = [], last = Math.min(pdf.numPages, PDF_MAX_PAGES), deadline = Date.now() + PDF_BUDGET_MS;
-        let read = 0, chars = 0;
-        while (read < last && chars <= EXCERPT_MAX && Date.now() < deadline) {
-          const content = await (await pdf.getPage(++read)).getTextContent();
-          const page = content.items.filter((item: any) => item.str != null).map((item: any) => item.str + (item.hasEOL ? "\n" : "")).join("");
-          pages.push(page);
-          chars += page.length;
-        }
-        const text = pages.join("\n").replace(/\s+/g, " ");
-        return {text,status:read < pdf.numPages ? 'partial' : text ? 'extracted' : 'empty'};
-      } finally {
-        await pdf.destroy();
-      }
-    }
-  } catch {
-    return {text:null,status:'failed'};
-  }
-  return {text:null,status:'unsupported'};
+// The standalone binary runs the worker as itself: src/delivery/entry.ts dispatches on QOOPIA_FILE_TEXT_WORKER.
+const extractInWorker = fileTextWorkers(() => import.meta.url.startsWith("file:///$bunfs/") ? [process.execPath]
+  : [process.execPath, "--no-env-file", fileURLToPath(new URL("./file-text-worker.ts", import.meta.url))]);
+
+// Best-effort text extraction: any parser failure is a status, so the upload still succeeds
+// (the file is stored + downloadable). Throws only RATE_LIMITED when every worker slot is taken.
+export async function parseFileText(mime: string, filename: string, buf: Buffer): Promise<Extracted> {
+  if (isTextual(mime, filename)) return { text: buf.toString("utf8"), status: "extracted" };
+  const ext = extOf(filename), m = (mime || "").toLowerCase();
+  if (ext === "docx" || m.includes("officedocument.wordprocessingml")) return extractInWorker("docx", buf);
+  if (ext === "pdf" || m === "application/pdf") return extractInWorker("pdf", buf);
+  return { text: null, status: "unsupported" };
 }
 
 function rowMeta(r: any) {
@@ -140,7 +137,7 @@ export function validateFileUpload(p: { folder?: string; filename: string; bytes
   return { folder, filename };
 }
 
-export async function fileUpload(p: {
+type UploadInput = {
   workspace_id: string;
   owner_agent_id: string;
   uploaded_by_agent_id: string;
@@ -152,13 +149,26 @@ export async function fileUpload(p: {
   replace_own_only?: boolean;
   /** An append must still see the exact file it read before asynchronous extraction. */
   append_snapshot?: { id: string; sha256: string } | null;
-}) {
+};
+
+export async function fileUpload(p: UploadInput) {
+  return writeFile(p, await parseFileText(p.mime || "application/octet-stream", validateFileUpload(p).filename, p.bytes));
+}
+
+/** Every file is parsed before the first write, and all are written in one transaction:
+ * a failure on any of them (a busy parser, a conflict) stores none. */
+export async function fileUploadBatch(inputs: UploadInput[]) {
+  const parsed: Extracted[] = [];
+  for (const p of inputs) parsed.push(await parseFileText(p.mime || "application/octet-stream", validateFileUpload(p).filename, p.bytes));
+  return db.transaction(() => inputs.map((p, i) => writeFile(p, parsed[i]!)))();
+}
+
+function writeFile(p: UploadInput, extracted: Extracted) {
   const { folder, filename } = validateFileUpload(p);
   const buf = p.bytes;
   const size = buf.length;
   const sha256 = hash(buf);
   const mime = p.mime || "application/octet-stream";
-  const extracted = await parseFileText(mime, filename, buf);
   const text_excerpt = extracted.text ? extracted.text.slice(0, EXCERPT_MAX) : null;
   const ts = nowIso();
   return db.transaction(() => {

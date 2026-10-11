@@ -11,7 +11,7 @@ import {redactMemory} from '../utils/secret-guard.ts';
 import {CONTINUITY_MAX_BODY_BYTES,readBoundedText} from '../utils/http-json.ts';
 // Leaves room for the request envelope (project path, ids, timestamps) under the server limit.
 const BATCH_BYTES=CONTINUITY_MAX_BODY_BYTES-128*1024;
-import {selectedNativeDirectory} from './native-client-paths.ts';
+import {selectedNativeDirectory,assertCodexTablesAppendable} from './native-client-paths.ts';
 import {installationLauncher} from './launcher.ts';
 import {readTransport} from './transport-config.ts';
 
@@ -102,6 +102,7 @@ function planMcp(runtime:Connection['runtime'],url:string,target:string,key:stri
   const expected={...servers};if(wanted)expected.qoopia_memory=wanted;else delete expected.qoopia_memory;
   if(!codex)return {file,before,next:JSON.stringify({...config,mcpServers:expected},null,2)+'\n'};
   // Our table is exactly what we appended. Refuse unusual formatting instead of rewriting unrelated TOML.
+  if(current===undefined)assertCodexTablesAppendable(text);
   const old=current===undefined?'':table(ownedKey!,ownedAddress),at=current===undefined?text.length:text.indexOf(old);
   if(at<0)throw new Error('The qoopia_memory entry formatting changed; edit it in Codex settings');
   const next=text.slice(0,at)+(key===null?'':table(key))+text.slice(at+old.length),parsed=Bun.TOML.parse(next) as Record<string,any>;
@@ -468,9 +469,12 @@ export async function runMemoryHook(file:string,input:unknown) {
     :'The local Qoopia protocol is not installed at '+JSON.stringify(protocolFile)+'. Before Qoopia work, read it with the qoopia_protocol tool of this connection; reconnecting this client in Qoopia reinstalls the local copy.')
     +refreshNotice+' Compare the installed kit revision with qoopia_capabilities protocol.revision; read qoopia_protocol when the server is newer. Use only this selected connection; document presence does not prove model or memory access. Current user instructions take precedence.\n';
   const session=connection.runtime+':'+hook.session_id;
-  let state:ClientState=fs.existsSync(stateFile)?readJson(stateFile):
-    {file:hook.transcript_path,session,project:hook.cwd,cursor:0,part:0};
-  if(state.file!==hook.transcript_path||state.session!==session||!Number.isSafeInteger(state.cursor)||state.cursor<0||!Number.isSafeInteger(state.part)||state.part<0)throw new Error('Invalid transcript cursor');
+  const load=():ClientState=>{
+    const value:ClientState=fs.existsSync(stateFile)?readJson(stateFile):{file:hook.transcript_path,session,project:hook.cwd,cursor:0,part:0};
+    if(value.file!==hook.transcript_path||value.session!==session||!Number.isSafeInteger(value.cursor)||value.cursor<0||!Number.isSafeInteger(value.part)||value.part<0)throw new Error('Invalid transcript cursor');
+    return value;
+  };
+  let state=load();
   // Hooks can overlap. A bounded OS-process lock prevents an older delivery
   // from moving the saved cursor backwards. After a killed hook its PID is gone.
   const unlock=lockCursor(stateFile);if(!unlock)return;
@@ -478,6 +482,8 @@ export async function runMemoryHook(file:string,input:unknown) {
   // Time left inside the session-start budget; other hooks keep the plain 2 s per request.
   const left=()=>hook.hook_event_name==='SessionStart'?started+START_BUDGET_MS-Date.now():Infinity;
   try {
+    // Read again under the lock: an overlapping hook may have advanced the cursor since the read above.
+    state=load();
     state.owner??=nativeOwner(connection.runtime);state.closed=hook.hook_event_name==='SessionEnd';
     if(Number.isFinite(hook.context_window?.used_percentage))state.context_percent=Math.max(0,Math.min(100,hook.context_window.used_percentage));
     if(hook.hook_event_name==='SessionStart') {

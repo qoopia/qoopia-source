@@ -69,7 +69,8 @@ test('tailer posts each attributed dialogue line once, retries failures and resu
     // The stub records a post before the tailer reads the 200 and advances its cursor;
     // wait for the acknowledgement to be persisted instead of racing SIGTERM against it.
     const acknowledged = { [file]: fs.statSync(file).size, [path.join(project, 'second.jsonl')]: fs.statSync(path.join(project, 'second.jsonl')).size };
-    const persisted = () => { try { return JSON.parse(fs.readFileSync(cursors, 'utf8')); } catch { return null; } };
+    // A cursor is stored with the inode it was taken on ({cursor, ino}); compare the byte offsets.
+    const persisted = () => { try { return Object.fromEntries(Object.entries(JSON.parse(fs.readFileSync(cursors, 'utf8')) as Record<string, number | { cursor: number }>).map(([k, v]) => [k, typeof v === 'number' ? v : v.cursor])); } catch { return null; } };
     await until(() => Bun.deepEquals(persisted(), acknowledged), 'persisted cursors');
     tailer.kill('SIGTERM');
     expect(await tailer.exited).toBe(0);
@@ -115,7 +116,7 @@ function tailerFixture(files: Record<string, string>, status: (uuid: string) => 
   const stderr = new Response(tailer.stderr).text();
   return {
     project, cursors, posts, allowlistGets: () => allowlistGets,
-    cursor: (name: string) => { try { return JSON.parse(fs.readFileSync(cursors, 'utf8'))[path.join(project, name)] as number; } catch { return undefined; } },
+    cursor: (name: string) => { try { const v = JSON.parse(fs.readFileSync(cursors, 'utf8'))[path.join(project, name)] as number | { cursor: number } | undefined; return typeof v === 'object' ? v.cursor : v; } catch { return undefined; } },
     async stop() {
       tailer.kill('SIGKILL');
       await tailer.exited;
@@ -180,7 +181,7 @@ test('tailer with hundreds of session files shares one allowlist request, backs 
 test('admin CLI registers, lists, pauses and resumes the autosession allowlist', () => {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-agents-'))), data = path.join(directory, 'data');
   fs.mkdirSync(data, { mode: 0o700 });
-  const fixture = p1Database(48), owner = bootstrapOwner(fixture, 'Tailer owner', 'Tailer workspace');
+  const fixture = p1Database(49), owner = bootstrapOwner(fixture, 'Tailer owner', 'Tailer workspace');
   const slug = (fixture.query('SELECT slug FROM workspaces WHERE id=?').get(owner.workspace_id) as { slug: string }).slug;
   fs.writeFileSync(path.join(data, 'qoopia.db'), fixture.serialize());
   fixture.close();

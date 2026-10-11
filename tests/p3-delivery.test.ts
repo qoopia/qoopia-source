@@ -114,6 +114,34 @@ test('F-293 a failed or killed first install leaves a root that installs again; 
   expect(fs.readdirSync(other)).toEqual(['notes.md']);
  }finally{f.cleanup();}
 });
+test('F-520 a connection file opened before the first install does not block that install',()=>{
+ const f=fixture();try{
+  // The Mac app's first action can be a double-clicked .qoopia-memory or .qoopia-connection file.
+  durableWrite(path.join(privateDirectory(path.join(f.install,'memory-clients','claude_code')),'connection.json'),'{}');
+  durableWrite(path.join(privateDirectory(path.join(f.install,'client-configs',randomUUID())),'receipt.json'),'{}');
+  const c=f.delivery.install(f.bundle('first'),3737);
+  expect(readCurrent(f.install).generation).toBe(c.generation);
+  expect(fs.readdirSync(path.join(f.install,'memory-clients'))).toEqual(['claude_code']);
+ }finally{f.cleanup();}
+});
+test('F-520 doctor does not pass a schema the selected bundle did not migrate to',()=>{
+ const f=fixture();try{
+  const c=f.delivery.install(f.bundle('first'),3737);
+  expect(f.delivery.doctor().checks.schema).toMatchObject({status:'pass',schema:37});
+  const d=new Database(dataFile(f.install,c));d.query("INSERT INTO schema_versions(version,description) VALUES (38,'written by a newer Qoopia')").run();d.close();
+  const report=f.delivery.doctor();
+  expect(report.checks.schema).toMatchObject({status:'fail',reason:'SCHEMA_NEWER_THAN_BUNDLE',schema:38,bundle_schema:37});
+  expect(report.ok).toBe(false);
+ }finally{f.cleanup();}
+});
+test('F-520 a refused import leaves no orphaned database copy',()=>{
+ const f=fixture();try{
+  const c=f.delivery.install(f.bundle('first'),3737);
+  expect(()=>f.delivery.importCopy(()=>{throw new Error('injected import refusal');})).toThrow('injected import refusal');
+  expect(fs.readdirSync(path.join(f.install,'generations'))).toEqual([c.generation]);
+  expect(readCurrent(f.install)).toEqual(c);
+ }finally{f.cleanup();}
+});
 test('F-293 install after uninstall re-adopts the preserved data under the same instance',()=>{
  const f=fixture();try{
   const c=f.delivery.install(f.bundle('first'),3737);
@@ -157,6 +185,11 @@ test('P3 missing inline original is not a green backup and last valid backup rem
  const f=fixture();try{const c=f.delivery.install(f.bundle('first'),3737);const db=dataFile(f.install,c);const d=new Database(db);const ids=d.query('SELECT id,workspace_id FROM agents LIMIT 1').get() as {id:string;workspace_id:string};
  d.query("INSERT INTO files(id,workspace_id,owner_agent_id,folder,filename,mime,size,sha256,content,uploaded_by_agent_id,created_at) VALUES ('file',?,?,'','fixture.txt','text/plain',3,?,?,?,'2026-01-01')").run(ids.workspace_id,ids.id,hash('abc'),Buffer.from('abc'),ids.id);d.close();
  const backup=path.join(f.root,'good');backupUnified(db,backup);const original=fs.readFileSync(path.join(backup,'snapshot.db'));
+ // A failure after the folder exists leaves no manifest-less folder to take a keep slot.
+ const chmod=fs.chmodSync,late=path.join(f.root,'late');
+ fs.chmodSync=((file:fs.PathLike,mode:fs.Mode)=>{if(String(file).startsWith(late+path.sep))throw new Error('synthetic late failure');return chmod(file,mode);}) as typeof fs.chmodSync;
+ try{expect(()=>backupUnified(db,late)).toThrow('synthetic late failure');}finally{fs.chmodSync=chmod;}
+ expect(fs.existsSync(late)).toBe(false);
  const broken=new Database(db);broken.query("UPDATE files SET content=? WHERE id='file'").run(Buffer.from('bad'));broken.close();expect(()=>backupUnified(db,path.join(f.root,'bad'))).toThrow('checksum');expect(fs.readFileSync(path.join(backup,'snapshot.db'))).toEqual(original);
  }finally{f.cleanup();}
 });

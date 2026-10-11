@@ -87,6 +87,12 @@ export interface InstallOpts {
   yes?: boolean;
 }
 
+/** LaunchAgent values are XML text: `&` or `<` in a path broke the plist, and a string replacement read `$&` in a path as a pattern. */
+export function fillPlist(template: string, values: Record<string, string>): string {
+  const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+  return template.replace(/{{([A-Z_]+)}}/g, (whole, key: string) => key in values ? xml(values[key]!) : whole);
+}
+
 export async function install(opts: InstallOpts = {}) {
   const start = Date.now();
   banner(`Qoopia ${PRODUCT_VERSION} installer`);
@@ -110,6 +116,10 @@ export async function install(opts: InstallOpts = {}) {
     );
   }
   step("Schema is current");
+  // Everything below binds a macOS LaunchAgent; elsewhere it changed the database and then wrote a plist nothing loads.
+  if (process.platform !== "darwin") {
+    throw new Error("This developer installer writes a macOS LaunchAgent. On Linux use the packaged installer: qoopia install --commit, then qoopia service install --commit.");
+  }
 
   // 3. Default workspace
   let workspaceSlug = "default";
@@ -255,17 +265,11 @@ export async function install(opts: InstallOpts = {}) {
     step(`Generated admin secret → ${adminSecretPath} (chmod 0600)`);
   }
 
-  const plist = plistTemplate
-    .replace(/{{BUN_PATH}}/g, bunPath)
-    .replace(/{{QOOPIA_ENTRY}}/g, qoopiaEntry)
-    .replace(/{{QOOPIA_ROOT}}/g, env.ROOT_DIR)
-    .replace(/{{QOOPIA_DATA_DIR}}/g, env.DATA_DIR)
-    .replace(/{{QOOPIA_PORT}}/g, String(env.PORT))
-    .replace(/{{LOG_DIR}}/g, env.LOG_DIR)
-    .replace(/{{BACKUP_DIR}}/g, env.BACKUP_DIR)
-    .replace(/{{QOOPIA_PUBLIC_URL}}/g, env.PUBLIC_URL)
-    .replace(/{{QOOPIA_ADMIN_SECRET}}/g, adminSecret)
-    .replace(/{{WORKING_DIR}}/g, PROJECT_ROOT);
+  const plist = fillPlist(plistTemplate, {
+    BUN_PATH: bunPath, QOOPIA_ENTRY: qoopiaEntry, QOOPIA_ROOT: env.ROOT_DIR, QOOPIA_DATA_DIR: env.DATA_DIR,
+    QOOPIA_PORT: String(env.PORT), LOG_DIR: env.LOG_DIR, BACKUP_DIR: env.BACKUP_DIR, QOOPIA_PUBLIC_URL: env.PUBLIC_URL,
+    QOOPIA_ADMIN_SECRET: adminSecret, WORKING_DIR: PROJECT_ROOT,
+  });
 
   const plistDir = path.join(os.homedir(), "Library/LaunchAgents");
   fs.mkdirSync(plistDir, { recursive: true });
@@ -314,12 +318,9 @@ export async function install(opts: InstallOpts = {}) {
         archivePlistTemplatePath,
         "utf8",
       );
-      const archivePlist = archivePlistTemplate
-        .replace(/{{BUN_PATH}}/g, bunPath)
-        .replace(/{{WORKING_DIR}}/g, PROJECT_ROOT)
-        .replace(/{{QOOPIA_ROOT}}/g, env.ROOT_DIR)
-        .replace(/{{QOOPIA_DATA_DIR}}/g, env.DATA_DIR)
-        .replace(/{{LOG_DIR}}/g, env.LOG_DIR);
+      const archivePlist = fillPlist(archivePlistTemplate, {
+        BUN_PATH: bunPath, WORKING_DIR: PROJECT_ROOT, QOOPIA_ROOT: env.ROOT_DIR, QOOPIA_DATA_DIR: env.DATA_DIR, LOG_DIR: env.LOG_DIR,
+      });
       const archivePlistPath = path.join(
         plistDir,
         "com.qoopia.archive-stale.plist",

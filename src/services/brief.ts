@@ -1,5 +1,5 @@
 import { db } from "../db/connection.ts";
-import { safeJsonParse, nowIso, QoopiaError } from "../utils/errors.ts";
+import { safeJsonParse, QoopiaError } from "../utils/errors.ts";
 import { readLevel, visibleRowSql } from "../auth/principal.ts";
 
 interface BriefParams {
@@ -69,6 +69,8 @@ export function brief(p: BriefParams) {
   // Always present so every note query in this function inherits the filter.
   extra.push(visibleRowSql());
   extraParams.push(...visible);
+  // A belief superseded through note_create(supersedes_id) keeps its status; it is history, not current state.
+  extra.push(`invalidated_at_ms IS NULL`);
 
   if (projectId) {
     extra.push(`project_id = ?`);
@@ -106,26 +108,29 @@ export function brief(p: BriefParams) {
     )
     .get(p.workspace_id, ...extraParams) as { c: number };
 
-  const now = nowIso();
+  // A due date without a time is due for that whole day; a moment is compared as a moment,
+  // whatever its precision or offset (text order put «2026-10-11» before «2026-10-11T09:00Z»).
   const overdueRow = db
     .prepare(
       `SELECT COUNT(*) as c FROM notes
        WHERE workspace_id = ? AND type = 'task' AND deleted_at IS NULL
-         AND json_extract(metadata, '$.due_date') IS NOT NULL
-         AND json_extract(metadata, '$.due_date') < ?
+         AND CASE WHEN length(json_extract(metadata, '$.due_date')) = 10
+           THEN date(json_extract(metadata, '$.due_date')) < date('now')
+           ELSE datetime(json_extract(metadata, '$.due_date')) < datetime('now') END
          AND (json_extract(metadata, '$.status') IS NULL OR json_extract(metadata, '$.status') NOT IN ('done', 'cancelled', 'archived'))
          ${extraSql}`,
     )
-    .get(p.workspace_id, now, ...extraParams) as { c: number };
+    .get(p.workspace_id, ...extraParams) as { c: number };
 
-  // Recent notes
+  // Recent notes. Archived ones (the legacy supersede path archives) are hidden, as in note_list and recall.
+  const notArchived = `AND (json_extract(metadata, '$.status') IS NULL OR json_extract(metadata, '$.status') != 'archived')`;
   const recentNotes = db
     .prepare(
       `SELECT id, text, metadata, agent_id, created_at, type
        FROM notes
        WHERE workspace_id = ?
          AND type IN ('note', 'memory', 'decision', 'knowledge', 'context')
-         AND deleted_at IS NULL
+         AND deleted_at IS NULL ${notArchived}
          ${extraSql}
        ORDER BY created_at DESC
        LIMIT ?`,
@@ -136,7 +141,7 @@ export function brief(p: BriefParams) {
     .prepare(
       `SELECT COUNT(*) as c FROM notes
        WHERE workspace_id = ? AND deleted_at IS NULL
-         AND type IN ('note', 'memory', 'decision', 'knowledge', 'context')
+         AND type IN ('note', 'memory', 'decision', 'knowledge', 'context') ${notArchived}
          ${extraSql}`,
     )
     .get(p.workspace_id, ...extraParams) as { c: number };

@@ -273,9 +273,16 @@ export function pendingNoteEmbeddings(workspace?:string, limit=32) {
     FROM notes n LEFT JOIN notes_embeddings e ON e.note_id=n.id
     WHERE n.deleted_at IS NULL ${workspace?'AND n.workspace_id=?':''} ORDER BY n.updated_at DESC`)
     .all(...(workspace?[workspace]:[])) as Array<NoteVersion&{id:string;workspace_id:string;text_hash:string|null;model:string|null;dim:number|null;chunks:number}>;
-  // Text is read only for the notes actually returned for embedding.
-  return rows.filter(r=>r.model!==EMBED_MODEL||r.dim!==EMBED_DIM||(EMBED_PROVIDER==='builtin'&&!r.chunks)||!fresh(r.id,r)).slice(0,limit)
-    .flatMap(r=>{const live=db.query('SELECT text FROM notes WHERE id=?').get(r.id) as {text:string}|null;return live?[{id:r.id,workspace_id:r.workspace_id,text:live.text}]:[];});
+  // Text is read only for the notes actually returned for embedding. A blank note has nothing to embed
+  // and fails every attempt: queued first, it would stop the pass for every older note behind it.
+  const pending:{id:string;workspace_id:string;text:string}[]=[];
+  for(const r of rows) {
+    if(pending.length>=limit)break;
+    if(r.model===EMBED_MODEL&&r.dim===EMBED_DIM&&(EMBED_PROVIDER!=='builtin'||r.chunks)&&fresh(r.id,r))continue;
+    const live=db.query('SELECT text FROM notes WHERE id=?').get(r.id) as {text:string}|null;
+    if(live?.text.trim())pending.push({id:r.id,workspace_id:r.workspace_id,text:live.text});
+  }
+  return pending;
 }
 
 function loadBuiltinChunks(workspace?:string) {

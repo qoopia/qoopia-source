@@ -10,6 +10,14 @@ export function nativeClientDirectory(surface:Surface,source:NodeJS.ProcessEnv=p
   if(!value||!path.isAbsolute(value)||hasNulOrNewline(value))throw new Error('Native client directory must be an absolute path');
   return safePath(value);
 }
+/** Qoopia adds its Codex entry as a [mcp_servers.NAME] table. TOML cannot extend an inline
+ * `mcp_servers = {...}`, so Codex would reject the whole file; Bun's parser accepts it anyway,
+ * so the root-level assignment is refused by its text. */
+export function assertCodexTablesAppendable(text:string) {
+  const root=text.split(/^[ \t]*\[/m,1)[0]!;
+  if(/^[ \t]*(?:mcp_servers|"mcp_servers"|'mcp_servers')[ \t]*=/m.test(root))
+    throw new Error('Codex config.toml defines mcp_servers inline; move those servers into [mcp_servers.NAME] tables, then retry. Nothing was changed.');
+}
 /** Capture only nonsecret path preferences before the service isolates its environment. */
 export function bindNativeClientDirectories(source:NodeJS.ProcessEnv) {
   captured={codex:nativeClientDirectory('codex',source),claude_code:nativeClientDirectory('claude_code',source)};

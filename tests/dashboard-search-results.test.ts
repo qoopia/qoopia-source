@@ -47,7 +47,7 @@ test("global search results: one article per hit, agent and Open session are sep
 test("Overview activity: the agent chip is a button", () => {
   const el = host();
   const ctx = context({ $: () => null });
-  runInNewContext(utils + between("  function paintFeed(items, el) {", "  // ================= AGENTS PAGE ================="), ctx);
+  runInNewContext(utils + between("  const NOTE_EVENTS = ", "  // ================= AGENTS PAGE ================="), ctx);
   ctx.paintFeed([{ action: "created", agent_id: "a1", agent_name: "alpha", summary: "did a thing", created_at: "2026-01-01T00:00:00Z" }], el);
   expect(aidTags(String(el.innerHTML))).toEqual(["button"]);
   // A summary rewritten again and again is one line with a count; another event breaks the run.

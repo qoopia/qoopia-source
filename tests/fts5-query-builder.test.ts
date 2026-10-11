@@ -36,6 +36,14 @@ describe("control characters never reach MATCH (F-168)", () => {
       .toEqual(["delivery tracking"]);
     expect(() => searchEntities({ workspace_id: ws, query: nul })).not.toThrow();
   });
+  // F-520-fts-surrogate: "\ud800" is a valid JSON escape; unpaired it ended the FTS5 string like NUL.
+  test("a lone surrogate is a separator too", async () => {
+    const lone = "deli\ud800very";
+    expect(sanitizeFtsQuery(lone)).toBe('"deli"* OR "very"*');
+    const r = await recall({ workspace_id: ws, caller_agent_id: agent, is_admin: false, query: lone, mode: "fts5" });
+    expect(r.results.map((row) => row.text)).toContain("delivery receipt for the parcel");
+    expect(sessionSearch({ workspace_id: ws, agent_id: agent, query: "\udfff tracking" }).results).toHaveLength(1);
+  });
 });
 
 describe("term floor counts code points and keeps logographic terms (F-170)", () => {

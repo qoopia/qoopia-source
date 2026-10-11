@@ -115,16 +115,16 @@ function componentState(workspaceId: string, noteId: string) {
   };
 }
 
+/** Walks out from the note through the edge indexes: only the note's own component is read and
+ * visibility-checked, not every supersede edge of the workspace (recall asks this per candidate). */
 function visibleComponentState(auth: AuthContext, noteId: string) {
-  const rows = db.prepare(
-    `SELECT source_note_id, target_note_id
-       FROM note_relations
-      WHERE workspace_id = ? AND relation_type = 'supersedes'
-      ORDER BY source_note_id, target_note_id`,
-  ).all(auth.workspace_id) as Array<{
-    source_note_id: string;
-    target_note_id: string;
-  }>;
+  const touching = db.prepare(
+    `SELECT source_note_id, target_note_id FROM note_relations
+      WHERE workspace_id = ?1 AND relation_type = 'supersedes' AND source_note_id = ?2
+     UNION ALL
+     SELECT source_note_id, target_note_id FROM note_relations
+      WHERE workspace_id = ?1 AND relation_type = 'supersedes' AND target_note_id = ?2`,
+  );
   const visibility = new Map<string, boolean>();
   const visible = (id: string): boolean => {
     const cached = visibility.get(id);
@@ -138,30 +138,22 @@ function visibleComponentState(auth: AuthContext, noteId: string) {
       return false;
     }
   };
-  const edges = rows.filter((row) => visible(row.source_note_id) && visible(row.target_note_id));
-  const adjacency = new Map<string, Set<string>>();
-  for (const row of edges) {
-    if (!adjacency.has(row.source_note_id)) adjacency.set(row.source_note_id, new Set());
-    if (!adjacency.has(row.target_note_id)) adjacency.set(row.target_note_id, new Set());
-    adjacency.get(row.source_note_id)!.add(row.target_note_id);
-    adjacency.get(row.target_note_id)!.add(row.source_note_id);
-  }
+  // Only edges whose two endpoints are visible connect the component.
   const component = new Set([noteId]);
+  const targets = new Set<string>();
   const queue = [noteId];
   while (queue.length) {
     const current = queue.shift()!;
-    for (const next of adjacency.get(current) ?? []) {
+    for (const row of touching.all(auth.workspace_id, current) as Array<{ source_note_id: string; target_note_id: string }>) {
+      if (!visible(row.source_note_id) || !visible(row.target_note_id)) continue;
+      targets.add(row.target_note_id);
+      const next = row.source_note_id === current ? row.target_note_id : row.source_note_id;
       if (component.has(next)) continue;
       component.add(next);
       queue.push(next);
     }
   }
   const noteIds = [...component].sort();
-  const targets = new Set(
-    edges
-      .filter((row) => component.has(row.source_note_id) && component.has(row.target_note_id))
-      .map((row) => row.target_note_id),
-  );
   const activeHeads = noteIds.filter((id) => !targets.has(id)).sort();
   return {
     note_ids: noteIds,
@@ -382,7 +374,7 @@ export function createNoteRelation(input: {
       ? componentState(input.auth.workspace_id, sourceNoteId)
       : null;
     return { created: true, relation: relationOut(row), chain: state };
-  })();
+  }).immediate();
 
   if (result.created && input.relation_type === "conflicts_with") recordConflict("relation");
   return result;

@@ -30,7 +30,8 @@ const tokenFile=(owner:string)=>path.join(agentDirectory(owner),'telegram.json')
 const token=(owner:string)=>(readJson(tokenFile(owner)) as {token:string}).token;
 /** Never include Telegram URLs or descriptions: they may contain the bot token. */
 class TelegramError extends QoopiaError {
-  constructor(readonly status:number,readonly retryAfter:number=0){
+  /** notSent: the connection was refused before any byte of the request left (Bun reports DNS failure the same way), so a retry cannot duplicate. */
+  constructor(readonly status:number,readonly retryAfter:number=0,readonly notSent=false){
     super('NOT_READY',status===409?'Telegram polling conflict: another host is using this bot.':status===401?'Telegram token was refused. Reconnect the bot.':status===429?'Telegram rate limit. Retrying after its cooldown.':'Telegram did not accept the request. Check the token, network and other bot connections.');
   }
 }
@@ -43,7 +44,7 @@ export async function telegramCall(secret:string,method:string,body:unknown,sign
     const result=JSON.parse(await readBoundedText(response,TELEGRAM_MAX_BYTES)) as any;
     if(!response.ok||!result.ok)throw new TelegramError(Number(result.error_code)||response.status,Math.min(86400,Math.max(1,Number(result.parameters?.retry_after)||1))*1000);
     return result.result;
-  }catch(error){if(error instanceof TelegramError)throw error;throw new TelegramError(0);}
+  }catch(error){if(error instanceof TelegramError)throw error;const refused=(error as {code?:unknown})?.code==='ConnectionRefused';throw new TelegramError(0,refused?5000:0,refused);}
 }
 export function telegramState(owner:string){
   agentOwner(owner);const p=pending.get(owner),c=channel(owner),settings=agentSettings(owner);
@@ -130,23 +131,32 @@ export async function pollTelegramOwner(owner:string) {
         const permitted=callback.message?.chat?.type==='private'&&String(callback.from?.id)===settings.telegram_user_id&&String(callback.message.chat.id)===settings.telegram_chat_id;
         const match=String(callback.data??'').match(/^qa:([0-9a-f-]{36}):(yes|no)$/);
         const saveMatch=String(callback.data??'').match(/^qs:([0-9A-HJKMNP-TV-Z]{26}):(yes|no)$/);
+        // The answer only clears the button's spinner. Telegram refuses one for a tap older than its
+        // window (a tap made while Qoopia was down), and an unacknowledged tap would be fetched and
+        // refused again on every poll, blocking every message behind it.
+        const answer=(text:string)=>telegramCall(secret,'answerCallbackQuery',{callback_query_id:callback.id,text}).catch(()=>{/* Cosmetic; the decision itself is already recorded or refused. */});
+        // Storage failures (non-QoopiaError) propagate: the tap stays unacknowledged and is retried.
         if(permitted&&saveMatch) {
           // The owner decides here through the same writer the dashboard uses: one use, one decision.
+          let text:string;
           try {
             const decision=decideSaveRequest({workspace_id:settings.workspace_id,actor_id:settings.owner_id,id:saveMatch[1],accept:saveMatch[2]==='yes'});
-            await telegramCall(secret,'answerCallbackQuery',{callback_query_id:callback.id,text:decision.state==='saved'?'Qoopia: saved':'Qoopia: declined'});
-          }catch(error) {
-            const code=error instanceof QoopiaError?error.code:'';
-            await telegramCall(secret,'answerCallbackQuery',{callback_query_id:callback.id,
-              text:code==='NOT_FOUND'||code==='CONFLICT'?'Request expired or already answered':'Qoopia could not apply this decision'});
+            text=decision.state==='saved'?'Qoopia: saved':'Qoopia: declined';
+          }catch(error){
+            if(!(error instanceof QoopiaError))throw error;
+            text=error.code==='NOT_FOUND'||error.code==='CONFLICT'?'Request expired or already answered':'Qoopia could not apply this decision';
           }
+          await answer(text);
         }
         else if(permitted&&match) {
           const state=telegramAgentState(owner),approval=state.approvals.find(a=>a.id===match[1]);
+          let text='Request expired or already answered';
           if(approval&&approval.expires>Date.now()&&simpleTelegramApproval(approval)) {
-            await myAgentAction(owner,{action:'approve',id:approval.id,accept:match[2]==='yes'});
-            await telegramCall(secret,'answerCallbackQuery',{callback_query_id:callback.id,text:'Qoopia: saved'});
-          }else await telegramCall(secret,'answerCallbackQuery',{callback_query_id:callback.id,text:'Request expired or already answered'});
+            // A busy agent refuses with CONFLICT; the approval and its button stay live for another tap.
+            try{await myAgentAction(owner,{action:'approve',id:approval.id,accept:match[2]==='yes'});text='Qoopia: saved';}
+            catch(error){if(!(error instanceof QoopiaError))throw error;text='Qoopia could not apply this decision. Try again.';}
+          }
+          await answer(text);
         }
         acknowledgeTelegram(owner,generation,update.update_id);continue;
       }
@@ -300,8 +310,8 @@ export async function deliverTelegram(owner:string){
         // Delivery works again: drop a stale delivery banner, but keep poll failures and sign-in banners.
         db.query('UPDATE qoopia_telegram_channels SET error=NULL WHERE owner_id=? AND generation=? AND failures=0 AND error NOT IN (?,?)').run(owner,generation,...TELEGRAM_LOGIN_ERRORS);
       }catch(error){
-        // Only explicit 429 is safely retryable. Network loss after send is ambiguous.
-        const retryable=error instanceof TelegramError&&error.status===429;
+        // Only explicit 429 and a refused connection are safely retryable. Network loss after send is ambiguous.
+        const retryable=error instanceof TelegramError&&(error.status===429||error.notSent);
         db.query('UPDATE qoopia_telegram_outbox SET state=?,retry_at=? WHERE id=?').run(retryable?'queued':'uncertain',retryable?Date.now()+error.retryAfter:0,item.id);
         if(!retryable&&item.run_id)db.query("UPDATE qoopia_telegram_outbox SET state='cancelled' WHERE run_id=? AND state='queued'").run(item.run_id);
         throw error;

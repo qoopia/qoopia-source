@@ -1,4 +1,4 @@
-import {test,expect} from 'bun:test';
+import {test,expect,spyOn} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {installMemoryClient,migrateMemoryHooks,removeMemoryClient,runMemoryHook,transcriptMessages} from '../src/delivery/memory-client.ts';
@@ -178,6 +178,29 @@ test('a byte that is not UTF-8 does not drift the cursor, and an emoji at a chun
   expect(JSON.parse(fs.readFileSync(path.join(root,'memory-clients/claude_code/cursors',hash(transcript)+'.json'),'utf8')).cursor).toBe(fs.statSync(transcript).size);
   fs.appendFileSync(transcript,JSON.stringify({type:'user',uuid:'u2',message:{content:'next'}})+'\n');await runMemoryHook(file,hook);
   expect(delivered).toEqual(['bad�','next']);
+ } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('an overlapping hook that advanced the cursor first is not resent from the stale read [F-520-cursor-lock]',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-client-overlap-')),home=path.join(root,'home'),logs=path.join(home,'.claude/projects/p');
+ fs.mkdirSync(logs,{recursive:true,mode:0o700});const delivered:string[]=[];
+ const server=Bun.serve({port:0,async fetch(req){const event=await req.json() as any;delivered.push(...event.messages.map((m:any)=>m.content));
+   return Response.json({accepted:event.messages.map((m:any)=>m.id),session_id:event.session_id,tail:[]});}});
+ const write=fs.writeFileSync;
+ try {
+  installMemoryClient({format:'qoopia-memory-connection/1',url:`http://127.0.0.1:${server.port}`,agent_id:'fixture',key:'q_fixturekey',runtime:'claude_code'},root,process.execPath,home);
+  const file=path.join(root,'memory-clients/claude_code/connection.json'),transcript=path.join(logs,'overlap.jsonl');
+  const cursor=path.join(root,'memory-clients/claude_code/cursors',hash(transcript)+'.json');
+  fs.writeFileSync(transcript,JSON.stringify({type:'user',uuid:'u1',message:{content:'first'}})+'\n');
+  const hook={session_id:'overlap',cwd:'/project',transcript_path:transcript,hook_event_name:'Stop'};
+  await runMemoryHook(file,hook);expect(delivered).toEqual(['first']);
+  fs.appendFileSync(transcript,JSON.stringify({type:'user',uuid:'u2',message:{content:'second'}})+'\n');
+  // Another hook delivers "second" and releases its lock between this hook's cursor read and its lock.
+  const spy=spyOn(fs,'writeFileSync').mockImplementation(((target:any,...rest:any[])=>{
+    if(String(target)===cursor+'.lock'){spy.mockRestore();write(cursor,JSON.stringify({...JSON.parse(fs.readFileSync(cursor,'utf8')),cursor:fs.statSync(transcript).size}));}
+    return (write as any)(target,...rest);}) as typeof fs.writeFileSync);
+  await runMemoryHook(file,hook);spy.mockRestore();
+  expect(delivered).toEqual(['first']);
  } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
 });
 

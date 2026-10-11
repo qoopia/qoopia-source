@@ -70,10 +70,11 @@ for (const view of Object.keys(views) as Array<keyof typeof views>) {
 }
 
 test("api() keeps the HTTP status and Retry-After for the error text", async () => {
-  const ctx: any = { BASE: "", AbortSignal, showLogin() {}, Number,
+  const ctx: any = { BASE: "", AbortSignal, showLogin() {}, Number, QI: { msg: String, resolve: String }, errReason: (e: any) => "Too many requests. Try again in " + e.retryAfter + " s.",
     fetch: async () => ({ status: 429, ok: false, headers: new Headers({ "retry-after": "41" }), json: async () => ({ error: "too_many_requests" }) }) };
-  runInNewContext(between("  async function api(path) {", "  async function apiWrite(path, body) {"), ctx);
+  runInNewContext(between("  // ---------- API ----------", "  async function apiWrite(path, body) {"), ctx);
   const error = await ctx.api("/x").catch((e: unknown) => e);
   expect(error.status).toBe(429);
   expect(error.retryAfter).toBe(41);
+  expect(error.message).toBe("Too many requests. Try again in 41 s.");
 });

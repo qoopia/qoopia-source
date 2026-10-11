@@ -178,23 +178,48 @@ describe("agent_inbox records delivery", () => {
     expect(second.slice(5, 8)).toEqual([sent[19], sent[18], sent[17]]);
   });
 
-  test("a message already pulled leaves no wake to fail later", async () => {
+  test("a message already pulled leaves no wake to fail later, and never claims one", async () => {
     const sent = send(PULLER, "pulled before the transport ran");
+    // No runtime: the sender is told so at once, not "queued".
+    expect(sent.wake).toMatchObject({ status: "ignored", reason: "no_webhook_config", delivery: "no_runtime" });
     agentInbox({ workspace_id: WORKSPACE, agent_id: PULLER });
 
-    // The wake is closed as delivered, so the worker has nothing to pick up
-    // and nothing to complain about.
+    // The message reached its recipient; nobody was woken, and the wake says so.
     const before = wakeFor(sent.id);
-    expect(before.status).toBe("delivered");
-    expect(before.delivered_at).toBeTruthy();
+    expect(messageDeliveredAt(sent.id)).toBeTruthy();
+    expect(before.status).toBe("ignored");
+    expect(before.last_error).toBe("no_webhook_config");
+    expect(before.delivered_at).toBeNull();
     expect(before.next_attempt_at).toBeNull();
-    expect(before.last_error).toBeNull();
 
     await drainAgentWakeQueue();
     const after = wakeFor(sent.id);
-    expect(after.status).toBe("delivered");
-    expect(after.attempt_count).toBe(before.attempt_count);
-    expect(after.last_error).toBeNull();
+    expect(after).toEqual(before);
+    const replay = agentSend({
+      workspace_id: WORKSPACE, agent_id: SENDER, to_agent: PULLER, body: "pulled before the transport ran",
+      topic: "inbox delivery", idempotency_key: "inboxdel-honest-replay",
+    });
+    agentInbox({ workspace_id: WORKSPACE, agent_id: PULLER });
+    const again = agentSend({
+      workspace_id: WORKSPACE, agent_id: SENDER, to_agent: PULLER, body: "pulled before the transport ran",
+      topic: "inbox delivery", idempotency_key: "inboxdel-honest-replay",
+    });
+    expect(replay.wake?.delivery).toBe("no_runtime");
+    expect(again.wake?.delivery).toBe("read_without_wake");
+  });
+
+  test("a recipient with a runtime that reads its inbox first is not reported woken, and is not pushed later", async () => {
+    let hits = 0;
+    server = Bun.serve({ port: 0, fetch: () => { hits += 1; return Response.json({ accepted: true }); } });
+    process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_URL = `http://127.0.0.1:${server.port}/wake`;
+    process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_TOKEN = "test-secret";
+    const sent = send(PUSHED, "read before the push");
+    expect(sent.wake).toMatchObject({ status: "queued", delivery: "waking" });
+    agentInbox({ workspace_id: WORKSPACE, agent_id: PUSHED });
+    await drainAgentWakeQueue();
+    expect(hits).toBe(0);
+    expect(wakeFor(sent.id)).toMatchObject({ status: "ignored", last_error: "read_from_inbox", delivered_at: null });
+    expect(messageDeliveredAt(sent.id)).toBeTruthy();
   });
 });
 
@@ -221,6 +246,21 @@ describe("the push path is unchanged", () => {
     const wake = wakeFor(sent.id);
     expect(wake.status).toBe("delivered");
     expect(wake.delivered_at).toBeTruthy();
+  });
+
+  test("a message read from the inbox does not ride along in a later push", async () => {
+    const bodies: string[][] = [];
+    server = Bun.serve({ port: 0, fetch: async (request) => {
+      bodies.push(((await request.json()) as { messages: { body: string }[] }).messages.map((m) => m.body));
+      return Response.json({ accepted: true });
+    } });
+    process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_URL = `http://127.0.0.1:${server.port}/wake`;
+    process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_TOKEN = "test-secret";
+    send(PUSHED, "already read");
+    agentInbox({ workspace_id: WORKSPACE, agent_id: PUSHED });
+    send(PUSHED, "fresh");
+    await drainAgentWakeQueue();
+    expect(bodies).toEqual([["fresh"]]);
   });
 
   test("a bare 2xx without accepted:true is still not delivery", async () => {

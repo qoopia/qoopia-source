@@ -220,7 +220,8 @@ export function loadoutOf(database:Database,workspace:string,id:string):Loadout{
 }
 export function sessionOpen(auth:AuthContext,input:unknown,database:Database=db){
   const a=sessionSchema.parse(input);
-  return command(database,auth,'report','skill_session_open',a.idempotency_key,a,a.native_session_ref,p=>{
+  type Skipped={assignment_id:string;slot:string;code:string};
+  return command<{loadout_id:string;snapshot_digest:string;skipped?:Skipped[]}>(database,auth,'report','skill_session_open',a.idempotency_key,a,a.native_session_ref,p=>{
     const r=reporter(database,auth,a.runtime_id);
     const existing=database.query('SELECT * FROM session_loadouts WHERE runtime_id=? AND native_session_ref=?').get(r.id,a.native_session_ref) as Loadout|null;
     if(existing){if(existing.qoopia_session_id!==a.qoopia_session_id)throw new QoopiaError('CONFLICT','Native session is bound to another Qoopia session');return;}
@@ -234,7 +235,11 @@ export function sessionOpen(auth:AuthContext,input:unknown,database:Database=db)
     if(compatibility(r.runtime_kind,r.runtime_version,r.platform).status!=='supported')throw new QoopiaError('UNSUPPORTED','Runtime requires exact-version configuration');
     const assignments=database.query("SELECT * FROM skill_assignments WHERE runtime_id=? AND desired_state='active' ORDER BY slot,id").all(r.id) as Assignment[];
     if(assignments.length>64)throw new QoopiaError('SIZE_LIMIT','At most 64 skills per session');
-    const selected=assignments.map(s=>({s,p:currentAssignmentPermission(database,s,true)}));
+    // An expired grant, revoked version or lapsed review leaves that one skill out of the new
+    // generation; it never blocks the session or the other currently authorized skills.
+    const selected:{s:Assignment;p:ReturnType<typeof currentAssignmentPermission>}[]=[],skipped:Skipped[]=[];
+    for(const s of assignments)try{selected.push({s,p:currentAssignmentPermission(database,s,true)});}
+      catch(error){if(!(error instanceof QoopiaError))throw error;skipped.push({assignment_id:s.id,slot:s.slot,code:error.code});}
     if(new Set(selected.map(({s})=>s.slot)).size!==selected.length)throw new QoopiaError('CONFLICT','Multiple scopes claim one native name');
     const id=randomUUID(),snapshot=selected.map(({s,p})=>({assignment:s,projection_digest:p.projection_digest}));
     database.query('INSERT OR IGNORE INTO sessions(id,workspace_id,agent_id,title) VALUES (?,?,?,?)').run(a.qoopia_session_id,c.principal.workspace_id,r.target_agent_id,'Managed runtime session');
@@ -242,7 +247,7 @@ export function sessionOpen(auth:AuthContext,input:unknown,database:Database=db)
       runtime_kind:r.runtime_kind,runtime_version:r.runtime_version,capabilities_digest:digest(r.capabilities_json),policy_snapshot_digest:digest(canonical(assignments)),snapshot_digest:digest(canonical(snapshot))});
     for(const {s,p} of selected)insertFact(database,'session_loadout_entries',c,{loadout_id:id,assignment_id:s.id,version_id:s.version_id,candidate_digest:p.v.candidate_digest,
       package_digest:s.package_digest,projection_digest:p.projection_digest,renderer_version:p.descriptor.renderer,slot:s.slot,assignment_snapshot:canonical(s)});
-    return {data:{loadout_id:id,snapshot_digest:digest(canonical(snapshot))},revision:1};
+    return {data:{loadout_id:id,snapshot_digest:digest(canonical(snapshot)),skipped},revision:1};
   });
 }
 export const loadoutSchema=z.object({loadout_id:identifier}).strict();

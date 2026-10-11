@@ -61,10 +61,17 @@ export function createVerifiedBackup(input: {
     if (sourceIntegrity.length !== 1 || sourceIntegrity[0] !== "ok" || sourceForeignKeys.length !== 0) {
       throw new Error("backup source failed integrity preflight");
     }
-    db.exec(`VACUUM INTO ${sqlString(output)}`);
+    try { db.exec(`VACUUM INTO ${sqlString(output)}`); }
+    catch (error) { fs.rmSync(output, { force: true }); throw error; }
   } finally {
     db.close();
   }
+  // From here the output is ours: a snapshot that fails verification must not stay behind looking like a backup.
+  try { return verifySnapshot(source, output, input.now, started); }
+  catch (error) { fs.rmSync(output, { force: true }); throw error; }
+}
+
+function verifySnapshot(source: string, output: string, now: Date | undefined, started: number): BackupReport {
   ensureSafeFile(output);
   const snapshot = openReadonlyDatabase(output);
   try {
@@ -77,7 +84,7 @@ export function createVerifiedBackup(input: {
     return {
       source,
       output,
-      created_at: (input.now ?? new Date()).toISOString(),
+      created_at: (now ?? new Date()).toISOString(),
       sha256: sha256File(output),
       size_bytes: fs.statSync(output).size,
       mode: "0600",

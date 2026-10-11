@@ -13,7 +13,7 @@ import {RUNTIMES} from '../delivery/runtime-versions.ts';
 import {createAgent} from '../admin/agents.ts';
 import {sha256Hex} from '../auth/api-keys.ts';
 import {embeddingCoverage} from './embedding-store.ts';
-import {memoryClientConnectionPath,memoryProfile,memoryRoot,memoryModelStatus,memoryText,selectMemoryProfile,type MemoryProfile} from './memory-model.ts';
+import {memoryClientConnectionPath,memoryProfile,memoryRoot,memoryModelStatus,memoryText,resetMemoryModelStatus,selectMemoryProfile,type MemoryProfile} from './memory-model.ts';
 import {QoopiaError} from '../utils/errors.ts';
 import {localServiceOrigin} from '../utils/standalone.ts';
 import {env} from '../utils/env.ts';
@@ -81,9 +81,16 @@ async function login(workspace:string,profile:MemoryProfile) {
   };
   child.stdout.on('data',capture);child.stderr.on('data',capture);
   const timer=setTimeout(()=>child.kill('SIGTERM'),300_000),hard=setTimeout(()=>child.kill('SIGKILL'),302_000);
-  const finish=(success:boolean)=>{clearTimeout(timer);clearTimeout(hard);clearTimeout(cancellation);pending='';if(logins.get(workspace)===state){logins.set(workspace,{state:state.state==='cancelled'?'cancelled':success?'completed':'failed'});busy.delete(workspace);}};
+  const finish=(success:boolean)=>{clearTimeout(timer);clearTimeout(hard);clearTimeout(cancellation);pending='';if(logins.get(workspace)===state){
+    const completed=success&&state.state!=='cancelled';logins.set(workspace,{state:state.state==='cancelled'?'cancelled':completed?'completed':'failed'});busy.delete(workspace);
+    // A fresh sign-in answers the failure that asked for it: the status stops saying «sign in» and parked
+    // conversations retry at the next tick instead of after their pause. A failure there sets it again.
+    if(completed){resetMemoryModelStatus(workspace);resume(workspace);}
+  }};
   child.once('error',()=>finish(false));child.once('close',code=>finish(code===0));
 }
+/** Conversations parked on a failure retry at the next maintenance tick. */
+function resume(workspace:string){db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);}
 type StoredConnection={format:'qoopia-memory-connection/1';url:string;agent_id:string;key:string;runtime:'codex'|'claude_code'};
 /** The stored memory connection while its agent is active with that key. 5.0.16 stored the tunnel
  * origin, which never serves /memory/continuity: the same agent moves to loopback. */
@@ -137,7 +144,7 @@ export async function memorySetupAction(ownerId:string,raw:unknown) {
   try {
     if(input.action==='select'){await provision(input.runtime);selectMemoryProfile(workspace,input.runtime);
       // Sessions parked without a usable profile resume at once.
-      db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);
+      resume(workspace);
       return memorySetupState(ownerId);}
     if(input.action==='connect-agent') {
       // An installed Qoopia links its own computer over loopback. Another computer reaches it only through the
@@ -166,7 +173,7 @@ export async function memorySetupAction(ownerId:string,raw:unknown) {
     const result=await memoryText(workspace,'Return exactly OK in result.',{purpose:'Qoopia subscription connection check'});
     if(result.text!=='OK')throw new QoopiaError('MODEL_INVALID_RESPONSE','Unexpected connection check response');
     // Owner fixed the dependency: pending checkpoints can now resume immediately.
-    db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);
+    resume(workspace);
     return memorySetupState(ownerId);
   } finally {if(logins.get(workspace)?.state!=='waiting')busy.delete(workspace);}
 }

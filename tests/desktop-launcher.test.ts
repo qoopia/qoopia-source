@@ -18,6 +18,8 @@ test('Desktop launcher follows the selected bundle, quotes literal paths, and re
       durableWrite(path.join(root,'current.json'),JSON.stringify({bundle:hash}));
       const current=run();expect(current.status).toBe(0);expect(current.stdout.split('\n')[0]).toBe(path.join(folder,'qoopia'));
     }
+    // With a server workspace selected the inactive local bundle is never run [F-520-desktop-server].
+    durableWrite(path.join(root,'server-workspace.json'),'{}');expect(run().stdout.split('\n')[0]).toBe(binary);fs.rmSync(path.join(root,'server-workspace.json'));
     durableWrite(path.join(root,'current.json'),JSON.stringify({bundle:'../../outside'}));expect(run().status).toBe(64);
     const launcher=applied.entry.args[0]!;const original=fs.readFileSync(launcher,'utf8');
     prepareDesktopLauncher(root,binding,binary,true,true);expect(fs.readFileSync(launcher,'utf8')).toBe(original);

@@ -78,6 +78,19 @@ describe("CRITICAL — Phase C is failure-atomic under the bun runner", () => {
     expect(statements.filter((s) => /ALTER TABLE notes ADD COLUMN/i.test(s))).toHaveLength(9);
   });
 
+  // F-520-trigger-case: a CASE … END; inside a trigger body is not the end of the trigger.
+  test("splitSqlStatements keeps a trigger whose body ends a statement with CASE … END", () => {
+    const sql = `CREATE TABLE t(a INTEGER, b TEXT);
+CREATE TRIGGER t_ai AFTER INSERT ON t BEGIN
+  UPDATE t SET b = CASE WHEN new.a > 0 THEN 'end;' ELSE 'case' END;
+  UPDATE t SET b = b || '' WHERE rowid = new.rowid;
+END;
+INSERT INTO t(a) VALUES (1);`;
+    const statements = splitSqlStatements(sql);
+    expect(statements).toHaveLength(3);
+    expect(statements[1]).toMatch(/^CREATE TRIGGER[\s\S]*\nEND$/);
+  });
+
   test("bun db.exec swallows the runtime trigger failure — the reason the runner cannot use it", () => {
     const { scratch } = preparedGraph();
     stagePreflight(scratch.db);

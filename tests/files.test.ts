@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
-import { fileUpload, fileGet, fileList, fileListByFolder, fileListFolders, fileGetForDownload, fileDelete, filePut, parseFileText } from "../src/services/files.ts";
+import { fileUpload, fileUploadBatch, fileGet, fileList, fileListByFolder, fileListFolders, fileGetForDownload, fileDelete, filePut, parseFileText } from "../src/services/files.ts";
 import JSZip from "jszip";
 
 let WS = "";
@@ -90,6 +90,17 @@ describe("agents save files with file_put", () => {
 });
 
 describe("files service", () => {
+  test("a batch upload stores all files or none", async () => {
+    const other = createAgent({ name: "batch-other-t", workspaceSlug: createWorkspace({ name: "files-batch" }).slug }).id;
+    await fileUpload({ workspace_id: WS, owner_agent_id: OWNER, uploaded_by_agent_id: other, folder: "batch", filename: "taken.txt", mime: "text/plain", bytes: Buffer.from("theirs") });
+    const item = (filename: string, text: string) => ({ workspace_id: WS, owner_agent_id: OWNER, uploaded_by_agent_id: OWNER, folder: "batch", filename, mime: "text/plain", bytes: Buffer.from(text), replace_own_only: true });
+    // The second file belongs to another author: the first one must not stay behind.
+    await expect(fileUploadBatch([item("first.txt", "one"), item("taken.txt", "mine")])).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(() => fileGet({ workspace_id: WS, folder: "batch", filename: "first.txt" })).toThrow();
+    expect(fileGet({ workspace_id: WS, folder: "batch", filename: "taken.txt" }).content).toBe("theirs");
+    expect((await fileUploadBatch([item("first.txt", "one"), item("second.txt", "two")])).map((f: any) => f.filename)).toEqual(["first.txt", "second.txt"]);
+  });
+
   test("DOCX extraction preserves normal text", async () => {
     const result = await parseFileText("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "normal.docx", await docx("<w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p>"));
     expect(result).toEqual({ text: "Hello DOCX\n\n", status: "extracted" });
@@ -119,6 +130,12 @@ describe("files service", () => {
     expect(result.text!.length).toBeLessThan(205_000);
     const meta = await up("big", "many.pdf", "application/pdf", pdf(2_000, "x".repeat(40), 10));
     expect((fileGet({ workspace_id: WS, id: meta.id }) as any).truncated).toBe(true);
+  });
+
+  test("one malformed PDF page leaves the other pages' text, marked partial", async () => {
+    // Page 3 of 3 becomes the number 42 (same length, so the xref stays exact).
+    const doc = pdf(3, "Good page").toString("latin1").replace(/(\n7 0 obj\n)([^\n]+)/,(_, head, page: string) => head + "42".padEnd(page.length));
+    expect(await parseFileText("application/pdf", "broken-page.pdf", Buffer.from(doc, "latin1"))).toEqual({ text: "Good page Good page", status: "partial" });
   });
 
   test("T-11 corrupted PDF reports extraction failure and preserves original bytes", async () => {

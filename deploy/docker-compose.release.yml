@@ -29,6 +29,7 @@ services:
       - ${QOOPIA_ROOT}/native-runtimes:${QOOPIA_ROOT}/native-runtimes
       - ${QOOPIA_ROOT}/native-logins:${QOOPIA_ROOT}/native-logins
       - ${QOOPIA_ROOT}/native-login-home:${QOOPIA_ROOT}/native-login-home
+      - ${QOOPIA_ROOT}/my-agent:${QOOPIA_ROOT}/my-agent
     healthcheck:
       test:
         - CMD

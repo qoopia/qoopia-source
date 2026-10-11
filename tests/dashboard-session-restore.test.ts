@@ -1,10 +1,10 @@
 import {test,expect} from 'bun:test';
-import {dashboardSource} from './helpers/dashboard-source.ts';
+import {dashboardSource,dashboardSend} from './helpers/dashboard-source.ts';
 import {runInNewContext} from 'node:vm';
 const html=dashboardSource;
 const start=html.lastIndexOf('  (async()=>{');
 const end=html.indexOf('\n})();',start);
-const restore=html.slice(start,end);
+const restore=dashboardSend+html.slice(start,end);
 for(const scenario of [
   {name:'local owner cookie survives reload without email binding',authorized:true,linked:false,pending:false},
   {name:'email-linked owner cookie survives reload',authorized:true,linked:true,pending:false},

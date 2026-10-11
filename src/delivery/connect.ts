@@ -14,6 +14,7 @@ import { localOwner } from './owner-onboarding.ts';
 import { hash, readJsonBytes, safePath, durableWrite } from '../utils/fs.ts';
 import { assertNoSecrets } from '../utils/secret-guard.ts';
 import { publishNativeConnection } from '../skills/connection.ts';
+import { assertCodexTablesAppendable } from './native-client-paths.ts';
 
 export const connectInput = z.object({
   runtime: z.enum(['claude_code', 'codex']), name: z.string().trim().min(1).max(120),
@@ -44,6 +45,7 @@ function configState(input: Input, root: string) {
     if (servers !== undefined && (!servers || Array.isArray(servers) || typeof servers !== 'object')) throw new Error();
     if (servers && Object.hasOwn(servers, 'qoopia')) throw new Error();
   } catch { throw new Error('Config malformed or qoopia entry already exists; preserve it and choose an explicit new config'); }
+  if (input.runtime === 'codex') assertCodexTablesAppendable(text);
   const beforeHash = before ? hash(before) : null;
   const backup = before ? file + '.qoopia-before-' + beforeHash : null;
   if (backup && fs.existsSync(backup)) throw new Error('Config preservation path already exists; inspect it before a new connection');

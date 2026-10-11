@@ -1,5 +1,5 @@
 /* Persistent owner chat. Page navigation never owns its DOM or polling lifecycle. */
-window.QoopiaChat = function ({api, esc, humanSize, onUnauthorized}) {
+window.QoopiaChat = function ({api, send, esc, humanSize, onUnauthorized}) {
   const panel=document.querySelector('#chatPanel'),body=document.querySelector('#chatBody'),launcher=document.querySelector('#chatLauncher');
   const $=selector=>panel.querySelector(selector);
   let disposed=false,mounted=false,refresh=async()=>{},returnFocus=launcher;
@@ -27,19 +27,16 @@ window.QoopiaChat = function ({api, esc, humanSize, onUnauthorized}) {
       if(busy&&!priority)throw Error(QI.msg('Please wait for the current action'));
       if(!priority)busy=true;const revision=++actionRevision;root.setAttribute('aria-busy','true');feedback(QI.msg('Working…'));$('#agentSend').disabled=true;
       try{
-        const response=await fetch('/api/dashboard/my-agent',{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(35000),headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body)});
-        const result=await response.json();if(response.status===401)onUnauthorized();if(!response.ok)throw Error(QI.resolve(result.error_description||'Agent action failed'));
+        const response=await send('/api/dashboard/my-agent',{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(35000),headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify(body)});
+        const result=await response.json().catch(()=>({}));if(response.status===401)onUnauthorized();if(!response.ok)throw Error(result.error_description||QI.resolve(QI.msg('Could not complete this.')));
         if(revision===actionRevision)feedback(result.accepted?QI.msg('Preparing your agent. You can use other pages while it starts.'):QI.msg('Saved.'));return result;
-      }catch(error){
-        if(error.name==='TimeoutError'||error.name==='AbortError')throw Error(QI.msg('The server has not confirmed this action yet. Check its status before trying again.'));
-        throw error;
       }finally{if(!priority)busy=false;if(here()&&!busy)root.removeAttribute('aria-busy');}
     }
     async function perform(body){try{const result=await action(body);await load();return result;}catch(e){feedback(e.message);}}
     async function fetchModels(provider){
       if(catalogRequests.has(provider)||!here())return;catalogRequests.add(provider);
       try {
-        const response=await fetch('/api/dashboard/my-agent',{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(15000),headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action:'models'})});
+        const response=await send('/api/dashboard/my-agent',{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(15000),headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action:'models'})});
         if(response.status===401){onUnauthorized();return;}
         const result=await response.json();if(!response.ok)throw Error(result.error_description||QI.msg('Could not load models. Try again.'));
         if(!here()||data?.provider!==provider)return;

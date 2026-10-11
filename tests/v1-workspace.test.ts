@@ -8,7 +8,8 @@ import {db,DB_PATH} from '../src/db/connection.ts';
 import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {issueLocalLogin} from '../src/delivery/local-login.ts';
-import {enableLocalWorkspace} from '../src/delivery/workspace.ts';
+import {enableLocalWorkspace,freeAgentName} from '../src/delivery/workspace.ts';
+import {createAgent} from '../src/admin/agents.ts';
 import {lockInstallation} from '../src/delivery/operations.ts';
 import {hash,safePath} from '../src/utils/fs.ts';
 import {startHttpServer} from '../src/http.ts';
@@ -90,3 +91,15 @@ echo '{"type":"result","subtype":"success","is_error":false}'
     expect(keychains()).toBe(originalKeychains);
   }
 },20_000);
+
+// A failed dashboard connect revokes its new agent; the name stays taken, so the retry needs another [F-520-connect-retry].
+test('a retried dashboard connect gets the next free agent name instead of a permanent refusal',()=>{
+  runMigrations();
+  const ws=randomUUID();db.query('INSERT INTO workspaces(id,name,slug) VALUES (?,?,?)').run(ws,'Retry test',ws);
+  expect(freeAgentName(ws,'Qoopia Claude')).toBe('Qoopia Claude');
+  const failed=createAgent({name:'Qoopia Claude',workspaceSlug:ws});db.query('UPDATE agents SET active=0 WHERE id=?').run(failed.id);
+  expect(freeAgentName(ws,'Qoopia Claude')).toBe('Qoopia Claude 2');
+  createAgent({name:'Qoopia Claude 2',workspaceSlug:ws});
+  expect(freeAgentName(ws,'Qoopia Claude')).toBe('Qoopia Claude 3');
+  expect(freeAgentName(ws,'Qoopia Codex')).toBe('Qoopia Codex');
+});

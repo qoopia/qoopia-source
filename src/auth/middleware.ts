@@ -27,6 +27,8 @@ export interface AuthContext {
   policy_epoch?: number;
   session_version?: number;
   authority_profile?: string;
+  /** human, agent or reporter (a runtime telemetry credential with no memory authority). */
+  principal_kind?: string;
   legacy_skill_access?: number;
   /** The discovery restriction this connection actually got, set by the transport that computed
    * it: a profile name, or null for the unrestricted legacy surface. Absent means "derive it",
@@ -109,6 +111,7 @@ function agentToContext(
     policy_epoch: a.policy_epoch,
     session_version: a.session_version,
     authority_profile: a.authority_profile,
+    principal_kind: a.principal_kind,
     legacy_skill_access: a.legacy_skill_access,
   };
 }

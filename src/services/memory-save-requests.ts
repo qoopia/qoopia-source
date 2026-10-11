@@ -34,15 +34,20 @@ export function decideSaveRequest(input:{workspace_id:string;actor_id:string;id:
     throw new QoopiaError('NOT_FOUND','This save request is no longer held. Ask the agent to prepare it again.');
   }
   if(row.agent_id===input.actor_id)throw new QoopiaError('FORBIDDEN','An agent cannot confirm its own save');
-  let noteId:string|null=null;
-  if(input.accept) {
-    const prepared=row.input as Record<string,unknown>;
-    noteId=row.operation==='note_update'?updateNote({...prepared,origin:'owner_confirmed'} as never).id
-      :createNote({...prepared,origin:'owner_confirmed'} as never).id;
-  }
-  // The note is written first: a failure there must not consume the request.
-  db.query('INSERT INTO memory_save_decisions(id,workspace_id,agent_id,operation,request_hash,decision,note_id,decided_by,decided_at_ms) VALUES(?,?,?,?,?,?,?,?,?)')
-    .run(row.id,row.workspace_id,row.agent_id,row.operation,row.request_hash,input.accept?'saved':'declined',noteId,input.actor_id,Date.now());
+  // The note and its decision commit together: a note without its decision row would be written
+  // again by the next confirmation, a decision without its note would lose the material.
+  const noteId=db.transaction(()=>{
+    let id:string|null=null;
+    if(input.accept) {
+      const prepared=row.input as Record<string,unknown>;
+      id=row.operation==='note_update'?updateNote({...prepared,origin:'owner_confirmed'} as never).id
+        :createNote({...prepared,origin:'owner_confirmed'} as never).id;
+    }
+    db.query('INSERT INTO memory_save_decisions(id,workspace_id,agent_id,operation,request_hash,decision,note_id,decided_by,decided_at_ms) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(row.id,row.workspace_id,row.agent_id,row.operation,row.request_hash,input.accept?'saved':'declined',id,input.actor_id,Date.now());
+    return id;
+  }).immediate();
+  // Only a committed decision consumes the request.
   dropPendingSave(row.id);
   return {id:row.id,state:input.accept?'saved':'declined',note_id:noteId,agent_id:row.agent_id};
 }

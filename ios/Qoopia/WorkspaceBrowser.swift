@@ -25,6 +25,7 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
     private var observations: [NSKeyValueObservation] = []
     private var deadline: Task<Void, Never>?
     private var downloads: [ObjectIdentifier: URL] = [:]
+    private var navigationBecameDownload = false
     private let preferences: UserDefaults
     #if DEBUG
     private let entryProbe = ProcessInfo.processInfo.arguments.contains("--acceptance-account-entry")
@@ -188,7 +189,7 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
         }
         let trusted = URLPolicy.sameOrigin(URLPolicy.account, url) || active?.contains(url) == true
         if action.shouldPerformDownload {
-            decisionHandler(trusted ? .download : .cancel)
+            decisionHandler(trusted || active?.contains(URLPolicy.owner(url)) == true ? .download : .cancel)
             return
         }
         if action.targetFrame?.isMainFrame == false {
@@ -201,7 +202,7 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
         }
         decisionHandler(.cancel)
         guard action.navigationType == .linkActivated else { return }
-        if let workspace = URLPolicy.workspaceLink(url) {
+        if let workspace = URLPolicy.workspaceLink(url, from: action.sourceFrame.request.url) {
             if let saved = workspaces.first(where: { $0 == workspace }) { open(saved) }
             else { pendingWorkspace = workspace }
         } else if URLPolicy.safeExternal(url) {
@@ -223,6 +224,7 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         loading = true
         failed = false
+        navigationBecameDownload = false
         deadline?.cancel()
         deadline = Task { [weak self] in
             try? await Task.sleep(for: .seconds(35))
@@ -251,16 +253,22 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { loading = false; failed = true }
 
     private func failedNavigation(_ error: Error) {
-        if (error as NSError).code == NSURLErrorCancelled { return }
+        let error = error as NSError
+        if error.code == NSURLErrorCancelled { return }
+        // A response turned into a download ends its navigation with "frame load interrupted" (102);
+        // the dashboard is still shown and must not be covered by the unavailable screen.
+        if navigationBecameDownload, error.domain == "WebKitErrorDomain", error.code == 102 {
+            navigationBecameDownload = false; deadline?.cancel(); loading = false; return
+        }
         deadline?.cancel(); loading = false; failed = true
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) { download.delegate = self }
-    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) { download.delegate = self }
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) { navigationBecameDownload = true; download.delegate = self }
 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
-        guard let url = response.url, active?.contains(url) == true else { completionHandler(nil); return }
+        guard let url = response.url.map(URLPolicy.owner), active?.contains(url) == true else { completionHandler(nil); return }
         do {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("qoopia-export-" + UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,

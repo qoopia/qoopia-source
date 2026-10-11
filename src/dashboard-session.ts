@@ -65,6 +65,9 @@ export { parseCookies };
 /** ingest-daemon and unknown types must NOT see dashboard data. */
 // A legacy "claude-privileged" row signs in as the ordinary agent it is (ADR-020).
 export const ALLOWED_TYPES = new Set(["owner", "steward", "claude-privileged", "standard"]);
+/** A runtime reporter is a 'standard' row with no memory authority (auth/policy.ts): never a dashboard reader. */
+export const dashboardPrincipal = (a: { type: string; principal_kind?: string | null }): boolean =>
+  ALLOWED_TYPES.has(a.type) && a.principal_kind !== "reporter";
 
 export interface DashboardAuth {
   workspace_id: string;
@@ -312,7 +315,7 @@ export function authFromSessionCookie(req: IncomingMessage): DashboardAuth | nul
   if (!verified) return null;
   const row = db
     .prepare(
-      `SELECT id, workspace_id, type, active, session_version
+      `SELECT id, workspace_id, type, principal_kind, active, session_version
          FROM agents
         WHERE id = ?`,
     )
@@ -321,12 +324,13 @@ export function authFromSessionCookie(req: IncomingMessage): DashboardAuth | nul
         id: string;
         workspace_id: string;
         type: string;
+        principal_kind: string;
         active: number;
         session_version: number;
       }
     | undefined;
   if (!row || !row.active) return null;
-  if (!ALLOWED_TYPES.has(row.type)) return null;
+  if (!dashboardPrincipal(row)) return null;
   // QDASHCOOKIE-002: cookie's session_version snapshot must still match
   // the live row. rotateAgentKey() and deleteAgent() bump this, so
   // outstanding cookies fail closed on the next request.
@@ -346,7 +350,7 @@ export function authFromSessionCookie(req: IncomingMessage): DashboardAuth | nul
  * Authenticate dashboard requests. Authorization: Bearer is the primary path
  * (curl, scripts, the login flow). The signed `qoopia_dash` cookie is the
  * fallback used only by the browser dashboard. Both go through the same
- * eligibility filter (ALLOWED_TYPES).
+ * eligibility filter (dashboardPrincipal).
  */
 export function checkDashboardAuth(req: IncomingMessage): DashboardAuth | null {
   const header = (req.headers["authorization"] as string | undefined) || "";
@@ -356,7 +360,7 @@ export function checkDashboardAuth(req: IncomingMessage): DashboardAuth | null {
     });
     const auth = authenticate(fetchReq);
     if (!auth) return null;
-    if (!ALLOWED_TYPES.has(auth.type)) return null;
+    if (!dashboardPrincipal(auth)) return null;
     return {
       workspace_id: auth.workspace_id,
       agent_id: auth.agent_id,
