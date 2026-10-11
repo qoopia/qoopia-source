@@ -73,8 +73,10 @@ export function transportSupervisor(options:{root:string;upstreamPort:number;bin
     }catch{
       if(stopped||started!==generation)return;
       phase='temporarily_unavailable';
-      if(expires<=Date.now())stopChild();
-      if(!child)nextTry=Date.now()+Math.min(60_000,1000*2**Math.min(++failures,6));
+      // A start that failed before its tunnel ran leaves only its edge listener: close it, or every retry adds one.
+      if(expires<=Date.now()||!child)stopChild();
+      // A failed spawn already scheduled its retry in failed(); count that failure once.
+      if(!child&&nextTry<=Date.now())nextTry=Date.now()+Math.min(60_000,1000*2**Math.min(++failures,6));
     }finally{working=false;}
   };
   const timer=setInterval(()=>{void tick();},30_000);timer.unref();

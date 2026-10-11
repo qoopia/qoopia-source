@@ -22,10 +22,10 @@
 
 /* Language choice is a text control; country flags do not represent languages. */
 .q-language{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;font:500 12px/1.5 var(--qoopia-font-ui);letter-spacing:.06em;color:var(--qoopia-smoke)}
-.q-language button{position:relative;appearance:none;background:transparent;color:inherit;border:0;border-radius:0;min-width:36px;min-height:40px;padding:8px 4px;font:inherit;letter-spacing:inherit;cursor:pointer}
-.q-language button[aria-pressed="true"]{color:var(--qoopia-white)}
-.q-language button[aria-pressed="true"]::after{content:"";position:absolute;left:8px;right:8px;bottom:3px;height:1px;background:currentColor}
-.q-language button:focus-visible{outline:2px solid var(--qoopia-white);outline-offset:3px;border-radius:3px}
+.q-language :is(button,a){position:relative;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;appearance:none;background:transparent;color:inherit;border:0;border-radius:0;min-width:36px;min-height:40px;padding:8px 4px;font:inherit;letter-spacing:inherit;cursor:pointer}
+.q-language :is(button[aria-pressed="true"],a[aria-current="page"]){color:var(--qoopia-white)}
+.q-language :is(button[aria-pressed="true"],a[aria-current="page"])::after{content:"";position:absolute;left:8px;right:8px;bottom:3px;height:1px;background:currentColor}
+.q-language :is(button,a):focus-visible{outline:2px solid var(--qoopia-white);outline-offset:3px;border-radius:3px}
 .q-language-login{display:flex;justify-content:flex-end;margin-bottom:16px}
 html[lang="ru"] .q-wordmark{font-family:var(--qoopia-font-display)}
 
@@ -87,7 +87,7 @@ h1,h2,h3{text-wrap:balance;scroll-margin-top:96px}
 .q-guide li{margin:8px 0}
 .q-guide .guide-clients{padding:16px 0}
 .q-profile .profile-small,.q-profile .profile-address,.q-profile .profile-divider,.q-profile .profile-footer{font-size:14px}
-@media(pointer:coarse){.q-language button{min-width:44px;min-height:44px}.q-auth button,.q-auth .btn,.q-guide nav a{min-height:44px}}
+@media(pointer:coarse){.q-language :is(button,a){min-width:44px;min-height:44px}.q-auth button,.q-auth .btn,.q-guide nav a{min-height:44px}}
 
 .q-consent .languages{margin-top:24px;text-align:right}
 

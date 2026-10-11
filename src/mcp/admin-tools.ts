@@ -19,7 +19,7 @@ import { z } from "zod";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError } from "../utils/errors.ts";
-import { createAgent, setSharedContext } from "../admin/agents.ts";
+import { createAgent, deactivateAgent, setSharedContext } from "../admin/agents.ts";
 import { AGENT_NAME_RE, AGENT_NAME_HINT, normalizeAgentName, sameAgentName } from "../utils/agent-name.ts";
 import { currentToolAuth } from "../auth/policy.ts";
 import { seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
@@ -41,6 +41,18 @@ import { decideSaveRequest, listSaveRequests } from "../services/memory-save-req
 interface AdminToolDef extends ToolDef {
   /** Only the workspace owner (canManagePolicy) can use it: not offered to a steward. */
   ownerOnly?: true;
+}
+
+/** An active agent of the caller's workspace by name, compared like createAgent does (case-insensitive). */
+function activeTarget(auth: AuthContext, name: string) {
+  let id: string;
+  try { id = resolveAgentByName(auth.workspace_id, name).agent_id; }
+  catch (error) {
+    if (error instanceof QoopiaError && error.code === "NOT_FOUND") throw new QoopiaError("NOT_FOUND", `Active agent '${normalizeAgentName(name)}' not found in workspace`);
+    throw error;
+  }
+  return db.query("SELECT id, name, type, tool_profile FROM agents WHERE id = ? AND workspace_id = ? AND active = 1")
+    .get(id, auth.workspace_id) as { id: string; name: string; type: string; tool_profile: string };
 }
 
 function assertSteward(auth: AuthContext) {
@@ -169,9 +181,9 @@ export const adminTools: AdminToolDef[] = [
           entity_type: "agent",
           entity_id: created.id,
           project_id: null,
-          summary: `Steward onboarded agent '${name}'${roleName ? ` with role '${roleName}'` : ""}`,
+          summary: `Steward onboarded agent '${created.name}'${roleName ? ` with role '${roleName}'` : ""}`,
           details: {
-            agent_name: name,
+            agent_name: created.name,
             role: roleName || null,
             bootstrap_notes: bootstrapCount,
           },
@@ -179,7 +191,7 @@ export const adminTools: AdminToolDef[] = [
 
         return {
           agent_id: created.id,
-          agent_name: name,
+          agent_name: created.name,
           api_key: created.api_key,
           workspace_id: created.workspace_id,
           bootstrap_notes_created: bootstrapCount,
@@ -246,34 +258,15 @@ export const adminTools: AdminToolDef[] = [
     handler(args, auth) {
       assertSteward(auth);
 
-      const targetName = normalizeAgentName(args.name as string);
-
-      // Self-guard: steward cannot deactivate itself
-      if (targetName === auth.agent_name) {
-        throw new QoopiaError(
-          "FORBIDDEN",
-          "Steward cannot deactivate itself. Use CLI: qoopia admin delete-agent",
-        );
-      }
-
-      const ws = db
-        .prepare(`SELECT slug FROM workspaces WHERE id = ?`)
-        .get(auth.workspace_id) as { slug: string } | undefined;
-      if (!ws)
-        throw new QoopiaError("NOT_FOUND", "workspace not found");
-
       // Deactivate agent + revoke all OAuth tokens in one transaction
       const txn = db.transaction(() => {
-        const agent = db
-          .prepare(
-            `SELECT id, type FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`,
-          )
-          .get(targetName, auth.workspace_id) as { id: string; type: string } | undefined;
+        const agent = activeTarget(auth, args.name as string);
 
-        if (!agent) {
+        // Self-guard: steward cannot deactivate itself
+        if (agent.id === auth.agent_id) {
           throw new QoopiaError(
-            "NOT_FOUND",
-            `Active agent '${targetName}' not found in workspace`,
+            "FORBIDDEN",
+            "Steward cannot deactivate itself. Use CLI: qoopia admin delete-agent",
           );
         }
 
@@ -285,18 +278,10 @@ export const adminTools: AdminToolDef[] = [
           );
         }
 
-        db.prepare(`UPDATE agents SET active = 0 WHERE id = ?`).run(agent.id);
-
-        // Revoke all OAuth tokens for this agent
-        const revoked = db
-          .prepare(
-            `UPDATE oauth_tokens SET revoked = 1 WHERE agent_id = ? AND revoked = 0`,
-          )
-          .run(agent.id);
-
-        return { agent_id: agent.id, tokens_revoked: revoked.changes };
+        return { agent_id: agent.id, name: agent.name, tokens_revoked: deactivateAgent(agent.id) };
       });
       const result = txn();
+      const targetName = result.name;
 
       logActivity({
         workspace_id: auth.workspace_id,
@@ -337,41 +322,22 @@ export const adminTools: AdminToolDef[] = [
     handler(args, auth) {
       assertSteward(auth);
 
-      const targetName = normalizeAgentName(args.name as string);
       const newProfile = args.tool_profile as
         | "read-only"
         | "no-destructive"
         | "full";
 
-      // Self-demote guard: a steward who locked itself into 'read-only'
-      // could no longer call agent_set_profile to undo it. Block here
-      // before doing any DB work.
-      if (
-        targetName === auth.agent_name &&
-        (newProfile === "read-only" || newProfile === "no-destructive")
-      ) {
-        throw new QoopiaError(
-          "FORBIDDEN",
-          "Cannot demote self — use a different steward or DB-level escalation",
-        );
-      }
-
       // Resolve target row inside the transaction so the last-steward
       // check sees the same snapshot as the UPDATE.
       const txn = db.transaction(() => {
-        const target = db
-          .prepare(
-            `SELECT id, type, tool_profile FROM agents
-             WHERE name = ? AND workspace_id = ? AND active = 1`,
-          )
-          .get(targetName, auth.workspace_id) as
-          | { id: string; type: string; tool_profile: string }
-          | undefined;
+        const target = activeTarget(auth, args.name as string);
 
-        if (!target) {
+        // Self-demote guard: a steward who locked itself into 'read-only'
+        // could no longer call agent_set_profile to undo it.
+        if (target.id === auth.agent_id && newProfile !== "full") {
           throw new QoopiaError(
-            "NOT_FOUND",
-            `Active agent '${targetName}' not found in workspace`,
+            "FORBIDDEN",
+            "Cannot demote self — use a different steward or DB-level escalation",
           );
         }
 
@@ -416,10 +382,12 @@ export const adminTools: AdminToolDef[] = [
 
         return {
           agent_id: target.id,
+          name: target.name,
           previous_profile: previous,
         };
       });
       const result = txn();
+      const targetName = result.name;
 
       logActivity({
         workspace_id: auth.workspace_id,

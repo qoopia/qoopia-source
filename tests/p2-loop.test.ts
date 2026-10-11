@@ -36,3 +36,13 @@ test('T-04 RU/EN deterministic redaction, one-off refusal, dedupe and no portabl
     expect(()=>assignSkill(f.reportAuth,{},f.database)).toThrow();expect(digest('fixture')).toHaveLength(64);
   }finally{f.database.close();}
 });
+test('F-520 a revoked skill is left out of the next session instead of blocking every other skill',()=>{
+  const f=loopFixture();try{
+    const kept=accepted(f,'1',undefined,0,'kept-skill'),dropped=accepted(f,'1',undefined,0,'dropped-skill');
+    assigned(f,kept);const gone=assigned(f,dropped);
+    skillLifecycle(f.auth,{version_id:dropped.version.id,kind:'revoke',reason:'fixture revoke',expected_revision:0,idempotency_key:randomUUID()},f.database);
+    const args={runtime_id:f.runtimeId,native_session_ref:randomUUID(),qoopia_session_id:randomUUID(),expected_revision:0,idempotency_key:randomUUID()};
+    expect(sessionOpen(f.reportAuth,args,f.database).data.skipped).toEqual([{assignment_id:gone.data.assignment_id,slot:'dropped-skill',code:'REVOKED'}]);
+    expect(opened(f).entries.map(e=>e.version_id)).toEqual([kept.version.id]);
+  }finally{f.database.close();}
+});

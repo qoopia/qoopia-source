@@ -93,11 +93,21 @@ export function currentToolAuth(database: Database, auth: AuthContext, risk: Ris
   }
   return { ...auth, type: p.type, tool_profile: p.tool_profile };
 }
+/** AgentComm: messages between agents of the workspace, its inbox, replies and thread sessions. */
+export const AGENTCOMM_TOOLS: readonly string[] = [
+  "agent_send", "agent_inbox", "agent_reply", "agent_status", "agent_session_create", "agent_session_close",
+];
+/** Which tools a connection's access profile carries at all. It only ever narrows: the tool
+ * profile, the OAuth scope and the instance role still gate every call, so a read-only
+ * memory-worker connection keeps agent_inbox/agent_status and never gets agent_send. */
 export function bootstrapToolAllowed(name: string, profile?: string): boolean {
   if (!profile) return true; // named legacy full connection, during compatibility window
   if (profile === "runtime-reporter") return false;
   if (["recall", "note_get", "skill_search", "skill_get", "operation_get"].includes(name)) return true;
   if (profile === "memory-worker" && ["note_create", "note_update", "session_save"].includes(name)) return true;
+  // A client connection or paired memory worker is a working agent of the workspace: it talks to
+  // the other agents. A memory reader stays without an inbox, so nobody can address it.
+  if (profile === "memory-worker" && AGENTCOMM_TOOLS.includes(name)) return true;
   if (profile === "skill-author" && ["skill_upsert", "entity_upsert", "skill_mark_tested"].includes(name)) return true;
   return profile === "owner" && ["connection_prepare", "agent_list", "agent_onboard", "agent_deactivate", "skill_upsert", "skill_mark_tested"].includes(name);
 }

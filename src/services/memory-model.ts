@@ -65,6 +65,8 @@ export function selectMemoryProfile(workspace:string,runtime:MemoryProfile['runt
 type MemoryStatus={state:'not_connected'|'selected'|'ready'|'auth_required'|'quota'|'timeout'|'unavailable'|'invalid_response'|'busy';
   requested_model?:string;observed_models?:string[];checked_at?:string;message?:string};
 const states=new Map<string,MemoryStatus>();
+/** The last answer no longer stands (a new sign-in): the status falls back to what is known without a call. */
+export function resetMemoryModelStatus(workspace:string){states.delete(workspace);}
 export function memoryModelStatus(workspace:string) {
   const profile=memoryProfile(workspace);
   return {runtime:profile?.runtime??null,model:profile?.model??null,...(states.get(workspace)??(profile&&lastSummary(workspace))??{state:profile?'selected':'not_connected'})};
@@ -162,20 +164,23 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
       // Its own process group: a yield stops the whole tree at once, so the next call never runs beside it.
       const child=spawn(launch.binary,launch.args,{cwd:launch.cwd,env:launch.env,stdio:['pipe','pipe','pipe'],detached:true});
       let stdout='',stderr='',failed:'time'|'output'|'yield'|undefined;
-      const timer=setTimeout(()=>{failed??='time';child.kill('SIGTERM');},term);
-      const hard=setTimeout(()=>child.kill('SIGKILL'),term+memoryTimeouts.kill_ms-memoryTimeouts.term_ms);
-      const killGroup=()=>{try{process.kill(-child.pid!,'SIGKILL');}catch{/* Already gone: close still settles the call. */}};
+      // Every stop goes to the whole group: a helper the CLI started holds its output pipe, and the call
+      // settles only when that pipe closes, so stopping the CLI alone would keep the slot forever.
+      const signal=(name:NodeJS.Signals)=>{try{process.kill(-child.pid!,name);}catch{/* Already gone: close still settles the call. */}};
+      const killGroup=()=>signal('SIGKILL');
+      const timer=setTimeout(()=>{failed??='time';signal('SIGTERM');},term);
+      const hard=setTimeout(killGroup,term+memoryTimeouts.kill_ms-memoryTimeouts.term_ms);
       // Detached, it would outlive a graceful server stop; the process exit takes its group along.
       process.once('exit',killGroup);
       // Yielding only once the process runs: before that the slot is spent on launch checks anyway.
       if(options.background)yieldSlot=()=>{yielded=true;failed??='yield';killGroup();};
       const collect=(which:'out'|'err',chunk:Buffer)=>{
-        if(stdout.length+stderr.length+chunk.length>512_000){failed??='output';child.kill('SIGTERM');return;}
+        if(stdout.length+stderr.length+chunk.length>512_000){failed??='output';signal('SIGTERM');return;}
         if(which==='out')stdout+=chunk.toString();else stderr+=chunk.toString();
       };
       child.stdout.on('data',b=>collect('out',b));child.stderr.on('data',b=>collect('err',b));child.stdin.on('error',()=>{});
       child.stdin.end(prompt);
-      child.once('error',()=>{clearTimeout(timer);clearTimeout(hard);reject(new QoopiaError('MODEL_UNAVAILABLE','Native runtime could not start'));});
+      child.once('error',()=>{clearTimeout(timer);clearTimeout(hard);process.off('exit',killGroup);reject(new QoopiaError('MODEL_UNAVAILABLE','Native runtime could not start'));});
       child.once('close',code=>{clearTimeout(timer);clearTimeout(hard);process.off('exit',killGroup);if(options.background)yieldSlot=undefined;
         if(failed==='yield')reject(new QoopiaError('MODEL_BUSY','Memory processing yielded to another request'));
         else if(failed)reject(new QoopiaError(failed==='time'?'MODEL_TIMEOUT':'MODEL_INVALID_RESPONSE',failed==='time'?`Memory model exceeded its ${term/1000}-second time budget`:'Memory model exceeded its output budget'));

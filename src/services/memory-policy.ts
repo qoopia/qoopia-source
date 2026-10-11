@@ -259,12 +259,14 @@ export function agentMemoryStatus(workspace:string,agent:string,database:Databas
   const policy=memoryPolicy(workspace,agent,database);
   const capture=database.query('SELECT MAX(created_at) AS at FROM session_messages WHERE workspace_id=? AND agent_id=?').get(workspace,agent) as {at:string|null};
   const summary=database.query("SELECT MAX(json_extract(metadata,'$.updated_at_ms')) AS at FROM notes WHERE workspace_id=? AND agent_id=? AND source='qoopia-continuity' AND deleted_at IS NULL").get(workspace,agent) as {at:number|null};
-  const backlog=database.query(`SELECT COUNT(*) AS pending,
-      (SELECT json_extract(e.metadata,'$.continuity_error') FROM sessions e WHERE e.workspace_id=?1 AND e.agent_id=?2
-        AND json_extract(e.metadata,'$.continuity_error') IS NOT NULL ORDER BY e.last_active DESC LIMIT 1) AS error
+  // An error counts only on a session that still waits for its summary. A workspace-wide pause also marks
+  // conversations already summarised or no longer live; nothing ever retries those, so their mark would
+  // keep the agent faulty after the cause was gone.
+  const backlog=database.query(`WITH pending AS (SELECT s.last_active,json_extract(s.metadata,'$.continuity_error') AS error
     FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1 AND s.last_active>=?3
       AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
-        FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0))`)
+        FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0)))
+    SELECT COUNT(*) AS pending,(SELECT error FROM pending WHERE error IS NOT NULL ORDER BY last_active DESC LIMIT 1) AS error FROM pending`)
     .get(workspace,agent,new Date(Date.now()-LIVE_SESSION_MS).toISOString()) as {pending:number;error:string|null};
   const signIn=['MODEL_NOT_CONNECTED','SIGN_IN_REQUIRED','MODEL_QUOTA','UNAUTHENTICATED'];
   // Hooks that stopped (removed, untrusted after an update, a broken launcher) leave the last capture

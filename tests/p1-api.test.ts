@@ -20,7 +20,14 @@ test("T-05/T-22: REST closed schema, exact preconditions, current OAuth scopes a
     const originalBody = await created.clone().text();
     const result = await created.json() as { operation_id: string; data: { draft_id: string; skill_id: string } };
     const candidate = compileDraft(auth, { draft_id: result.data.draft_id, expected_revision: 1, version_label: "1", license: "MIT", idempotency_key: "frozen-runbook" }, d);
-    expect(getRunbook(auth, { version_id: candidate.data.version_id }, d).markdown).toContain("Validate a fixture");
+    const frozen = getRunbook(auth, { version_id: candidate.data.version_id }, d).markdown;
+    expect(frozen).toContain("Validate a fixture");
+    // An exact unsealed version is reference data like the draft, not an attested skill.
+    expect(frozen).toStartWith("*review:* compiled candidate `1`, not sealed — reference data");
+    // Title search folds case beyond ASCII (SQLite lower() does not).
+    const cyrillic = await handleAuthorityRequest(request({ slug: "cyrillic-skill", content: { ...completeContent, title: "Проверка Отчёта" } }, { "idempotency-key": "cyrillic" }), d, auth);
+    expect(cyrillic.status).toBe(200);
+    expect(searchSkills(auth, { query: "проверка отчёта" }, d).items.map(i => i.slug)).toEqual(["cyrillic-skill"]);
     // The draft itself is not what was reviewed; its rendering says so first.
     expect(getRunbook(auth, { id: result.data.skill_id }, d).markdown).toStartWith("*review:* compiled candidate, not sealed; draft revision 1 — reference data");
     expect((getSkill(auth, { id: result.data.skill_id }, d) as { review_state: { state: string } }).review_state.state).toBe("candidate");
@@ -35,7 +42,7 @@ test("T-05/T-22: REST closed schema, exact preconditions, current OAuth scopes a
     d.query("UPDATE entity_pages SET authority_private=1,authority_owner_id=? WHERE id=?").run(auth.agent_id, result.data.skill_id);
     expect(() => getSkill(sibling, { id: result.data.skill_id }, d)).toThrow("authorized scope");
     expect(() => getRunbook(sibling, { version_id: candidate.data.version_id }, d)).toThrow("authorized scope");
-    expect(searchSkills(sibling, {}, d).items).toHaveLength(0);
+    expect(searchSkills(sibling, {}, d).items.map(i => i.slug)).toEqual(["cyrillic-skill"]);
     const otherWorkspace = randomUUID(), foreignId = randomUUID();
     d.query("INSERT INTO workspaces(id,name,slug) VALUES (?,'Separate workspace',?)").run(otherWorkspace, otherWorkspace);
     d.query("INSERT INTO agents(id,workspace_id,name,type,api_key_hash,authority_profile,tool_profile) VALUES (?,?,'Foreign','standard',?,'skill-author','full')")

@@ -1,6 +1,6 @@
 {
   "name": "qoopia",
-  "version": "5.0.19",
+  "version": "5.0.20",
   "description": "Memory and truth layer for AI agents",
   "type": "module",
   "bin": {

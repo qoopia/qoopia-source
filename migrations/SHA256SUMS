@@ -46,3 +46,4 @@ b29f9de00ad5efe05d615b26a63e84c2dc5529618e19a7743e954def9134af48  044-telegram-r
 814848a8908330b11218abde11ece7a992138888286aba15751e8fe715e8e95b  046-manual-message-ledger.sql
 a4cc8fe88ef6c6d2f0706d47ddfe0e305b24784fcfe77e8f885170f5bfeb5eca  047-client-surfaces.sql
 83c29708f1dd6b8f8e3a78b95eb93efdf0545df01ec8ab24cba83ac8973adf0b  048-read-path-indexes.sql
+bca5a6def62a68cd0de8f2ad821c0d05b12e75f0391ebeacc1e6515e2928d210  049-agent-wake-claims.sql

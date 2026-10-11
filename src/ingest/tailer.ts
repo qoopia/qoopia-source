@@ -405,14 +405,20 @@ export function extractText(raw: string): ExtractResult | null {
 // ---------------------------------------------------------------------------
 
 const fileCursors = new Map<string, number>();
+/** The inode each cursor was taken on, so a file replaced under the same name restarts at 0 instead of
+ * skipping the new file's first bytes. Not st_dev: APFS renumbers it across reboots. */
+const fileInodes = new Map<string, number>();
+const offset = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
 function loadCursors() {
   try {
     if (!fs.existsSync(CURSORS_PATH)) return;
     const raw = fs.readFileSync(CURSORS_PATH, "utf8");
-    const obj = JSON.parse(raw) as Record<string, number>;
+    // A bare number is the cursor format before 5.0.20.
+    const obj = JSON.parse(raw) as Record<string, number | { cursor: number; ino: number }>;
     for (const [k, v] of Object.entries(obj)) {
-      if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) fileCursors.set(k, v);
+      if (offset(v)) fileCursors.set(k, v as number);
+      else if (v && typeof v === "object" && offset(v.cursor) && offset(v.ino)) { fileCursors.set(k, v.cursor); fileInodes.set(k, v.ino); }
     }
     console.log(`[tailer] loaded ${fileCursors.size} cursors from ${CURSORS_PATH}`);
   } catch (err) {
@@ -422,8 +428,8 @@ function loadCursors() {
 
 function persistCursors() {
   try {
-    const obj: Record<string, number> = {};
-    for (const [k, v] of fileCursors) obj[k] = v;
+    const obj: Record<string, number | { cursor: number; ino: number }> = {};
+    for (const [k, v] of fileCursors) { const ino = fileInodes.get(k); obj[k] = ino === undefined ? v : { cursor: v, ino }; }
     const tmp = CURSORS_PATH + ".tmp";
     fs.mkdirSync(path.dirname(CURSORS_PATH), { recursive: true, mode: 0o700 });
     fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
@@ -535,6 +541,7 @@ function forget(filePath: string) {
   watchers.get(filePath)?.close();
   watchers.delete(filePath);
   stalled.delete(filePath);
+  fileInodes.delete(filePath);
   if (fileCursors.delete(filePath)) persistCursors();
 }
 
@@ -582,7 +589,10 @@ async function readNewLines(filePath: string) {
     }
 
     let cursor = fileCursors.get(filePath) ?? 0;
-    if (fdStat.size < cursor) cursor=0; // Truncated source: server UUID dedup makes replay safe.
+    // Truncated or replaced source: server UUID dedup makes replay safe.
+    if (fdStat.size < cursor || (fileInodes.get(filePath) ?? fdStat.ino) !== fdStat.ino) cursor=0;
+    fileInodes.set(filePath, fdStat.ino);
+    fileCursors.set(filePath, cursor);
     if (fdStat.size === cursor) return;
     // ponytail: bounded 4 MiB reads. A complete record larger than that (a native tool
     // dump) is skipped and logged; a record without its newline yet stays pending.
@@ -603,7 +613,9 @@ async function readNewLines(filePath: string) {
         if (n<buf.length) return; // Reached EOF: the oversized record is still being written.
       }
     }
-    for (const line of buf.subarray(0,end+1).toString('utf8').split('\n').slice(0,-1)) {
+    // Split the bytes, not decoded text: an invalid byte decodes to a 3-byte U+FFFD and would move the cursor off the record boundary.
+    for (let start=0,nl=buf.indexOf(10);nl>=0&&nl<=end;start=nl+1,nl=buf.indexOf(10,start)) {
+      const line=buf.subarray(start,nl).toString('utf8');
       const result=extractText(line.trim());
       if (result) {
         const {role,text,metadata,entry}=result,cwd=entry.cwd??'';
@@ -611,7 +623,7 @@ async function readNewLines(filePath: string) {
         if (agentId) await postIngest({attributed_agent_id:agentId,session_id:entry.sessionId!,uuid:entry.uuid!,
           role,content:text,timestamp:entry.timestamp??new Date().toISOString(),cwd,metadata});
       }
-      cursor+=Buffer.byteLength(line)+1;
+      cursor+=nl-start+1;
       fileCursors.set(filePath,cursor); // Only acknowledged or deliberately excluded records.
     }
   } finally {

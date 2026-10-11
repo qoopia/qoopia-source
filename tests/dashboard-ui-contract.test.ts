@@ -181,7 +181,7 @@ test('a tapped button on a phone does not stay in its grey hover state',()=>{
 });
 
 test('preparing a client before external access is on points a phone owner to the switch, not to CLI commands',()=>{
-  expect(dashboardScript).toContain('{ status: r.status, code: data.code }');
+  expect(dashboardScript).toContain('{ status: r.status, code: data.code,');
   expect(dashboardScript).toMatch(/e\.code==='NOT_READY'&&!network\.hidden\)\{[^}]*network\.open=true/);
 });
 

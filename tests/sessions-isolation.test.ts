@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, setSystemTime, test } from "bun:test";
 import { ulid } from "ulid";
 import { runMigrations } from "../src/db/migrate.ts";
 import { db } from "../src/db/connection.ts";
@@ -84,6 +84,9 @@ test("session_summarize refuses foreign sessions and boundary messages from anot
   expect(code(summary(alice, wsA, aliceSession, b1, a2))).toBe("INVALID_INPUT");
   expect(code(summary(alice, wsA, aliceSession, a1, b1))).toBe("INVALID_INPUT");
   expect(code(summary(alice, wsA, aliceSession, a1, a2))).toBe("accepted");
+  // F-520-summary-retry: the retry of a lost reply returns the stored summary, not a second copy.
+  const retry = summary(alice, wsA, aliceSession, a1, a2)() as { saved: boolean; duplicate?: boolean };
+  expect(retry).toMatchObject({ saved: false, duplicate: true });
   expect((db.query("SELECT COUNT(*) AS n FROM summaries WHERE session_id = ?").get(aliceSession) as { n: number }).n).toBe(1);
 });
 
@@ -124,4 +127,33 @@ test("session_save with a message_id appends once and every retry returns the or
   send("ok");
   send("ok");
   expect(count(session)).toBe(3);
+});
+
+test("a turn's message_id dedups a late retry, and a busy session id is refused (F-520-turn-key)", () => {
+  const session = `sis-turn-${ulid()}`;
+  const turn = (user: string, message_id: string) => call("session_save", alice, wsA, { session_id: session, user, assistant: `re: ${user}`, message_id });
+  expect(turn("first", "t1").saved).toBe(true);
+  expect(turn("second", "t2").saved).toBe(true);
+  // The retry of t1 arrives after t2: the last-turn heuristic cannot see it, the key does.
+  const retry = turn("first", "t1");
+  expect(retry).toMatchObject({ saved: false, duplicate: true });
+  expect(count(session)).toBe(4);
+  // With a key, the same words are a new turn.
+  expect(turn("second", "t3").saved).toBe(true);
+  expect(refusal(() => turn("changed", "t1"))).toBe("CONFLICT: message_id was already used for a different message");
+  expect(count(session)).toBe(6);
+  expect(refusal(() => call("session_save", bob, wsA, { session_id: session, user: "x", assistant: "y", message_id: "b1" }))).toBe(UNAVAILABLE);
+  expect(refusal(() => call("session_save", carol, wsB, { session_id: session, user: "x", assistant: "y" }))).toBe(UNAVAILABLE);
+});
+
+test("a keyed Autosave retry across UTC midnight returns the stored turn (F-520-turn-midnight)", () => {
+  const turn = () => call("session_save", carol, wsB, { user: "late question", assistant: "late answer", message_id: "midnight-1" });
+  try {
+    setSystemTime(new Date("2026-10-11T23:59:59.500Z"));
+    const first = turn();
+    setSystemTime(new Date("2026-10-12T00:00:01.000Z"));
+    const retry = turn();
+    expect(retry).toMatchObject({ saved: false, duplicate: true, session_id: first.session_id });
+    expect(count(first.session_id)).toBe(2);
+  } finally { setSystemTime(); }
 });

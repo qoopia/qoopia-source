@@ -8,7 +8,7 @@ import { authorize, type AuthorityAction } from "../auth/policy.ts";
 import { issuePairing, pairingSchema, redeemPairing, revokePrincipal, revokePrincipalSchema } from "../auth/pairings.ts";
 import { reviseDraft, reviseSchema, compileDraft, compileSchema, reviewSkill, reviewSchema,
   sealSkill, sealSchema, registerPublisherKey, signingKeySchema, getSkillVersion, requireSkillRead,
-  skillReviewLine, skillReviewState } from "../skills/authority.ts";
+  skillReviewLine, skillReviewState, versionReviewLine } from "../skills/authority.ts";
 import { canonical, digest } from "../skills/commands.ts";
 import { COMPILER, RENDERER, NATIVE_RENDERER, renderRunbook, type SkillContent } from "../skills/format.ts";
 import { QoopiaError } from "../utils/errors.ts";
@@ -42,7 +42,7 @@ export function searchSkills(auth: AuthContext, raw: unknown, database: Database
     if (!parsed.success) throw new QoopiaError("INVALID_INPUT", "Cursor does not match filters or principal");
     snapshot = parsed.data.snapshot; afterMs = parsed.data.ms; afterId = parsed.data.id;
   }
-  const rows = database.query(`WITH visible AS (
+  const scanned = database.query(`WITH visible AS (
     SELECT e.id,e.slug,COALESCE(r.content_json,json_object('title',e.title)) AS content_json,
       COALESCE(r.created_at_ms,CAST(strftime('%s',e.updated_at) AS INTEGER)*1000) AS updated_at_ms,
       d.id AS draft_id,COALESCE(r.revision_no,0) AS revision
@@ -51,10 +51,14 @@ export function searchSkills(auth: AuthContext, raw: unknown, database: Database
     WHERE e.workspace_id=? AND e.type='skill' AND (d.id IS NULL OR r.id IS NOT NULL)
       AND (e.authority_private=0 OR e.authority_owner_id=? OR EXISTS(SELECT 1 FROM workspace_owners WHERE workspace_id=e.workspace_id AND actor_id=?))
     ) SELECT * FROM visible WHERE updated_at_ms<=? AND (updated_at_ms>? OR (updated_at_ms=? AND id>?))
-      AND instr(lower(json_extract(content_json,'$.title')),lower(?))>0 ORDER BY updated_at_ms,id LIMIT ?`)
-    .all(snapshot, p.workspace_id, p.id, p.id, snapshot, afterMs, afterMs, afterId, a.query, a.limit + 1) as Array<{
+      ORDER BY updated_at_ms,id`)
+    .all(snapshot, p.workspace_id, p.id, p.id, snapshot, afterMs, afterMs, afterId) as Array<{
       id: string; slug: string; content_json: string; updated_at_ms: number; draft_id: string | null; revision: number;
     }>;
+  // SQLite lower() folds ASCII only, so a Cyrillic title missed a differently cased query. Match in JS.
+  // ponytail: scans the workspace's visible skills per page; push into an FTS column if a workspace holds thousands.
+  const needle = a.query.toLocaleLowerCase();
+  const rows = scanned.filter(row => String((JSON.parse(row.content_json) as SkillContent).title ?? "").toLocaleLowerCase().includes(needle)).slice(0, a.limit + 1);
   const items = rows.slice(0, a.limit).map(({ content_json, ...row }) => ({ ...row, title: (JSON.parse(content_json) as SkillContent).title }));
   const last = items.at(-1);
   return { items, next_cursor: rows.length > a.limit && last ? Buffer.from(canonical({ binding, snapshot, ms: last.updated_at_ms, id: last.id })).toString("base64url") : null,
@@ -100,14 +104,14 @@ export function getRunbook(auth: AuthContext, raw: unknown, database: Database =
   }
   if ("members_json" in skill) {
     const encoded = (JSON.parse(String(skill.members_json)) as Record<string, string>)["SKILL.md"];
-    if (encoded) return { markdown: Buffer.from(encoded, "base64").toString("utf8"), skill_id: skill.skill_id, version_id: skill.id };
+    if (encoded) return { markdown: `${versionReviewLine(String(skill.status), String(skill.version_label))}\n\n${Buffer.from(encoded, "base64").toString("utf8")}`, skill_id: skill.skill_id, version_id: skill.id };
   }
-  if ("original_format" in skill && skill.original_format === "skillonomia-legacy") {
+  if ("original_format" in skill && skill.original_format === "skillonomia-legacy" && "version_label" in skill) {
     const row = database.query("SELECT package_bytes FROM skill_versions WHERE id=? AND workspace_id=?")
       .get(String(skill.id), auth.workspace_id) as { package_bytes: Uint8Array };
     const bytes = Buffer.from(row.package_bytes);
     const markdown = readPackage(bytes, bytes[0] === 0x1f && bytes[1] === 0x8b ? "tar.gz" : "tar").get("SKILL.md");
-    if (markdown) return { markdown: markdown.toString("utf8"), skill_id: skill.skill_id, version_id: skill.id };
+    if (markdown) return { markdown: `${versionReviewLine(skill.status, skill.version_label)}\n\n${markdown.toString("utf8")}`, skill_id: skill.skill_id, version_id: skill.id };
   }
   throw new QoopiaError("UNSUPPORTED", "This historical version has no frozen runbook; read its original version record");
 }

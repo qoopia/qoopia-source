@@ -155,3 +155,26 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"{\\\\"resu
     expect((await memoryText('ws-old','Return OK.',{})).text).toBe('OK');expect(argv()).toContain('gpt-5.6-luna');
   } finally {process.env.PATH=path0;enableMemoryRoot(before);fs.rmSync(root,{recursive:true,force:true});}
 },30_000);
+
+test('a timed-out model run is stopped with everything it started, so the slot is released',async()=>{
+  const root=tempRoot(),before=memoryRoot(),path0=process.env.PATH,bin=path.join(root,'bin');
+  fs.mkdirSync(bin,{mode:0o700});
+  // A helper the CLI started keeps its output pipe open after the CLI itself is stopped.
+  fs.writeFileSync(path.join(bin,'codex'),['#!/bin/sh',`[ "$1" = --version ] && { echo 'codex-cli ${RUNTIMES.codex.version}'; exit 0; }`,
+    `case " $* " in *' login status '*) echo 'Logged in using ChatGPT'; exit 0;; esac`,'sleep 30 &','echo $! > "$(dirname "$0")/helper"','exec sleep 30',''].join('\n'),{mode:0o700});
+  const helper=()=>Number(fs.readFileSync(path.join(bin,'helper'),'utf8'));
+  const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
+  try {
+    enableMemoryRoot(root);process.env.PATH=bin+path.delimiter+path0;selectMemoryProfile('ws-orphan','codex');
+    Object.assign(memoryTimeouts,{term_ms:300,kill_ms:600});
+    const started=Date.now();
+    await expect(memoryText('ws-orphan','Return OK.',{})).rejects.toMatchObject({code:'MODEL_TIMEOUT'});
+    expect(Date.now()-started).toBeLessThan(5_000);
+    expect(memoryModelBusy()).toBe(false);
+    expect(alive(helper())).toBe(false);
+  } finally {
+    Object.assign(memoryTimeouts,{term_ms:45_000,kill_ms:47_000});
+    if(fs.existsSync(path.join(bin,'helper'))&&alive(helper()))process.kill(helper(),'SIGKILL');
+    process.env.PATH=path0;enableMemoryRoot(before);fs.rmSync(root,{recursive:true,force:true});
+  }
+},15_000);

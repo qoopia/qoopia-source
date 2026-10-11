@@ -23,7 +23,15 @@ import { RUNTIMES } from './runtime-versions.ts';
 import { prepareNativeKeychain } from './native-keychain.ts';
 import { QoopiaError } from '../utils/errors.ts';
 import { redactSensitive } from '../utils/secret-guard.ts';
+import { lookalikeAgents } from '../utils/agent-name.ts';
 
+/** A failed connect revokes its new agent but the name stays taken (names are never reused),
+ * so a retry with the same fixed name was refused for good. The next free numbered name is used. */
+export function freeAgentName(workspace:string,base:string) {
+  const taken=db.query('SELECT name FROM agents WHERE workspace_id=?').all(workspace) as {name:string}[];
+  let name=base;for(let n=2;lookalikeAgents(taken,name).length;n++)name=base+' '+n;
+  return name;
+}
 // Set only by the local installed launcher, after it acquires the lifetime lock.
 let installation: {root:string; source:NodeJS.ProcessEnv} | undefined;
 // ponytail: one local action at a time; use a per-runtime queue if concurrent work is needed.
@@ -110,7 +118,7 @@ export async function workspaceAction(ownerId:string,raw:unknown) {
       if(!ref){
         // Native discovery walks ancestors. Keep generated execution files away from the user's real agent profiles.
         const config=path.join(privateDirectory(path.join(work,'connection')),kind==='codex'?'config.toml':'mcp.json');
-        const args={runtime:kind,name:kind==='codex'?'Qoopia Codex':'Qoopia Claude',config,ownerId};
+        const args={runtime:kind,name:freeAgentName(c.owner.workspace_id,kind==='codex'?'Qoopia Codex':'Qoopia Claude'),config,ownerId};
         const {instance,bundle,generation,port}=c.current;
         const target={root:c.root,instance,bundle,generation,port};
         const preview=await connectInstalled(args,target);

@@ -4,14 +4,14 @@ import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { logActivity } from "./activity.ts";
-import { markDeliveredOnRead, scheduleAgentWakeDrain } from "./agent-wake.ts";
+import { markDeliveredOnRead, scheduleAgentWakeDrain, wakeDelivery, wakeDeliveryNote, wakeRouteFor } from "./agent-wake.ts";
 import { bootstrapToolAllowed } from "../auth/policy.ts";
 
 type AgentCommKind = "request" | "ack" | "reply" | "status" | "system";
 
 type AgentRow = { id: string; name: string; type: string; active: number; last_seen: string | null; tool_profile: string; workspace_id: string };
 type SessionRow = { id: string; workspace_id: string; topic: string; status: string; created_by_agent_id: string; metadata: string; idempotency_key: string | null; created_at: string; updated_at: string; closed_at: string | null };
-type MessageRow = { id: string; workspace_id: string; session_id: string; sender_agent_id: string; recipient_agent_id: string; kind: string; body: string; metadata: string; delivered_at: string | null; parent_message_id: string | null; idempotency_key: string | null; created_at: string; sender_name?: string; recipient_name?: string; topic?: string; session_status?: string; wake_id?: string | null; wake_status?: string | null };
+type MessageRow = { id: string; workspace_id: string; session_id: string; sender_agent_id: string; recipient_agent_id: string; kind: string; body: string; metadata: string; delivered_at: string | null; parent_message_id: string | null; idempotency_key: string | null; created_at: string; sender_name?: string; recipient_name?: string; topic?: string; session_status?: string; wake_id?: string | null; wake_status?: string | null; wake_error?: string | null; wake_attempts?: number | null };
 
 interface AgentSendInput {
   workspace_id: string;
@@ -143,8 +143,8 @@ function resolveCounterparty(workspace_id: string, nameOrId: string): AgentRow {
 }
 
 /**
- * A recipient whose connection profile has no agent_inbox (a client connection or memory-setup
- * agent: 'memory-worker' without the legacy surface) can never read a message, so queueing one
+ * A recipient whose connection profile has no agent_inbox (a paired 'memory-reader' without the
+ * legacy surface) can never read a message, so queueing one
  * would answer "delivered automatically" for something nobody will see. Refuse it at send time.
  */
 function assertCanReceive(target: AgentRow): void {
@@ -222,32 +222,51 @@ function messageOut(row: MessageRow) {
 
 function createWake(
   workspace_id: string,
-  target_agent_id: string,
+  target: { id: string; name: string; workspace_id: string },
   session_id: string,
   message_id: string,
 ): string {
   const id = ulid();
+  // A recipient with no runtime to push to is closed at once: its wake is not
+  // "queued" for anyone to read as on its way.
+  const route = wakeRouteFor(target);
   db.prepare(
     `INSERT INTO agent_wake_events
-       (id, workspace_id, target_agent_id, session_id, message_id, payload, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, workspace_id, target_agent_id, session_id, message_id, payload, created_at, status, last_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     workspace_id,
-    target_agent_id,
+    target.id,
     session_id,
     message_id,
     JSON.stringify({ reason: "agent_message" }),
     nowIso(),
+    route.route === "push" ? "queued" : "ignored",
+    route.route === "push" ? null : route.reason,
   );
   return id;
+}
+
+function wakeOut(row: MessageRow) {
+  const delivery = wakeDelivery(row.delivered_at, {
+    status: row.wake_status, last_error: row.wake_error, attempt_count: row.wake_attempts,
+  });
+  return {
+    event_id: row.wake_id as string,
+    status: row.wake_status ?? "queued",
+    ...(row.wake_error ? { reason: row.wake_error } : {}),
+    delivery,
+    note: wakeDeliveryNote(delivery),
+  };
 }
 
 function loadMessageResult(messageId: string, deduplicated = false) {
   const row = db.prepare(
     `SELECT m.*, recipient.name AS recipient_name, sender.name AS sender_name,
             s.topic, s.status AS session_status,
-            w.id AS wake_id, w.status AS wake_status
+            w.id AS wake_id, w.status AS wake_status, w.last_error AS wake_error,
+            w.attempt_count AS wake_attempts
        FROM agent_comm_messages m
        JOIN agents recipient ON recipient.id = m.recipient_agent_id
        JOIN agents sender ON sender.id = m.sender_agent_id
@@ -264,9 +283,7 @@ function loadMessageResult(messageId: string, deduplicated = false) {
     to: row.recipient_name,
     kind: row.kind,
     created_at: row.created_at,
-    wake: row.wake_id
-      ? { event_id: row.wake_id, status: row.wake_status ?? "queued" }
-      : null,
+    wake: row.wake_id ? wakeOut(row) : null,
     ...(deduplicated ? { deduplicated: true } : {}),
   };
 }
@@ -540,7 +557,7 @@ export function agentSessionCreate(input: {
           ts,
         );
         db.prepare(`UPDATE agents SET last_seen = ? WHERE id = ?`).run(ts, sender.id);
-        wakeId = createWake(input.workspace_id, target.id, sessionId, messageId);
+        wakeId = createWake(input.workspace_id, target, sessionId, messageId);
         logSend(
           {
             workspace_id: input.workspace_id,
@@ -722,7 +739,7 @@ export function agentSend(input: AgentSendInput) {
         throw new QoopiaError("CONFLICT", "agent session is closed");
       }
       db.prepare(`UPDATE agents SET last_seen = ? WHERE id = ?`).run(ts, sender.id);
-      wakeId = createWake(homeWorkspaceId, target.id, sessionId, messageId);
+      wakeId = createWake(homeWorkspaceId, target, sessionId, messageId);
       logSend(input, messageId, sessionId, target.name, kind, reroutedFrom);
       if (input.close_after_send) {
         logActivity({

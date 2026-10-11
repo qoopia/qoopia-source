@@ -37,22 +37,31 @@ def check(root, *, public=False):
     schema = max(int(p.name.split('-')[0]) for p in (root / 'migrations').glob('[0-9]*-*.sql'))
     preview_path = root / 'LOCAL-RELEASE.json'
     preview = read('LOCAL-RELEASE.json') if preview_path.exists() else None
+    owner_preview = preview is not None and not public
     # Owner acceptance precedes publication. Keep the signed public feed and download
     # hashes truthful instead of inventing unpublished packages to satisfy this gate.
-    version = release['version'] if preview and not public else package['version']
-    issues = health.consistency_issues({'release': release, 'appcast': (root / 'marketing-site/updates/macos/appcast.xml').read_text(), 'ios': ios}, version, schema, release['source'], ios['version'], str(ios['build']))
-    if preview:
+    # During a preview the published files describe the public stage (its version and schema);
+    # the repository's newer version and migrations belong to the preview, as in release-health.py.
+    version = release['version'] if owner_preview else package['version']
+    public_schema = release.get('schema_version') if owner_preview else schema
+    issues = health.consistency_issues({'release': release, 'appcast': (root / 'marketing-site/updates/macos/appcast.xml').read_text(), 'ios': ios}, version, public_schema, release['source'], ios['version'], str(ios['build']))
+    if preview is not None:
         if public:
             issues.append('local_release:owner_acceptance_pending')
-        if (preview.get('format') != 'qoopia-owner-preview/1' or preview.get('version') != package['version']
+        if (not isinstance(preview, dict) or preview.get('format') != 'qoopia-owner-preview/1' or preview.get('version') != package['version']
                 or preview.get('schema_version') != schema or preview.get('status') != 'awaiting_owner_acceptance'
                 or preview.get('branch') != 'release/' + package['version']
-                or not re.fullmatch('[0-9a-f]{40}', preview.get('base_source', ''))
-                or tuple(map(int, package['version'].split('.'))) <= tuple(map(int, release['version'].split('.')))):
+                or not re.fullmatch('[0-9a-f]{40}', str(preview.get('base_source', '')))
+                or preview.get('public_version', release['version']) != release['version']
+                or not isinstance(release.get('schema_version'), int)):
             issues.append('local_release:invalid_preview')
+        else:
+            issues += ['local_release:' + issue for issue in health.preview_order_issues(release['version'], release['schema_version'], package['version'], schema)]
     for name in ('mac', 'linux'):
         item = release.get('packages', {}).get(name, {})
-        if not item.get('url', '').startswith('https://github.com/qoopia/qoopia-downloads/releases/download/' + release['tag'] + '/') or version not in item.get('file', '') or not re.fullmatch('[0-9a-f]{64}', item.get('sha256', '')) or not isinstance(item.get('bytes'), int) or item.get('bytes', 0) <= 0:
+        # The link must be this exact file of this release: a substring match let 5.0.1 accept qoopia-5.0.19-*.
+        file = str(item.get('file', ''))
+        if not file.startswith('qoopia-' + version + '-') or item.get('url') != 'https://github.com/qoopia/qoopia-downloads/releases/download/' + release['tag'] + '/' + file or not re.fullmatch('[0-9a-f]{64}', item.get('sha256', '')) or not isinstance(item.get('bytes'), int) or item.get('bytes', 0) <= 0:
             issues.append(name + ':invalid_package')
     if not appcast_build_is_newest(root, release['version']):
         issues.append('appcast:build_not_newer')

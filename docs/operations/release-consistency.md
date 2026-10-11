@@ -12,7 +12,7 @@ A release is complete only after its delivered surfaces agree. A green build or 
 
 ## Monitor configuration
 
-`QOOPIA_RELEASE_SHA` (runtime), `QOOPIA_PACKAGE_SOURCE` (signed package), `QOOPIA_RELEASE_VERSION`, `QOOPIA_SCHEMA_VERSION`, `QOOPIA_IOS_VERSION`, `QOOPIA_IOS_BUILD` are mandatory deployment inputs. A missing version/schema/beta record is a configuration error, not a healthy result.
+`QOOPIA_RELEASE_SHA` (runtime), `QOOPIA_PACKAGE_SOURCE` (signed package), `QOOPIA_RELEASE_VERSION`, `QOOPIA_SCHEMA_VERSION`, `QOOPIA_IOS_VERSION`, `QOOPIA_IOS_BUILD` are mandatory deployment inputs. A missing version/schema/beta record is a configuration error, not a healthy result. The three `QOOPIA_PREVIEW_*` values are optional and only describe an owner preview on the memory server (see below).
 
 Example invocation (values must come from the verified release):
 
@@ -22,6 +22,41 @@ python3 scripts/release-health.py --root /srv/qoopia-monitor \
   --version "$QOOPIA_RELEASE_VERSION" --schema-version "$QOOPIA_SCHEMA_VERSION" \
   --ios-version "$QOOPIA_IOS_VERSION" --ios-build "$QOOPIA_IOS_BUILD"
 ```
+
+## Two stages: public stable and owner preview
+
+The owner tries a new version on the memory server (`mcp.qoopia.ai`) before anything is published. The monitor then checks two explicit stages and never relabels a mismatch as OK:
+
+| Stage | Surfaces | Expected from `/srv/qoopia-monitor/release.env` |
+|---|---|---|
+| `public` | website `release.json`, Pages alias, signed Mac feed, `ios-release.json`, `qoopia-source` tag/main/`RELEASE.json`, `qoopia-downloads` `RELEASE.json`/README, both GitHub latest releases, sign-in service, Apple-review server, source mirror | `QOOPIA_RELEASE_VERSION`, `QOOPIA_SCHEMA_VERSION`, `QOOPIA_RELEASE_SHA`, `QOOPIA_PACKAGE_SOURCE`, `QOOPIA_AUTH_RELEASE_SHA`, `QOOPIA_IOS_VERSION`, `QOOPIA_IOS_BUILD` |
+| `owner_preview` | memory server `/ready`: `version`, `release_sha`, `schema_version`, readiness checks | `QOOPIA_PREVIEW_VERSION`, `QOOPIA_PREVIEW_RELEASE_SHA` (40-hex runtime SHA), `QOOPIA_PREVIEW_SCHEMA_VERSION` |
+
+- No `QOOPIA_PREVIEW_*` value set (absent or empty): one public stage, exactly the previous behaviour; the memory server must match the public values.
+- All three set: the memory server is checked only against the preview values, everything else only against the public values. `status.json` shows `"summary": "OK — public 5.0.19, owner preview 5.0.20 on memory"`, a `stages` object with each stage's expectations and issues, and `stage` on every `http` entry.
+- Preview-stage issues are prefixed `owner_preview:` (`owner_preview:memory:version_mismatch`, `owner_preview:memory:unexpected_state` for a wrong runtime SHA, schema or failed readiness). Public issues keep their names (`auth:version_mismatch`).
+- ALERT, never a fall back to the public stage: only some preview values set (`owner_preview:config_missing:QOOPIA_PREVIEW_RELEASE_SHA`), a malformed value (`owner_preview:config_invalid:…`), a preview version not newer than public (`owner_preview:not_newer_than_public`, also a stale preview left after publication) or a preview schema below public (`owner_preview:schema_behind_public`). `check-release-metadata.py` applies the same rule to `LOCAL-RELEASE.json` (`local_release:not_newer_than_public`, `local_release:schema_behind_public`); during a preview it checks the published files against `release.json`'s own version and schema, and an optional `public_version` in the record must equal that version.
+
+Procedure (values only from verified delivery evidence; back up `release.env` first):
+
+1. Owner preview rollout on the memory server: after `/ready` reports the new build, add `QOOPIA_PREVIEW_VERSION`, `QOOPIA_PREVIEW_RELEASE_SHA` and `QOOPIA_PREVIEW_SCHEMA_VERSION` from that `/ready`. Leave the public values unchanged. Run the service once and require `status: OK` with the two-stage summary.
+2. Public release after owner GO: once every public surface is delivered, move the preview values into `QOOPIA_RELEASE_VERSION`, `QOOPIA_RELEASE_SHA`, `QOOPIA_SCHEMA_VERSION` (and `QOOPIA_PACKAGE_SOURCE` / `QOOPIA_AUTH_RELEASE_SHA` when those builds differ), then delete or empty the three `QOOPIA_PREVIEW_*` lines in the same edit. Require `status: OK` with the single-stage summary `OK — public <version>`.
+
+```sh
+# /srv/qoopia-monitor/release.env during an owner preview (example values)
+QOOPIA_RELEASE_VERSION=5.0.19
+QOOPIA_SCHEMA_VERSION=48
+QOOPIA_RELEASE_SHA=<public runtime SHA>
+QOOPIA_PACKAGE_SOURCE=<signed package source SHA>
+QOOPIA_AUTH_RELEASE_SHA=<sign-in service SHA>
+QOOPIA_IOS_VERSION=5.0.8
+QOOPIA_IOS_BUILD=3
+QOOPIA_PREVIEW_VERSION=5.0.20
+QOOPIA_PREVIEW_RELEASE_SHA=<preview runtime SHA from mcp.qoopia.ai/ready>
+QOOPIA_PREVIEW_SCHEMA_VERSION=49
+```
+
+The same values can be passed as `--preview-version`, `--preview-source`, `--preview-schema-version`. Only the memory server carries a preview; a preview of the sign-in service or the Apple-review server is not a supported stage and reports as a public mismatch.
 
 ## Separate iOS beta channel
 

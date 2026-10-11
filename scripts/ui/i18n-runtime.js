@@ -3,13 +3,22 @@
   'use strict';
   const catalog = __CATALOG__;
   const countForms = {member:[['member','members','members'],['участник','участника','участников']],session:[['session','sessions','sessions'],['сессия','сессии','сессий']],
-    message:[['message','messages','messages'],['сообщение','сообщения','сообщений']],note:[['note','notes','notes'],['заметка','заметки','заметок']],file:[['file','files','files'],['файл','файла','файлов']]};
+    message:[['message','messages','messages'],['сообщение','сообщения','сообщений']],note:[['note','notes','notes'],['заметка','заметки','заметок']],file:[['file','files','files'],['файл','файла','файлов']],
+    result:[['result','results','results'],['результат','результата','результатов']],token:[['token','tokens','tokens'],['токен','токена','токенов']]};
   const key = 'qoopia.language';
   const valid = value => value === 'en' || value === 'ru';
   const read = () => { try { return localStorage.getItem(key); } catch { return null; } };
   const cookie = document.cookie.match(/(?:^|; )qoopia_language=(en|ru)(?:;|$)/)?.[1];
   const requested = new URLSearchParams(location.search).get('lang');
-  let language = [requested, cookie, read()].find(valid) || (navigator.language.toLowerCase().startsWith('ru') ? 'ru' : 'en');
+  const preferred = [requested, cookie, read()].find(valid);
+  // A page published in one language (qoopia.ai/ru/...) keeps it; an explicit other choice opens its translation.
+  const fixed = document.documentElement.dataset?.staticLanguage !== undefined && valid(document.documentElement.lang) ? document.documentElement.lang : null;
+  const translation = fixed && preferred && preferred !== fixed && document.querySelector('link[rel="alternate"][hreflang="' + preferred + '"]');
+  // On the site ?lang= (older links) is a choice too: remember it, or the stored language would send the visitor back.
+  if (fixed && valid(requested)) remember(requested);
+  // stop() first: the rest of this page must not parse, run its scripts or count a view.
+  if (translation) { window.stop(); location.replace(new URL(translation.href).pathname + location.hash); }
+  let language = fixed || preferred || (navigator.language.toLowerCase().startsWith('ru') ? 'ru' : 'en');
   const nonce = 'q' + Array.from(crypto.getRandomValues(new Uint32Array(2)), n => n.toString(36)).join('');
   const pattern = new RegExp('\\uE000' + nonce + ':([0-9]+)\\uE001', 'g');
   const messages = [], bindings = new Map(), tokenValues = new Map();
@@ -68,15 +77,23 @@
   }
   function syncControls() {
     document.documentElement.lang=language;
-    document.querySelectorAll('[data-language]').forEach(b => b.setAttribute('aria-pressed',String(b.dataset.language===language)));
+    document.querySelectorAll('[data-language]').forEach(b => {
+      const current = b.dataset.language === language;
+      if (b.tagName !== 'A') b.setAttribute('aria-pressed', String(current));
+      else if (current) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
+    });
+  }
+  function remember(value) {
+    try{localStorage.setItem(key,value);}catch{/* Storage unavailable (private mode or blocked); the choice lasts for this page. */}
+    const shared=location.hostname==='qoopia.ai'||location.hostname.endsWith('.qoopia.ai');
+    if(shared)document.cookie='qoopia_language='+value+'; Path=/; Domain=qoopia.ai; Max-Age=31536000; SameSite=Lax; Secure';
   }
   function setLanguage(value) {
     if(!valid(value))return;
     language=value;
     const address=new URL(location.href);if(address.searchParams.has("lang")){address.searchParams.set("lang",value);history.replaceState(null,"",address.pathname+address.search+address.hash);}
-    try{localStorage.setItem(key,value);}catch{/* Storage unavailable (private mode or blocked); the choice lasts for this page. */}
-    const shared=location.hostname==='qoopia.ai'||location.hostname.endsWith('.qoopia.ai');
-    if(shared)document.cookie='qoopia_language='+value+'; Path=/; Domain=qoopia.ai; Max-Age=31536000; SameSite=Lax; Secure';
+    remember(value);
     syncControls();
     for(const [node,binding] of bindings)renderBinding(node,binding);
     window.dispatchEvent(new CustomEvent('qoopia:language',{detail:value}));
@@ -90,7 +107,8 @@
   document.documentElement.lang=language;
   document.addEventListener('DOMContentLoaded',()=>{
     scan(document);syncControls();
-    document.addEventListener('click',event=>{const button=event.target.closest('[data-language]');if(button)setLanguage(button.dataset.language);});
+    // On a fixed-language page the switcher is a link to the translation: remember the choice and let it navigate.
+    document.addEventListener('click',event=>{const button=event.target.closest('[data-language]');if(!button||!valid(button.dataset.language))return;if(fixed)remember(button.dataset.language);else setLanguage(button.dataset.language);});
     const observer=new MutationObserver(records=>{
       for(const record of records){
         if(record.type==='childList'){for(const node of record.addedNodes)scan(node);}
@@ -100,5 +118,5 @@
     });
     observer.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['placeholder','title','aria-label','alt']});
   });
-  window.addEventListener('storage',event=>{if(event.key===key&&valid(event.newValue)&&event.newValue!==language)setLanguage(event.newValue);});
+  window.addEventListener('storage',event=>{if(!fixed&&event.key===key&&valid(event.newValue)&&event.newValue!==language)setLanguage(event.newValue);});
 })();

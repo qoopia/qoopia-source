@@ -85,6 +85,19 @@ test('429 uses Telegram cooldown; ambiguous delivery is visible and never replay
   queueTelegram(owner,generation,'ambiguous',{chat_id:'123',text:'Do not repeat'});mode='ambiguous';await deliverTelegram(owner);expect(sent.length).toBe(3);recoverTelegram();mode='ok';await deliverTelegram(owner);expect(sent.length).toBe(3);expect(telegramState(owner).uncertain_deliveries).toBe(1);
 });
 
+test('a reply refused at connect (offline, DNS down) is retried, not written off as uncertain',async()=>{
+  const {owner}=fixture(),generation=channel(owner)!.generation;
+  queueTelegram(owner,generation,'offline:0',{chat_id:'123',text:'Synthetic reply part 1'});
+  queueTelegram(owner,generation,'offline:1',{chat_id:'123',text:'Synthetic reply part 2'});
+  let offline=true;const sent=mockTelegram([],()=>offline?Promise.reject(Object.assign(new Error('Unable to connect'),{code:'ConnectionRefused'})):Response.json({ok:true,result:{message_id:56}}));
+  await deliverTelegram(owner);
+  expect(telegramState(owner).uncertain_deliveries).toBe(0);
+  expect(db.query("SELECT state FROM qoopia_telegram_outbox WHERE owner_id=? ORDER BY id").all(owner)).toEqual([{state:'queued'},{state:'queued'}]);
+  db.query('UPDATE qoopia_telegram_outbox SET retry_at=0 WHERE owner_id=?').run(owner);offline=false;await deliverTelegram(owner);
+  expect(sent.map(m=>m.text)).toEqual(['Synthetic reply part 1','Synthetic reply part 1','Synthetic reply part 2']);
+  expect(db.query("SELECT state FROM qoopia_telegram_outbox WHERE owner_id=? ORDER BY id").all(owner)).toEqual([{state:'sent'},{state:'sent'}]);
+});
+
 test('a successful delivery keeps the subscription sign-in banner',async()=>{
   const {owner}=fixture(),generation=channel(owner)!.generation;
   db.query('UPDATE qoopia_telegram_channels SET error=? WHERE owner_id=?').run(TELEGRAM_LOGIN_REQUIRED,owner);
@@ -337,4 +350,19 @@ test('a Telegram task that needed an approval still delivers its final answer to
   for(let i=0;i<4;i++)await deliverTelegram(owner);
   expect(sent.some(m=>m.text==='FINAL-ANSWER-AFTER-APPROVAL')).toBe(true);
   expect(db.query('SELECT state FROM qoopia_agent_telegram_delivery WHERE run_id=?').get(approval.run_id)).toEqual({state:'sent'});
+});
+
+test('a button tap Telegram no longer lets Qoopia answer is acknowledged and never blocks the messages behind it',async()=>{
+  const {owner}=fixture();
+  const updates:any[]=[{update_id:70,callback_query:{id:'cb70',from:{id:123},data:'qa:'+randomUUID()+':yes',message:{chat:{id:123,type:'private'}}}},update(71,'Synthetic task after a stale tap')];
+  globalThis.fetch=fakeFetch(async(url:any)=>{
+    const method=String(url).split('/').at(-1);
+    if(method==='getUpdates')return Response.json({ok:true,result:updates});
+    if(method==='answerCallbackQuery')return Response.json({ok:false,error_code:400,description:'Bad Request: query is too old'},{status:400});
+    return Response.json({ok:true,result:{message_id:1}});
+  });
+  await pollTelegramOwner(owner);
+  expect(db.query('SELECT telegram_offset n FROM qoopia_agent_settings WHERE owner_id=?').get(owner)).toEqual({n:72});
+  expect(telegramState(owner).queued).toBe(1);
+  expect(channel(owner)?.failures).toBe(0);
 });

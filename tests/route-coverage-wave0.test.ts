@@ -25,6 +25,7 @@ import { createAgent } from "../src/admin/agents.ts";
 import { bootstrapOwner } from "../src/auth/pairings.ts";
 import { startHttpServer } from "../src/http.ts";
 import { saveMessage } from "../src/services/sessions.ts";
+import { setMemoryPolicy } from "../src/services/memory-policy.ts";
 
 let server: Server;
 let baseUrl = "";
@@ -35,6 +36,8 @@ let OWNER_KEY = "";
 let TARGET_AGENT_ID = "";
 let FOREIGN_AGENT_ID = "";
 let FOREIGN_WORKSPACE_ID = "";
+let OWNER_ID = "";
+let HOME_WORKSPACE_ID = "";
 
 beforeAll(async () => {
   runMigrations();
@@ -45,7 +48,10 @@ beforeAll(async () => {
   // The dashboard endpoints below resolve the caller through localOwner(),
   // which requires exactly one bootstrapped human owner on the instance.
   // Without it every one of them answers 400 regardless of agent type.
-  OWNER_KEY = bootstrapOwner(db, "Wave0 owner", undefined, ws.id).api_key;
+  const owner = bootstrapOwner(db, "Wave0 owner", undefined, ws.id);
+  OWNER_KEY = owner.api_key;
+  OWNER_ID = owner.agent_id;
+  HOME_WORKSPACE_ID = ws.id;
 
   INGEST_KEY = createAgent({
     name: "wave0-ingest",
@@ -239,6 +245,25 @@ describe("POST /ingest/session", () => {
       body: ingestBody(),
     });
     expect(r.status).toBe(200);
+  });
+
+  // F-520-ingest-manual: a tailer that replays its transcript after the owner returned to auto
+  // must not backfill the manual period, exactly like /memory/continuity.
+  test("acknowledges but does not store a replayed record written during a manual period", async () => {
+    const policy = (mode: "auto" | "manual") => setMemoryPolicy({ workspace_id: HOME_WORKSPACE_ID, agent_id: TARGET_AGENT_ID, mode, actor_id: OWNER_ID });
+    policy("manual");
+    const during = new Date().toISOString();
+    await Bun.sleep(5);
+    policy("auto");
+    const post = (content: string, timestamp: string) => fetch(`${baseUrl}/ingest/session`, {
+      method: "POST", headers: { authorization: `Bearer ${INGEST_KEY}` }, body: ingestBody({ content, timestamp }) });
+    const replay = await post("wave0 written while manual", during);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({ skipped: "memory_mode_manual" });
+    expect((await post("wave0 written after", new Date().toISOString())).status).toBe(200);
+    const stored = (content: string) => (db.query("SELECT COUNT(*) AS n FROM session_messages WHERE content=?").get(content) as { n: number }).n;
+    expect(stored("wave0 written while manual")).toBe(0);
+    expect(stored("wave0 written after")).toBe(1);
   });
 });
 

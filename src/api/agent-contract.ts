@@ -60,6 +60,19 @@ function currentConnection(database:Database,workspace:string,agent:string) {
     .get(agent,workspace) as {surface:string;state:string;verified_at:string|null}|null;
 }
 
+/** The cause behind a summary failure code, so the reason names what is wrong and the action fits it. */
+const MODEL_FAULTS:Record<string,{reason:string;action:string}>={
+  MODEL_NOT_CONNECTED:{reason:'No memory model is connected, so conversations are not summarised.',
+    action:'The owner chooses Claude or ChatGPT in Qoopia memory settings and signs in. Accepted messages are kept.'},
+  UNAUTHENTICATED:{reason:'The memory subscription needs a new sign-in.',
+    action:'The owner signs in to the memory subscription in Qoopia memory settings. Accepted messages are kept; summaries resume by themselves.'},
+  MODEL_QUOTA:{reason:'The memory subscription reached its usage limit.',
+    action:'Summaries resume by themselves when the limit resets. Accepted messages are kept.'},
+  MODEL_TIMEOUT:{reason:'The memory model did not answer in time.',
+    action:'Qoopia retries in smaller parts by itself. Accepted messages are kept; if it persists, the owner checks the memory model in Qoopia.'},
+  INVALID_PROFILE:{reason:'The memory settings of this workspace cannot be read.',
+    action:'The owner chooses Claude or ChatGPT again in Qoopia memory settings. Accepted messages are kept.'},
+};
 type ContinuityBase={id:string;title:string;tools:string[];withheld:string[]};
 /** One channel's live status as the mechanism row; `waiting` is decided by the caller. */
 function channelMechanism(base:ContinuityBase,memory:ReturnType<typeof agentMemoryStatus>):Mechanism {
@@ -68,8 +81,11 @@ function channelMechanism(base:ContinuityBase,memory:ReturnType<typeof agentMemo
   if(memory.state==='working')return {...base,status:'available',reason:null,action:null};
   if(memory.error_code==='CAPTURE_STOPPED')return {...base,status:'faulty',reason:'This agent keeps working, but its sessions stopped arriving: the lifecycle hooks no longer deliver.',
     action:'The owner runs qoopia doctor on the computer where this runtime runs; it names the failing hook and what to do. Saved memory stays readable.'};
-  return {...base,status:'faulty',reason:memory.state==='behind'?'Conversations wait for a summary.':'The memory model reported an error.',
-    action:memory.state==='sign_in'?'The owner signs in to the memory subscription in Qoopia, or checks its quota.':'Accepted messages are kept. The owner checks the memory model in Qoopia; summaries resume by themselves.'};
+  // Behind is capture working with summaries catching up (the dashboard says so), not a fault.
+  if(memory.state==='behind')return {...base,status:'available',reason:'Conversations wait for a summary.',action:null};
+  const known=MODEL_FAULTS[memory.error_code??''];
+  return {...base,status:'faulty',reason:known?.reason??'The memory model reported an error.',
+    action:known?.action??(memory.state==='sign_in'?'The owner signs in to the memory subscription in Qoopia, or checks its quota.':'Accepted messages are kept. The owner checks the memory model in Qoopia; summaries resume by themselves.')};
 }
 function continuity(database:Database,auth:AuthContext,canSave:boolean):Mechanism {
   const base={id:'memory.continuity',title:'Automatic session capture and restore',tools:[] as string[],withheld:[] as string[]};

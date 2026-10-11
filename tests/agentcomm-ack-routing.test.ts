@@ -386,9 +386,9 @@ describe("agent-comm parent_message_id names a message of the same thread", () =
   });
 
   test("a message to an agent without an inbox is refused, not queued", () => {
-    // Shaped like a client-connection / memory-setup agent: its profile has no agent_inbox.
+    // A paired memory reader: its profile has no agent_inbox.
     const worker = createAgent({ name: "inboxless-t", workspaceSlug: wsSlug }).id;
-    db.query("UPDATE agents SET authority_profile = 'memory-worker', legacy_skill_access = 0 WHERE id = ?").run(worker);
+    db.query("UPDATE agents SET authority_profile = 'memory-reader', legacy_skill_access = 0 WHERE id = ?").run(worker);
     const count = () => (db.prepare("SELECT count(*) AS n FROM agent_comm_messages WHERE recipient_agent_id = ?").get(worker) as { n: number }).n;
     const refused = errorOf(() => agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "inboxless-t", body: "please review" }));
     expect(refused).toMatchObject({ code: "UNSUPPORTED" });
@@ -398,6 +398,16 @@ describe("agent-comm parent_message_id names a message of the same thread", () =
     expect(count()).toBe(0);
     // An agent with the legacy surface (its inbox included) still receives.
     expect(agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "leo-t", body: "still fine" }).to).toBe("leo-t");
+  });
+
+  test("a client connection's memory worker has an inbox: it receives, reads and answers", () => {
+    const worker = createAgent({ name: "worker-inbox-t", workspaceSlug: wsSlug }).id;
+    db.query("UPDATE agents SET authority_profile = 'memory-worker', tool_profile = 'no-destructive', legacy_skill_access = 0 WHERE id = ?").run(worker);
+    const sent = agentSend({ workspace_id: WS, agent_id: LIAM, to_agent: "worker-inbox-t", body: "please review" });
+    expect(sent.to).toBe("worker-inbox-t");
+    expect(agentInbox({ workspace_id: WS, agent_id: worker }).items.map((m: { id: string }) => m.id)).toContain(sent.id);
+    const answer = agentReply({ workspace_id: WS, agent_id: worker, session_id: sent.session_id, body: "reviewed" });
+    expect(row(answer.id).recipient_agent_id).toBe(LIAM);
   });
 
   test("agent_status by a local agent's id is not flagged as another workspace", () => {

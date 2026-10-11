@@ -8,7 +8,7 @@ import {z} from 'zod';
 import {safePath,privateDirectory,readJsonBytes,durableWrite,hash,hasNulOrNewline,readJson} from '../utils/fs.ts';
 import {resourceOrigin} from '../auth/resource-origin.ts';
 import {nativeOwnerHome} from './native-keychain.ts';
-import {selectedNativeDirectory} from './native-client-paths.ts';
+import {selectedNativeDirectory,assertCodexTablesAppendable} from './native-client-paths.ts';
 import {prepareDesktopLauncher} from './desktop-launcher.ts';
 
 const clientBindingSchema=z.object({format:z.literal('qoopia-client-connection/1'),connection_id:z.string().uuid(),
@@ -83,7 +83,7 @@ export function configureNativeClient(root:string,raw:unknown,action:'plan'|'app
   if(action==='remove'&&!existing){durableWrite(receiptFile,JSON.stringify({...receipt,state:'removed'}));return result('CLIENT_CONFIG_REMOVED',{next_action:'The local entry is removed. Revoke its memory access in Qoopia if it is still active.'});}
   let next:string;
   if(codex){
-    if(action==='apply')next=state.text+'\n[mcp_servers.'+name+']\nurl = '+JSON.stringify(binding.mcp_url)+'\n';
+    if(action==='apply'){assertCodexTablesAppendable(state.text);next=state.text+'\n[mcp_servers.'+name+']\nurl = '+JSON.stringify(binding.mcp_url)+'\n';}
     else {
       // The owned entry is exactly one table with one URL. Refuse unusual user formatting instead of rewriting unrelated TOML.
       const marker='\n[mcp_servers.'+name+']\nurl = '+JSON.stringify(binding.mcp_url)+'\n',start=state.text.indexOf(marker);

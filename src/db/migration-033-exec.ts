@@ -26,6 +26,8 @@ const TRIGGER_HEAD = /\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
 const TRIGGER_TAIL = /\bEND\s*$/i;
 const SCHEMA_VERSION_INSERT = /\bINSERT\s+INTO\s+schema_versions\b/i;
 
+const words = (sql: string, word: RegExp) => (sql.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"/g, "''").match(word) ?? []).length;
+
 /** Убрать комментарии — только для решения «закончился ли оператор». */
 function stripComments(sql: string): string {
   return sql.replace(/--[^\n]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
@@ -82,7 +84,9 @@ export function splitSqlStatements(sql: string): string[] {
       const body = stripComments(current).trim();
       // Внутри тела триггера `;` разделяет вложенные операторы, а не сам
       // `CREATE TRIGGER`: терминатор — только `;` сразу после `END`.
-      if (TRIGGER_HEAD.test(body) && !TRIGGER_TAIL.test(body)) {
+      // A CASE … END; inside the body ends a nested statement too: the trigger is closed only once
+      // its ENDs outnumber its CASEs (one END for BEGIN). Literals are blanked before counting.
+      if (TRIGGER_HEAD.test(body) && !(TRIGGER_TAIL.test(body) && words(body, /\bEND\b/gi) > words(body, /\bCASE\b/gi))) {
         current += char;
         index++;
         continue;

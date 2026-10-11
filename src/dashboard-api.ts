@@ -34,10 +34,11 @@ import { setSharedContext } from "./admin/agents.ts";
 import { connectedApps } from "./services/browser-connections.ts";
 import { decideSaveRequest, listSaveRequests } from "./services/memory-save-requests.ts";
 import { agentContractFor } from "./api/agent-contract.ts";
+import { wakeDelivery } from "./services/agent-wake.ts";
 import { authorityOperations } from "./api/authority.ts";
 import { QoopiaError, safeJsonParse } from "./utils/errors.ts";
 import {
-  ALLOWED_TYPES,
+  dashboardPrincipal,
   DashboardAuth,
   SESSION_TTL_SEC,
   authFromSessionCookie,
@@ -106,7 +107,7 @@ function loginHandler(req: IncomingMessage, res: ServerResponse) {
     });
     return;
   }
-  if (!ALLOWED_TYPES.has(auth.type)) {
+  if (!dashboardPrincipal(auth)) {
     json(res, 401, {
       error: "unauthorized",
       error_description:
@@ -832,14 +833,22 @@ function ccOverview(res: ServerResponse, auth: DashboardAuth) {
         `workspace_id = ?${mf} AND created_at >= ?`,
         [ws, ...mp, since24],
       ),
+      // Messages that reached their recipient by no route yet. A wake row stays
+      // undelivered after a read from the inbox, so it cannot stand in here.
       undelivered: ccCount(
-        "agent_wake_events",
-        `workspace_id = ?${wf} AND delivered_at IS NULL`,
+        "agent_comm_messages",
+        `workspace_id = ?${admin ? "" : " AND recipient_agent_id = ?"} AND delivered_at IS NULL`,
         [ws, ...wp],
       ),
+      // Only wakes a runtime accepted. Reading the inbox is not a wake.
       wakes_24h: ccCount(
         "agent_wake_events",
-        `workspace_id = ?${wf} AND created_at >= ?`,
+        `workspace_id = ?${wf} AND status = 'delivered' AND created_at >= ?`,
+        [ws, ...wp, since24],
+      ),
+      no_runtime_24h: ccCount(
+        "agent_wake_events",
+        `workspace_id = ?${wf} AND status = 'ignored' AND last_error = 'no_webhook_config' AND created_at >= ?`,
         [ws, ...wp, since24],
       ),
     };
@@ -1140,7 +1149,10 @@ function acThread(
                   s.name AS sender_name, r.name AS recipient_name,
                   m.kind, m.body, m.metadata, m.parent_message_id,
                   m.created_at, m.delivered_at,
-                  cs.topic AS topic
+                  cs.topic AS topic,
+                  (SELECT json_object('status', w.status, 'last_error', w.last_error, 'attempt_count', w.attempt_count)
+                     FROM agent_wake_events w WHERE w.message_id = m.id
+                    ORDER BY w.created_at DESC LIMIT 1) AS wake
            FROM (${acPairSql("m.*", cursor ? ` AND ${cursor.sql}` : "")}) m
            LEFT JOIN agents s ON s.id = m.sender_agent_id
            LEFT JOIN agents r ON r.id = m.recipient_agent_id
@@ -1170,6 +1182,7 @@ function acThread(
       parent_message_id: m.parent_message_id ?? null,
       created_at: m.created_at,
       delivered_at: m.delivered_at ?? null,
+      delivery: wakeDelivery(m.delivered_at, m.wake ? JSON.parse(m.wake) : null),
     }));
 
   const countDir = db.prepare(

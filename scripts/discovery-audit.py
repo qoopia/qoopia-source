@@ -9,12 +9,15 @@ URLS = {
     'home':'https://qoopia.ai/', 'docs':'https://qoopia.ai/docs',
     'releases':'https://qoopia.ai/releases', 'understand':'https://qoopia.ai/understand',
     'understand-ru':'https://qoopia.ai/understand-ru', 'mobile':'https://qoopia.ai/mobile',
+    'home-ru':'https://qoopia.ai/ru/', 'docs-ru':'https://qoopia.ai/ru/docs',
+    'releases-ru':'https://qoopia.ai/ru/releases', 'mobile-ru':'https://qoopia.ai/ru/mobile',
     'robots':'https://qoopia.ai/robots.txt','sitemap':'https://qoopia.ai/sitemap.xml',
     'release':'https://qoopia.ai/release.json',
     'source-readme':'https://raw.githubusercontent.com/qoopia/qoopia-source/main/README.md',
     'source-manifest':'https://raw.githubusercontent.com/qoopia/qoopia-source/main/SOURCE-MANIFEST.json',
     'source-facts':'https://raw.githubusercontent.com/qoopia/qoopia-source/main/docs/discovery/answers.json',
 }
+PAGES = ('home','docs','releases','understand','understand-ru','mobile','home-ru','docs-ru','releases-ru','mobile-ru')
 UA='QoopiaDiscovery/1.0 (+https://qoopia.ai)'
 MAX_BYTES=2_000_000
 class Page(html.parser.HTMLParser):
@@ -55,7 +58,7 @@ def inspect(key,text,record):
     def issue(code,detail):findings.append({'surface':key,'code':code,'detail':detail})
     if text is None:
         issue('FETCH_UNAVAILABLE',str(record.get('http_status')));return findings
-    if key in ('home','docs','releases','understand','understand-ru','mobile'):
+    if key in PAGES:
         p=Page();p.feed(text)
         if not ''.join(p.title).strip():issue('TITLE_MISSING','No raw HTML title')
         if not p.meta.get('description'):issue('DESCRIPTION_MISSING','No raw HTML description')
@@ -63,11 +66,11 @@ def inspect(key,text,record):
         if p.canon!=[URLS[key]]:issue('CANONICAL_MISMATCH',str(p.canon))
         if 'noindex' in (p.meta.get('robots','')+' '+record.get('headers',{}).get('x-robots-tag','')).lower():issue('NOINDEX','Intended public page excluded')
         if 'product source repository remains private' in text:issue('FALSE_PRIVATE_SOURCE','Public source contradicted by copy')
-        if key=='home' and '/understand' not in text:issue('EVALUATION_NOT_LINKED','No direct explanation entry point')
+        if key.startswith('home') and '/understand' not in text:issue('EVALUATION_NOT_LINKED','No direct explanation entry point')
     if key=='sitemap':
         try:
             locs=[n.text for n in ET.fromstring(text).iter() if n.tag.endswith('}loc')]
-            expected={URLS[k] for k in ('home','docs','releases','understand','understand-ru','mobile')}
+            expected={URLS[k] for k in PAGES}
             if set(locs)!=expected:issue('SITEMAP_ROUTES','Expected public route set differs')
         except ET.ParseError:issue('SITEMAP_INVALID','XML parse error')
     if key=='robots':

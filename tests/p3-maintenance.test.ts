@@ -21,11 +21,16 @@ test('P3 maintenance really expires traces, keeps durable feedback and reports v
  VALUES ('p3-trace',?,?,?,'normal','v4',1,1,'2000-01-01T00:00:00.000Z')`).run(owner.workspace_id,owner.agent_id,'a'.repeat(64));
  db.query(`INSERT INTO recall_feedback(id,workspace_id,note_id,trace_id,actor_agent_id,feedback,idempotency_key)
  VALUES ('p3-feedback',?,'p3-feedback-note','p3-trace',?,'helpful','p3-feedback-key')`).run(owner.workspace_id,owner.agent_id);
- const result=runMaintenance();expect(result.ok).toBe(true);expect((result.report.recall_trace_expiry as {deleted_traces:number}).deleted_traces).toBeGreaterThan(0);
+ // F-520-trace-backlog: more than one 1000-trace batch expires in one run.
+ const extra=db.query(`INSERT INTO recall_traces(id,workspace_id,caller_agent_id,query_hash,mode,pipeline_version,duration_ms,result_count,expires_at)
+ VALUES (?,?,?,?,'normal','v4',1,1,'2000-01-01T00:00:00.000Z')`);
+ for(let i=0;i<1500;i++)extra.run('p3-backlog-'+i,owner.workspace_id,owner.agent_id,'b'.repeat(64));
+ const result=runMaintenance();expect(result.ok).toBe(true);expect((result.report.recall_trace_expiry as {deleted_traces:number}).deleted_traces).toBeGreaterThanOrEqual(1501);
+ expect(db.query("SELECT COUNT(*) AS n FROM recall_traces WHERE expires_at<'2001'").get()).toEqual({n:0});
  expect(db.query("SELECT trace_id FROM recall_feedback WHERE id='p3-feedback'").get()).toEqual({trace_id:null});
- expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:48});
+ expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:49});
  const backups=fs.readdirSync(env.BACKUP_DIR).filter(n=>n.startsWith('qoopia-'));expect(backups.length).toBeGreaterThan(0);
- for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(48);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
+ for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(49);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
 });
 
 test('P3 task purge keeps only observable tombstones for immutable skill sources',()=>{

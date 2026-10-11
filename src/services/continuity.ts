@@ -32,6 +32,13 @@ function assertSession(workspace:string,agent:string,session:string) {
   if(!row||row.agent_id!==agent)throw new QoopiaError('NOT_FOUND','Session unavailable');
   return row;
 }
+/** The linked predecessor's context. One purged since (task-bound retention) is no predecessor: refusing
+ * would fail every later batch and checkpoint of its successor, which restore inside their writes. */
+function predecessorOf(workspace:string,agent:string,meta:Record<string,any>,depth:number) {
+  if(depth>=8||typeof meta.continuity_previous!=='string')return dashboardPredecessor(meta);
+  try{return restoreContext(workspace,agent,meta.continuity_previous,depth+1);}
+  catch(error){if((error as QoopiaError).code==='NOT_FOUND')return null;throw error;}
+}
 export function restoreContext(workspace:string,agent:string,session:string,depth=0):{session_id:string;note_id:string|null;context:string;revision:number;through_message_id:number;tail:Array<{id:number;role:string;content:string}>;tail_truncated:boolean;instruction:string} {
   const row=assertSession(workspace,agent,session),meta=safeJsonParse(row.metadata,{} as Record<string,any>);
   const note=noteFor(workspace,agent,session),checkpoint=note?safeJsonParse(note.metadata,{} as Record<string,any>):{};
@@ -41,7 +48,7 @@ export function restoreContext(workspace:string,agent:string,session:string,dept
     .get(workspace,agent,session,checkpoint.through_message_id??0) as {n:number};
   let remaining=16_000;const tail:typeof messages=[];
   for(const message of messages){if(remaining<=0)break;const content=message.content.slice(-remaining);tail.push({...message,content});remaining-=content.length;}
-  const predecessor=!note?(depth<8&&typeof meta.continuity_previous==='string'?restoreContext(workspace,agent,meta.continuity_previous,depth+1):dashboardPredecessor(meta)):null;
+  const predecessor=!note?predecessorOf(workspace,agent,meta,depth):null;
   const combined=[...(predecessor?.tail??[]),...tail.reverse()];
   const bounded:typeof messages=[];remaining=16_000;let shortened=false;
   for(const m of combined.reverse()){if(remaining<=0){shortened=true;break;}const content=m.content.slice(-remaining);shortened||=content.length<m.content.length;bounded.push({...m,content});remaining-=content.length;}
@@ -213,7 +220,7 @@ export async function checkpointSession(workspace:string,agent:string,session:st
     .all(session,workspace,agent,old.through_message_id??0) as JournalRow[];
   if(!rows.length)return {state:'unchanged'};
   const more=rows.length===100,events=summaryEvents(workspace,agent,session,rows,more);
-  const predecessor=!note?(meta.continuity_previous?restoreContext(workspace,agent,meta.continuity_previous):dashboardPredecessor(meta)):null;
+  const predecessor=!note?predecessorOf(workspace,agent,meta,0):null;
   // memoryText refuses a prompt over 140k chars after JSON escaping, so the source is budgeted in
   // that escaped form: quotes, newlines or binary output can multiply a message's size.
   const previous=excerpt(note?.text??predecessor?.context??'',SOURCE_BUDGET/4);
@@ -253,7 +260,9 @@ export async function checkpointSession(workspace:string,agent:string,session:st
     if(current?.id!==note?.id||current?.text!==note?.text||current?.metadata!==note?.metadata)return {state:'changed_during_summary'};
     const version=(old.revision??0)+1,through=batch.at(-1)!.id;
     const summary=sessionSummarize({workspace_id:workspace,agent_id:agent,session_id:session,content:text,
-      msg_start_id:batch[0]!.id,msg_end_id:through,level:1});
+      // The batch is a prefix of the events, so its source starts at the first row; batch[0].id is
+      // the last row of a leading tool output and would leave its first rows outside the range.
+      msg_start_id:rows[0]!.id,msg_end_id:through,level:1});
     const metadata={format:FORMAT,revision:version,through_message_id:through,source_session:session,
       summary_id:summary.summary_id,model:result.model,updated_at_ms:Date.now()};
     const noteId=note?.id??createNote({workspace_id:workspace,agent_id:agent,type:'context',source:'qoopia-continuity',
@@ -317,9 +326,14 @@ export async function processMemoryMaintenance() {
         // for the next session. Other errors stay with this session. The journal keeps everything.
         const profileWide=['UNAUTHENTICATED','MODEL_QUOTA','MODEL_UNAVAILABLE','UNSUPPORTED'].includes(code);
         const backoff=profileWide?0:(db.query("SELECT json_extract(metadata,'$.continuity_backoff') AS n FROM sessions WHERE id=?").get(session.id) as {n:number|null}|null)?.n??0;
-        db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?)
-          WHERE ${profileWide?"workspace_id=? AND json_extract(metadata,'$.continuity_enabled')=1":'id=?'}`)
-          .run(code,Date.now()+Math.min(6*3600_000,300_000*2**backoff),profileWide?session.workspace_id:session.id);break;
+        // Only the live sessions this loop could pick: finished ones are never retried, so a mark on
+        // them would outlive the cause and grow with the workspace's history.
+        const retryAt=Date.now()+Math.min(6*3600_000,300_000*2**backoff);
+        if(profileWide)db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?)
+          WHERE workspace_id=? AND json_extract(metadata,'$.continuity_enabled')=1 AND last_active>=?`)
+          .run(code,retryAt,session.workspace_id,new Date(Date.now()-LIVE_SESSION_MS).toISOString());
+        else db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?) WHERE id=?`).run(code,retryAt,session.id);
+        break;
       }
     }
   } finally {running=false;}

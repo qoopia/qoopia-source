@@ -1,8 +1,8 @@
 import { test, expect } from 'bun:test';
-import {dashboardSource} from './helpers/dashboard-source.ts';
+import {dashboardSource,dashboardSend} from './helpers/dashboard-source.ts';
 import { runInNewContext } from 'node:vm';
 const html=dashboardSource;
-const source=html.slice(html.indexOf('  let loginPoll=0;'),html.indexOf("  $('#emailLoginForm').onsubmit"));
+const source=dashboardSend+html.slice(html.indexOf('  let loginPoll=0;'),html.indexOf("  $('#emailLoginForm').onsubmit"));
 function harness(popup:any=null){
  const elements=new Map<string,any>();const created:any[]=[];const timers:Array<()=>void>=[];const requests:any[]=[];
  const $=(id:string)=>{if(!elements.has(id))elements.set(id,{value:'',hidden:false,style:{},classList:{add(){},remove(){}},disabled:false,textContent:'',append(){},after(){},scrollIntoView(){},reportValidity:()=>true});return elements.get(id);};

@@ -141,7 +141,7 @@ test("DCR with a non-object body or a non-string client_name never echoes engine
   const name = await fetch(`${base}/oauth/register`, { method: "POST", headers: steward,
     body: JSON.stringify({ client_name: { a: 1 }, redirect_uris: ["https://client.example/cb"] }) });
   expect(name.status).toBe(400);
-  expect(await name.json()).toMatchObject({ error_description: "client_name must be a string" });
+  expect(await name.json()).toMatchObject({ error_description: "client_name must be a string of at most 200 characters" });
   expect(handlerFailures()).toBe(0);
 });
 

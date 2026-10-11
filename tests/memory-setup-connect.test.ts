@@ -4,7 +4,11 @@ import {db} from '../src/db/connection.ts';
 import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {createAgent,deleteAgent,rotateAgentKey} from '../src/admin/agents.ts';
-import {memorySetupAction,migrateMemoryOrigins} from '../src/services/memory-setup.ts';
+import {memorySetupAction,memorySetupState,migrateMemoryOrigins} from '../src/services/memory-setup.ts';
+import {enableMemoryRoot,memoryModelStatus,memoryRoot,memoryText,selectMemoryProfile} from '../src/services/memory-model.ts';
+import {continuityEvent} from '../src/services/continuity.ts';
+import {RUNTIMES} from '../src/delivery/runtime-versions.ts';
+import os from 'node:os';
 import {installMemoryClient} from '../src/delivery/memory-client.ts';
 import {hash} from '../src/utils/fs.ts';
 import fs from 'node:fs';import path from 'node:path';
@@ -145,4 +149,26 @@ test('an installed Qoopia downloads a file for another computer at its external 
     if(prior.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=prior.standalone;
     fs.rmSync(root,{recursive:true,force:true});
   }
+});
+
+test('a completed sign-in clears «sign in» and lets parked conversations retry at once',async()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-login-'))),bin=path.join(root,'bin'),before=memoryRoot(),path0=process.env.PATH;
+  fs.chmodSync(root,0o700);fs.mkdirSync(bin,{mode:0o700});
+  // A fake codex: signed out for the model call, and a device sign-in that completes.
+  fs.writeFileSync(path.join(bin,'codex'),['#!/bin/sh',`[ "$1" = --version ] && { echo 'codex-cli ${RUNTIMES.codex.version}'; exit 0; }`,
+    `case " $* " in *' login status '*) echo 'Not logged in'; exit 1;; *' login '*) echo 'https://auth.openai.com/codex/device ABCD-EFGHI'; exit 0;; esac`,'exit 1',''].join('\n'),{mode:0o700});
+  try {
+    enableMemoryRoot(root);process.env.PATH=bin+path.delimiter+path0;selectMemoryProfile(slug,'codex');
+    const agentId=createAgent({name:'login-resume-agent',workspaceSlug:slug}).id;
+    continuityEvent(slug,agentId,{session_id:'codex:login-resume',project:'/login',runtime:'codex',event:'progress',messages:[{id:'l1',role:'user',content:'Синтетическое сообщение.'}]});
+    db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error','UNAUTHENTICATED','$.continuity_retry_at',?) WHERE id='codex:login-resume'").run(Date.now()+300_000);
+    await expect(memoryText(slug,'Return OK.',{})).rejects.toMatchObject({code:'UNAUTHENTICATED'});
+    expect(memoryModelStatus(slug).state).toBe('auth_required');
+    expect(await memorySetupAction(owner.agent_id,{action:'login'})).toEqual({state:'waiting'});
+    for(let i=0;i<300&&memorySetupState(owner.agent_id).login?.state==='waiting';i++)await Bun.sleep(10);
+    expect(memorySetupState(owner.agent_id).login?.state).toBe('completed');
+    expect(memoryModelStatus(slug).state).not.toBe('auth_required');
+    const meta=JSON.parse((db.query("SELECT metadata FROM sessions WHERE id='codex:login-resume'").get() as {metadata:string}).metadata);
+    expect(meta).not.toHaveProperty('continuity_error');expect(meta).not.toHaveProperty('continuity_retry_at');
+  } finally {process.env.PATH=path0;enableMemoryRoot(before);fs.rmSync(root,{recursive:true,force:true});}
 });

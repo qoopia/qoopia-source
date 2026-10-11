@@ -27,12 +27,18 @@ import { browserEnvironment as captureBrowserEnvironment, openBrowser, presentWo
 declare const QOOPIA_PINNED_KEY:string;
 declare const QOOPIA_BUILD_SHA:string;
 const argv=process.argv.slice(2), cmd=({'--version':'version','-v':'version','--help':'help','-h':'help'} as Record<string,string>)[argv[0]??'']??argv[0]??'help';
-const arg=(name:string)=>{const i=argv.indexOf('--'+name);return i<0?undefined:argv[i+1];};
+// A trailing `--root` used to read as absent and silently select the default installation.
+const arg=(name:string)=>{const i=argv.indexOf('--'+name);if(i<0)return undefined;const v=argv[i+1];if(v===undefined||v.startsWith('--'))throw new Error('--'+name+' requires a value');return v;};
 const flag=(name:string)=>argv.includes('--'+name);
 const need=(name:string)=>{const v=arg(name);if(!v||v.startsWith('--'))throw new Error('--'+name+' required');return v;};
 const emit=(v:unknown)=>console.log(JSON.stringify(v));
 /** What the owner reads about a failure: a full disk in plain words, anything else redacted. */
 const failureText=(error:unknown,limit:number)=>String(diskFull(error)??redactSensitive(error instanceof Error?error.message:'Unknown error').text.slice(0,limit));
+/** A start step that adopts what an earlier version left behind never blocks start, but its failure
+ * is one redacted line in the service log (GitHub issue #8): silence hid why hooks or instructions lagged. */
+export async function adopt(step:string,run:()=>unknown|Promise<unknown>) {
+  try{await run();}catch(error){console.error(JSON.stringify({event:'start_step_failed',step,reason:failureText(error,300),next_action:'Qoopia keeps running; run qoopia doctor for the affected part.'}));}
+}
 function configure(root:string,bundle:string,port=3737,layout?:ReturnType<typeof platformPaths>,instance?:string) {
   bindNativeOwnerHome(os.homedir());
   bindNativeClientDirectories(process.env);
@@ -121,6 +127,7 @@ async function main(){
    const input=await Bun.stdin.text();if(input.length>2*1024*1024)throw new Error('Hook input too large');
    const output=await runMemoryHook(need('config'),JSON.parse(input));if(output)console.log(JSON.stringify(output));return;
  }
+ if(cmd==='wake-runner'){const {wakeRunnerCli}=await import('./wake-runner.ts');await wakeRunnerCli(argv,arg,flag);return;}
  if(cmd==='client-link'){
    const {configureNativeClient}=await import('./client-config.ts');
    const input=readJson(safePath(need('file'))),clientRoot=platformPaths(arg('root')).root;
@@ -184,19 +191,28 @@ async function main(){
    if(['apply','label','disconnect','network-start','network-enable','network-disable','network-revoke','client-apply','client-remove','client-auth-start'].includes(action)&&!flag('commit')){
      emit({format:'qoopia-connections/1',state:'requires_user_action',code:'COMMIT_REQUIRED',next_action:'Review the plan, then apply with --commit.'});return;
    }
+   // Every refusal used to read "start Qoopia": a missing or unverifiable installation has its own next step.
+   let stage:'INSTALLATION'|'SERVICE'='SERVICE';
    try {
      let library:string|undefined;
      if(!readServerWorkspace(root)){
+       if(!fs.existsSync(path.join(root,'current.json'))){
+         emit({format:'qoopia-connections/1',state:'requires_user_action',code:'INSTALL_REQUIRED',next_action:'Qoopia is not installed on this root. Install it (qoopia install --commit) or select your server (qoopia use-server --url ... --commit), with the same --root if you use one.'});
+         process.exitCode=1;return;
+       }
+       stage='INSTALLATION';
        const selected=readCurrent(root),installedBundle=path.join(root,'bundles',selected.bundle);
        verifyBundle(installedBundle,QOOPIA_PINNED_KEY,allow);
        library=path.join(installedBundle,'assets/native',`owner-peer.${process.platform==='darwin'?'dylib':'so'}`);
+       stage='SERVICE';
      }
      const result=await runConnectionCommand(root,{...input,action},arg('owner-id'),library);
      emit(result);
      // A refused plan or apply is a failure for a script too, not only in the JSON.
      if(result?.state==='error')process.exitCode=1;
    }
-   catch {emit({format:'qoopia-connections/1',state:'temporarily_unavailable',code:'LOCAL_SERVICE_UNAVAILABLE',next_action:'Start Qoopia on this root and retry status. Never retry a write without checking status.'});process.exitCode=1;}
+   catch {emit(stage==='INSTALLATION'?{format:'qoopia-connections/1',state:'requires_user_action',code:'INSTALLATION_UNVERIFIED',next_action:'The installed Qoopia on this root could not be verified. Run qoopia doctor with the same --root; nothing was changed.'}
+     :{format:'qoopia-connections/1',state:'temporarily_unavailable',code:'LOCAL_SERVICE_UNAVAILABLE',next_action:'Start Qoopia on this root and retry status. Never retry a write without checking status.'});process.exitCode=1;}
    return;
  }
  if(cmd==='use-server'){
@@ -211,7 +227,7 @@ async function main(){
  if(remote && cmd==='desktop-prepare'){emit({state:'server_workspace',binary:process.execPath});return;}
  if(remote && cmd==='open'){
    // No local service starts on a server-workspace computer: opening a newer package moves the hooks onto it.
-   try{const {migrateMemoryHooks}=await import('./memory-client.ts');migrateMemoryHooks(root,process.execPath);}catch{/* hooks stay as they are */}
+   await adopt('memory_hooks',async()=>(await import('./memory-client.ts')).migrateMemoryHooks(root,process.execPath));
    if(flag('desktop')){emit({event:'workspace',url:remote});return;}
    if(!openBrowser(remote,browserEnvironment))throw new Error('Could not open your Qoopia server in the browser');
    emit({url:remote,data_location:'server'});return;
@@ -269,7 +285,7 @@ async function main(){
    if(child.status!==0)throw new Error('Copy migration failed; previous generation preserved (child exit '+child.status+')');
  };
  const nativeConfig=process.platform==='darwin'?path.join(os.homedir(),'Library/LaunchAgents/com.qoopia.server.plist'):
-   path.join(process.env.XDG_CONFIG_HOME??path.join(os.homedir(),'.config'),'systemd/user/qoopia.service');
+   path.join(process.env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config'),'systemd/user/qoopia.service');
  const executeService=(command:string,args:string[])=>{const result=spawnSync(command,args,{encoding:'utf8',env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,...linuxUserManagerEnvironment(process.platform,process.env)}});if(result.error||result.status!==0)throw new Error('User service command failed; native config and ownership ledger were preserved');};
  const autostart=(installation:string)=>new UserAutostart({root,installation,platform:process.platform as 'darwin'|'linux',configFile:nativeConfig,execute:executeService,allowTestFixture:allow});
  let packageUpdated=false;
@@ -522,16 +538,16 @@ async function main(){
    }
    process.on('exit',release);
    // Before configure isolates the environment: systemctl --user needs the session bus.
-   try{autostart(current.instance).retarget(installationLauncher(root,path.join(bundle,'qoopia')));}catch{/* a changed or foreign service stays as it is */}
+   await adopt('autostart_retarget',()=>autostart(current.instance).retarget(installationLauncher(root,path.join(bundle,'qoopia'))));
    const nativeSource={PATH:process.env.PATH},ownerName=arg('owner-name')??os.userInfo().username;
    configure(path.dirname(path.dirname(dataFile(root,current))),bundle,current.port,layout,current.instance);
    const {db}=await import('../db/connection.ts');
    const {enableLocalWorkspace}=await import('./workspace.ts');enableLocalWorkspace(root,nativeSource);
    // Adopt what earlier versions left behind; each step reports refusals elsewhere and never blocks start.
-   try{const {migrateMemoryHooks}=await import('./memory-client.ts');migrateMemoryHooks(root,path.join(bundle,'qoopia'));}catch{/* hooks stay as they are */}
-   try{const {migrateMemoryOrigins}=await import('../services/memory-setup.ts');migrateMemoryOrigins();}catch{/* relink in memory settings */}
+   await adopt('memory_hooks',async()=>(await import('./memory-client.ts')).migrateMemoryHooks(root,path.join(bundle,'qoopia')));
+   await adopt('memory_origins',async()=>(await import('../services/memory-setup.ts')).migrateMemoryOrigins());
    // A profile linked through Connections has no session-start hook: without this its kit keeps the linking revision.
-   try{const {refreshAgentInstructions}=await import('../agent-kit/install.ts');refreshAgentInstructions(root,true);}catch{/* instructions refresh reports it */}
+   await adopt('agent_instructions',async()=>(await import('../agent-kit/install.ts')).refreshAgentInstructions(root,true));
    const {startOwnerControl}=await import('./owner-control.ts');
    const {ownerControlRequest}=await import('./owner-onboarding.ts');
    const closeControl=startOwnerControl(root,input=>ownerControlRequest(db,input));
@@ -562,4 +578,5 @@ async function main(){
    }else throw new Error('Unknown command');
  }finally{release();}
 }
-if(import.meta.main)main().catch((error:unknown)=>{console.error('Qoopia operation refused: '+failureText(error,1000));process.exitCode=1;});
+// The binary is also its own file-text extraction worker (src/services/files.ts spawns it).
+if(import.meta.main)(process.env.QOOPIA_FILE_TEXT_WORKER?import('../services/file-text-worker.ts').then(m=>m.runFileTextWorker()):main()).catch((error:unknown)=>{console.error('Qoopia operation refused: '+failureText(error,1000));process.exitCode=1;});

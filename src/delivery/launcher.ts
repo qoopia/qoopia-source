@@ -6,6 +6,14 @@ import { durableWrite, hasNulOrNewline, privateDirectory, safePath } from '../ut
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 
+/** A Mac app opened from its disk image or a translocated copy has a path that vanishes after eject
+ * or restart: hooks and adapters naming it would fail in every later session. */
+export function stableBinary(binary: string) {
+  binary = safePath(binary);
+  if (binary.includes('/AppTranslocation/') || binary.startsWith('/Volumes/') && binary.includes('.app/Contents/'))
+    throw new Error('Qoopia is running from its disk image or a temporary copy. Move Qoopia to Applications, open it from there, then try again.');
+  return binary;
+}
 /** A path that keeps working across updates: an update prunes all but the two newest bundles, so a
  * hook or autostart unit naming bundles/<digest>/qoopia breaks after the second update. This POSIX
  * script follows current.json (its first "bundle" is the selected one; previous comes later).
@@ -13,7 +21,7 @@ const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 export function installationLauncher(root: string, binary: string) {
   root = safePath(root);
   // A selected server workspace makes any local installation inactive: its bundle is not the one in use.
-  if (!fs.existsSync(path.join(root, 'current.json')) || fs.existsSync(path.join(root, 'server-workspace.json'))) return safePath(binary);
+  if (!fs.existsSync(path.join(root, 'current.json')) || fs.existsSync(path.join(root, 'server-workspace.json'))) return stableBinary(binary);
   if (hasNulOrNewline(root)) throw new Error('Invalid installation path');
   const file = path.join(root, 'bin', 'qoopia');
   const script = '#!/bin/sh\nset -eu\nroot=' + quote(root) + '\n' +

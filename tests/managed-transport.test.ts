@@ -6,7 +6,7 @@ import {readTransport} from '../src/delivery/transport-config.ts';
 import {loginBroker} from '../src/identity/broker.ts';
 import {db} from '../src/db/connection.ts';import {runMigrations} from '../src/db/migrate.ts';
 import {bootstrapOwner} from '../src/auth/pairings.ts';import {env} from '../src/utils/env.ts';
-import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
+import {durableWrite,privateDirectory,hash} from '../src/utils/fs.ts';
 import {startMcpEdge} from '../src/delivery/mcp-edge.ts';
 import http from 'node:http';import {once} from 'node:events';
 import {transportSupervisor} from '../src/delivery/transport-supervisor.ts';
@@ -147,6 +147,25 @@ test('pausing or stopping during an in-flight registry lease never reopens a pub
       expect(supervisor.status().reachable).toBe(false);expect(fs.existsSync(path.join(root,'config/tunnel/config.json'))).toBe(false);
     }finally{supervisor.stop();fs.rmSync(root,{recursive:true,force:true});}
   }
+});
+
+test('a tunnel start that fails after its edge listens leaves no listener or socket behind [F-520-edge-leak]',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-edge-leak-'));
+  const id=randomUUID(),workspace=randomUUID(),installation=randomUUID();
+  const config={format:'qoopia-transport/1',owner_id:randomUUID(),workspace_id:workspace,installation_id:installation,
+    identity:await newIdentity(),tunnel_secret:Buffer.alloc(32).toString('base64'),enabled:true,
+    device:{id,installation_id:installation,workspace_id:workspace,state:'active',public_origin:'https://fixture.example'},
+    tunnel:{id:randomUUID(),account:'a'.repeat(32)}} as TransportConfig;
+  // A regular file where config/ belongs: writing the tunnel config fails after the edge is listening.
+  fs.writeFileSync(path.join(root,'config'),'not a directory');
+  const sockets=path.join('/var/tmp/qoopia-'+process.getuid!(),hash(fs.realpathSync(root)).slice(0,24));
+  const supervisor=transportSupervisor({root:fs.realpathSync(root),upstreamPort:19377,binary:'/nonexistent-fixture',config:()=>config,
+    lease:async()=>'active',request:fakeFetch(async()=>new Response('ready'))});
+  try{
+    await supervisor.refresh();
+    expect(supervisor.status().state).toBe('temporarily_unavailable');
+    expect(fs.readdirSync(sockets).filter(name=>name.startsWith('edge-'))).toEqual([]);
+  }finally{supervisor.stop();fs.rmSync(root,{recursive:true,force:true});fs.rmSync(sockets,{recursive:true,force:true});}
 });
 
 test('network setup acknowledges before provider response, rejects duplicates and exposes resumable state',async()=>{

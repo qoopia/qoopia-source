@@ -153,6 +153,24 @@ describe("V4 note relations", () => {
     expect(getNote(workspace, oldId, standard.agent_id, false).metadata.status).toBeUndefined();
   });
 
+  // F-520-chain-cost: recall asks for the chain of every candidate; unrelated chains must cost nothing.
+  test("a supersede chain reads only its own component, not every edge of the workspace", () => {
+    for (let i = 0; i < 30; i++) {
+      const older = note(standard, `unrelated old ${i}`);
+      createNoteRelation({ auth: standard, source_note_id: note(standard, `unrelated new ${i}`), target_note_id: older, relation_type: "supersedes" });
+    }
+    const a = note(standard, "own chain a");
+    const b = note(standard, "own chain b");
+    createNoteRelation({ auth: standard, source_note_id: b, target_note_id: a, relation_type: "supersedes" });
+    let noteReads = 0;
+    const prepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => { if (/FROM notes\b/.test(sql)) noteReads++; return prepare(sql); }) as typeof db.prepare;
+    let chain: ReturnType<typeof getSupersedeChain>;
+    try { chain = getSupersedeChain({ auth: standard, note_id: a }); } finally { db.prepare = prepare; }
+    expect(chain).toEqual({ note_ids: [a, b].sort(), active_heads: [b], conflict: false, incomplete: false });
+    expect(noteReads).toBeLessThanOrEqual(3);
+  });
+
   test("cycles fail closed and multi-heads are explicit and deterministic", () => {
     const a = note(standard, "chain a");
     const b = note(standard, "chain b");

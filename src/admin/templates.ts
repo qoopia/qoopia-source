@@ -10,6 +10,8 @@
  * versioning system, and 10 real tables is the budget.
  */
 
+import { QoopiaError } from "../utils/errors.ts";
+
 interface BootstrapNote {
   type: string;
   text: string;
@@ -124,9 +126,10 @@ const PRESETS: Record<string, RolePreset> = {
 export const ROLE_PRESET_NAMES = ["general", "family", "ops-kz", "smm"];
 
 export function getRolePreset(name: string): RolePreset {
-  const preset = PRESETS[name.toLowerCase()];
+  // Own keys only: 'constructor' or 'toString' must not resolve to Object.prototype members.
+  const key = name.toLowerCase(), preset = Object.hasOwn(PRESETS, key) ? PRESETS[key] : undefined;
   if (!preset) {
-    throw new Error(
+    throw new QoopiaError("INVALID_INPUT",
       `Unknown role preset '${name}'. Available: ${ROLE_PRESET_NAMES.join(", ")}`,
     );
   }

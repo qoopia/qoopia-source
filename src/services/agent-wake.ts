@@ -1,4 +1,5 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
+import type { Database } from "bun:sqlite";
 import { DB_READ_ONLY, db } from "../db/connection.ts";
 import { nowIso } from "../utils/errors.ts";
 import { readBoundedText } from "../utils/http-json.ts";
@@ -123,8 +124,13 @@ function pendingMessagesFor(row: WakeEventRow): PendingMessageRow[] {
         WHERE w.workspace_id = ?
           AND w.target_agent_id = ?
           AND w.delivered_at IS NULL
+          AND m.delivered_at IS NULL
           AND sender.active = 1
+          -- The integrity rules deliver() holds the trigger to, so a corrupt or
+          -- imported row cannot ride along where it would be refused on its own.
           AND m.workspace_id = w.workspace_id
+          AND s.workspace_id = w.workspace_id
+          AND m.recipient_agent_id = w.target_agent_id
           AND (w.id = ? OR (w.created_at <= ? AND w.created_at >= ?))
         ORDER BY (w.id = ?) DESC, m.created_at ASC, m.id ASC
         LIMIT ?)
@@ -141,18 +147,12 @@ function pendingMessagesFor(row: WakeEventRow): PendingMessageRow[] {
 }
 
 /**
- * Record delivery on the message and on its wake event at once, so the two can
- * never disagree, and record it once: a row that already carries delivered_at
- * keeps the timestamp it got the first time.
- *
- * Both delivery paths land here, which is the point — there is one definition
- * of "delivered", not two. The push path stamps when the recipient's runtime
- * has confirmed it accepted the payload; the pull path stamps when the
- * recipient takes the message out of its own inbox.
- *
- * Closing the wake event is what keeps a message that arrived by pull from
- * being retried later against a runtime that was never there, and failing
- * loudly for a message that was in fact read.
+ * Record a push delivery on the message and on its wake event at once, so the
+ * two can never disagree, and record it once: a row that already carries
+ * delivered_at keeps the timestamp it got the first time. Only the push path
+ * lands here, when the recipient's runtime has confirmed it accepted the
+ * payload; a read from the inbox is recorded by markDeliveredOnRead and never
+ * marks a wake delivered.
  */
 function stampDelivered(messageIds: string[], deliveredAt: string): void {
   const ids = [...new Set(messageIds)].filter(Boolean);
@@ -190,21 +190,59 @@ function messageIdsForEvents(eventIds: string[]): string[] {
  * runtime accepted a push.
  *
  * Some agents are client-initiated identities rather than processes: a
- * connector the owner opens, an ephemeral CLI session. There is no address to
- * push to and never will be, and giving them a webhook that answers
- * accepted:true on their behalf would be a lie. The honest moment is this one
- * — the message is in the result the agent is reading, so it is in its
- * context. Nothing is asked of the model, and nothing is left open.
+ * connector the owner opens, an ephemeral CLI session. When such an agent
+ * reads its inbox the message has reached it, so the message is stamped
+ * delivered. Its wake is not: nobody was woken. A wake still waiting is closed
+ * as "read_from_inbox" so it is never pushed after the fact, and a wake that
+ * had nowhere to go keeps its reason. Only a runtime's own acceptance makes a
+ * wake "delivered".
  *
  * Returns the timestamp written, or null when this instance cannot write.
  */
 export function markDeliveredOnRead(messageIds: string[]): string | null {
   if (DB_READ_ONLY) return null;
-  if (!messageIds.length) return null;
+  const ids = [...new Set(messageIds)].filter(Boolean);
+  if (!ids.length) return null;
   const deliveredAt = nowIso();
-  db.transaction(() => stampDelivered(messageIds, deliveredAt))();
+  const placeholders = ids.map(() => "?").join(", ");
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE agent_comm_messages SET delivered_at = ?
+        WHERE delivered_at IS NULL AND id IN (${placeholders})`,
+    ).run(deliveredAt, ...ids);
+    db.prepare(
+      `UPDATE agent_wake_events
+          SET status = 'ignored', next_attempt_at = NULL, last_error = 'read_from_inbox'
+        WHERE delivered_at IS NULL AND status IN ('queued', 'failed')
+          AND message_id IN (${placeholders})`,
+    ).run(...ids);
+  })();
   return deliveredAt;
 }
+
+/** What happened to a message on its way to the recipient, in words a sender and the dashboard can show. */
+export type WakeDelivery = "woken" | "read_without_wake" | "waking" | "no_runtime" | "wake_failed";
+
+export function wakeDelivery(
+  messageDeliveredAt: string | null | undefined,
+  wake: { status?: string | null; last_error?: string | null; attempt_count?: number | null } | null,
+): WakeDelivery {
+  if (wake?.status === "delivered") return "woken";
+  if (messageDeliveredAt) return "read_without_wake";
+  if (!wake?.status) return "no_runtime";
+  if (wake.status === "queued") return "waking";
+  if (wake.status === "failed") return (wake.attempt_count ?? 0) < AGENT_WAKE_MAX_ATTEMPTS ? "waking" : "wake_failed";
+  return wake.last_error === "no_webhook_config" ? "no_runtime" : "wake_failed";
+}
+
+const WAKE_DELIVERY_NOTE: Record<WakeDelivery, string> = {
+  woken: "The recipient's runtime accepted the wake and took the message into a turn.",
+  read_without_wake: "The recipient read the message from its inbox; no runtime was woken.",
+  waking: "A wake is being pushed to the recipient's runtime.",
+  no_runtime: "The recipient has no runtime to wake. It gets this message only when it reads agent_inbox.",
+  wake_failed: "The wake could not be delivered. The message waits in the recipient's agent_inbox.",
+};
+export const wakeDeliveryNote = (delivery: WakeDelivery) => WAKE_DELIVERY_NOTE[delivery];
 
 function envPrefixForAgent(targetName: string): string {
   const normalized = targetName.trim().toLowerCase();
@@ -244,11 +282,11 @@ function isStaleLeoDirectCallback(targetName: string, url: URL): boolean {
  */
 function webhookBindingError(
   prefix: string,
-  row: WakeEventRow,
+  targetAgentId: string,
 ): "unbound_webhook_config" | "ambiguous_webhook_config" | null {
   const boundAgentId = process.env[`${prefix}_AGENT_ID`]?.trim();
   if (boundAgentId) {
-    return boundAgentId === row.target_agent_id ? null : "unbound_webhook_config";
+    return boundAgentId === targetAgentId ? null : "unbound_webhook_config";
   }
   // ponytail: scans every agent name per push; add a normalized-name column if fleets grow large.
   const holders = (db.prepare(`SELECT name FROM agents`).all() as { name: string }[])
@@ -256,7 +294,10 @@ function webhookBindingError(
   return holders === 1 ? null : "ambiguous_webhook_config";
 }
 
-function resolveWebhookConfig(row: WakeEventRow): WebhookResolution {
+function resolveWebhookConfig(
+  row: Pick<WakeEventRow, "target_name" | "target_agent_id" | "workspace_id">,
+  quiet = false,
+): WebhookResolution {
   const targetName = row.target_name;
   const prefix = envPrefixForAgent(targetName);
   const rawUrl = process.env[`${prefix}_URL`];
@@ -278,9 +319,9 @@ function resolveWebhookConfig(row: WakeEventRow): WebhookResolution {
   if (isStaleLeoDirectCallback(targetName, url)) {
     return { ignored: "stale_direct_callback_disabled" };
   }
-  const bindingError = webhookBindingError(prefix, row);
+  const bindingError = webhookBindingError(prefix, row.target_agent_id);
   if (bindingError) {
-    logger.warn("AgentComm wake not pushed: webhook config is not bound to this agent", {
+    if (!quiet) logger.warn("AgentComm wake not pushed: webhook config is not bound to this agent", {
       reason: bindingError,
       env_prefix: prefix,
       target_agent_id: row.target_agent_id,
@@ -297,6 +338,30 @@ function resolveWebhookConfig(row: WakeEventRow): WebhookResolution {
       auth: rawAuth === "bearer" ? "bearer" : "hmac",
     },
   };
+}
+
+/**
+ * Asked when a message is written: can this recipient be woken at all? An
+ * agent without a runtime gets its wake closed at once as no_webhook_config, so
+ * neither agent_send nor the dashboard ever shows it as on its way.
+ */
+export function wakeRouteFor(target: { id: string; name: string; workspace_id: string }):
+  { route: "push" } | { route: "none"; reason: string } {
+  const resolved = resolveWebhookConfig(
+    { target_name: target.name, target_agent_id: target.id, workspace_id: target.workspace_id },
+    true,
+  );
+  return "ignored" in resolved ? { route: "none", reason: resolved.ignored } : { route: "push" };
+}
+
+/** The bound runtime's own shared secret, for a callback that answers as its agent. */
+export function boundRuntimeSecret(agent: { id: string; name: string }): { secret: string; auth: "bearer" | "hmac" } | null {
+  const prefix = envPrefixForAgent(agent.name);
+  if (process.env[`${prefix}_AGENT_ID`]?.trim() !== agent.id) return null;
+  const secret = process.env[`${prefix}_SECRET`] || process.env[`${prefix}_TOKEN`];
+  if (!secret) return null;
+  const rawAuth = (process.env[`${prefix}_AUTH`] || "hmac").trim().toLowerCase();
+  return { secret, auth: rawAuth === "bearer" ? "bearer" : "hmac" };
 }
 
 function dueRows(eventId?: string, limit = BATCH_SIZE): WakeEventRow[] {
@@ -618,41 +683,103 @@ async function deliver(row: WakeEventRow): Promise<WakeDeliveryResult> {
   }
 }
 
-/** Recipient agent id -> wake ids deferred while a delivery to it is in flight. */
-// ponytail: per-process; a second server process on the same DB could still
-// overlap a delivery. Claim per recipient in the DB if that ever runs.
-const inFlightTargets = new Map<string, string[]>();
+/** A recipient's delivery lease: renewed while its push is in flight, taken over once it lapses. */
+const CLAIM_LEASE_MS = DELIVERY_TIMEOUT_MS * 2;
+const CLAIM_RENEW_MS = Math.floor(CLAIM_LEASE_MS / 3);
+
+/**
+ * One delivery per recipient at a time, across every writer process on this
+ * database: a parallel push would re-carry every message of the in-flight
+ * payload into another turn. One statement takes a free or lapsed lease (a
+ * crashed holder is taken over once its lease expires). Losing the race sets
+ * the rerun flag in the same transaction, so the holder, which reads the flag
+ * as it releases, re-drives the recipient; the losing wake stays queued and
+ * costs no attempt. Returns this holder's token, or null.
+ */
+export function acquireWakeClaim(targetAgentId: string, database: Database = db): string | null {
+  const holder = randomUUID(), now = Date.now();
+  return database.transaction(() => {
+    const taken = database.prepare(
+      `INSERT INTO agent_wake_claims (target_agent_id, holder, lease_until) VALUES (?, ?, ?)
+       ON CONFLICT(target_agent_id) DO UPDATE
+         SET holder = excluded.holder, lease_until = excluded.lease_until
+       WHERE agent_wake_claims.lease_until <= ?`,
+    ).run(targetAgentId, holder, new Date(now + CLAIM_LEASE_MS).toISOString(), new Date(now).toISOString()).changes === 1;
+    if (!taken) database.prepare(`UPDATE agent_wake_claims SET rerun = 1 WHERE target_agent_id = ?`).run(targetAgentId);
+    return taken ? holder : null;
+  }).immediate();
+}
+
+/** False once the lease is no longer this holder's. */
+export function renewWakeClaim(targetAgentId: string, holder: string, database: Database = db): boolean {
+  return database.prepare(
+    `UPDATE agent_wake_claims SET lease_until = ? WHERE target_agent_id = ? AND holder = ?`,
+  ).run(new Date(Date.now() + CLAIM_LEASE_MS).toISOString(), targetAgentId, holder).changes === 1;
+}
+
+/** Releases the lease; true when another drain asked for a rerun while it was held. */
+export function releaseWakeClaim(targetAgentId: string, holder: string, database: Database = db): boolean {
+  const row = database.prepare(
+    `DELETE FROM agent_wake_claims WHERE target_agent_id = ? AND holder = ? RETURNING rerun`,
+  ).get(targetAgentId, holder) as { rerun: number } | null;
+  return row?.rerun === 1;
+}
+
+/**
+ * The recipient's newest due wake: a delivery re-carries what is pending up to
+ * its trigger's age, so the newest one takes every waiting message along
+ * (beyond one batch the worker's next pass takes the rest).
+ */
+function redriveRecipient(targetAgentId: string): void {
+  const next = db.prepare(
+    `SELECT id FROM agent_wake_events
+      WHERE target_agent_id = ? AND status IN ('queued', 'failed') AND attempt_count < ?
+        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+      ORDER BY created_at DESC, id DESC LIMIT 1`,
+  ).get(targetAgentId, AGENT_WAKE_MAX_ATTEMPTS, nowIso()) as { id: string } | null;
+  if (next) scheduleAgentWakeDrain(next.id);
+}
+
+/** One wake under its recipient's claim; undefined when another delivery holds it or the row moved on. */
+async function deliverClaimed(row: WakeEventRow): Promise<WakeDeliveryResult | undefined> {
+  const holder = acquireWakeClaim(row.target_agent_id);
+  if (!holder) return undefined;
+  let result: WakeDeliveryResult | undefined;
+  const renew = setInterval(() => {
+    if (!renewWakeClaim(row.target_agent_id, holder)) {
+      logger.warn("AgentComm wake claim lapsed during delivery", { event_id: row.id, target_agent_id: row.target_agent_id });
+    }
+  }, CLAIM_RENEW_MS);
+  try {
+    const attempt = claim(row);
+    if (attempt !== null) {
+      result = await deliver(row);
+      recordOutcome(row, attempt, result);
+    }
+  } finally {
+    clearInterval(renew);
+    if (releaseWakeClaim(row.target_agent_id, holder)) redriveRecipient(row.target_agent_id);
+  }
+  return result;
+}
 
 export async function drainAgentWakeQueue(options: {
   eventId?: string;
   limit?: number;
 } = {}): Promise<WakeDeliveryResult[]> {
   const rows = dueRows(options.eventId, Math.min(Math.max(options.limit ?? BATCH_SIZE, 1), 100));
-  const results: WakeDeliveryResult[] = [];
-  for (const row of rows) {
-    // One delivery per recipient at a time: a parallel drain would re-carry
-    // every message already in the in-flight payload into another turn. The
-    // deferred wake is re-driven when the in-flight one is recorded; by then
-    // it was either carried and stamped, or it goes out on its own.
-    const deferred = inFlightTargets.get(row.target_agent_id);
-    if (deferred) {
-      deferred.push(row.id);
-      continue;
+  // Recipients are delivered side by side, each one's wakes in order: a runtime that times out
+  // must not hold every other recipient's retries behind its 5 s per wake.
+  const byTarget = new Map<string, { row: WakeEventRow; index: number }[]>();
+  rows.forEach((row, index) => byTarget.set(row.target_agent_id, [...(byTarget.get(row.target_agent_id) ?? []), { row, index }]));
+  const delivered: { index: number; result: WakeDeliveryResult }[] = [];
+  await Promise.all([...byTarget.values()].map(async (queue) => {
+    for (const { row, index } of queue) {
+      const result = await deliverClaimed(row);
+      if (result) delivered.push({ index, result });
     }
-    const attempt = claim(row);
-    if (attempt === null) continue;
-    inFlightTargets.set(row.target_agent_id, []);
-    let result: WakeDeliveryResult;
-    try {
-      result = await deliver(row);
-      recordOutcome(row, attempt, result);
-    } finally {
-      const waiting = inFlightTargets.get(row.target_agent_id) ?? [];
-      inFlightTargets.delete(row.target_agent_id);
-      for (const eventId of waiting) scheduleAgentWakeDrain(eventId);
-    }
-    results.push(result);
-  }
+  }));
+  const results = delivered.sort((a, b) => a.index - b.index).map((d) => d.result);
   return results;
 }
 
@@ -660,13 +787,16 @@ let scheduled = false;
 
 /** Non-throwing post-commit nudge; durable queue state remains authoritative. */
 export function scheduleAgentWakeDrain(eventId?: string): void {
-  if (scheduled && !eventId) return;
-  scheduled = true;
+  // Only the general pass is deduplicated; a single-event nudge never clears its flag.
+  if (!eventId) {
+    if (scheduled) return;
+    scheduled = true;
+  }
   queueMicrotask(() => {
     void drainAgentWakeQueue({ eventId })
       .catch((error) => logger.warn("AgentComm wake drain failed", { error: String(error) }))
       .finally(() => {
-        scheduled = false;
+        if (!eventId) scheduled = false;
       });
   });
 }

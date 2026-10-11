@@ -107,6 +107,12 @@ export function bridgeRelay(db:Database,relay=BRIDGE_RELAY) {
         z.object({group:id}).strict().parse(body);
         return json(roster(g,peer));
       }
+      if(op==='leave'&&(db.query('SELECT state FROM bridge_relay_members WHERE group_id=? AND peer=?').get(g.id,peer) as {state:string}|null)?.state==='pending') {
+        // A join the owner never admitted is withdrawn, not removed: a later invitation may ask again.
+        z.object({group:id}).strict().parse(body);
+        db.query("DELETE FROM bridge_relay_members WHERE group_id=? AND peer=? AND state='pending'").run(g.id,peer);
+        return json({removed:peer});
+      }
       member(g,peer);
       if(op==='invite') {
         member(g,peer,true);

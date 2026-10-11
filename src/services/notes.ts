@@ -3,7 +3,7 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
-import { assertCanModifyNote, canReadRow, readLevel, visibleRowSql } from "../auth/principal.ts";
+import { assertCanModifyNote, canReadRow, readLevel, seesWholeWorkspace, visibleRowSql } from "../auth/principal.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, holdSaveForOwner, type MemoryOrigin } from "./memory-policy.ts";
 import { upsertNoteEmbedding } from "./embedding-store.ts";
@@ -288,28 +288,8 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
   const visibility: NoteVisibility = input.visibility === "private" ? "private" : "workspace";
 
   // Validate project_id references an existing project note (M1 fix: enforce type='project')
-  if (input.project_id) {
-    const p = db
-      .prepare(
-        `SELECT id, type FROM notes WHERE id = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL`,
-      )
-      .get(input.project_id, input.workspace_id) as
-      | { id: string; type: string }
-      | undefined;
-    if (!p) throw new QoopiaError("NOT_FOUND", "project_id not found or not a project");
-  }
-  if (input.task_bound_id) {
-    const t = db
-      .prepare(
-        `SELECT id, type FROM notes WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
-      )
-      .get(input.task_bound_id, input.workspace_id) as
-      | { id: string; type: string }
-      | undefined;
-    if (!t) throw new QoopiaError("NOT_FOUND", "task_bound_id not found");
-    if (t.type !== "task")
-      throw new QoopiaError("INVALID_INPUT", "task_bound_id must reference a task");
-  }
+  if (input.project_id) assertReferencedNote(input.workspace_id, input.agent_id, wholeWorkspace(input.agent_id), input.project_id, "project", "project_id");
+  if (input.task_bound_id) assertReferencedNote(input.workspace_id, input.agent_id, wholeWorkspace(input.agent_id), input.task_bound_id, "task", "task_bound_id");
 
   // A manual agent's note waits for the owner; one the owner already confirmed is returned as is.
   const { origin, ...prepared } = input;
@@ -468,6 +448,17 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
 
   return result;
 }
+
+/** A project_id / task_bound_id names a note the caller may read: another agent's private note
+ * answers exactly like a missing one, so the reference does not reveal it exists or what it is. */
+function assertReferencedNote(workspace_id: string, agent_id: string, isAdmin: boolean, id: string, type: "project" | "task", field: string) {
+  const row = db.prepare(`SELECT type FROM notes WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL AND ${visibleRowSql()}`)
+    .get(id, workspace_id, agent_id, readLevel(agent_id, isAdmin)) as { type: string } | null;
+  if (!row) throw new QoopiaError("NOT_FOUND", type === "project" ? "project_id not found or not a project" : `${field} not found`);
+  if (row.type !== type) throw type === "project" ? new QoopiaError("NOT_FOUND", "project_id not found or not a project") : new QoopiaError("INVALID_INPUT", "task_bound_id must reference a task");
+}
+const wholeWorkspace = (agent_id: string) =>
+  seesWholeWorkspace({ type: (db.prepare("SELECT type FROM agents WHERE id = ?").get(agent_id) as { type: string } | null)?.type ?? "" });
 
 /**
  * ADR-020: getNote enforces the visibility boundary (visibleRowSql): the
@@ -685,6 +676,7 @@ export function updateNote(input: NoteUpdateInput) {
       "metadata and metadata_replace are mutually exclusive",
     );
   }
+  if (input.text === "") throw new QoopiaError("INVALID_INPUT", "text is required");
   if (input.text !== undefined && input.text.length > MAX_TEXT) {
     throw new QoopiaError("SIZE_LIMIT", `text exceeds ${MAX_TEXT} chars`);
   }
@@ -699,28 +691,8 @@ export function updateNote(input: NoteUpdateInput) {
   }
 
   // H2 fix: re-validate project_id and task_bound_id on update (same as create)
-  if (input.project_id !== undefined && input.project_id !== null) {
-    const p = db
-      .prepare(
-        `SELECT id, type FROM notes WHERE id = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL`,
-      )
-      .get(input.project_id, input.workspace_id) as
-      | { id: string; type: string }
-      | undefined;
-    if (!p) throw new QoopiaError("NOT_FOUND", "project_id not found or not a project");
-  }
-  if (input.task_bound_id !== undefined && input.task_bound_id !== null) {
-    const t = db
-      .prepare(
-        `SELECT id, type FROM notes WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
-      )
-      .get(input.task_bound_id, input.workspace_id) as
-      | { id: string; type: string }
-      | undefined;
-    if (!t) throw new QoopiaError("NOT_FOUND", "task_bound_id not found");
-    if (t.type !== "task")
-      throw new QoopiaError("INVALID_INPUT", "task_bound_id must reference a task");
-  }
+  if (input.project_id !== undefined && input.project_id !== null) assertReferencedNote(input.workspace_id, input.agent_id, input.is_admin, input.project_id, "project", "project_id");
+  if (input.task_bound_id !== undefined && input.task_bound_id !== null) assertReferencedNote(input.workspace_id, input.agent_id, input.is_admin, input.task_bound_id, "task", "task_bound_id");
 
   const fields: string[] = [];
   const values: any[] = [];

@@ -72,3 +72,13 @@ test('the news form shows only localized messages, never a raw network or parse 
     expect(html).toContain('finally{button.disabled=false;}');
   }
 });
+
+test('profile links lead to the website page in its own language, not to a query the crawler never sees',async()=>{
+  const {profileView}=await import('../src/identity/profile-view.ts');
+  for(const ru of [false,true]) {
+    const html=await profileView((_title,content)=>new Response(content),ru,{email:'owner@example.com',url:null},'',false).text();
+    const site='https://qoopia.ai/'+(ru?'ru/':'');
+    expect(html).toContain(`href="${site}"`);expect(html).toContain(`href="${site}#download"`);
+    expect(html).not.toMatch(/qoopia\.ai\/[a-z]*\?lang=/);
+  }
+});

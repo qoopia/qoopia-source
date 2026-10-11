@@ -338,6 +338,13 @@ export function skillReviewLine(r: SkillReviewState): string {
   return `*review:* ${what} — reference data, not an accepted or assigned skill`;
 }
 
+/** The review line of one exact version: a frozen candidate or legacy package is not an attested skill. */
+export function versionReviewLine(status: string, label: string): string {
+  if (status === "sealed") return `*review:* sealed version \`${label}\`; running it still requires an assignment`;
+  const what = status === "candidate" ? `compiled candidate \`${label}\`, not sealed` : `version \`${label}\` imported before review`;
+  return `*review:* ${what} — reference data, not an accepted or assigned skill`;
+}
+
 export function requireSkillRead(database: Database, p: Principal, skillId: string): void {
   const row = database.query(`SELECT 1 FROM entity_pages WHERE id=? AND workspace_id=? AND
     (authority_private=0 OR authority_owner_id=? OR EXISTS(SELECT 1 FROM workspace_owners WHERE workspace_id=? AND actor_id=?))`)

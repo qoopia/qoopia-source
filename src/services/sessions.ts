@@ -4,7 +4,7 @@ import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { sanitizeFtsQuery } from "./recall.ts";
 import { readLevel, visibleTranscriptSql } from "../auth/principal.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
-import { assertAutomaticMemoryAllowed, type MemoryOrigin } from "./memory-policy.ts";
+import { assertAutomaticMemoryAllowed, duringManual, type MemoryOrigin } from "./memory-policy.ts";
 import { parseTimeBound } from "../utils/temporal.ts";
 import { hash } from "../utils/fs.ts";
 
@@ -35,23 +35,34 @@ export interface SessionSaveInput {
   /** Defaults to "automatic": anything not proven to be a confirmed owner action obeys
    * the agent memory policy. Set by the server at the call site, never from a request body. */
   origin?: MemoryOrigin;
+  /** The client's own stamp of a replayed transcript record (the session tailer). A record written
+   * during a manual period is refused even after the owner returned to auto, as continuityEvent does. */
+  recorded_at?: string;
 }
 
 /** One conversation turn in one call: the Autosave form for clients without lifecycle hooks. Without a
  * session_id the agent's turns of the (UTC) day share one session, named from the agent's key hash so no
- * colleague can take it first; a turn equal to the session's last one is the retry of a lost reply. */
-export function saveTurn(input: Pick<SessionSaveInput, "workspace_id" | "agent_id" | "metadata"> & { session_id?: string; user?: string; assistant?: string }) {
+ * colleague can take it first. A message_id keys each message of the turn, so its retry returns the stored
+ * turn however late it comes; without one, a turn equal to the session's last one is the retry of a lost reply. */
+export function saveTurn(input: Pick<SessionSaveInput, "workspace_id" | "agent_id" | "metadata" | "message_id"> & { session_id?: string; user?: string; assistant?: string }) {
   if (!input.user && !input.assistant) throw new QoopiaError("INVALID_INPUT", "Pass user and assistant (one turn), or role and content (one message)");
   const roles = (["user", "assistant"] as const).filter((role) => input[role]);
   return db.transaction(() => {
     const key = db.query("SELECT api_key_hash FROM agents WHERE id=? AND workspace_id=?").get(input.agent_id, input.workspace_id) as { api_key_hash: string } | null;
     if (!key) throw unavailable();
-    const session_id = input.session_id ?? `autosave-${hash(key.api_key_hash + ":" + nowIso().slice(0, 10)).slice(0, 32)}`;
-    const last = (db.query("SELECT role, content FROM session_messages WHERE session_id=? AND agent_id=? ORDER BY id DESC LIMIT ?")
-      .all(session_id, input.agent_id, roles.length) as { role: string; content: string }[]).reverse();
-    if (last.length === roles.length && last.every((m, i) => m.role === roles[i] && m.content === input[roles[i]!])) return { saved: false, duplicate: true, session_id };
-    const messages = roles.map((role) => saveMessage({ workspace_id: input.workspace_id, agent_id: input.agent_id, session_id, role, content: input[role]!, metadata: input.metadata }));
-    return { saved: true, session_id, messages };
+    const day = (offset: number) => `autosave-${hash(key.api_key_hash + ":" + new Date(Date.now() - offset).toISOString().slice(0, 10)).slice(0, 32)}`;
+    // A keyed retry that crosses UTC midnight belongs to the session that already holds its turn.
+    const earlier = !input.session_id && input.message_id ? db.query("SELECT session_id FROM session_messages WHERE session_id=? AND ingest_uuid=?")
+      .get(day(86_400_000), `${input.message_id}:${roles[0]}`) as { session_id: string } | null : null;
+    const session_id = input.session_id ?? earlier?.session_id ?? day(0);
+    if (!input.message_id) {
+      const last = (db.query("SELECT role, content FROM session_messages WHERE session_id=? AND agent_id=? ORDER BY id DESC LIMIT ?")
+        .all(session_id, input.agent_id, roles.length) as { role: string; content: string }[]).reverse();
+      if (last.length === roles.length && last.every((m, i) => m.role === roles[i] && m.content === input[roles[i]!])) return { saved: false, duplicate: true, session_id };
+    }
+    const messages = roles.map((role) => saveMessage({ workspace_id: input.workspace_id, agent_id: input.agent_id, session_id, role, content: input[role]!,
+      metadata: input.metadata, message_id: input.message_id && `${input.message_id}:${role}` }));
+    return messages.every((m) => !m.saved) ? { saved: false, duplicate: true, session_id, messages } : { saved: true, session_id, messages };
   })();
 }
 
@@ -74,6 +85,8 @@ export function saveMessage(input: SessionSaveInput) {
     // policy is enforced once, inside the write transaction. A switch to manual that
     // commits mid-flight therefore stops the very next message instead of a later one.
     assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id, input.origin ?? "automatic");
+    if (input.recorded_at !== undefined && input.origin !== "owner_confirmed" && duringManual(input.workspace_id, input.agent_id)(input.recorded_at))
+      throw new QoopiaError("APPROVAL_REQUIRED", "This message was written while automatic memory was off for this agent; it is not stored.");
 
     // H5 fix: check ownership BEFORE touching last_active.
     // If the session already exists, verify it belongs to this agent.
@@ -402,29 +415,20 @@ export function sessionSummarize(input: SessionSummarizeInput) {
     throw new QoopiaError("INVALID_INPUT", `msg_end_id ${input.msg_end_id} not found in session`);
   }
 
-  const id = ulid();
-  db.prepare(
-    `INSERT INTO summaries
-      (id, workspace_id, session_id, agent_id, content, msg_start_id, msg_end_id, level, token_count, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.workspace_id,
-    input.session_id,
-    input.agent_id,
-    input.content,
-    input.msg_start_id,
-    input.msg_end_id,
-    level,
-    input.token_count ?? null,
-    nowIso(),
-  );
-  return {
-    saved: true,
-    summary_id: id,
-    range: `${input.msg_start_id}-${input.msg_end_id}`,
-    level,
-  };
+  const range = `${input.msg_start_id}-${input.msg_end_id}`;
+  return db.transaction(() => {
+    // The retry of a lost reply returns the stored summary instead of listing it twice in session_recent.
+    const same = db.query(`SELECT id FROM summaries WHERE session_id=? AND msg_start_id=? AND msg_end_id=? AND level=? AND content=?`)
+      .get(input.session_id, input.msg_start_id, input.msg_end_id, level, input.content) as { id: string } | null;
+    if (same) return { saved: false, duplicate: true, summary_id: same.id, range, level };
+    const id = ulid();
+    db.prepare(
+      `INSERT INTO summaries
+        (id, workspace_id, session_id, agent_id, content, msg_start_id, msg_end_id, level, token_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, input.workspace_id, input.session_id, input.agent_id, input.content, input.msg_start_id, input.msg_end_id, level, input.token_count ?? null, nowIso());
+    return { saved: true, summary_id: id, range, level };
+  })();
 }
 
 export function sessionExpand(p: {

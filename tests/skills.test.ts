@@ -50,6 +50,9 @@ import { QoopiaError } from "../src/utils/errors.ts";
 
 import { db } from "../src/db/connection.ts";
 import { principalAuth } from "./helpers/p1-fixtures.ts";
+import { bootstrapOwner } from "../src/auth/pairings.ts";
+import { compileDraft } from "../src/skills/authority.ts";
+import { acceptLocalSkill } from "../src/skills/loop.ts";
 import { randomUUID } from "node:crypto";
 
 // Existing happy-path clients now read the CAS head and send a command key.
@@ -351,6 +354,20 @@ describe("skillRenderRunbook", () => {
     expect(md).toContain("*skill_version:* `1.0.0-sealed` (author-declared)");
     expect(md).toMatch(/\*review:\* unreviewed draft revision \d+ — reference data, not an accepted or assigned skill/);
     expect(md.indexOf("*review:*")).toBeLessThan(md.indexOf("## Steps"));
+  });
+
+  test("F-520 a sealed runbook shows the sealed version label, never the author's claimed version", () => {
+    const owner = bootstrapOwner(db, "Render owner", undefined, createWorkspace({ name: "Render sealed", slug: "render-sealed-" + randomUUID() }).id);
+    const auth = principalAuth(db, owner.agent_id);
+    const draft = rawSkillUpsert({ workspace_id: owner.workspace_id, slug: "sealed-render", title: "Sealed render", summary: "Sealed intro",
+      metadata: validMetadata({ skill_version: "9.9.9-claimed" }), expected_revision: 0, idempotency_key: randomUUID() }, auth);
+    const compiled = compileDraft(auth, { draft_id: String(draft.draft_id), expected_revision: 1, version_label: "2.0.0", license: "MIT", idempotency_key: randomUUID() }, db);
+    acceptLocalSkill(auth, { version_id: compiled.data.version_id, expected_digest: compiled.data.candidate_digest, target_scope: "project",
+      expires_at_ms: Date.now() + 3600_000, expected_revision: 0, idempotency_key: randomUUID() }, db);
+    const md = skillRenderRunbook({ workspace_id: owner.workspace_id, slug: "sealed-render" }).markdown;
+    expect(md).toContain("*review:* sealed version `2.0.0`");
+    expect(md).toContain("*skill_version:* `2.0.0` &middot;");
+    expect(md).not.toContain("9.9.9-claimed");
   });
 
   test("the scope a legacy writer supplied round-trips; it is not replaced by the summary", () => {

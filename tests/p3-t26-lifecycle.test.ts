@@ -94,6 +94,35 @@ test('a service an older version pinned to a bundle moves onto the installation 
   }
 });
 
+test('a linked ~/.config refuses service install but never blocks uninstall of an installation without autostart [F-520-linked-config]',()=>{
+  const f=fixture();try{
+    const real=path.join(f.nativeDir,'dotfiles-config'),linked=path.join(f.nativeDir,'linked-config');
+    fs.mkdirSync(real,{recursive:true,mode:0o700});fs.symlinkSync(real,linked);
+    const service=new UserAutostart({root:f.installation,installation:'fixture-instance',platform:'linux',configFile:path.join(linked,'systemd/user/qoopia.service'),execute:()=>{}});
+    expect(service.remove()).toEqual({autostart:'never_enabled',native_files_touched:0});
+    expect(()=>service.install(f.executable)).toThrow('symbolic link');
+  }finally{f.cleanup();}
+});
+
+test('the macOS service restarts after a failure, and a plist written by 5.0.19 gains KeepAlive at start [F-520-launchd-keepalive]',()=>{
+  const f=fixture();try{
+    const config=path.join(f.nativeDir,'qoopia.plist'),launcher=path.join(f.installation,'bin','qoopia');
+    fs.mkdirSync(path.dirname(launcher),{recursive:true,mode:0o700});fs.writeFileSync(launcher,'launcher',{mode:0o700});
+    const service=new UserAutostart({root:f.installation,installation:'fixture-instance',platform:'darwin',configFile:config,execute:()=>{}});
+    const keepAlive='<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>5</integer>';
+    service.install(launcher);const current=fs.readFileSync(config,'utf8');expect(current).toContain(keepAlive);
+    // Exactly what 5.0.17-5.0.19 left: the launcher plist without KeepAlive, owned by its ledger.
+    const legacy=current.replace(keepAlive,''),ledgerFile=path.join(f.installation,'config','autostart.json');
+    const sha=(v:string|Buffer)=>new Bun.CryptoHasher('sha256').update(v).digest('hex');
+    fs.writeFileSync(config,legacy,{mode:0o600});
+    fs.writeFileSync(ledgerFile,JSON.stringify({...JSON.parse(fs.readFileSync(ledgerFile,'utf8')),config_sha256:sha(legacy)}),{mode:0o600});
+    expect(service.retarget(launcher)).toEqual({autostart:'retargeted',native_files_touched:1});
+    expect(fs.readFileSync(config,'utf8')).toBe(current);
+    expect(service.install(launcher)).toEqual({autostart:'enabled',native_files_touched:0});
+    expect(service.remove().autostart).toBe('removed');
+  }finally{f.cleanup();}
+});
+
 test('a systemd unit written by 5.0.16 (before the restart limits) still moves onto the launcher',()=>{
   const f=fixture();try{
     const config=path.join(f.nativeDir,'qoopia.service'),calls:string[][]=[];

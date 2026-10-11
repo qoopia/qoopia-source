@@ -131,7 +131,7 @@ test('dead client registrations are reclaimed at the limit; fresh and used ones 
   const connection=apply(),callback=['http://127.0.0.1:19191/callback'];
   const register=()=>registerClient({client_name:'Retrying Codex',redirect_uris:callback},connectionRegistrationAuth(connection.id,callback));
   const clients=Array.from({length:20},register);
-  expect(()=>connectionRegistrationAuth(connection.id,callback)).toThrow('registration limit');
+  expect(register).toThrow('registration limit');
   const agent=(db.query('SELECT agent_id FROM client_connections WHERE id=?').get(connection.id) as {agent_id:string}).agent_id;
   db.query("UPDATE oauth_clients SET created_at='2000-01-01T00:00:00Z' WHERE agent_id=?").run(agent);
   db.query(`INSERT INTO oauth_tokens(token_hash,client_id,agent_id,workspace_id,token_type,granted_scope,expires_at,revoked,created_at)
@@ -140,7 +140,7 @@ test('dead client registrations are reclaimed at the limit; fresh and used ones 
   const left=(db.query('SELECT id FROM oauth_clients WHERE agent_id=?').all(agent) as {id:string}[]).map(r=>r.id).sort();
   expect(left).toEqual([clients[0]!.client_id,fresh.client_id].sort());
   for(let i=0;i<18;i++)register();
-  expect(()=>connectionRegistrationAuth(connection.id,callback)).toThrow('registration limit');
+  expect(register).toThrow('registration limit');
 });
 // A client that revokes its own grant (sign-out, removed connector) can no longer call. The card used to keep
 // saying ready / "Use this connection"; it now asks for a new sign-in until the client holds a grant again.

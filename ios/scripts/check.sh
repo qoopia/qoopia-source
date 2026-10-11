@@ -12,6 +12,9 @@ root=pathlib.Path('Qoopia')
 keys=lambda language:set(re.findall(r'^"(.*?)"\s*=',(root/f'{language}.lproj/Localizable.strings').read_text(),re.M))
 assert keys('en')==keys('ru'),'iOS localization mismatch'
 assert (root/'Assets.xcassets/AppIcon.appiconset/AppIcon.png').stat().st_size>1000
+# The dashboard's file input offers Take Photo or Video: iOS terminates an app that opens the camera without these.
+info=(root/'Info.plist').read_text()
+assert all(f'<key>{key}</key>' in info for key in ('NSCameraUsageDescription','NSMicrophoneUsageDescription')),'iOS camera/microphone usage descriptions missing'
 print('iOS assets and localization: passed')
 PY
 if xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then

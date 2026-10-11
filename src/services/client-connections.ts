@@ -42,23 +42,11 @@ const connectionActionSchema = z.discriminatedUnion('action',[
   z.object({action:z.literal('client-auth-start'),id:connectionId}).strict(),
   z.object({action:z.literal('client-auth-status'),id:connectionId}).strict(),
 ]);
-const REGISTRATION_LIMIT=20;
-/** The consent ticket lifetime: an unused registration older than this has no flow left to finish. */
-const UNUSED_REGISTRATION_MS=600_000;
 export function connectionRegistrationAuth(id:string,redirectUris:unknown):AuthContext {
   if(!connectionId.safeParse(id).success)throw new QoopiaError('NOT_FOUND','Connection unavailable');
   const row=publicConnection(id);
   if(!connectionRedirectsAllowed(row.surface,redirectUris))throw new QoopiaError('INVALID_INPUT','redirect_uris are not this client’s callback');
-  const registered=()=>(db.query('SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?').get(row.agent_id) as {n:number}).n;
-  if(registered()>=REGISTRATION_LIMIT){
-    // A client that retries a failed connect registers again each time. Registrations that never received
-    // a code or token and outlived a consent ticket are dead: reclaim them. Fresh or used ones still count.
-    db.query(`DELETE FROM oauth_clients WHERE agent_id=? AND created_at<=?
-      AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
-      AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`)
-      .run(row.agent_id,new Date(Date.now()-UNUSED_REGISTRATION_MS).toISOString().replace(/\.\d{3}Z$/,'Z'));
-    if(registered()>=REGISTRATION_LIMIT)throw new QoopiaError('RATE_LIMITED','Connection registration limit reached');
-  }
+  // registerClient bounds how many registrations the connection's agent holds.
   return {agent_id:row.agent_id,workspace_id:row.workspace_id,agent_name:row.surface,source:'api-key',type:'standard'};
 }
 function owned(ownerId:string,id:string):Row {

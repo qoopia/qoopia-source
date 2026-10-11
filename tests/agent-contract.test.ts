@@ -28,8 +28,12 @@ beforeAll(()=>{
   agents.standard=createAgent({name:'contract-standard',workspaceSlug:ws.slug}).id;
   agents.reader=createAgent({name:'contract-reader',workspaceSlug:ws.slug}).id;
   agents.worker=createAgent({name:'contract-memory-worker',workspaceSlug:ws.slug}).id;
+  agents.readOnlyWorker=createAgent({name:'contract-read-only-worker',workspaceSlug:ws.slug}).id;
+  agents.memoryReader=createAgent({name:'contract-memory-reader',workspaceSlug:ws.slug}).id;
   db.query("UPDATE agents SET tool_profile='read-only' WHERE id=?").run(agents.reader!);
-  db.query("UPDATE agents SET authority_profile='memory-worker',legacy_skill_access=0 WHERE id=?").run(agents.worker!);
+  db.query("UPDATE agents SET authority_profile='memory-worker',tool_profile='no-destructive',legacy_skill_access=0 WHERE id=?").run(agents.worker!);
+  db.query("UPDATE agents SET authority_profile='memory-worker',tool_profile='read-only',legacy_skill_access=0 WHERE id=?").run(agents.readOnlyWorker!);
+  db.query("UPDATE agents SET authority_profile='memory-reader',tool_profile='read-only',legacy_skill_access=0 WHERE id=?").run(agents.memoryReader!);
 });
 const authOf=(id:string):AuthContext=>{
   const row=db.query('SELECT id,name,type,tool_profile,authority_profile,legacy_skill_access FROM agents WHERE id=?').get(id) as any;
@@ -77,11 +81,18 @@ test('each mechanism reports one of five states with a reason and an action',()=
   const standard=of(agents.standard!),reader=of(agents.reader!);
   expect(standard['memory.notes']).toMatchObject({status:'available',reason:null});
   expect(standard.management).toMatchObject({status:'forbidden',tools:[],action:'Ask the steward or the owner to do it.'});
-  // A memory worker's AgentComm is withheld by its connection profile, which no switch widens:
-  // the contract must not send the owner to a card control or agent_set_profile that cannot help.
+  // A client connection / paired memory worker talks to the agents of its workspace (qoopia-source PR #33).
   const worker=of(agents.worker!);
-  expect(worker.agentcomm).toMatchObject({status:'forbidden',tools:[]});
-  expect(worker.agentcomm!.action).toContain('agent_set_profile cannot add them');
+  expect(worker.agentcomm).toMatchObject({status:'available',reason:null});
+  expect([...worker.agentcomm!.tools].sort()).toEqual(['agent_inbox','agent_reply','agent_send','agent_session_close','agent_session_create','agent_status']);
+  // The tool profile still gates each call: a read-only worker reads its inbox and never sends.
+  const readOnly=of(agents.readOnlyWorker!).agentcomm!;
+  expect([...readOnly.tools].sort()).toEqual(['agent_inbox','agent_status']);
+  expect(readOnly.withheld).toContain('agent_send');
+  // A memory reader stays without AgentComm, and the contract says no switch adds it.
+  const memoryReader=of(agents.memoryReader!).agentcomm!;
+  expect(memoryReader).toMatchObject({status:'forbidden',tools:[]});
+  expect(memoryReader.action).toContain('agent_set_profile cannot add them');
   expect(of(agents.steward!).management!.tools).toContain('memory_policy_list');
   expect(of(agents.steward!).management!.tools).not.toContain('memory_policy_set');
   expect(of(owner).management!.tools).toContain('memory_policy_set');
@@ -105,7 +116,17 @@ test('automatic capture is reported as it really is, not as it is wished',()=>{
   expect(state()).toMatchObject({status:'forbidden'});
   db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error','MODEL_QUOTA') WHERE id='claude_code:contract'").run();
   setMemoryPolicy({workspace_id:workspace,agent_id:agents.standard!,mode:'auto',actor_id:owner});
-  expect(state()).toMatchObject({status:'faulty'});expect(state().action).toContain('signs in');
+  // The reason names the cause, and the action fits it: a quota waits for its reset, it is not a sign-in.
+  expect(state()).toMatchObject({status:'faulty',reason:'The memory subscription reached its usage limit.'});expect(state().action).toContain('limit resets');
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error','MODEL_NOT_CONNECTED') WHERE id='claude_code:contract'").run();
+  expect(state()).toMatchObject({status:'faulty',reason:'No memory model is connected, so conversations are not summarised.'});
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error','DEPENDENCY_UNAVAILABLE') WHERE id='claude_code:contract'").run();
+  expect(state()).toMatchObject({status:'faulty',reason:'The memory model reported an error.'});
+  // Summaries catching up behind two live conversations is capture working, not a fault.
+  db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_error') WHERE id='claude_code:contract'").run();
+  continuityEvent(workspace,agents.standard!,{session_id:'claude_code:contract-2',project:'/contract',runtime:'claude_code',event:'progress',messages:[{id:'c2',role:'user',content:'Второе синтетическое сообщение.'}]});
+  expect(state()).toMatchObject({status:'available',reason:'Conversations wait for a summary.'});
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error','MODEL_QUOTA') WHERE id='claude_code:contract'").run();
 });
 
 test('the agent, the steward overview and the capabilities call read one contract; live status stays out of the digest',()=>{

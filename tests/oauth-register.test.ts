@@ -458,6 +458,27 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
     expect(row).toBeFalsy();
   });
 
+  // F-520-dcr-bound: anonymous registration used to store any size and any number of rows.
+  test("unauthenticated DCR refuses oversized metadata and stops at the registration limit", async () => {
+    const chatgpt = "https://chatgpt.com/connector_platform_oauth_redirect";
+    const count = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id = ?").get(GPT_ID) as { n: number }).n;
+    const before = count();
+    for (const body of [
+      { client_name: "x".repeat(201), redirect_uris: [chatgpt] },
+      { client_name: "ChatGPT", redirect_uris: Array.from({ length: 11 }, (_, i) => `${chatgpt}?n=${i}`) },
+      { client_name: "ChatGPT", redirect_uris: [`${chatgpt}/${"a".repeat(2048)}`] },
+    ]) expect((await postRegister(body)).status).toBe(400);
+    expect(count()).toBe(before);
+    db.query("UPDATE oauth_clients SET created_at = ? WHERE agent_id = ?").run(new Date().toISOString(), GPT_ID);
+    let status = 201;
+    for (let i = count(); i < 21 && status === 201; i++) {
+      authLimiter.resetForTests();
+      status = (await postRegister({ client_name: `ChatGPT ${i}`, redirect_uris: [chatgpt] })).status;
+    }
+    expect(status).toBe(429);
+    expect(count()).toBe(20);
+  });
+
   test("Claude.ai unauthenticated DCR rejects unsupported client auth methods", async () => {
     const r = await postRegister({
       client_name: "claude-basic-unauth",

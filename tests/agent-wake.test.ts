@@ -490,6 +490,29 @@ describe("a wake delivers exactly what it carries, once", () => {
     expect(messageDelivered(backlog[20]!.messageId)).toBeNull();
   });
 
+  test("a slow runtime does not hold another recipient's wake behind it", async () => {
+    const arrived: Record<string, number> = {};
+    server = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        arrived[path] = Date.now();
+        if (path === "/slow") await Bun.sleep(1500);
+        return accepted();
+      },
+    });
+    process.env.AGENTCOMM_LEO_WEBHOOK_URL = `http://127.0.0.1:${server.port}/slow`;
+    process.env.AGENTCOMM_LEO_WEBHOOK_TOKEN = "test-only-leo-token";
+    process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_URL = `http://127.0.0.1:${server.port}/fast`;
+    process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_TOKEN = "test-only-wake-token";
+    seedWake({ targetId: leoId, createdAt: new Date(Date.now() - 2000).toISOString() });
+    seedWake({ targetId });
+    const results = await drainAgentWakeQueue();
+    expect(results.map((r) => r.status)).toEqual(["delivered", "delivered"]);
+    // Sequential delivery would reach /fast only after /slow answered (1.5 s later).
+    expect(arrived["/fast"]! - arrived["/slow"]!).toBeLessThan(1000);
+  });
+
   test("concurrent drains for one recipient push each message into exactly one turn", async () => {
     const received = serveTarget(() => Bun.sleep(150));
     const first = seedWake({ body: "burst 1" });
@@ -510,6 +533,18 @@ describe("a wake delivers exactly what it carries, once", () => {
       expect(copies.filter((id) => id === messageId)).toHaveLength(1);
       expect(messageDelivered(messageId)).not.toBeNull();
     }
+  });
+
+  test("a wake row pointed at another agent's message never rides along in a batch", async () => {
+    const received = serveTarget();
+    // Addressed to Leo, but its wake row names wake-target (corrupt or imported row).
+    const forged = seedWake({ targetId: leoId, body: "addressed to Leo", createdAt: new Date(Date.now() - 60_000).toISOString() });
+    db.prepare(`UPDATE agent_wake_events SET target_agent_id = ? WHERE id = ?`).run(targetId, forged.eventId);
+    const own = seedWake({ body: "addressed to wake-target" });
+
+    await drainAgentWakeQueue({ eventId: own.eventId });
+    expect(received[0].messages.map((m: any) => m.message_id)).toEqual([own.messageId]);
+    expect(messageDelivered(forged.messageId)).toBeNull();
   });
 
   test("a deactivated sender's queued messages are no longer pushed", async () => {

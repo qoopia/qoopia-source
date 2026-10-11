@@ -16,8 +16,9 @@
  */
 import { MAX_QUERY_CHARS } from "./recall/config.ts";
 
-/** Would end the FTS5 string literal or open a group. */
-const STRUCTURAL = /["`()[\]{}\p{Cc}]/gu;
+/** Would end the FTS5 string literal or open a group. A lone surrogate (a valid JSON escape) cannot
+ * be encoded as UTF-8 and ends the string like U+0000. */
+const STRUCTURAL = /["`()[\]{}\p{Cc}\p{Cs}]/gu;
 /** Bareword operators; callers apply their own join. */
 const OPERATOR = /^(AND|OR|NOT|NEAR)$/i;
 const INDEXABLE = /[\p{L}\p{N}]/u;

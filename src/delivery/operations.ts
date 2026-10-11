@@ -116,10 +116,12 @@ export class Delivery {
     for(const dir of created)if(!selected.includes(path.basename(dir)))fs.rmSync(dir,{recursive:true,force:true});
   }
   /** Without a pointer only a killed first install's own entries may remain: the lock file and
-   * stage or content-addressed bundles. None holds memory; stage directories are partial copies. */
+   * stage or content-addressed bundles. None holds memory; stage directories are partial copies.
+   * A connection opened before the first install (memory-link, client-link) keeps its receipts in
+   * memory-clients/ and client-configs/; they hold no memory and stay as they are. */
   private interruptedInstall() {
     const list=(dir:string)=>fs.existsSync(path.join(this.root,dir))?fs.readdirSync(path.join(this.root,dir)):[];
-    if(!list('').every(name=>['operations.sqlite','bundles','generations'].includes(name))||!list('bundles').every(name=>name.startsWith('stage-')||/^[a-f0-9]{64}$/.test(name))||
+    if(!list('').every(name=>['operations.sqlite','bundles','generations','memory-clients','client-configs'].includes(name))||!list('bundles').every(name=>name.startsWith('stage-')||/^[a-f0-9]{64}$/.test(name))||
       !list('generations').every(name=>name.startsWith('stage-')))throw new Error('Fresh installation requires an empty root');
     return ['bundles','generations'].flatMap(dir=>list(dir).filter(name=>name.startsWith('stage-')).map(name=>safePath(path.join(this.root,dir,name))));
   }
@@ -322,9 +324,13 @@ export class Delivery {
       const c=readCurrent(this.root),id=generation(),dir=path.join(this.root,'generations',id);
       const checkpoint=path.join(this.root,'backups','pre-import-'+randomUUID());
       const snapshot=backupUnified(dataFile(this.root,c),checkpoint,c.instance,operationsDirectory(this.root,c));
-      privateDirectory(path.join(dir,'data'));durableCopyFile(path.join(checkpoint,'snapshot.db'),path.join(dir,'data','qoopia.db'),snapshot.size,snapshot.sha256);
-      const report=apply(dir),next=snapshotInfo(path.join(dir,'data','qoopia.db'));
-      if(next.instance!==c.instance)throw new Error('Import changed target identity');
+      // A refused import removes its full database copy; nothing selects it and prune never would.
+      let report:unknown,next:ReturnType<typeof snapshotInfo>;
+      try{
+        privateDirectory(path.join(dir,'data'));durableCopyFile(path.join(checkpoint,'snapshot.db'),path.join(dir,'data','qoopia.db'),snapshot.size,snapshot.sha256);
+        report=apply(dir);next=snapshotInfo(path.join(dir,'data','qoopia.db'));
+        if(next.instance!==c.instance)throw new Error('Import changed target identity');
+      }catch(error){this.discard([dir]);throw error;}
       const result:Current={...c,generation:id,previous:{...c,previous:undefined},cutover_hash:next.logical_hash};
       this.commit(result);return {current:result,report};
     });
@@ -481,7 +487,11 @@ export class Delivery {
       stage='DATABASE';
       const inspected=inspectDoctorDatabase(file);summary=inspected.summary;
       if(summary.instance!==current.instance)throw new Error('INSTANCE_MISMATCH');
-      checks.schema = {status:'pass',reason:'INTEGRITY_AND_SCHEMA_VERIFIED',action:'No migration needed.',schema:summary.schema};
+      // The selected bundle migrates its generation to schema_max; any other version is a pending or foreign migration, not a pass.
+      const target=bundle.manifest.schema_max;
+      checks.schema = summary.schema===target ? {status:'pass',reason:'INTEGRITY_AND_SCHEMA_VERIFIED',action:'No migration needed.',schema:summary.schema}
+        : {status:'fail',reason:summary.schema>target?'SCHEMA_NEWER_THAN_BUNDLE':'SCHEMA_MIGRATION_PENDING',schema:summary.schema,bundle_schema:target,
+          action:summary.schema>target?'Open the newer Qoopia that wrote this data; do not run an older one on it.':'Preserve data; rerun the update from the installed Qoopia so its migration completes.'};
       checks.auth = inspected.owners ? {status:'pass',reason:'STORED_OWNER_PRESENT',action:'Use owner-login for an explicit live IPC check.',owners:inspected.owners}
         : unknown('OWNER_NOT_BOUND','Run owner-login from the owner OS session.');
       checks.native_adapter = unknown(inspected.runtimes ? 'STORED_REGISTRATIONS_NOT_LIVE_QUALIFICATION' : 'NO_RUNTIME_REGISTRATION','Connect an owner-selected runtime; qualify separately.');

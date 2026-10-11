@@ -141,6 +141,12 @@ describe("release artifact contracts", () => {
     expect(compose).toContain("QOOPIA_BACKUP_DIR: ${QOOPIA_ROOT}/backups");
     expect(compose).toContain('QOOPIA_AUTO_MIGRATE: "false"');
     expect(compose).toContain("${QOOPIA_ROOT}/data:${QOOPIA_ROOT}/data");
+    // Every folder the server writes under its root must outlive the container [F-520-compose-my-agent].
+    // memory-clients/ at the root is read only by a standalone installation.
+    const written = new Set(fs.readdirSync(path.join(repoRoot, "src/services")).filter((name) => name.endsWith(".ts")).flatMap((name) => [...read(`src/services/${name}`).matchAll(/path\.join\(memoryRoot\(\),\s*'([a-z-]+)'/g)].map((m) => m[1]!)));
+    written.delete("memory-clients");
+    expect(written.has("my-agent")).toBe(true);
+    for (const dir of written) expect(compose).toContain(`\${QOOPIA_ROOT}/${dir}:\${QOOPIA_ROOT}/${dir}`);
     expect(compose).toContain(
       "body.server_role !== process.env.QOOPIA_SERVER_ROLE",
     );

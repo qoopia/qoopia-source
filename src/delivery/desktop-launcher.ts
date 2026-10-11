@@ -3,6 +3,7 @@ import path from 'node:path';
 import {z} from 'zod';
 import {hash,safePath,readJsonBytes,durableWrite,privateDirectory,hasNulOrNewline} from '../utils/fs.ts';
 import {stdioBindingSchema,stdioFolder} from './stdio-oauth.ts';
+import {stableBinary} from './launcher.ts';
 
 const receiptSchema=z.object({format:z.literal('qoopia-desktop-launcher/1'),binding_hash:z.string().regex(/^[a-f0-9]{64}$/),
   script_hash:z.string().regex(/^[a-f0-9]{64}$/),previous_script_hash:z.string().regex(/^[a-f0-9]{64}$/).optional(),state:z.enum(['pending','applied'])}).strict();
@@ -17,13 +18,15 @@ function owned(file:string){
  */
 export function prepareDesktopLauncher(root:string,raw:unknown,binary:string,apply=false,allowTestFixture=false) {
   const binding=stdioBindingSchema.parse(raw),folder=stdioFolder(root,binding),file=path.join(folder,'binding.json'),launcher=path.join(folder,'launch.sh');
-  root=safePath(root);binary=safePath(binary);
+  // Without a local installation launch.sh runs this binary itself, so it must outlive the disk image.
+  root=safePath(root);binary=fs.existsSync(path.join(root,'current.json'))?safePath(binary):stableBinary(binary);
   if(hasNulOrNewline(root+binary))throw new Error('Invalid adapter installation path');
   const bindingBytes=JSON.stringify(binding),bindingHash=hash(bindingBytes),receiptFile=path.join(folder,'desktop-launcher.json');
   const receipt=fs.existsSync(receiptFile)?receiptSchema.parse(JSON.parse(owned(receiptFile).toString())):null;
   if(receipt&&receipt.binding_hash!==bindingHash)throw new Error('Local adapter belongs to another connection');
   const script='#!/bin/sh\nset -eu\nroot='+quote(root)+'\nbinary='+quote(binary)+'\n'+
-    'if [ -f "$root/current.json" ]; then\n'+
+    // A selected server workspace makes a local installation inactive (installationLauncher's rule): its bundle is not updated.
+    'if [ -f "$root/current.json" ] && [ ! -f "$root/server-workspace.json" ]; then\n'+
     '  selected=$(/usr/bin/plutil -extract bundle raw -o - "$root/current.json") || exit 64\n'+
     '  case "$selected" in ""|*[!0-9a-f]*) exit 64 ;; esac\n'+
     '  [ "${#selected}" -eq 64 ] || exit 64\n'+

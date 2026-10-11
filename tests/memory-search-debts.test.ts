@@ -28,6 +28,15 @@ test('a late embedding cannot overwrite an edit; stale and deleted rows do not c
     expect(loadWorkspaceEmbeddings(workspace)).toHaveLength(0);expect(embeddingCoverage(workspace).embedded).toBe(0);
   } finally {server.stop(true);if(saved===undefined)delete process.env.QOOPIA_EMBED_ENDPOINT;else process.env.QOOPIA_EMBED_ENDPOINT=saved;}
 });
+test('a blank note neither enters nor blocks the embedding queue (F-520-blank-embed)',()=>{
+  const ws=createWorkspace({name:'Blank embed',slug:'blank-embed'}).id,who=createAgent({name:'blank-embed-agent',workspaceSlug:'blank-embed'}).id;
+  const older=createNote({workspace_id:ws,agent_id:who,text:'Старая заметка ждёт индексации.'});
+  const blank=createNote({workspace_id:ws,agent_id:who,text:'Будет очищена.'});
+  expect(()=>updateNote({workspace_id:ws,agent_id:who,is_admin:false,id:blank.id,text:''})).toThrow('text is required');
+  // A blank text that reached the database another way (whitespace through MCP, an import) is skipped, not retried first forever.
+  updateNote({workspace_id:ws,agent_id:who,is_admin:false,id:blank.id,text:' \n '});
+  expect(pendingNoteEmbeddings(ws,1).map(n=>n.id)).toEqual([older.id]);
+});
 test('concurrent embeddings of the same note text share one inference run',async()=>{
   let calls=0;
   const server=Bun.serve({port:0,fetch:async()=>{calls++;await Bun.sleep(50);return Response.json({embeddings:[Array(EMBED_DIM).fill(0.1)]});}});

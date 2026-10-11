@@ -143,7 +143,16 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     report.messages_purged = messagesPurged;
 
     // P3: bounded expiry is wired to the existing daily scheduler; feedback survives.
-    report.recall_trace_expiry = expireRecallTraceBatch(db, { cutoff: nowIso() });
+    // Each batch is one short write lock; a day that traced more than one batch drains the same night
+    // instead of leaving the table to grow by the difference every day.
+    // ponytail: at most 100 batches (100k traces) per run; the rest waits for the next run.
+    const traces = { selected: 0, detached_feedback: 0, deleted_items: 0, deleted_traces: 0 }, cutoff = nowIso();
+    for (let batch = 0; batch < 100; batch++) {
+      const expired = expireRecallTraceBatch(db, { cutoff });
+      for (const key of Object.keys(traces) as Array<keyof typeof traces>) traces[key] += expired[key];
+      if (expired.selected < 1_000) break;
+    }
+    report.recall_trace_expiry = traces;
 
     // 2. Idempotency keys
     // H3 fix: normalize both sides to datetime() to avoid ISO-8601 vs SQLite format mismatch

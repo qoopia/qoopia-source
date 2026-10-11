@@ -210,3 +210,27 @@ test('without a chosen memory model the agent reads «needs sign-in», not «cat
   await processMemoryMaintenance();
   expect(agentMemoryStatus(ws.id,agent)).toMatchObject({state:'sign_in',error_code:'MODEL_NOT_CONNECTED',pending_sessions:2});
 });
+
+test('a quota failure that is over does not keep the agent at «needs sign-in» through a conversation it already summarised',async()=>{
+  const ws=createWorkspace({name:'Stale fault',slug:'maintenance-stale-fault'}),agent=createAgent({name:'stale-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');
+  pending(ws.id,agent,'codex:stale-done','progress');
+  for(let tick=0;tick<3&&!notes(ws.id);tick++)await processMemoryMaintenance();
+  expect(notes(ws.id)).toBe(1);
+  // The quota runs out on the next conversation: the pause covers the workspace's live sessions,
+  // the summarised one still live included, but never a conversation that ended hours ago.
+  pending(ws.id,agent,'codex:stale-old','progress');
+  db.query("UPDATE sessions SET last_active=? WHERE id='codex:stale-old'").run(new Date(Date.now()-3*3600_000).toISOString());
+  mode('quota');
+  try {pending(ws.id,agent,'codex:stale-next');await processMemoryMaintenance();}
+  finally {mode('ok');}
+  expect(meta('codex:stale-done').continuity_error).toBe('MODEL_QUOTA');
+  expect(meta('codex:stale-old').continuity_error).toBeUndefined();
+  expect(agentMemoryStatus(ws.id,agent).state).toBe('sign_in');
+  // The quota resets and the pending conversation is summarised: nothing waits on the model any more.
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',0) WHERE id='codex:stale-next'").run();
+  for(let tick=0;tick<3&&notes(ws.id)<2;tick++)await processMemoryMaintenance();
+  expect(notes(ws.id)).toBe(2);
+  expect(agentMemoryStatus(ws.id,agent)).toMatchObject({error_code:null,pending_sessions:0});
+  expect(agentMemoryStatus(ws.id,agent).state).not.toBe('sign_in');
+});

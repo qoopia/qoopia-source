@@ -176,7 +176,10 @@ describe("F-090: standalone gates", () => {
     expect((await fetch(`${local}/api/dashboard/local-login`)).status).toBe(403);
     expect((await post(null, issueLocalLogin(k.ownerId))).status).toBe(403);
     expect((await post("https://evil.example", issueLocalLogin(k.ownerId))).status).toBe(403);
-    expect((await post(local, "0".repeat(32))).status).toBe(401);
+    const expired = await post(local, "0".repeat(32));
+    expect(expired.status).toBe(401);
+    // The same machine-readable shape as every other dashboard endpoint.
+    expect(await expired.json()).toEqual({ error: "invalid_code", error_description: "Login code expired or invalid" });
   });
 
   test("identity routes are 404 when owner sign-in is off on a hosted server", async () => {

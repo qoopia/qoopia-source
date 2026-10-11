@@ -10,7 +10,7 @@ import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJs
 import { tableExists } from '../db/introspect.ts';
 
 /** Schemas a unified snapshot can carry. One list: backup, retention and restore read it from here. */
-const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48] as const;
+const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48,49] as const;
 export const unifiedSnapshotSchema=(schema:number)=>(UNIFIED_SNAPSHOT_SCHEMAS as readonly number[]).includes(schema);
 
 export function inspectSnapshot(database: Database) {
@@ -61,15 +61,18 @@ export function backupUnified(source: string, output: string, expectedInstance?:
   // metadata allowance. This is not a reservation or a SQLite temporary-space quota.
   preflightSpace(output, [snapshotExtent(source), operationsBytes?.length ?? 0, MAX_JSON_BYTES]);
   privateDirectory(output);
-  const snapshot = createVerifiedBackup({source, output:path.join(output,'snapshot.db')});
-  fs.chmodSync(snapshot.output,0o600);
-  const info = snapshotInfo(snapshot.output);
-  if (info.instance !== sourceInfo.instance) throw new Error('Snapshot instance changed');
-  if (operationsBytes) durableWrite(opsFile(output), operationsBytes);
-  const manifest = { format:operationsBytes ? 'qoopia-backup/2' : 'qoopia-backup/1', data_scope:`complete-schema-${info.schema}-installation`, created_at:snapshot.created_at, sha256:snapshot.sha256, size:snapshot.size_bytes, ...info,
-    ...(operationsBytes ? {operations: {sha256:hash(operationsBytes),size:operationsBytes.length}} : {}) };
-  durableWrite(path.join(output,'manifest.json'),JSON.stringify(manifest,null,2)+'\n');
-  return manifest;
+  // A folder without its manifest is no backup, yet it would take a daily keep slot from a good one.
+  try {
+    const snapshot = createVerifiedBackup({source, output:path.join(output,'snapshot.db')});
+    fs.chmodSync(snapshot.output,0o600);
+    const info = snapshotInfo(snapshot.output);
+    if (info.instance !== sourceInfo.instance) throw new Error('Snapshot instance changed');
+    if (operationsBytes) durableWrite(opsFile(output), operationsBytes);
+    const manifest = { format:operationsBytes ? 'qoopia-backup/2' : 'qoopia-backup/1', data_scope:`complete-schema-${info.schema}-installation`, created_at:snapshot.created_at, sha256:snapshot.sha256, size:snapshot.size_bytes, ...info,
+      ...(operationsBytes ? {operations: {sha256:hash(operationsBytes),size:operationsBytes.length}} : {}) };
+    durableWrite(path.join(output,'manifest.json'),JSON.stringify(manifest,null,2)+'\n');
+    return manifest;
+  } catch (error) { fs.rmSync(output, { recursive: true, force: true }); throw error; }
 }
 type BackupManifest = ReturnType<typeof backupUnified>;
 /** One member list for verification, doctor and conservative rotation. */

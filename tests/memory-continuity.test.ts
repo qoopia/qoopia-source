@@ -184,3 +184,23 @@ test('a 7 MB tool output reaches the summarizer as a few KB of head and tail; th
   // cannot checkpoint) and locks the table against schema changes.
   expect(()=>db.exec('CREATE INDEX f341_probe ON session_messages(id); DROP INDEX f341_probe')).not.toThrow();
 });
+test('a summary range starts at the first row of a leading multi-row tool output (F-520-summary-range)',async()=>{
+  const session='claude_code:leading-tool-output';
+  continuityEvent(workspace,agent,{session_id:session,project:'/range',runtime:'claude_code',event:'precompact',messages:[
+    {id:'res:0:0',role:'tool',content:'first part of the output'},{id:'res:0:1',role:'tool',content:'second part'},{id:'after:0:0',role:'assistant',content:'Done.'}]});
+  const ids=(db.query('SELECT id FROM session_messages WHERE session_id=? ORDER BY id').all(session) as {id:number}[]).map(r=>r.id);
+  db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_priority',1) WHERE id=?").run(session);
+  expect((await checkpointSession(workspace,agent,session,summarize)).state).toBe('saved');
+  expect(db.query('SELECT msg_start_id,msg_end_id FROM summaries WHERE session_id=?').get(session)).toEqual({msg_start_id:ids[0],msg_end_id:ids[2]});
+});
+test('a purged predecessor does not stop capture or summaries of its successor (F-520-purged-predecessor)',async()=>{
+  const ev=(session:string,event:string,messages:object[],previous?:string)=>continuityEvent(workspace,agent,
+    {session_id:session,project:'/purged',runtime:'claude_code',event,messages,...(previous?{previous_session_id:previous}:{})});
+  ev('claude_code:purged-a','start',[{id:'pa-1',role:'user',content:'Предшественник.'}]);
+  ev('claude_code:purged-b','start',[{id:'pb-1',role:'user',content:'Преемник.'}],'claude_code:purged-a');
+  // What the task-bound purge does to the predecessor (retention.ts).
+  db.query("DELETE FROM session_messages WHERE session_id='claude_code:purged-a'").run();
+  db.query("DELETE FROM sessions WHERE id='claude_code:purged-a'").run();
+  expect(ev('claude_code:purged-b','progress',[{id:'pb-2',role:'user',content:'После очистки.'}]).tail.map(m=>m.content)).toEqual(['Преемник.','После очистки.']);
+  expect((await checkpointSession(workspace,agent,'claude_code:purged-b',summarize)).state).toBe('saved');
+});

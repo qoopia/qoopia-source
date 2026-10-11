@@ -517,7 +517,7 @@ export function supersedeExistingNote(input: {
           : "workspace",
     });
     return { relation_id: relation.relation_id, invalidated_at_ms: closeMs };
-  })();
+  }).immediate();
 }
 
 /** `valid_until_inferred` из provenance. Читается только при флаге ON. */

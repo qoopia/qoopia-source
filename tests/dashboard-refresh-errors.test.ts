@@ -47,7 +47,7 @@ test('a failed Refresh keeps the snapshot and still renders the page',async()=>{
   expect(rendered).toHaveLength(1);expect(rendered[0]).not.toContain('memorySaves');
 });
 
-const write=between('  async function apiWrite(path, body) {','  // ---------- Auth / boot ----------');
+const write=between('  // ---------- API ----------','  async function api(path) {')+between('  async function apiWrite(path, body) {','  // ---------- Auth / boot ----------');
 const binders=between('  // The agent prepared these notes','  function renderAgentDetail() {');
 function memoryWrites(status:number,description:string){
   const elements:Record<string,any>={'#memoryResult':{textContent:''}};
@@ -56,7 +56,7 @@ function memoryWrites(status:number,description:string){
   const refreshed:unknown[]=[];
   const ctx:any={QI:{msg:(x:string)=>x,resolve:(x:string)=>x},esc:String,fmtNum:String,fmtTimeFull:String,BASE:'',AbortSignal,showLogin(){},
     $:(id:string)=>elements[id],state:{drill:{kind:'agent'}},route:async(force:unknown)=>{refreshed.push(force);},api:async()=>({items:[]}),
-    fetch:async()=>({ok:false,status,json:async()=>({error:'x',error_description:description})})};
+    fetch:async()=>({ok:false,status,headers:new Headers(),json:async()=>({error:'x',error_description:description})})};
   runInNewContext(write+binders,ctx);
   const agent={id:'a1',memory:{mode:'auto',revision:0,pending_saves:1}};
   return {ctx,agent,decide,refreshed,result:elements['#memoryResult']};

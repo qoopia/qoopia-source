@@ -44,7 +44,7 @@ test("V1 dashboard interactive collections use native single-click controls", ()
 
 test("V1 dashboard resolves loading and reconciles failed mutations without discarding inputs", () => {
   has(dashboard, "Could not load the overview.");
-  has(dashboard, "if (!r.ok) throw new Error");
+  has(dashboard, "if (!r.ok) throw failure(r");
   has(dashboard, "await filesLoadList()");
   has(dashboard, "await skillReconcile()");
   has(dashboard, "Your edits are kept");

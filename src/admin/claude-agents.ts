@@ -12,6 +12,7 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
 import { workspaceIdBySlug } from "./workspaces.ts";
+import { normalizeAgentName } from "../utils/agent-name.ts";
 
 interface ClaudeAgentRecord {
   id: string;
@@ -36,7 +37,7 @@ export function registerClaudeAgent(opts: {
 
   const agent = db
     .prepare(`SELECT id FROM agents WHERE name = ? AND workspace_id = ? AND active = 1`)
-    .get(opts.agentName, workspaceId) as { id: string } | undefined;
+    .get(normalizeAgentName(opts.agentName), workspaceId) as { id: string } | undefined;
   if (!agent)
     throw new QoopiaError("NOT_FOUND", `active agent '${opts.agentName}' not found in workspace '${opts.workspaceSlug}'`);
 
@@ -148,9 +149,10 @@ export function getAllowlist(workspace_id: string): Array<{
 }> {
   return db
     .prepare(
-      `SELECT cwd_prefix, agent_id, workspace_id, autosession_enabled
-       FROM claude_code_agents
-       WHERE autosession_enabled = 1 AND workspace_id = ?`,
+      // A deactivated agent's mapping stays listed for the owner but is not tailed: ingest refuses it.
+      `SELECT c.cwd_prefix, c.agent_id, c.workspace_id, c.autosession_enabled
+       FROM claude_code_agents c JOIN agents a ON a.id = c.agent_id AND a.workspace_id = c.workspace_id AND a.active = 1
+       WHERE c.autosession_enabled = 1 AND c.workspace_id = ?`,
     )
     .all(workspace_id) as Array<{
       cwd_prefix: string;
