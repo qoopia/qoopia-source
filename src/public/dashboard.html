@@ -22,7 +22,7 @@
 <button aria-expanded="false" aria-controls="nav" aria-label="Menu" class="nav-toggle" data-i18n-aria-label="Menu" id="navToggle"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
 </div>
 <div class="workspace-location"><strong id="workspaceName"><span data-i18n="Your workspace">Your workspace</span></strong><span id="workspaceHost"></span></div>
-<nav class="nav" id="nav"></nav>
+<nav aria-label="Main menu" class="nav" data-i18n-aria-label="Main menu" id="nav"></nav>
 <div class="side-foot">
 <a data-native-app-settings href="qoopia-app://settings" hidden data-i18n="App settings">App settings</a>
 <a id="profileLink" href="#profile"><svg class="inline-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span data-i18n="Profile">Profile</span></a>
@@ -39,7 +39,7 @@
 <nav aria-label="Breadcrumb" class="crumb" data-i18n-aria-label="Breadcrumb" id="crumb"></nav>
 <div class="tb-spacer"></div>
 <div class="tb-clock" id="clock"></div>
-<div aria-label="Language" class="q-language" data-i18n-aria-label="Language" role="group"><button aria-label="English" data-language="en" lang="en" title="English" type="button">EN</button><span aria-hidden="true">/</span><button aria-label="Русский" data-language="ru" lang="ru" title="Русский" type="button">RU</button></div></header>
+<div aria-label="Language" class="q-language" data-i18n-aria-label="Language" role="group"><button data-language="en" lang="en" title="English" type="button">EN</button><span aria-hidden="true">/</span><button data-language="ru" lang="ru" title="Русский" type="button">RU</button></div></header>
 <div class="ui-update" hidden="" id="uiUpdate" role="status"><span data-i18n="A new Qoopia interface is ready.">A new Qoopia interface is ready.</span><button id="uiReload"><span data-i18n="Reload this page">Reload this page</span></button></div>
 <p id="uiFeedback" class="ui-feedback" role="status" aria-live="polite"></p><main class="content" id="main" tabindex="-1"></main>
 </div>
@@ -47,7 +47,7 @@
 </div>
 <!-- Login -->
 <main class="login-wrap" id="loginView">
-<div class="login-card"><div aria-label="Language" class="q-language q-language-login" data-i18n-aria-label="Language" role="group"><button aria-label="English" data-language="en" lang="en" title="English" type="button">EN</button><span aria-hidden="true">/</span><button aria-label="Русский" data-language="ru" lang="ru" title="Русский" type="button">RU</button></div>
+<div class="login-card"><div aria-label="Language" class="q-language q-language-login" data-i18n-aria-label="Language" role="group"><button data-language="en" lang="en" title="English" type="button">EN</button><span aria-hidden="true">/</span><button data-language="ru" lang="ru" title="Русский" type="button">RU</button></div>
 <h1 class="q-brand login-brand"><img alt="qoopia" class="brand-wordmark" src="/brand/graphite/qoopia-wordmark-ivory.svg" width="128" height="34"/></h1>
 <div class="login-sub"><span data-i18n="Your workspace, waiting for you.">Your workspace, waiting for you.</span></div>
 <div hidden="" id="emailLogin">

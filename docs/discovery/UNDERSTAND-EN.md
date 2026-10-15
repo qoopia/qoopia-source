@@ -1,6 +1,6 @@
 # Is Qoopia right for you?
 
-Reviewed: 2026-09-14. Qoopia V1.
+Reviewed: 2026-10-14 for Qoopia 5.0.21.
 
 
 ## When does Qoopia help?
@@ -19,9 +19,9 @@ Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/d
 
 ## Can I start from a phone?
 
-Use your existing Qoopia dashboard on iPhone, including memory, agents, connections, files and chat. On a server installation, open its HTTPS address in Safari, sign in with the email linked to that workspace, then add it to Home Screen as a web app; the server must stay running. A Mac or Linux installation keeps its dashboard on that computer, so open it there. The phone does not run the Mac/Linux agent runtime or create a second memory database. A managed MCP endpoint is for agent tools, not dashboard access.
+Qoopia for iPhone is a free TestFlight beta for iOS 17 or later. It opens the dashboard of a server installation reachable over HTTPS: memory, agents, connections, files and chat; the server must stay running. A Mac or Linux installation keeps its dashboard on that computer, listening only on its local address, so the iPhone app cannot open it yet: use the dashboard on that computer. The phone does not run the agent runtime or create a second memory database. A managed MCP address is for agent tools, not dashboard access.
 
-Sources: [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md), [src/http/web-app.ts](https://github.com/qoopia/qoopia-source/blob/main/src/http/web-app.ts), [src/public/app.webmanifest](https://github.com/qoopia/qoopia-source/blob/main/src/public/app.webmanifest)
+Sources: [docs/operations/ios-direct-dashboard.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/ios-direct-dashboard.md), [src/delivery/mcp-edge.ts](https://github.com/qoopia/qoopia-source/blob/main/src/delivery/mcp-edge.ts), [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md)
 
 
 ## Can my agent install it for me?
@@ -33,7 +33,7 @@ Sources: [marketing-site/install-agent.js](https://github.com/qoopia/qoopia-sour
 
 ## What does installation require?
 
-Current V1 packages support Apple Silicon Macs with macOS 15 or later and Linux x64 with glibc 2.34 or later. Intel Macs, Windows and a standalone phone installation are not supported by these packages. The packages do not require a separate Bun, Docker or Ollama installation. Opening a website profile does not deploy your personal memory. Local search and embeddings are bundled; cloud model access is authorized separately.
+Current packages support Apple Silicon Macs with macOS 15 or later and Linux x64 with glibc 2.34 or later and the ps command (procps), run as a normal user rather than root. Intel Macs, Windows and a standalone phone installation are not supported by these packages. The packages do not require a separate Bun, Docker or Ollama installation. Opening a website profile does not deploy your personal memory. Local search and embeddings are bundled; cloud model access is authorized separately.
 
 Sources: [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [marketing-site/docs.html](https://github.com/qoopia/qoopia-source/blob/main/marketing-site/docs.html)
 
@@ -61,7 +61,7 @@ Sources: [src/delivery/steward.ts](https://github.com/qoopia/qoopia-source/blob/
 
 ## Can two independent environments exchange materials?
 
-Bridges provide selective exchange between separate Qoopia installations. You choose an invitation, materials and permissions. Publishing catalog titles and descriptions is different from sending file contents. Received material is not automatically installed or added to ordinary memory; previously received copies cannot be recalled. A broader automatically connected agent network is a future direction, not a current V1 promise.
+Bridges provide selective exchange between separate Qoopia installations. You choose an invitation, materials and permissions. Publishing catalog titles and descriptions is different from sending file contents. Received material is not automatically installed or added to ordinary memory; previously received copies cannot be recalled. A broader automatically connected agent network is a future direction, not a current promise.
 
 Sources: [src/bridges/service.ts](https://github.com/qoopia/qoopia-source/blob/main/src/bridges/service.ts), [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md)
 
@@ -75,9 +75,9 @@ Sources: [src/skills/format.ts](https://github.com/qoopia/qoopia-source/blob/mai
 
 ## What is AgentComm?
 
-AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard.
+AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard. Since 5.0.20 a message can also wake a Claude Code or Codex agent through qoopia wake-runner. Its operator configures this on a server (Docker) installation; the Mac and Linux packages do not offer it yet.
 
-Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/qoopia-protocol.md)
+Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/qoopia-protocol.md), [src/services/agent-wake.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/agent-wake.ts)
 
 
 ## What if setup fails, or I want to leave?

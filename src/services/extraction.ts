@@ -756,6 +756,7 @@ export function reviewExtractionCandidate(input: {
       workspace_id: input.auth.workspace_id,
       agent_id: input.auth.agent_id,
       action: "extraction_reviewed",
+      event: `extraction.candidate.${status}`,
       entity_type: "extraction_candidate",
       entity_id: current.id,
       project_id: null,

@@ -61,6 +61,8 @@ test.skipIf(!fs.existsSync(path.join(operations,'README.md')))('the operations i
   const dir=operations,index=fs.readFileSync(path.join(dir,'README.md'),'utf8');
   const linked=new Set([...index.matchAll(/\]\(([^)#\s]+)/g)].map(m=>m[1]));
   expect(fs.readdirSync(dir).filter(f=>f.endsWith('.md')&&f!=='README.md'&&!linked.has(f))).toEqual([]);
+  // Dated records moved to archive/ are listed too (A10-13).
+  expect(fs.readdirSync(path.join(dir,'archive')).filter(f=>f.endsWith('.md')&&!linked.has('archive/'+f))).toEqual([]);
 });
 
 // Also private (not in the public source export).
@@ -70,4 +72,32 @@ test.skipIf(!fs.existsSync(surfaces))('every live V4 feature flag is documented 
   const flags=Object.keys(getV4FeatureFlags({})).map(key=>'QOOPIA_V4_'+key.toUpperCase());
   expect(flags.length).toBeGreaterThan(8);
   expect(flags.filter(flag=>!text.includes('`'+flag+'`'))).toEqual([]);
+});
+
+// A10-18: the commands and scripts that agent instructions tell agents to run exist. In the public
+// export START-HERE.md is absent and AGENTS.md is its own; each is checked where it exists.
+function missingInstructionReferences(root:string,files:string[]){
+  const scripts=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).scripts??{},missing:string[]=[];
+  for(const file of files.filter(f=>fs.existsSync(path.join(root,f)))){
+    const text=fs.readFileSync(path.join(root,file),'utf8');
+    for(const [,name] of text.matchAll(/\bbun run ([A-Za-z0-9:._/-]+)/g)){
+      const isFile=name!.includes('/')||/\.(ts|js)$/.test(name!);
+      if(isFile?!fs.existsSync(path.join(root,name!)):!(name! in scripts))missing.push(file+': bun run '+name);
+    }
+    for(const [ref] of text.matchAll(/(?<![\w/.-])scripts\/[A-Za-z0-9._/-]+\.(?:ts|py|sh|cjs|js)\b/g))
+      if(!fs.existsSync(path.join(root,ref)))missing.push(file+': '+ref);
+  }
+  return missing;
+}
+
+test('commands and scripts named in agent instructions exist [A10-18]',()=>{
+  const root=path.resolve(import.meta.dir,'..');
+  expect(missingInstructionReferences(root,['AGENTS.md','START-HERE.md'])).toEqual([]);
+  const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-agent-refs-'));
+  try{
+    fs.mkdirSync(path.join(scratch,'scripts'));fs.writeFileSync(path.join(scratch,'scripts/real.py'),'');
+    fs.writeFileSync(path.join(scratch,'package.json'),JSON.stringify({scripts:{typecheck:'tsc'}}));
+    fs.writeFileSync(path.join(scratch,'AGENTS.md'),'`bun run typecheck`, `bun run lint`, `python3 scripts/real.py`, `scripts/gone.ts`, `bun run scripts/real.py`\n');
+    expect(missingInstructionReferences(scratch,['AGENTS.md','START-HERE.md'])).toEqual(['AGENTS.md: bun run lint','AGENTS.md: scripts/gone.ts']);
+  }finally{fs.rmSync(scratch,{recursive:true,force:true});}
 });

@@ -163,7 +163,7 @@ export function packageAndNotarizeDarwin(directory:string,dmg:string,authorizati
     checked('/usr/sbin/spctl',['-a','-t','execute','-v',app],'Gatekeeper app verification failed',runner);
     fs.rmSync(appArchive,{force:true});
     fs.symlinkSync('/Applications',path.join(stage,'Applications'));
-    fs.writeFileSync(path.join(stage,'START-HERE.txt'),'Drag Qoopia to Applications, then open Qoopia.\nYour dashboard opens inside Qoopia. Close its window to keep running in the menu bar. Use Check for Updates from the Qoopia menu. Updates preserve your data and connections.\nYour data stays in your local Application Support/Qoopia folder.\n');
+    fs.writeFileSync(path.join(stage,'START-HERE.txt'),'Drag Qoopia to Applications, then open Qoopia.\nYour dashboard opens inside Qoopia. Close its window to keep running in the menu bar. Use Check for Updates from the Qoopia menu. Updates preserve your data and connections.\nAgents reach their memory only while Qoopia runs: turn on Open at Login in the Qoopia menu-bar menu so it is there after a restart.\nYour data stays in your local Application Support/Qoopia folder.\n');
     checked('/usr/bin/hdiutil',['create','-srcfolder',stage,'-volname','Qoopia','-format','UDZO','-ov',work],'DMG creation failed',runner);
     checked('/usr/bin/codesign',['--force','--timestamp','--sign',authorization.codesign_identity,work],'DMG signing failed',runner);
     checked('/usr/bin/codesign',['--verify','--strict','--verbose=2',work],'DMG signature verification failed',runner);

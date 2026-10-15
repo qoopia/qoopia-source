@@ -32,7 +32,7 @@
  * / `--- SHARED KNOWLEDGE END ---`) are owned by edit_shared_knowledge.py
  * and the Supervisor sync — this tool ignores them entirely.
  *
- * Usage (inside qoopia-corsair container):
+ * Usage (inside the server container):
  *
  *   bun run /app/scripts/mainmemory_migrate.ts \
  *     --source=/path/to/MAINMEMORY.md \
@@ -171,7 +171,7 @@ export interface Classification {
  * substring match against the H2 header (or "<intro>" for the pre-H2
  * persona block).
  *
- * Tuned for corsair-main's MAINMEMORY shape; conservative — anything
+ * Tuned for the main agent's MAINMEMORY shape; conservative — anything
  * unrecognised falls through to "ephemeral" so we never silently
  * migrate ambiguous prose to entity pages.
  */

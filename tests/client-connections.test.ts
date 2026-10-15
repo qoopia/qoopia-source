@@ -127,19 +127,23 @@ test('path-derived authorization server metadata of a connection is that connect
 });
 // Every failed connect attempt registers again. Twenty dead registrations used to block the connection for
 // good ("registration limit reached"); unused ones past a consent's lifetime are now reclaimed, live ones never.
-test('dead client registrations are reclaimed at the limit; fresh and used ones still count',()=>{
+// A3-04: even fresh unused ones give way, oldest first, so anonymous registrations cannot lock the owner out.
+test('dead client registrations are reclaimed at the limit; fresh unused ones give way, used ones still count',()=>{
   const connection=apply(),callback=['http://127.0.0.1:19191/callback'];
   const register=()=>registerClient({client_name:'Retrying Codex',redirect_uris:callback},connectionRegistrationAuth(connection.id,callback));
   const clients=Array.from({length:20},register);
-  expect(register).toThrow('registration limit');
   const agent=(db.query('SELECT agent_id FROM client_connections WHERE id=?').get(connection.id) as {agent_id:string}).agent_id;
+  const ids=()=>(db.query('SELECT id FROM oauth_clients WHERE agent_id=?').all(agent) as {id:string}[]).map(r=>r.id).sort();
+  const use=(id:string)=>db.query(`INSERT INTO oauth_tokens(token_hash,client_id,agent_id,workspace_id,token_type,granted_scope,expires_at,revoked,created_at)
+    VALUES(?,?,?,?,'refresh','mcp:read','2999-01-01T00:00:00Z',0,'2000-01-01T00:00:00Z')`).run(randomBytes(16).toString('hex'),id,agent,owner.workspace_id);
+  use(clients[0]!.client_id);
+  const next=register();
+  expect(ids()).toEqual([...clients.filter((_,i)=>i!==1).map(c=>c.client_id),next.client_id].sort());
   db.query("UPDATE oauth_clients SET created_at='2000-01-01T00:00:00Z' WHERE agent_id=?").run(agent);
-  db.query(`INSERT INTO oauth_tokens(token_hash,client_id,agent_id,workspace_id,token_type,granted_scope,expires_at,revoked,created_at)
-    VALUES(?,?,?,?,'refresh','mcp:read','2999-01-01T00:00:00Z',0,'2000-01-01T00:00:00Z')`).run(randomBytes(16).toString('hex'),clients[0]!.client_id,agent,owner.workspace_id);
   const fresh=register();
-  const left=(db.query('SELECT id FROM oauth_clients WHERE agent_id=?').all(agent) as {id:string}[]).map(r=>r.id).sort();
-  expect(left).toEqual([clients[0]!.client_id,fresh.client_id].sort());
-  for(let i=0;i<18;i++)register();
+  expect(ids()).toEqual([clients[0]!.client_id,fresh.client_id].sort());
+  for(const id of ids())if(id!==clients[0]!.client_id)use(id);
+  for(let i=0;i<18;i++)use(register().client_id);
   expect(register).toThrow('registration limit');
 });
 // A client that revokes its own grant (sign-out, removed connector) can no longer call. The card used to keep
@@ -336,6 +340,10 @@ test('owner-connection registration keeps the surface callback and answers refus
   const agent=db.query('SELECT agent_id FROM client_connections WHERE id=?').get(muse.id) as {agent_id:string};
   while((db.query('SELECT count(*) n FROM oauth_clients WHERE agent_id=?').get(agent.agent_id) as {n:number}).n<20)
     expect((await register(muse.id,['https://muse.example/cb'])).status).toBe(201);
+  // A3-04: unused registrations give way; only twenty used clients refuse the next one.
+  for(const {id} of db.query('SELECT id FROM oauth_clients WHERE agent_id=?').all(agent.agent_id) as {id:string}[])
+    db.query(`INSERT INTO oauth_tokens(token_hash,client_id,agent_id,workspace_id,token_type,granted_scope,expires_at,revoked,created_at)
+      VALUES(?,?,?,?,'refresh','mcp:read','2999-01-01T00:00:00Z',0,'2000-01-01T00:00:00Z')`).run(randomBytes(16).toString('hex'),id,agent.agent_id,owner.workspace_id);
   expect((await register(muse.id,['https://muse.example/cb'])).status).toBe(429);
 });
 

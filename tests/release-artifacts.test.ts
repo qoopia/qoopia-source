@@ -154,6 +154,24 @@ describe("release artifact contracts", () => {
     expect(compose).not.toContain("$${process.env.QOOPIA_PORT}/health");
   });
 
+  // A5-09: the sign-in container has a /ready healthcheck and a read-only operator mount. The owner
+  // declined a read-only root, dropped capabilities and memory limits for the production containers
+  // (15.10): they stay as the reviewed 5.0.20 memory compose. deploy/docker-compose.auth.yml is a
+  // private operator file, absent from the public source export.
+  test("the sign-in container has a /ready healthcheck", () => {
+    for (const file of ["deploy/docker-compose.release.yml", "deploy/docker-compose.auth.yml"]) {
+      if (!fs.existsSync(path.join(repoRoot, file))) continue;
+      const compose = read(file);
+      for (const key of ["read_only: true", "cap_drop:", "mem_limit:"]) expect(compose).not.toContain(key);
+    }
+    if (fs.existsSync(path.join(repoRoot, "deploy/docker-compose.auth.yml"))) {
+      const auth = read("deploy/docker-compose.auth.yml");
+      expect(auth).toContain("/ready`)");
+      expect(auth).toContain("/srv/qoopia-auth/operator:/operator:ro");
+      expect(read("src/identity/broker.ts")).toContain("url.pathname === '/ready'");
+    }
+  });
+
   // scripts/v4-rollback-rehearsal.ts asserts that rolling back is an image
   // swap rather than a code-directory swap, and it reads compose/docker-
   // compose.v4.yml because that is the only compose baked into the image by
@@ -167,10 +185,12 @@ describe("release artifact contracts", () => {
     ].filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
 
     // A new compose file must be reviewed, not silently exempt from the check.
+    // deploy/docker-compose.auth.yml is a private operator file, absent from the public source export.
     expect(composeFiles.sort()).toEqual([
       "compose/docker-compose.v4.yml",
+      "deploy/docker-compose.auth.yml",
       "deploy/docker-compose.release.yml",
-    ]);
+    ].filter((f) => f !== "deploy/docker-compose.auth.yml" || fs.existsSync(path.join(repoRoot, f))));
 
     for (const file of composeFiles) {
       expect(read(file)).not.toContain("/srv/qoopia/code");
@@ -256,7 +276,8 @@ describe.skipIf(!fs.existsSync(path.join(repoRoot, ".github/workflows")))("CI wo
     expect(ci.concurrency.group).toContain("${{ github.ref }}");
     expect(ci.concurrency["cancel-in-progress"]).toBe("${{ github.ref != 'refs/heads/main' }}");
     if (publicSource) {
-      expect(ci.jobs.build.if).toBe("github.event_name != 'schedule'");
+      // A8-18: the daily scheduled run tests unchanged main here too.
+      expect(ci.jobs.build.if).toBeUndefined();
       expect(ci.jobs.build.name).toBe("typecheck + tests");
       return;
     }
@@ -274,7 +295,13 @@ describe.skipIf(!fs.existsSync(path.join(repoRoot, ".github/workflows")))("CI wo
     expect(runs("advisories")).toContain("bun run sec:vendored-pdfjs");
     expect(ci.jobs.advisories.if).toBe(forkOnlyPullRequests);
     expect(ci.on.schedule).toEqual([{ cron: expect.stringMatching(/^\d+ \d+ \* \* \*$/) }]);
-    expect(ci.jobs.build.if).toStartWith("github.event_name != 'schedule'");
+    // A8-18: the daily run also tests unchanged main, so a green scheduled run means the tests pass.
+    expect(ci.jobs.build.if ?? "").not.toContain("schedule");
+    // The secret scan is its own workflow so the public source export carries it (A8-15).
+    expect(ci.jobs.secrets).toBeUndefined();
+    const scan = workflow("secret-scan.yml");
+    expect(scan.jobs.secrets.steps.map((step: { run?: string }) => step.run ?? "").join("\n")).toContain("/bin/gitleaks\" git --redact");
+    expect(fs.existsSync(path.join(repoRoot, ".github/dependabot.yml"))).toBe(false);
   });
 
   test("Linux bundle inputs come from the permanent Debian snapshot and are built daily", async () => {

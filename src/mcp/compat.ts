@@ -43,7 +43,7 @@ import {
   type RiskClass,
 } from "./profiles.ts";
 import type { ToolDef, toolCallback } from "./tools.ts";
-import { isAdmin, seesWholeWorkspace } from "../auth/principal.ts";
+import { isAdmin, levelOf, seesWholeWorkspace, visibleRowSql } from "../auth/principal.ts";
 
 // V2 plural entity → V3 singular type
 const ENTITY_TO_TYPE: Record<string, string> = {
@@ -222,7 +222,8 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
         entity_id: (args.entity_id as string) || null,
         project_id: (args.project_id as string) || null,
         summary: String(args.summary || ""),
-        details: (args.details as Record<string, unknown>) || {},
+        // An event code marks a sentence Qoopia phrases itself; a hand-written entry cannot claim one.
+        details: Object.fromEntries(Object.entries((args.details as Record<string, unknown>) || {}).filter(([k]) => k !== "event" && k !== "params")),
       });
       return { created: true, id };
     }
@@ -420,23 +421,24 @@ function v2Note(args: Record<string, unknown>, auth: AuthContext) {
   if (!text) throw new QoopiaError("INVALID_INPUT", "text required");
   const v2type = (args.type as string) || "memory";
 
-  // Resolve project: accept ULID or exact name (mirrors brief() resolution)
+  // Resolve project: accept ULID or exact name (mirrors brief() resolution). Only a project the
+  // caller may read resolves, so a private project of a sibling is never an oracle.
   let projectId: string | null = null;
   if (args.project) {
     const projectVal = String(args.project);
     const byId = db
       .prepare(
-        `SELECT id FROM notes WHERE id = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL`,
+        `SELECT id FROM notes WHERE id = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL AND ${visibleRowSql()}`,
       )
-      .get(projectVal, auth.workspace_id) as { id: string } | undefined;
+      .get(projectVal, auth.workspace_id, auth.agent_id, levelOf(auth)) as { id: string } | undefined;
     if (byId) {
       projectId = byId.id;
     } else {
       const byName = db
         .prepare(
-          `SELECT id FROM notes WHERE text = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL LIMIT 1`,
+          `SELECT id FROM notes WHERE text = ? AND workspace_id = ? AND type = 'project' AND deleted_at IS NULL AND ${visibleRowSql()} LIMIT 1`,
         )
-        .get(projectVal, auth.workspace_id) as { id: string } | undefined;
+        .get(projectVal, auth.workspace_id, auth.agent_id, levelOf(auth)) as { id: string } | undefined;
       if (byName) {
         projectId = byName.id;
       }
@@ -618,7 +620,7 @@ export function registerCompatTools(
 
   // recall and brief already exist in V3 with the same name. We DON'T re-register
   // them — the V3 versions already accept the V2 args (V2 'entities' is ignored,
-  // V2 'agent_name' is ignored). Aidan's existing recall/brief calls work as-is.
+  // V2 'agent_name' is ignored). An agent's existing recall/brief calls work as-is.
   // If we want to be strict about V2 'entities' string, we could override here,
   // but it's not needed for current clients.
 }

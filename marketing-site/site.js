@@ -11,7 +11,8 @@ if(platform){
    if(release.availability==='public'&&pkg.url&&new URL(pkg.url).protocol==='https:'){
     document.querySelector('#release-state').textContent=QI.msg('{version} is available for {platform}.',{version:release.version,platform:pkg.label});
     if(foreign){const notice=document.createElement('p');notice.className='notice';notice.textContent=QI.msg('This device does not look like an Apple Silicon Mac or a Linux x64 computer. Choose the package for the computer where Qoopia will run.');action.append(notice);}
-    const a=document.createElement('a');a.className='button';a.href=pkg.url;a.dataset.platform=platform.value;a.dataset.version=release.version;a.textContent=QI.msg('Download {format} ↓',{format:pkg.format});action.append(a);
+    // /download/<platform> is counted on the server and redirects to pkg.url (GitHub).
+    const a=document.createElement('a');a.className='button';a.href='/download/'+platform.value;a.dataset.platform=platform.value;a.dataset.version=release.version;a.textContent=QI.msg('Download {format} ↓',{format:pkg.format});action.append(a);
     const checksum=document.createElement('p');checksum.className='release-meta';checksum.textContent='SHA-256: '+pkg.sha256;action.append(checksum);
    }
   }

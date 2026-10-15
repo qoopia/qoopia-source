@@ -475,7 +475,9 @@ interface LinkResult {
  * deliberately stricter than the DB schema (which has no FK) so cross-
  * workspace link smuggling is impossible from the MCP surface.
  */
-export function addLink(input: LinkInput): LinkResult {
+export function addLink(input: LinkInput, auth?: AuthContext): LinkResult {
+  // A link is page content: both pages render it. The same gate as entity_upsert.
+  if (auth) assertAutomaticMemoryAllowed(auth.workspace_id, auth.agent_id);
   if (!input.workspace_id) {
     throw new QoopiaError("INVALID_INPUT", "workspace_id is required");
   }
@@ -507,16 +509,22 @@ export function addLink(input: LinkInput): LinkResult {
     );
   }
 
+  // A private page (a private skill) is invisible to everyone but its author, the steward and
+  // the owner — linking to it answers NOT_FOUND exactly like a missing id.
+  const whole = !auth || seesWholeWorkspace(auth);
   const endpoints = db
     .prepare(
-      `SELECT id FROM entity_pages
-        WHERE id IN (?, ?) AND workspace_id = ?`,
+      `SELECT id, slug, authority_owner_id FROM entity_pages
+        WHERE id IN (?, ?) AND workspace_id = ?
+          AND (?4 = 1 OR authority_private = 0 OR authority_owner_id = ?5)`,
     )
     .all(
       input.source_entity_id,
       input.target_entity_id,
       input.workspace_id,
-    ) as Array<{ id: string }>;
+      whole ? 1 : 0,
+      auth?.agent_id ?? null,
+    ) as Array<{ id: string; slug: string; authority_owner_id: string | null }>;
   const found = new Set(endpoints.map((r) => r.id));
   if (!found.has(input.source_entity_id)) {
     throw new QoopiaError(
@@ -530,6 +538,9 @@ export function addLink(input: LinkInput): LinkResult {
       `target entity ${input.target_entity_id} not found in workspace`,
     );
   }
+  // The link is written from the source page, so only who may change that page adds it; any
+  // readable page may be its target, as a note may cite a sibling's note.
+  if (auth) assertCanModifyPage(endpoints.find((r) => r.id === input.source_entity_id)!, auth);
 
   // INSERT OR IGNORE on the UNIQUE triple → duplicate triples are no-op.
   const result = db

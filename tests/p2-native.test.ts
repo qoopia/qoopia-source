@@ -137,6 +137,8 @@ for(const kind of ['codex','claude_code'] as const)test(`Native ${kind}: subscri
   NODE_OPTIONS:'--require /unselected/hook',CLAUDE_CODE_EFFORT_LEVEL:'low',CLAUDE_CODE_SYNC_SKILLS:'1'};
  const launch=nativeLaunch(kind,'/disposable/session','Use reviewed CSV skill',{auth_mode:'subscription',...QUALIFICATION_MODELS[kind]},source,'/disposable/session/native-attempt');
  expect(launch.env.HOME).toBe('/disposable/session/native-attempt');
+ // A3b-03: options end before the prompt for both CLIs, so a prompt is never read as a flag.
+ expect(launch.args.slice(-2)).toEqual(['--','Use reviewed CSV skill']);
  expect(launch.env[kind==='codex'?'CODEX_ACCESS_TOKEN':'CLAUDE_CODE_OAUTH_TOKEN']).toBe(token);
  for(const key of ['CODEX_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL','NODE_OPTIONS','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_SYNC_SKILLS'])expect(launch.env[key]).toBeUndefined();
  expect(launch.env[kind==='codex'?'CLAUDE_CODE_OAUTH_TOKEN':'CODEX_ACCESS_TOKEN']).toBeUndefined();

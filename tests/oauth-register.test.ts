@@ -459,7 +459,7 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
   });
 
   // F-520-dcr-bound: anonymous registration used to store any size and any number of rows.
-  test("unauthenticated DCR refuses oversized metadata and stops at the registration limit", async () => {
+  test("unauthenticated DCR refuses oversized metadata and keeps at most the limit, newest first", async () => {
     const chatgpt = "https://chatgpt.com/connector_platform_oauth_redirect";
     const count = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id = ?").get(GPT_ID) as { n: number }).n;
     const before = count();
@@ -470,13 +470,19 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
     ]) expect((await postRegister(body)).status).toBe(400);
     expect(count()).toBe(before);
     db.query("UPDATE oauth_clients SET created_at = ? WHERE agent_id = ?").run(new Date().toISOString(), GPT_ID);
-    let status = 201;
-    for (let i = count(); i < 21 && status === 201; i++) {
+    // A3-04: 25 anonymous registrations in a row never refuse the next one (the owner's own ChatGPT
+    // connect registers the same way); the oldest unused ones give way and the quota holds.
+    const statuses: number[] = [];
+    let last = "";
+    for (let i = 0; i < 25; i++) {
       authLimiter.resetForTests();
-      status = (await postRegister({ client_name: `ChatGPT ${i}`, redirect_uris: [chatgpt] })).status;
+      const r = await postRegister({ client_name: `ChatGPT ${i}`, redirect_uris: [chatgpt] });
+      statuses.push(r.status);
+      last = ((await r.json()) as { client_id: string }).client_id;
     }
-    expect(status).toBe(429);
+    expect(statuses.every((s) => s === 201)).toBe(true);
     expect(count()).toBe(20);
+    expect(db.query("SELECT 1 FROM oauth_clients WHERE id = ?").get(last)).not.toBeNull();
   });
 
   test("Claude.ai unauthenticated DCR rejects unsupported client auth methods", async () => {

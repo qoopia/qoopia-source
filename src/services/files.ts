@@ -191,7 +191,7 @@ function writeFile(p: UploadInput, extracted: Extracted) {
     // Checked by the write itself, so a file another author saves meanwhile is never replaced.
     if (!written.changes) throw new QoopiaError("CONFLICT", `${folder}/${filename} was written by someone else; choose another name or folder`);
     const row = db.prepare(`SELECT * FROM files WHERE workspace_id = ? AND folder = ? AND filename = ?`).get(p.workspace_id, folder, filename) as any;
-    logActivity({ workspace_id: p.workspace_id, agent_id: p.uploaded_by_agent_id, action: "file_upload", entity_type: "file", entity_id: row.id, project_id: null, summary: `Uploaded ${filename} to ${folder}`, details: { folder, filename, mime, size } });
+    logActivity({ workspace_id: p.workspace_id, agent_id: p.uploaded_by_agent_id, action: "file_upload", event: "file.uploaded", params: { name: filename, folder }, entity_type: "file", entity_id: row.id, project_id: null, summary: `Uploaded ${filename} to ${folder}`, details: { folder, filename, mime, size } });
     return rowMeta(row);
   })();
 }
@@ -200,7 +200,7 @@ export function fileDelete(p: { workspace_id: string; id: string; agent_id: stri
   const row = db.prepare(`SELECT id, folder, filename FROM files WHERE workspace_id = ? AND id = ?`).get(p.workspace_id, p.id) as any;
   if (!row) throw new QoopiaError("NOT_FOUND", "file not found");
   db.prepare(`DELETE FROM files WHERE workspace_id = ? AND id = ?`).run(p.workspace_id, p.id);
-  logActivity({ workspace_id: p.workspace_id, agent_id: p.agent_id, action: "file_delete", entity_type: "file", entity_id: p.id, project_id: null, summary: `Deleted ${row.filename} from ${row.folder}`, details: { folder: row.folder, filename: row.filename } });
+  logActivity({ workspace_id: p.workspace_id, agent_id: p.agent_id, action: "file_delete", event: "file.deleted", params: { name: row.filename, folder: row.folder }, entity_type: "file", entity_id: p.id, project_id: null, summary: `Deleted ${row.filename} from ${row.folder}`, details: { folder: row.folder, filename: row.filename } });
   return { deleted: true, id: p.id };
 }
 

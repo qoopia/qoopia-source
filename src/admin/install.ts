@@ -3,7 +3,7 @@ import { PRODUCT_VERSION } from "../utils/product-version.ts";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { getPendingMigrations } from "../db/migrate.ts";
@@ -140,7 +140,7 @@ export async function install(opts: InstallOpts = {}) {
   if (!stewardName && isInteractive() && !opts.yes) {
     console.log("\n  ─── Steward Agent Setup ───\n");
     console.log("  The steward manages Qoopia through chat (create agents, onboard, etc.).\n");
-    stewardName = await ask("Primary agent name (will become steward)", "Alan");
+    stewardName = await ask("Primary agent name (will become steward)", "Steward");
     const presets = listRolePresets();
     stewardRole = await choose(
       "Select steward's role preset:",
@@ -293,10 +293,10 @@ export async function install(opts: InstallOpts = {}) {
 
   // 6. Load service (unload first if already loaded)
   try {
-    execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+    execFileSync("launchctl", ["unload", plistPath], { stdio: "ignore" });
   } catch { /* Not loaded yet is normal; the load below reports real failures. */ }
   try {
-    execSync(`launchctl load "${plistPath}"`, { stdio: "ignore" });
+    execFileSync("launchctl", ["load", plistPath], { stdio: "ignore" });
     step("LaunchAgent loaded");
   } catch (err) {
     console.warn(
@@ -336,10 +336,10 @@ export async function install(opts: InstallOpts = {}) {
         );
       }
       try {
-        execSync(`launchctl unload "${archivePlistPath}"`, { stdio: "ignore" });
+        execFileSync("launchctl", ["unload", archivePlistPath], { stdio: "ignore" });
       } catch { /* Not loaded yet is normal; the load below reports real failures. */ }
       try {
-        execSync(`launchctl load "${archivePlistPath}"`, { stdio: "ignore" });
+        execFileSync("launchctl", ["load", archivePlistPath], { stdio: "ignore" });
         step("archive-stale cron loaded (Sunday 03:00 weekly)");
       } catch (err) {
         console.warn(

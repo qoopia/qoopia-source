@@ -268,11 +268,11 @@ class ProjectStatusTests(unittest.TestCase):
         status = importlib.util.module_from_spec(loader)
         with patch.object(sys, 'argv', [str(script)]), patch('builtins.print'):
             loader.loader.exec_module(status)  # offline snapshot only: local Git reads, no --live
-        delivery = {'account_service': {'container': 'qoopia-auth', 'image': 'sha256:a'}, 'memory_service': {'container': 'qoopia-corsair', 'image': 'sha256:b'}}
+        delivery = {'account_service': {'container': 'qoopia-auth', 'image': 'sha256:a'}, 'memory_service': {'container': 'qoopia-server', 'image': 'sha256:b'}}
         line = '/{} {} {} 2026-10-11T00:00:00Z'.format
-        self.assertTrue(status.services_match(line('qoopia-auth', 'sha256:a', 'running') + '\n' + line('qoopia-corsair', 'sha256:b', 'running'), delivery))
-        for raw in [line('qoopia-auth', 'sha256:a', 'running') + '\n' + line('qoopia-corsair', 'sha256:b', 'exited'),
-                    line('qoopia-auth', 'sha256:b', 'running') + '\n' + line('qoopia-corsair', 'sha256:a', 'running'),
+        self.assertTrue(status.services_match(line('qoopia-auth', 'sha256:a', 'running') + '\n' + line('qoopia-server', 'sha256:b', 'running'), delivery))
+        for raw in [line('qoopia-auth', 'sha256:a', 'running') + '\n' + line('qoopia-server', 'sha256:b', 'exited'),
+                    line('qoopia-auth', 'sha256:b', 'running') + '\n' + line('qoopia-server', 'sha256:a', 'running'),
                     line('qoopia-auth', 'sha256:a', 'running') + ' sha256:b']:
             with self.subTest(raw=raw):
                 self.assertFalse(status.services_match(raw, delivery))
@@ -357,11 +357,153 @@ class AlertDeliveryTests(unittest.TestCase):
         self.assertEqual(status['alert']['state'], 'delivered')
         self.assertEqual([e['id'] for e in self.sent], [self.sent[0]['id']] * 2)
 
+    def test_deploy_window_defers_the_alert_until_the_problem_outlives_it(self):
+        # Healthy baseline, then a deploy window: issues are recorded but nobody is paged.
+        self.run_main(self.channels, self.receiver())
+        Path(self.root, 'status.json').write_text(json.dumps({'issues': []}))
+        self.sent.clear()
+        until = Path(self.root, 'maintenance-until')
+        until.write_text((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)).isoformat())
+        code, status = self.run_main(self.channels, self.receiver())
+        self.assertEqual((code, status['status'], status['issues'], self.sent), (0, 'MAINTENANCE', [], []))
+        self.assertTrue(status['maintenance_issues'])
+        # The window closes and the problem is still there: one alert.
+        until.unlink()
+        code, status = self.run_main(self.channels, self.receiver())
+        self.assertEqual((code, status['status'], len(self.sent)), (1, 'ALERT', 1))
+
     def test_unconfigured_monitor_sends_nothing(self):
         def forbidden(*_a, **_k):
             raise AssertionError('no channel configured')
         _, status = self.run_main('', forbidden)
         self.assertEqual(status['alert']['state'], 'not_configured')
+
+
+class MonitorSourcesTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='qoopia-health-sources-')
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root, ignore_errors=True))
+
+    def write(self, name, lines):
+        path = os.path.join(self.root, name)
+        Path(path).write_text(''.join(json.dumps(line) + '\n' for line in lines))
+        return path
+
+    def test_only_unresolved_critical_invariants_are_issues(self):
+        stream = self.write('invariant.jsonl', [
+            {'severity': 'critical', 'fingerprint': 'a', 'check': 'identity_mismatch'},
+            {'severity': 'critical', 'fingerprint': 'b', 'check': 'repeat_fingerprint'},
+            {'event': 'resolved', 'severity': 'critical', 'fingerprint': 'b', 'check': 'repeat_fingerprint'},
+            {'severity': 'warning', 'fingerprint': 'c', 'check': 'release_not_published'},
+            {'severity': 'critical', 'fingerprint': 'd', 'check': 'Not A Plain <Name>'}])
+        self.assertEqual(health.invariant_issues(stream), ['invariant:identity_mismatch', 'invariant:unknown'])
+        self.assertEqual(health.invariant_issues(os.path.join(self.root, 'absent.jsonl')), [])
+        self.assertEqual(health.invariant_issues(None), [])
+
+    def test_offsite_copy_must_be_fresh_and_include_sign_in_database(self):
+        now = datetime.datetime(2026, 10, 15, 12, tzinfo=datetime.timezone.utc)
+        at = lambda hours: (now - datetime.timedelta(hours=hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        fresh = self.write('fresh.jsonl', [{'at': at(30), 'status': 'ok', 'auth': 'ok'}, {'at': at(2), 'status': 'ok', 'auth': 'ok'}, {'at': at(1), 'status': 'fail', 'step': 'scp'}])
+        self.assertEqual(health.offsite_issues(fresh, now), [])
+        self.assertEqual(health.offsite_issues(self.write('stale.jsonl', [{'at': at(27), 'status': 'ok', 'auth': 'ok'}, {'at': at(1), 'status': 'fail'}]), now), ['backup:offsite_stale'])
+        self.assertEqual(health.offsite_issues(self.write('memory-only.jsonl', [{'at': at(2), 'status': 'ok'}]), now), ['backup:auth_offsite_missing'])
+        self.assertEqual(health.offsite_issues(os.path.join(self.root, 'absent.jsonl'), now), ['backup:offsite_unreadable'])
+        self.assertEqual(health.offsite_issues(None, now), [])
+        # A failure an older script wrote over several lines does not hide the fresh records after it.
+        broken = os.path.join(self.root, 'broken.jsonl')
+        with open(broken, 'w') as f:
+            f.write('{"at":"%s","status":"fail","detail":"line one\nline two"}\n' % at(40))
+            f.write(json.dumps({'at': at(2), 'status': 'ok', 'auth': 'ok'}) + '\n')
+        self.assertEqual(health.offsite_issues(broken, now), [])
+
+    def test_failed_units_are_issues(self):
+        calls = []
+
+        def systemctl(args, **_):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0 if args[-1] == 'corsair-system-backup.service' else 1)
+        with patch.object(health.subprocess, 'run', side_effect=systemctl):
+            self.assertEqual(health.unit_issues(['qoopia-release-source.service', 'corsair-system-backup.service']), ['unit_failed:corsair-system-backup'])
+        self.assertEqual(calls[0], ['systemctl', 'is-failed', '--quiet', 'qoopia-release-source.service'])
+        with patch.object(health.subprocess, 'run', side_effect=FileNotFoundError):
+            self.assertEqual(health.unit_issues(['x.service']), ['units:unavailable'])
+
+    def test_maintenance_window_is_bounded(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        file = Path(self.root, 'maintenance-until')
+        file.write_text((now + datetime.timedelta(minutes=20)).isoformat())
+        self.assertAlmostEqual(health.maintenance_until(self.root, now).timestamp(), (now + datetime.timedelta(minutes=20)).timestamp(), delta=1)
+        file.write_text((now + datetime.timedelta(days=3)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+        self.assertLessEqual(health.maintenance_until(self.root, now), now + health.MAINTENANCE_CAP + datetime.timedelta(seconds=5))
+        file.write_text((now - datetime.timedelta(minutes=1)).isoformat())
+        self.assertIsNone(health.maintenance_until(self.root, now))
+        file.write_text('2026-10-15T04:00:00')  # no zone: ignored, never guessed
+        self.assertIsNone(health.maintenance_until(self.root, now))
+
+
+class RelayRoutingTests(unittest.TestCase):
+    """release-health -> signed envelope over real curl -> loopback relay -> Telegram (stubbed)."""
+    KEY = bytes(range(32, 64))
+
+    def setUp(self):
+        import threading
+        spec = importlib.util.spec_from_file_location('ops_alert_relay', Path(__file__).resolve().parents[1] / 'scripts/ops-alert-relay.py')
+        self.relay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.relay)
+        self.root = tempfile.mkdtemp(prefix='qoopia-relay-')
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root, ignore_errors=True))
+        self.server = self.relay.Relay(('127.0.0.1', 0), self.relay.Handler)
+        self.addCleanup(self.server.server_close)
+        port = self.server.server_address[1]
+        self.policy = os.path.join(self.root, 'channels.json')
+        policy = {'format': 'qoopia-alert-channels/1', 'channels': [{'id': 'telegram-relay', 'url': 'http://127.0.0.1:%d/alert' % port, 'allowed_hosts': ['127.0.0.1'],
+                                                                     'signing_key_base64url': base64.urlsafe_b64encode(self.KEY).rstrip(b'=').decode()}]}
+        with open(os.open(self.policy, os.O_WRONLY | os.O_CREAT, 0o600), 'w') as f:
+            json.dump(policy, f)
+        self.server.keys, self.server.ledger = self.relay.loopback_keys(self.policy), self.relay.Ledger(os.path.join(self.root, 'ledger.json'))
+        self.messages, self.telegram_up = [], True
+        self.server.send = lambda text: self.telegram_up and not self.messages.append(text)
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(self.server.shutdown)
+
+    def run_main(self):
+        argv = ['release-health.py', '--root', self.root, '--source', 'a' * 40, '--schema-version', '47', '--version', '5.0.14', '--ios-version', '5.0.8', '--ios-build', '3',
+                '--analytics', os.path.join(self.root, 'none.json'), '--git-mirror', os.path.join(self.root, 'none'), '--alert-channels', self.policy]
+        with patch.object(sys, 'argv', argv), patch.object(health, 'request', lambda item: (item[0], {'ok': False, 'error': 'HTTP_OR_NETWORK_FAILURE'})), \
+                patch.object(health, 'mirror_issues', return_value=[]), patch('builtins.print'):
+            health.main()
+        return json.loads(Path(self.root, 'status.json').read_text())
+
+    def test_alert_reaches_telegram_once_and_only_confirmed_delivery_counts(self):
+        self.telegram_up = False
+        self.assertEqual(self.run_main()['alert']['state'], 'failed')
+        self.assertEqual(self.messages, [])
+        self.telegram_up = True
+        status = self.run_main()
+        self.assertEqual(status['alert']['state'], 'delivered')
+        self.assertEqual(len(self.messages), 1)
+        self.assertTrue(self.messages[0].startswith('Qoopia ALERT: public-release'))
+        self.assertIn('memory', self.messages[0])
+        # The same event again (lost receipt): confirmed from the ledger, no second message.
+        envelope = json.dumps({'id': status['alert']['event_id'], 'event_type': 'operational_alert', 'payload': {'subject': 'ALERT'}}, separators=(',', ':')).encode()
+        self.server.ledger.add(status['alert']['event_id'], hashlib.sha256(envelope).hexdigest())
+        self.assertTrue(health.deliver_alert(health.alert_channels(self.policy), {'id': status['alert']['event_id'], 'payload': {'subject': 'ALERT'}}))
+        self.assertEqual(len(self.messages), 1)
+
+    def test_wrong_key_is_refused(self):
+        forged = [(url, bytes(32)) for url, _ in health.alert_channels(self.policy)]
+        self.assertFalse(health.deliver_alert(forged, {'id': 'x', 'payload': {'subject': 'ALERT'}}))
+        self.assertEqual(self.messages, [])
+
+    def test_remote_plain_http_channel_is_rejected(self):
+        policy = json.loads(Path(self.policy).read_text())
+        policy['channels'][0].update(url='http://alerts.example.test/alert', allowed_hosts=['alerts.example.test'])
+        Path(self.policy).write_text(json.dumps(policy))
+        with self.assertRaises(ValueError):
+            health.alert_channels(self.policy)
+        self.assertEqual(self.relay.render({'subject': 'OK', 'component': 'public-release', 'cause': None, 'installation': 'release-health', 'at': 'now'}),
+                         'Qoopia OK: public-release\nrelease-health · now')
 
 
 if __name__ == '__main__':

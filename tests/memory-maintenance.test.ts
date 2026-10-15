@@ -7,7 +7,9 @@ import {runMigrations} from '../src/db/migrate.ts';
 import {db} from '../src/db/connection.ts';
 import {createWorkspace} from '../src/admin/workspaces.ts';
 import {createAgent} from '../src/admin/agents.ts';
-import {continuityEvent,memoryMaintenanceTick,processMemoryMaintenance} from '../src/services/continuity.ts';
+import {continuityEvent,memoryMaintenanceTick,processMemoryMaintenance,resumeMemoryCatchUp} from '../src/services/continuity.ts';
+import {readOps} from '../src/delivery/ops-state.ts';
+import {env} from '../src/utils/env.ts';
 import {logger} from '../src/utils/logger.ts';
 import {enableMemoryRoot,memoryModelBusy,memoryModelStatus,memoryProfilePath,memoryRoot,memoryText,memoryTimeouts,selectMemoryProfile} from '../src/services/memory-model.ts';
 import {createNote} from '../src/services/notes.ts';
@@ -25,7 +27,7 @@ beforeAll(()=>{
   fs.writeFileSync(path.join(bin,'codex'),`#!/bin/sh
 dir=$(dirname "$0")
 [ "$1" = --version ] && { echo 'codex-cli ${RUNTIMES.codex.version}'; exit 0; }
-case " $* " in *' login status '*) echo 'Logged in using ChatGPT'; exit 0;; esac
+case " $* " in *' login status '*) [ "$(cat "$dir/mode")" = unauth ] && { echo 'Not logged in'; exit 1; }; echo 'Logged in using ChatGPT'; exit 0;; esac
 printf . >> "$dir/runs"; cat >/dev/null
 # A killed run cannot clean up, so the marker holds its pid and only a live one counts.
 [ -e "$dir/running" ] && kill -0 "$(cat "$dir/running")" 2>/dev/null && printf x >> "$dir/overlaps"; echo $$ > "$dir/running"; trap 'rm -f "$dir/running"' EXIT
@@ -60,19 +62,56 @@ test('an unreadable profile marks only its own workspace; every other workspace 
   expect(meta('codex:broken-profile').continuity_error).toBe('INVALID_PROFILE');
 });
 
-test('a finished conversation is not caught up: only one active in the last two hours is summarised',async()=>{
+const quiet=(session:string,hours=3)=>db.query('UPDATE sessions SET last_active=? WHERE id=?').run(new Date(Date.now()-hours*3600_000).toISOString(),session);
+const noteOf=(session:string)=>(db.query("SELECT COUNT(*) AS n FROM notes WHERE session_id=? AND source='qoopia-continuity'").get(session) as {n:number}).n;
+
+test('a conversation that went quiet with its tail unsummarised is caught up after the live ones [A2-01]',async()=>{
   const ws=createWorkspace({name:'Finished conversations',slug:'maintenance-finished'}),agent=createAgent({name:'finished-agent',workspaceSlug:ws.slug}).id;
-  selectMemoryProfile(ws.id,'codex');
-  pending(ws.id,agent,'codex:finished','progress');
-  db.query('UPDATE sessions SET last_active=? WHERE id=?').run(new Date(Date.now()-3*3600_000).toISOString(),'codex:finished');
+  selectMemoryProfile(ws.id,'codex');resumeMemoryCatchUp();
+  pending(ws.id,agent,'codex:finished','progress');quiet('codex:finished');
+  pending(ws.id,agent,'codex:live','progress');
+  // Waiting, not «working»: the quiet conversation is still owed its note.
+  expect(agentMemoryStatus(ws.id,agent).pending_sessions).toBe(2);
+  // One model call per tick, the live conversation first.
+  await processMemoryMaintenance();
+  expect([noteOf('codex:live'),noteOf('codex:finished')]).toEqual([1,0]);
+  await processMemoryMaintenance();
+  expect(noteOf('codex:finished')).toBe(1);
+  expect(agentMemoryStatus(ws.id,agent).pending_sessions).toBe(0);
+  // Nothing left: further ticks launch nothing.
   const launched=runs();
   for(let tick=0;tick<3;tick++)await processMemoryMaintenance();
-  // Its messages stay stored and searchable; no model call is spent and the agent does not read as behind.
-  expect(runs()).toBe(launched);expect(notes(ws.id)).toBe(0);
-  expect(agentMemoryStatus(ws.id,agent).pending_sessions).toBe(0);
-  pending(ws.id,agent,'codex:live','progress');
-  for(let tick=0;tick<5&&!notes(ws.id);tick++)await processMemoryMaintenance();
-  expect(notes(ws.id)).toBe(1);
+  expect(runs()).toBe(launched);
+});
+
+test('a sign-in failure stays in the status after two hours of silence, pauses the catch-up and raises one owner alert [A2-02, A2-03]',async()=>{
+  const ws=createWorkspace({name:'Signed out',slug:'maintenance-signed-out'}),agent=createAgent({name:'signed-out-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');resumeMemoryCatchUp();
+  const alerts=()=>readOps(env.OPS_STATE_DIR).alerts.filter(a=>a.cause==='MEMORY_SIGN_IN_REQUIRED');
+  mode('unauth');
+  try {
+    pending(ws.id,agent,'codex:signed-out','progress');
+    await processMemoryMaintenance();
+    expect(agentMemoryStatus(ws.id,agent)).toMatchObject({state:'sign_in',error_code:'UNAUTHENTICATED'});
+    // The owner hears of it once, through the operations journal and its alert channels.
+    expect(alerts()).toMatchObject([{active:true,state:'pending'}]);
+    // Three hours of silence: the sign-in is still broken and the status still says so.
+    quiet('codex:signed-out');
+    for(const session of ['codex:quiet-1','codex:quiet-2']){pending(ws.id,agent,session,'progress');quiet(session,5);}
+    expect(agentMemoryStatus(ws.id,agent)).toMatchObject({state:'sign_in',error_code:'UNAUTHENTICATED',pending_sessions:3});
+    // The quiet history waits through the workspace pause: no launch per conversation, no second alert.
+    db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',0) WHERE id='codex:signed-out'").run();
+    const launched=runs();
+    for(let tick=0;tick<4;tick++)await processMemoryMaintenance();
+    expect(runs()).toBe(launched);
+    expect(alerts()).toHaveLength(1);
+  } finally {mode('ok');}
+  // Signed in again: everything is caught up and the alert is resolved, not raised again.
+  resumeMemoryCatchUp(ws.id);db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at') WHERE workspace_id=?").run(ws.id);
+  for(let tick=0;tick<6&&notes(ws.id)<3;tick++)await processMemoryMaintenance();
+  expect(notes(ws.id)).toBe(3);
+  expect(agentMemoryStatus(ws.id,agent)).toMatchObject({error_code:null,pending_sessions:0});
+  expect(alerts()).toMatchObject([{active:false}]);
 });
 
 test('a quota failure pauses the whole workspace: pending sessions cost one model launch, not one each',async()=>{
@@ -217,8 +256,8 @@ test('a quota failure that is over does not keep the agent at «needs sign-in» 
   pending(ws.id,agent,'codex:stale-done','progress');
   for(let tick=0;tick<3&&!notes(ws.id);tick++)await processMemoryMaintenance();
   expect(notes(ws.id)).toBe(1);
-  // The quota runs out on the next conversation: the pause covers the workspace's live sessions,
-  // the summarised one still live included, but never a conversation that ended hours ago.
+  // The quota runs out on the next conversation: the pause marks the workspace's live sessions, the
+  // summarised one still live included; a conversation that ended hours ago waits through the workspace pause.
   pending(ws.id,agent,'codex:stale-old','progress');
   db.query("UPDATE sessions SET last_active=? WHERE id='codex:stale-old'").run(new Date(Date.now()-3*3600_000).toISOString());
   mode('quota');
@@ -229,8 +268,10 @@ test('a quota failure that is over does not keep the agent at «needs sign-in» 
   expect(agentMemoryStatus(ws.id,agent).state).toBe('sign_in');
   // The quota resets and the pending conversation is summarised: nothing waits on the model any more.
   db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',0) WHERE id='codex:stale-next'").run();
-  for(let tick=0;tick<3&&notes(ws.id)<2;tick++)await processMemoryMaintenance();
-  expect(notes(ws.id)).toBe(2);
+  resumeMemoryCatchUp(ws.id);
+  for(let tick=0;tick<4&&notes(ws.id)<3;tick++)await processMemoryMaintenance();
+  // The live conversation and, after it, the quiet one that waited.
+  expect(notes(ws.id)).toBe(3);
   expect(agentMemoryStatus(ws.id,agent)).toMatchObject({error_code:null,pending_sessions:0});
   expect(agentMemoryStatus(ws.id,agent).state).not.toBe('sign_in');
 });

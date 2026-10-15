@@ -4,3 +4,19 @@
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
   Content-Security-Policy: default-src 'self'; img-src 'self'; style-src 'self' 'sha256-I/ZB69Zw7y/aUR9ndcbNttMUE8QzWd6Me4L4b4ODKlo='; script-src 'self'; connect-src 'self' https://auth.qoopia.ai; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'
+# Assets referenced only with a ?v=<content hash> stamp (scripts/build-site-languages.ts,
+# scripts/discovery-content.py): a changed file gets a new URL, so a year-long cache is safe.
+/site.js
+  Cache-Control: public, max-age=31536000, immutable
+/analytics.js
+  Cache-Control: public, max-age=31536000, immutable
+/install-agent.js
+  Cache-Control: public, max-age=31536000, immutable
+/style.css
+  Cache-Control: public, max-age=31536000, immutable
+/brand/base.css
+  Cache-Control: public, max-age=31536000, immutable
+/brand/i18n.js
+  Cache-Control: public, max-age=31536000, immutable
+/.well-known/security.txt
+  Content-Type: text/plain; charset=utf-8

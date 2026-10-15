@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { appendManagedLog, retainManagedLogs, inspectManagedLogs } from '../src/utils/managed-logs.ts';
-import { recordMaintenance, readOps, opsSummary, opsFile } from '../src/delivery/ops-state.ts';
+import { recordMaintenance, recordMemoryAlert, readOps, opsSummary, opsFile } from '../src/delivery/ops-state.ts';
 import { deliverOpsAlerts } from '../src/services/ops-alerts.ts';
 import { hash } from '../src/utils/fs.ts';
 import { fakeFetch } from './helpers/fake-fetch.ts';
@@ -144,5 +144,18 @@ test('inflight receiver attempt does not lose a concurrent resolve/recurrence or
   release();await delivery;expect(calls).toBe(1);
   expect(readOps(root).alerts[0]).toMatchObject({active:false,state:'confirmed'});
   expect(readOps(root).alerts[1]).toMatchObject({id:recurrence,active:true,state:'pending'});
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('a memory model alert is raised once per incident and only the memory worker resolves it [A2-03]',()=>{
+ const root=fixture();try{
+  expect(recordMemoryAlert(root,'installation','MEMORY_SIGN_IN_REQUIRED',1000)).toBe(true);
+  expect(recordMemoryAlert(root,'installation','MEMORY_SIGN_IN_REQUIRED',1001)).toBe(false);
+  // The daily run neither raises nor resolves it, success or failure.
+  recordMaintenance(root,'installation',null,1002);recordMaintenance(root,'installation','BACKUP_FAILED',1003);
+  expect(readOps(root).alerts.filter(a=>a.active).map(a=>a.cause).sort()).toEqual(['BACKUP_FAILED','MEMORY_SIGN_IN_REQUIRED']);
+  expect(opsSummary(root)).toMatchObject({active:2,pending:2});
+  recordMemoryAlert(root,'installation',null,1004);
+  expect(readOps(root).alerts.find(a=>a.cause==='MEMORY_SIGN_IN_REQUIRED')).toMatchObject({active:false,state:'pending'});
+  expect(()=>recordMemoryAlert(root,'installation','BACKUP_FAILED')).toThrow('MEMORY_');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

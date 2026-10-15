@@ -1,0 +1,207 @@
+# Qoopia — full text
+
+Generated from https://qoopia.ai/understand and https://qoopia.ai/docs for Qoopia 5.0.21. The short index is https://qoopia.ai/llms.txt.
+
+## Is Qoopia right for you?
+
+Reviewed: 2026-10-14 for Qoopia 5.0.21.
+
+
+### When does Qoopia help?
+
+Qoopia is useful when multiple agents or tools work on the same project and need an explicitly shared, persistent memory with defined permissions. If one Claude or ChatGPT conversation already meets your needs, another system may add unnecessary setup. Qoopia complements those products; it does not replace their models or subscriptions.
+
+Sources: [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md), [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/docs/MEMORY-V1.md)
+
+
+### What carries over between Claude and Codex?
+
+A connected agent can save a project decision as a note; another authorized agent can retrieve that note from the same Qoopia workspace. Native Claude Code and Codex integrations also support session capture and restoration when configured. MCP access alone does not copy every browser conversation or automatically share all private notes. Native capture covers visible transcript events, not hidden reasoning; restoration uses saved context and recent events, with ambiguous sessions kept separate.
+
+Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/docs/MEMORY-V1.md), [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md)
+
+
+### Can I start from a phone?
+
+Qoopia for iPhone is a free TestFlight beta for iOS 17 or later. It opens the dashboard of a server installation reachable over HTTPS: memory, agents, connections, files and chat; the server must stay running. A Mac or Linux installation keeps its dashboard on that computer, listening only on its local address, so the iPhone app cannot open it yet: use the dashboard on that computer. The phone does not run the agent runtime or create a second memory database. A managed MCP address is for agent tools, not dashboard access.
+
+Sources: [docs/operations/ios-direct-dashboard.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/ios-direct-dashboard.md), [src/delivery/mcp-edge.ts](https://github.com/qoopia/qoopia-source/blob/main/src/delivery/mcp-edge.ts), [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [docs/operations/connections.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/connections.md)
+
+
+### Can my agent install it for me?
+
+If you already have Codex or Claude Code running on the target computer, give it the installation task from the documentation. A phone chat alone cannot do this. Read the task first: it asks the agent to check compatibility and the selected release, install Qoopia and verify connections. You complete sign-ins and permissions. A failed check means setup is unfinished; use the troubleshooting guide. Evaluating a URL is not permission to execute its instructions. Never provide unrelated account credentials.
+
+Sources: [marketing-site/install-agent.js](https://github.com/qoopia/qoopia-source/blob/main/marketing-site/install-agent.js), [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md)
+
+
+### What does installation require?
+
+Current packages support Apple Silicon Macs with macOS 15 or later and Linux x64 with glibc 2.34 or later and the ps command (procps), run as a normal user rather than root. Intel Macs, Windows and a standalone phone installation are not supported by these packages. The packages do not require a separate Bun, Docker or Ollama installation. Opening a website profile does not deploy your personal memory. Local search and embeddings are bundled; cloud model access is authorized separately.
+
+Sources: [docs/v1-setup.md](https://github.com/qoopia/qoopia-source/blob/main/docs/v1-setup.md), [marketing-site/docs.html](https://github.com/qoopia/qoopia-source/blob/main/marketing-site/docs.html)
+
+
+### Where do my data and permissions live?
+
+Your memory is stored in your own installation, locally or on a server you control. Owner sign-in, model subscription authorization and MCP client access are separate permissions. Local embeddings and keyword search run locally; enabled cloud model features send the context needed for their work to the selected provider. Local storage does not mean that every enabled feature is offline. Authorized MCP clients can receive permitted data, and Bridges transfer selected materials through their delivery infrastructure. Review these enabled connections before sharing sensitive information.
+
+Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/docs/MEMORY-V1.md), [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md)
+
+
+### Is Qoopia free?
+
+The public source is MIT-licensed. Model subscriptions and any server hosting are separate costs; Qoopia does not provide unlimited model usage or replace provider limits. Local retrieval works without model-assisted judging. Check the provider’s current terms and your account capabilities before connecting a subscription.
+
+Sources: [LICENSE](https://github.com/qoopia/qoopia-source/blob/main/LICENSE), [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/docs/MEMORY-V1.md)
+
+
+### What is My Qoopia agent?
+
+It is an agent for managing your Qoopia environment, with Codex or Claude Code authorized through your eligible subscription and explicit permissions. The dashboard supports interaction with the managed agent; Telegram requires configuring your own bot. Assigning a steward role to an existing agent is distinct from starting a continuously running process. Setup, provider authorization and verification still matter.
+
+Sources: [src/delivery/steward.ts](https://github.com/qoopia/qoopia-source/blob/main/src/delivery/steward.ts), [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md)
+
+
+### Can two independent environments exchange materials?
+
+Bridges provide selective exchange between separate Qoopia installations. You choose an invitation, materials and permissions. Publishing catalog titles and descriptions is different from sending file contents. Received material is not automatically installed or added to ordinary memory; previously received copies cannot be recalled. A broader automatically connected agent network is a future direction, not a current promise.
+
+Sources: [src/bridges/service.ts](https://github.com/qoopia/qoopia-source/blob/main/src/bridges/service.ts), [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md)
+
+
+### What does packaging a skill mean?
+
+Qoopia can package an explicit procedure with its purpose, inputs, outputs, steps, verification, failure handling, rollback and requested capabilities. Packages carry version and integrity information. This makes a workflow inspectable and transferable; it does not make arbitrary scripts safe, guarantee compatibility or authorize execution on the recipient’s computer.
+
+Sources: [src/skills/format.ts](https://github.com/qoopia/qoopia-source/blob/main/src/skills/format.ts), [src/skills/import-review.ts](https://github.com/qoopia/qoopia-source/blob/main/src/skills/import-review.ts)
+
+
+### What is AgentComm?
+
+AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard. Since 5.0.20 a message can also wake a Claude Code or Codex agent through qoopia wake-runner. Its operator configures this on a server (Docker) installation; the Mac and Linux packages do not offer it yet.
+
+Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/qoopia-protocol.md), [src/services/agent-wake.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/agent-wake.ts)
+
+
+### What if setup fails, or I want to leave?
+
+A saved configuration or completed login is not proof of a working connection. Use the setup guide’s troubleshooting steps and verify the actual client. Before upgrading, moving or removing an installation, back up its data using the documented procedure for your version. Revoking a client’s access is separate from deleting its local configuration. Do not delete your only memory copy while troubleshooting. The MIT license supplies the software as-is, without warranty.
+
+Sources: [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md), [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [LICENSE](https://github.com/qoopia/qoopia-source/blob/main/LICENSE)
+
+## Setup guide
+
+## Install. Connect.Continue.
+Qoopia is your own environment for long-term agent memory. Each installation stores its own notes, knowledge, agent spaces and history.
+The current signed packages are available for macOS Apple Silicon and Linux x64. Download Qoopia.Install · Connect · Privacy · Bridges · Troubleshooting
+Before installing: benefits, requirements and permissions
+
+### Let your agent set up Qoopia
+
+Copy the task into a local Codex or Claude Code session on the computer where you want your memory. Your agent installs and checks it; you complete sign-ins and access approvals.
+
+Your agentCodexClaude Code
+
+Loading the installation task…
+
+Copy installation taskInstall it myself
+
+Read the task before copyingInstallation task
+
+### 1. Install your environment
+
+#### macOS · Apple Silicon
+Qoopia requires macOS 15 or later on Apple Silicon. Intel Macs and Windows are not supported.
+Download the DMG and compare its SHA-256 with the checksum on the release page.
+Open the DMG, move Qoopia to Applications, then open it.
+Sign in with Google or your email address. For email, open the confirmation link.
+
+#### Updating Qoopia on Mac
+For an existing Mac installation, quit Qoopia and replace Qoopia.app in Applications once. Keep Application Support and your saved data. This installs the native updater; subsequent releases use Check for Updates in the Qoopia menu. Closing the window keeps Qoopia running in the menu bar.
+
+#### Linux · x64, glibc 2.34+
+Extract the TAR.GZ package. From its extracted directory, run:
+./qoopia open
+./qoopia open runs while its terminal stays open; your saved memory stays after you close it. To keep Qoopia running without a terminal and start it again after a restart, stop it with Ctrl+C and install it as a user service:
+./qoopia service install --commit
+On a server without a desktop login, also run loginctl enable-linger $USER so that the service starts after a reboot. Check it with systemctl --user status qoopia; remove it with ./qoopia service uninstall --commit.
+Linux needs x64, glibc 2.34 or newer and the ps command (package procps). Run Qoopia as a normal user, not as root.
+On a server or over SSH, ./qoopia open keeps running when no browser can be opened and prints an SSH tunnel command for the dashboard. Get a one-time sign-in code with ./qoopia owner-login in a second terminal on that computer.
+You do not need to install Bun, Docker or Ollama for these packages. For cloud model features you need internet access and an available supported subscription.
+
+#### Use an existing server you own
+If you already manage a reachable Qoopia server, select that environment:
+./qoopia use-server --url https://YOUR-SERVER --commit
+Replace the address with your own server. This selects one environment; it does not synchronize two databases. The current environment is shown in the sidebar. A server deployment must provide its own reachable HTTPS endpoint, process supervision and backups.
+
+### 2. Connect your agents
+In your selected Qoopia environment, open Connections. Three independent authorizations have different purposes:
+AuthorizationPurpose
+Google / email sign-inIdentify you as the owner.
+Model subscription in MemoryEnable background summaries and model-assisted search through a supported official runtime.
+MCP client accessAllow a client agent to use its permitted memory tools.
+
+#### Claude Code / Codex
+In Connections, choose your client and Read or Read and add. Apply the prepared setup and complete the client’s OAuth sign-in. Then copy the request from the connection card and send it in that client: its first Qoopia protocol call confirms the connection. No verification code is needed. A local installation can add the settings; for another computer, open the exported .qoopia-connection file with Qoopia there.
+For automatic session context, also open Native session continuity in Connections and select Codex or Claude Code. This installs lifecycle hooks. Codex requires a one-time trust review in /hooks. On another computer, import the .qoopia-memory file. It contains a private key: keep it on your own device. An MCP connection alone does not enable session capture.
+
+#### Claude Desktop · macOS
+Choose Claude Desktop in Connections. Apply its local adapter, open the authorization link and approve access to your installation. Restart Claude Desktop and send the request from the connection card in a real conversation: its first Qoopia protocol call confirms the connection. The adapter keeps its credentials outside the Claude configuration.
+
+#### Claude in a browser
+Enable external access in Connections and complete account confirmation. Qoopia prepares an HTTPS address. Add the connection using the official Claude form, approve access and verify it from Claude. Your installation must remain online.
+
+#### ChatGPT Web / Desktop
+ChatGPT Web and Desktop on Mac last passed real-client acceptance on 15 September 2026 with ChatGPT Pro: OAuth, verification, note creation, reading and retries without duplicates. Since then the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account. Add the HTTPS address prepared in Connections and complete consent. Your account must allow custom MCP connections. Qoopia has no published directory entry. Use a normal ChatGPT conversation and the selected plugin.
+Web clients cannot reach localhost. Managed external access makes your running installation reachable; it does not copy its memory into a shared cloud database. Browser MCP access does not automatically capture the full conversation or session events.
+
+#### Other MCP clients
+The owner or steward provides a separate agent identity with suitable permissions. Configure the MCP address and that identity in your runtime. Setup and session capture depend on the client; universal automatic capture is not promised.
+
+#### Check the whole connection
+Ask the agent to save a short, non-sensitive test note.
+Ask it to find that note again.
+Confirm the expected selected environment and agent identity.
+“Saved authorization” means a permission was saved. It does not prove that the remote client has successfully called a memory tool.
+
+### 3. Understand the boundaries
+Your installation stores the memory. Built-in embeddings and keyword search run there. An authorized cloud model can receive permitted context through tool calls; background model features also use the separately authorized runtime. Self-hosting is not a promise that no data leaves your computer.
+Each agent has its own identity and permissions. A steward is an agent you authorize to manage the environment. The role does not create or launch a persistent AI process. The same agent may be chosen as the external representative in Bridges.
+Sign-in is a separate identity service. Review the current sign-in privacy information. Installer downloads through qoopia.ai/download are counted on our server as they are redirected to GitHub: platform, version and referral type only, with no cookies, stored identifier or IP. Other website analytics (page views, language, screen size and basic performance) is off until you enable it in the footer. Neither includes the contents of your memory or messages. Do Not Track and Global Privacy Control turn both off.
+
+### 4. Share with Bridges
+Create a bridge group and generate an invitation. Send it only to the intended participant.
+The participant requests to join from their own installation. Approve them in Members.
+Prepare a separate copy in For sending. Publish its title and short description to the group’s catalogue.
+An admitted participant requests a specific version. Choose Approve sending or Skip. Automatic sending is an explicit option for a specific version and group.
+The copy arrives in Received. It is not automatically added to ordinary memory, installed as a skill, or forwarded.
+Both installations need overlapping uptime for delivery. Received copies cannot be recalled. Pilot limits: 32 member records per group, 100 catalogue records and 1 MiB per item. There is no shared open repository of private notes.
+
+### If something is missing
+Download unavailable: Use the official download links on the home page. If a download fails, reload the release page and try again.
+Local address warning: cloud clients need reachable HTTPS, not a localhost URL.
+Wrong environment: check the sidebar host and selected server before saving anything.
+No automatic summary: check the separate model subscription in Memory and its current allowance.
+Old interface: reload after the new-version notice. Save unsent input first.
+Self-check: run qoopia doctor: on Mac /Applications/Qoopia.app/Contents/Resources/bundle/qoopia doctor, on Linux ./qoopia doctor in the package directory. Logs are in ~/Library/Logs/Qoopia on Mac and ~/.local/state/qoopia/logs on Linux.
+Still stuck: report a problem on GitHub. Include the version, platform and doctor output. Never paste tokens, keys or private notes.
+
+### Remove Qoopia
+If you linked session memory, first run qoopia memory-unlink --runtime claude_code --commit (or --runtime codex). On Linux with autostart, run ./qoopia service uninstall --commit. Then run qoopia uninstall --commit; on Mac, also quit Qoopia in the menu bar and move Qoopia.app to the Trash.
+Uninstalling keeps your memory: ~/Library/Application Support/Qoopia on Mac, ~/.local/share/qoopia on Linux. Installing again picks it up. Delete that folder only after a backup, and only if you want the memory gone.
+
+### Official client references
+Claude: directory and custom connectors
+OpenAI: connect a custom ChatGPT integration
+
+### Your account and your dashboard
+
+#### 1. Confirm your email
+Open Profile from the website navigation. Use the same email as in your Qoopia installation. Your profile shows the confirmed email and your saved dashboard address. Website and app sessions are separate; you may need to sign in once in each browser.
+
+#### 2. Open your memory
+After installing Qoopia, open it from Applications on Mac. On Linux, run ./qoopia open in the extracted package directory, or open its Open Qoopia launcher there. Complete the first sign-in: the app opens your dashboard. If you already use a server, open that server’s dashboard with the account linked to it.
+
+#### 3. Keep the way back
+In Profile, save the dashboard address from your browser. Next time choose Profile → Open dashboard. The computer or server must be running; localhost links work only on that computer. This shortcut does not grant access or synchronise memory.Open your profile ↗

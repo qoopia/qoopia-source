@@ -8,7 +8,7 @@ import { audit } from "../utils/audit.ts";
 import { logger } from "../utils/logger.ts";
 import type { AuthContext } from "./middleware.ts";
 import type { RiskClass } from "../mcp/tools.ts";
-import { isLoopbackRedirectHost } from "./dcr-policy.ts";
+import { isLoopbackRedirectHost, SAFE_HOST } from "./dcr-policy.ts";
 
 /**
  * OAuth 2.1 PKCE code flow with opaque tokens.
@@ -442,10 +442,15 @@ const REGISTRATION_LIMIT = 20;
 function reserveRegistration(agentId: string): void {
   const registered = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?").get(agentId) as { n: number }).n;
   if (registered() < REGISTRATION_LIMIT) return;
-  db.query(`DELETE FROM oauth_clients WHERE agent_id=? AND created_at<=?
-    AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
-    AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`)
-    .run(agentId, plusSec(-CONSENT_TICKET_TTL_SEC));
+  const unused = `agent_id=? AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
+    AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`;
+  db.query(`DELETE FROM oauth_clients WHERE ${unused} AND created_at<=?`).run(agentId, plusSec(-CONSENT_TICKET_TTL_SEC));
+  // The Claude and ChatGPT callbacks register without credentials, so anyone can fill the quota
+  // faster than a consent finishes (audit 5.0.21 A3-04). The oldest registration nobody completed
+  // gives way instead of the owner's new connection being refused; a used client never does.
+  if (registered() >= REGISTRATION_LIMIT) {
+    db.query(`DELETE FROM oauth_clients WHERE id=(SELECT id FROM oauth_clients WHERE ${unused} ORDER BY created_at, rowid LIMIT 1)`).run(agentId);
+  }
   if (registered() >= REGISTRATION_LIMIT) throw new QoopiaError("RATE_LIMITED", "Client registration limit reached; finish or cancel a pending connection first");
 }
 
@@ -504,6 +509,10 @@ export function registerClient(
         "INVALID_INPUT",
         `Invalid redirect URI: non-loopback http:// redirect URIs are not allowed (${uri})`,
       );
+    }
+    // A host that is not a plain DNS name or IP literal (`*`, `;`) is no callback and would reach the CSP.
+    if (!SAFE_HOST.test(parsed.hostname)) {
+      throw new QoopiaError("INVALID_INPUT", `Invalid redirect URI host: ${uri}`);
     }
     // RFC 6749 §3.1.2: the redirection endpoint carries no fragment; credentials hide the real host.
     if (uri.includes("#") || parsed.username || parsed.password) {

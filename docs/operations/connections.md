@@ -2,7 +2,7 @@
 
 The release supports the tested Codex CLI, Claude Code, Claude Desktop and Claude
 Web combinations below. ChatGPT Pro Web and Mac Desktop passed real-client acceptance
-on 15 September 2026 (ChatGPT acceptance (`chatgpt-acceptance-20260915.md`, private record)): OAuth,
+on 15 September 2026: OAuth,
 verification, reading, writing and idempotent replay. Since then the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account.
 Existing installed packages and their selected remote workspaces remain authoritative.
 
@@ -83,6 +83,11 @@ conflicting historical origins transactionally. No memory tables are moved.
 
 ## Verification at this checkpoint
 
+Checkpoint of 12 September 2026 (runtime build 98dad33, ChatGPT added on 15 September).
+These client and version results were not re-run for 5.0.18–5.0.21: newer Claude Code,
+Codex CLI/Desktop (including the Codex Desktop 0.162 hooks) and ChatGPT consent are not
+re-verified. Treat the list below as the last qualified evidence, not as current status.
+
 The private acceptance ledger binds every result to its source build and surface.
 On runtime build 98dad33, clean Linux Claude Code 2.1.224 and Claude Web using a
 clean Mac passed real OAuth, connection_verify, create, idempotent repeat and get.
@@ -113,7 +118,7 @@ ChatGPT Web read/add succeeded in the isolated 040997f prototype, but the client
 blocked verification. ChatGPT Desktop manual read/create/repeat/get also passed
 in a confirmed ChatGPT conversation against that prototype; read-only database
 inspection found exactly one new note. Those prototype results did not qualify either surface for that release.
-The 15 September 2026 ChatGPT Web and Desktop run, including writes and idempotent replay, is recorded in the linked acceptance report; the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account. No client
+The 15 September 2026 ChatGPT Web and Desktop run, including writes and idempotent replay, passed (the evidence stays in the private acceptance ledger); the current consent and automatic connection confirmation have not been re-verified with a real ChatGPT account. No client
 safety block is retried through another path, and no verified flag is set by an
 operator. The tests used existing ChatGPT Pro and Claude Max subscriptions and do
 not qualify other plans or client versions. The acceptance specification permits

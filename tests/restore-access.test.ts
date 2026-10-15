@@ -28,6 +28,8 @@ function fixture() {
   agent('codex', 'key-codex-old');
   // Granted before the backup, withdrawn after it (below): steward role, old skill API, shared context, automatic memory.
   db.query("UPDATE agents SET type='steward',legacy_skill_access=1 WHERE id='codex'").run();
+  // ADR-022: the dreamer role, granted before the backup to codex and withdrawn after it; claude gets it after.
+  db.query("UPDATE agents SET metadata=json_set(metadata,'$.dreamer',json('true')) WHERE id='codex'").run();
   agent('telegram', 'key-telegram'); client('telegram-app', 'telegram'); token('refresh-tg', 'telegram-app', 'telegram');
   db.query(`INSERT INTO agent_pairings(id,workspace_id,actor_id,origin_instance_id,created_at_ms,updated_at_ms,code_digest,name,profile,principal_kind,runtime_id,expires_at_ms,policy_epoch)
     VALUES ('pairing-1',?,?,?,1,1,'digest-1','pairing','memory-worker','agent','runtime-1',?,1)`).run(ws, owner.agent_id, instance, Date.now() + 86_400_000);
@@ -44,6 +46,8 @@ function fixture() {
   after.query("UPDATE agent_pairings SET revoked_at_ms=42 WHERE id='pairing-1'").run();
   after.query("UPDATE agents SET type='standard',legacy_skill_access=0 WHERE id='codex'").run();
   after.query("UPDATE agents SET metadata=json_set(metadata,'$.shared_context',json('false')),memory_mode='manual',memory_mode_revision=1 WHERE id='claude'").run();
+  after.query("UPDATE agents SET metadata=json_remove(metadata,'$.dreamer') WHERE id='codex'").run();
+  after.query("UPDATE agents SET metadata=json_set(metadata,'$.dreamer',json('true')) WHERE id='claude'").run();
   after.query("INSERT INTO agents(id,workspace_id,name,api_key_hash) VALUES ('chatgpt',?,'chatgpt client','key-chatgpt')").run(ws);
   after.query(`INSERT INTO client_connections(id,workspace_id,owner_id,agent_id,surface,access_mode,request_key,state,challenge_hash,challenge_expires_at,created_at)
     VALUES ('c-chatgpt',?,?,'chatgpt','chatgpt','read_write','c-chatgpt','verified','h',?,?)`).run(ws, owner.agent_id, future, new Date().toISOString());
@@ -87,6 +91,9 @@ test('same-machine restore keeps a steward demotion, a withdrawn skill API, shar
     const result = f.delivery.restore(f.backup), d = new Database(dataFile(f.root, result.current), { readonly: true });
     expect(d.query("SELECT type,legacy_skill_access FROM agents WHERE id='codex'").get()).toEqual({ type: 'standard', legacy_skill_access: 0 });
     expect(d.query("SELECT json_extract(metadata,'$.shared_context') shared,memory_mode FROM agents WHERE id='claude'").get()).toEqual({ shared: 0, memory_mode: 'manual' });
+    // ADR-022: the dreamer role follows the owner's latest decision both ways.
+    expect(d.query("SELECT id,json_extract(metadata,'$.dreamer') dreamer FROM agents WHERE id IN ('claude','codex') ORDER BY id").all())
+      .toEqual([{ id: 'claude', dreamer: 1 }, { id: 'codex', dreamer: null }]);
     d.close();
   } finally { f.cleanup(); }
 });

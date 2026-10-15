@@ -1,13 +1,17 @@
 // ADR-020 (owner decision, supersedes the F-002/F-193 agent-type rules): every agent has one
-// shared-context toggle. On (the default) it reads its siblings' notes and transcripts in its own
-// workspace; off it reads only its own. The steward and the owner read the whole workspace.
-// claude-privileged is an ordinary agent. A 'private' note stays with its author, the steward and
-// the owner. Nobody reads another workspace, even one that records the same owner.
+// shared-context toggle. On (the default) it reads its siblings' notes in its own workspace; off it
+// reads only its own. The steward and the owner read the whole workspace. claude-privileged is an
+// ordinary agent. A 'private' note stays with its author, the steward and the owner. Nobody reads
+// another workspace, even one that records the same owner.
+// ADR-022 (owner decision 2026-10-14, 5.0.21): another agent's raw transcript is read only by the
+// dreamer, the steward and the owner; the shared-context toggle no longer opens it. The old rule
+// returns only with QOOPIA_TRANSCRIPTS_OWN_ONLY=false (the last describe below).
 import { beforeAll, describe, expect, test } from "bun:test";
 import { runMigrations } from "../src/db/migrate.ts";
 import { db } from "../src/db/connection.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
-import { createAgent, setSharedContext } from "../src/admin/agents.ts";
+import { createAgent, setDreamer, setSharedContext } from "../src/admin/agents.ts";
+import { env } from "../src/utils/env.ts";
 import { legacyPrivilegedAgent } from "./helpers/legacy-agent.ts";
 import { bootstrapOwner } from "../src/auth/pairings.ts";
 import { saveMessage } from "../src/services/sessions.ts";
@@ -24,7 +28,7 @@ beforeAll(() => {
   const w = createWorkspace({ name: "Shared context matrix", slug: "adr020-matrix" });
   ws = w.id;
   for (const [name, type] of [["alice", "standard"], ["on", "standard"], ["off", "standard"], ["priv", "claude-privileged"],
-    ["privoff", "claude-privileged"], ["steward", "steward"]] as const) {
+    ["privoff", "claude-privileged"], ["dreamer", "standard"], ["dreamoff", "standard"], ["steward", "steward"]] as const) {
     ids[name] = type === "claude-privileged"
       ? legacyPrivilegedAgent(`adr020-${name}`, w.slug).id
       : createAgent({ name: `adr020-${name}`, workspaceSlug: w.slug, type }).id;
@@ -33,6 +37,10 @@ beforeAll(() => {
   ids.owner = owner;
   setSharedContext({ workspace_id: ws, agent_id: ids.off!, enabled: false, actor_id: owner });
   setSharedContext({ workspace_id: ws, agent_id: ids.privoff!, enabled: false, actor_id: owner });
+  setDreamer({ workspace_id: ws, agent_id: ids.dreamer!, enabled: true, actor_id: owner });
+  // A dreamer whose shared context is off still reads every transcript, but no sibling note.
+  setDreamer({ workspace_id: ws, agent_id: ids.dreamoff!, enabled: true, actor_id: owner });
+  setSharedContext({ workspace_id: ws, agent_id: ids.dreamoff!, enabled: false, actor_id: owner });
 
   shared = createNote({ workspace_id: ws, agent_id: ids.alice!, text: "zebracode alice shared note" }).id;
   privateNote = createNote({ workspace_id: ws, agent_id: ids.alice!, text: "zebracode alice private note", visibility: "private" }).id;
@@ -60,13 +68,16 @@ const texts = (out: unknown): string[] => {
 const zebra = (list: string[]) => list.filter((t) => t?.includes("zebracode")).sort();
 const searchAll = async (who: string) => zebra(texts(await call(who, "recall", { query: "zebracode", scope: "all", cross_workspace: true, limit: 50 })));
 
+const SHARED_NOTE = ["zebracode alice shared note"];
 const SIBLING = ["zebracode alice shared note", "zebracode alice transcript"];
+const TRANSCRIPT = ["zebracode alice transcript"];
 const WHOLE = ["zebracode alice private note", "zebracode alice shared note", "zebracode alice transcript"];
+// ADR-022: "on" and "priv" lost the sibling transcript; the dreamer reads it whatever its toggle says.
 const EXPECTED: Record<string, string[]> = {
-  alice: WHOLE, on: SIBLING, priv: SIBLING, off: [], privoff: [], steward: WHOLE, owner: WHOLE,
+  alice: WHOLE, on: SHARED_NOTE, priv: SHARED_NOTE, off: [], privoff: [], dreamer: SIBLING, dreamoff: TRANSCRIPT, steward: WHOLE, owner: WHOLE,
 };
 
-describe("ADR-020 visibility matrix", () => {
+describe("ADR-020/022 visibility matrix", () => {
   for (const [who, expected] of Object.entries(EXPECTED)) {
     test(`${who}: recall (notes, activity, sessions) sees exactly its share and never another workspace`, async () => {
       // Activity rows repeat a note's text in their summary, so hidden texts are checked as substrings.
@@ -98,12 +109,12 @@ describe("ADR-020 visibility matrix", () => {
       const rows = (call(who, "activity_list", { limit: 500 }) as { items: Array<{ agent_id: string }> }).items;
 
       const sees = rows.some((r) => r.agent_id === ids.alice);
-      expect(sees).toBe(who === "alice" || expected.length > 0);
+      expect(sees).toBe(who === "alice" || expected.some((t) => t.endsWith("note")));
     });
   }
 
   test("opening another agent's session by id stays refused for everyone (F-091)", () => {
-    for (const who of ["on", "steward", "owner"]) {
+    for (const who of ["on", "dreamer", "steward", "owner"]) {
       expect(() => call(who, "session_recent", { session_id: "adr020-alice" })).toThrow();
     }
   });
@@ -112,6 +123,25 @@ describe("ADR-020 visibility matrix", () => {
     setSharedContext({ workspace_id: ws, agent_id: ids.on!, enabled: false, actor_id: owner });
     expect(await searchAll("on")).toEqual([]);
     setSharedContext({ workspace_id: ws, agent_id: ids.on!, enabled: true, actor_id: owner });
+    expect(await searchAll("on")).toEqual(SHARED_NOTE);
+  });
+
+  test("granting and withdrawing the dreamer role takes effect on the next call", async () => {
+    setDreamer({ workspace_id: ws, agent_id: ids.on!, enabled: true, actor_id: owner });
     expect(await searchAll("on")).toEqual(SIBLING);
+    setDreamer({ workspace_id: ws, agent_id: ids.on!, enabled: false, actor_id: owner });
+    expect(await searchAll("on")).toEqual(SHARED_NOTE);
+  });
+});
+
+describe("QOOPIA_TRANSCRIPTS_OWN_ONLY=false restores the ADR-020 transcript rule", () => {
+  test("shared context opens the sibling transcript again; off still reads only its own", async () => {
+    env.TRANSCRIPTS_OWN_ONLY = false;
+    try {
+      expect(await searchAll("on")).toEqual(SIBLING);
+      expect(zebra(texts(call("on", "session_search", { query: "zebracode", scope: "workspace" })))).toEqual(TRANSCRIPT);
+      expect(await searchAll("off")).toEqual([]);
+      expect(await searchAll("dreamoff")).toEqual(TRANSCRIPT);
+    } finally { env.TRANSCRIPTS_OWN_ONLY = true; }
   });
 });

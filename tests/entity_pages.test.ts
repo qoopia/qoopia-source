@@ -73,7 +73,7 @@ describe("upsertEntity", () => {
       slug: "agentcomm-protocol",
       title: "AgentComm protocol",
       summary: "L0–L6 event-push protocol with loop-prevention.",
-      metadata: { participants: ["corsair-main", "leo"] },
+      metadata: { participants: ["main-agent", "leo"] },
     });
     expect(r.created).toBe(true);
     expect(r.id).toMatch(/^[0-9A-Z]{26}$/);
@@ -83,28 +83,28 @@ describe("upsertEntity", () => {
     expect(got.title).toBe("AgentComm protocol");
     expect(got.type).toBe("protocol");
     expect(got.status).toBe("active");
-    expect(got.metadata.participants).toEqual(["corsair-main", "leo"]);
+    expect(got.metadata.participants).toEqual(["main-agent", "leo"]);
   });
 
   test("is idempotent on (workspace, slug) — second call updates same id", () => {
     const first = upsertEntity({
       workspace_id: WORKSPACE_A,
       type: "agent",
-      slug: "corsair-main-agent",
-      title: "corsair-main (initial)",
+      slug: "main-agent-agent",
+      title: "main-agent (initial)",
     });
     const second = upsertEntity({
       workspace_id: WORKSPACE_A,
       type: "agent",
-      slug: "corsair-main-agent",
-      title: "corsair-main (updated)",
+      slug: "main-agent-agent",
+      title: "main-agent (updated)",
       summary: "Now with summary.",
     });
     expect(second.created).toBe(false);
     expect(second.id).toBe(first.id);
 
-    const got = getEntity({ workspace_id: WORKSPACE_A, slug: "corsair-main-agent" });
-    expect(got.title).toBe("corsair-main (updated)");
+    const got = getEntity({ workspace_id: WORKSPACE_A, slug: "main-agent-agent" });
+    expect(got.title).toBe("main-agent (updated)");
     expect(got.summary).toBe("Now with summary.");
   });
 

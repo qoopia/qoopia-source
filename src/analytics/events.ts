@@ -5,11 +5,11 @@ import {z} from 'zod';
 // Closed vocabulary: never accept request bodies, URLs, identity or error text.
 const eventSchema=z.object({
  id:z.string().uuid(),
- kind:z.enum(['site_view','download_click','site_performance','auth_request','mail_accepted','mail_failed','email_confirmed','login_redeemed','profile_login','profile_logout','profile_saved','auth_http']),
+ kind:z.enum(['site_view','download_click','download_redirect','site_performance','auth_request','mail_accepted','mail_failed','email_confirmed','login_redeemed','profile_login','profile_logout','profile_saved','auth_http']),
  page:z.enum(['home','docs','releases','mobile','404','profile','confirm','google','requests','redeem','devices','other']).optional(),
  language:z.enum(['en','ru','other']).optional(),
  platform:z.enum(['mac','linux','other']).optional(),
- // Public release version offered by the website download button (not a client identifier).
+ // Public release version of the offered installer (not a client identifier).
  version:z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[0-9A-Za-z.-]{1,40})?$/).optional(),
  method:z.enum(['email','google','other']).optional(),
  outcome:z.enum(['ok','pending','rejected','error']).optional(),
@@ -81,4 +81,35 @@ export async function browserEvent(req:Request,write:(raw:unknown)=>boolean):Pro
   if(event.version&&event.kind!=='download_click')return new Response(null,{status:400,headers});
   write(event);return new Response(null,{status:204,headers});
  }catch{return new Response(null,{status:400,headers});}
+}
+
+// Installer downloads counted on the server, on the redirect: qoopia.ai/download/<platform> (Pages
+// _redirects) → auth.qoopia.ai/download/<platform> → 302 to the current GitHub asset named by the public
+// release.json. Works without JavaScript and past blockers; stores no IP, cookie or identifier.
+const ASSET=/^https:\/\/github\.com\/qoopia\/qoopia-downloads\/releases\/download\/v[0-9A-Za-z.-]+\/[0-9A-Za-z._-]+$/;
+const releaseSchema=z.object({version:eventSchema.shape.version.unwrap(),availability:z.literal('public'),
+ packages:z.object({mac:z.object({url:z.string().regex(ASSET)}),linux:z.object({url:z.string().regex(ASSET)})})});
+export const DOWNLOAD_PLATFORMS=['mac','linux'] as const;
+export const LATEST_RELEASES='https://github.com/qoopia/qoopia-downloads/releases/latest';
+// Crawlers follow links too; a count is a person or their agent (curl/wget included), not an indexer.
+const CRAWLER=/bot\b|bot\/|crawl|spider|slurp|facebookexternalhit|preview|headless/i;
+export function downloadRedirect(loadRelease:()=>Promise<unknown>,count:(event:{platform:'mac'|'linux';version?:string;referrer:'direct'|'internal'|'other'},ip:string)=>void,now=Date.now,ttl=300_000){
+ let cached:{at:number;release:z.infer<typeof releaseSchema>}|null=null;
+ const current=async()=>{
+  if(cached&&now()-cached.at<ttl)return cached.release;
+  try{cached={at:now(),release:releaseSchema.parse(await loadRelease())};}catch{/* Keep the last good release; without one, send people to the release page. */}
+  return cached?.release??null;
+ };
+ return async(req:Request,platform:string,ip:string):Promise<Response>=>{
+  const headers={'cache-control':'no-store','referrer-policy':'no-referrer'};
+  if(!(DOWNLOAD_PLATFORMS as readonly string[]).includes(platform))return new Response('Unknown platform',{status:404,headers});
+  if(req.method!=='GET'&&req.method!=='HEAD')return new Response(null,{status:405,headers:{...headers,allow:'GET, HEAD'}});
+  const release=await current(),location=release?.packages[platform as 'mac'|'linux'].url??LATEST_RELEASES;
+  const referer=req.headers.get('referer');let referrer:'direct'|'internal'|'other'='direct';
+  try{if(referer)referrer=/(^|\.)qoopia\.ai$/.test(new URL(referer).hostname)?'internal':'other';}catch{referrer='other';}
+  const privacy=req.headers.get('sec-gpc')==='1'||req.headers.get('dnt')==='1';
+  if(req.method==='GET'&&!privacy&&!CRAWLER.test(req.headers.get('user-agent')??''))
+   try{count({platform:platform as 'mac'|'linux',...(release?{version:release.version}:{}),referrer},ip);}catch{/* Counting never blocks a download. */}
+  return new Response(null,{status:302,headers:{...headers,location}});
+ };
 }

@@ -1,5 +1,7 @@
 import { inspectManagedLogs, previewManagedEvents } from '../utils/managed-logs.ts';
-import { inspectDoctorDatabase, inspectScheduledBackups, BACKUP_DATED_IN_FUTURE, type Check } from './doctor-checks.ts';
+import { inspectDoctorDatabase, inspectScheduledBackups, BACKUP_DATED_IN_FUTURE, cliCommandCheck, linuxSandboxCheck, type Check } from './doctor-checks.ts';
+import { wakeRunnerHealth } from './wake-runner.ts';
+import { platformPaths } from './platform-paths.ts';
 import { memoryClientsCheck } from './memory-client.ts';
 import { opsSummary, readRecoveryOps, mergeRecoveryOps, writeOps, opsFile, validateRecoveryOps, OpsJournalError, RECOVERY_DELIVERY_HOLD, RECOVERY_WARNING, serializeOps, OPS_JOURNAL_FORMAT } from './ops-state.ts';
 import { z } from 'zod';
@@ -515,6 +517,14 @@ export class Delivery {
       checks[name]??=unknown('NOT_INSPECTED','Resolve the stored-state finding and rerun doctor.');
     checks.application_logs=inspectManagedLogs(logRoot) as Check;
     checks.memory_clients=memoryClientsCheck(this.root);
+    const inspect=(check:()=>Check)=>{try{return check();}catch{return unknown('CHECK_UNREADABLE','Rerun doctor; this read-only check could not read its files.');}};
+    // The runner is a service of this OS user, beside its default installation: an explicit --root (a second
+    // installation, a test) does not own it.
+    const ownsUserServices=(()=>{try{return platformPaths().root===safePath(this.root);}catch{return false;}})();
+    checks.wake_runner=ownsUserServices?inspect(()=>wakeRunnerHealth(this.root))
+      :{status:'pass',reason:'WAKE_RUNNER_NOT_APPLICABLE',action:'The wake runner is checked by the doctor of the default installation of this user.'};
+    checks.cli_command=inspect(()=>cliCommandCheck(this.root));
+    checks.sandbox=inspect(()=>linuxSandboxCheck(current?path.join(this.root,'bundles',current.bundle,'assets/native/linux/bwrap'):''));
     checks.port=unknown('NO_LISTENER_IDENTITY_PROBE','Start explicitly and use the functional fixture probe; an occupied port or health200 alone is insufficient.');
     checks.live_auth=unknown('NO_LIVE_UID_OR_HTTP_PROBE','Run separately authorized owner IPC and HTTP qualification.');
     checks.functional=unknown('NO_WRITE_ROUNDTRIP','Run deterministic isolated fixture probe; doctor never mutates user data.');

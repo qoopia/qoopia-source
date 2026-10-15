@@ -118,16 +118,22 @@ describe("owner dashboard switch", () => {
 });
 
 describe("dashboard reads follow the toggle", () => {
-  test("shared context on: siblings, their notes and messages, never a private note", async () => {
+  test("shared context on: siblings, their notes and sessions, never a private note or a raw message (ADR-022)", async () => {
     expect(items((await get(bobKey, "/api/dashboard/agents")).body).map((a) => a.id)).toContain(id.alice);
     const notes = await get(bobKey, `/api/dashboard/agents/${id.alice}/notes`);
     expect(notes.status).toBe(200);
     expect(items(notes.body).map((n) => n.text)).toEqual(["quasarword alice shared"]);
     const found = items((await get(bobKey, "/api/dashboard/search?q=quasarword")).body).map((r) => r.excerpt);
     expect(found).toContain("quasarword alice shared");
-    expect(found).toContain("quasarword alice message");
+    expect(found).not.toContain("quasarword alice message");
     expect(found).not.toContain("quasarword alice private");
     expect((await get(bobKey, `/api/dashboard/agents/${id.alice}/sessions`)).status).toBe(200);
+    // The session opens with its summaries; the raw messages stay with alice, the dreamer, steward and owner.
+    const opened = await get(bobKey, "/api/dashboard/sessions/toggle-alice/messages");
+    expect(opened.status).toBe(200);
+    expect(opened.body).toMatchObject({ messages: [], transcript_hidden: true });
+    expect(items((await get(bobKey, `/api/dashboard/agents/${id.alice}/search?q=quasarword`)).body)).toEqual([]);
+    expect(JSON.stringify((await get(ownerKey, "/api/dashboard/sessions/toggle-alice/messages")).body)).toContain("quasarword alice message");
   });
 
   test("shared context off: only itself", async () => {
@@ -190,5 +196,82 @@ describe("AgentComm provenance follows the toggle", () => {
     const open = async (key: string) => ((await get(key, "/api/dashboard/overview")).body.comm as { open_sessions: number }).open_sessions;
     expect(await open(carlKey)).toBe(0);
     expect(await open(bobKey)).toBeGreaterThan(0);
+  });
+});
+
+// ADR-022: the owner grants the dreamer role; the dreamer reads every raw transcript, nothing to manage.
+describe("dreamer role", () => {
+  const dreamerTool = adminTools.find((t) => t.name === "agent_set_dreamer")!;
+  const dreamerAudits = (target: string) =>
+    (db.query("SELECT COUNT(*) AS n FROM activity WHERE action='agent_dreamer_changed' AND entity_id=?").get(target) as { n: number }).n;
+  const postDreamer = (key: string, agent: string, body: unknown, headers: Record<string, string> = { "x-qoopia-csrf": "1" }) =>
+    fetch(`${base}/api/dashboard/agents/${agent}/dreamer`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+  const mcp = async (key: string, method: string, params: Record<string, unknown> = {}) => {
+    const r = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, accept: "application/json, text/event-stream", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+    const text = await r.text();
+    const line = text.split("\n").find((l) => l.startsWith("data:"));
+    return JSON.parse(line ? line.slice(5) : text).result;
+  };
+  const toolNames = async (key: string) => ((await mcp(key, "tools/list")).tools as { name: string }[]).map((t) => t.name);
+
+  test("MCP: only the owner grants it, by name, audited once, idempotent; never to the steward or the owner", () => {
+    expect(dreamerTool.risk).toBe("admin");
+    expect(() => dreamerTool.handler({ agent: "toggle-carl", enabled: true }, as("steward", "steward"))).toThrow(/Only the workspace owner/);
+    expect(() => dreamerTool.handler({ agent: "toggle-carl", enabled: true }, as("carl", "standard"))).toThrow(/Only the workspace owner/);
+    expect(() => dreamerTool.handler({ agent: "toggle-steward", enabled: true }, as("owner", "owner"))).toThrow(/already read every transcript/);
+    expect(dreamerTool.handler({ agent: "toggle-carl", enabled: true }, as("owner", "owner"))).toMatchObject({ agent_id: id.carl, dreamer: true, changed: true });
+    expect(metadata(id.carl!).dreamer).toBe(true);
+    expect(dreamerTool.handler({ agent: id.carl!, enabled: true }, as("owner", "owner"))).toMatchObject({ changed: false });
+    expect(dreamerTool.handler({ agent: id.carl!, enabled: false }, as("owner", "owner"))).toMatchObject({ dreamer: false, changed: true });
+    expect(metadata(id.carl!)).not.toHaveProperty("dreamer");
+    expect(dreamerAudits(id.carl!)).toBe(2);
+  });
+
+  test("dashboard: only the owner switches it, with CSRF; the card shows it to the owner as a switch", async () => {
+    expect((await postDreamer(ownerKey, id.bob!, { enabled: true }, {})).status).toBe(403);
+    expect((await postDreamer(stewardKey, id.bob!, { enabled: true })).status).toBe(403);
+    expect((await postDreamer(bobKey, id.bob!, { enabled: true })).status).toBe(403);
+    expect((await postDreamer(ownerKey, id.bob!, { enabled: "yes" })).status).toBe(400);
+    expect((await postDreamer(ownerKey, id.steward!, { enabled: true })).status).toBe(400);
+    type Card = Row & { dreamer: boolean | null; can_switch_dreamer: boolean };
+    const card = async (key: string, who: string) => (items((await get(key, "/api/dashboard/agents")).body) as Card[]).find((a) => a.id === id[who])!;
+    expect(await card(ownerKey, "bob")).toMatchObject({ dreamer: false, can_switch_dreamer: true });
+    expect(await card(ownerKey, "steward")).toMatchObject({ dreamer: null, can_switch_dreamer: false });
+    expect(await card(bobKey, "bob")).toMatchObject({ dreamer: false, can_switch_dreamer: false });
+
+    const on = await postDreamer(ownerKey, id.bob!, { enabled: true });
+    expect(on.status).toBe(200);
+    expect(await on.json()).toMatchObject({ agent_id: id.bob, dreamer: true, changed: true });
+    expect(await card(ownerKey, "bob")).toMatchObject({ dreamer: true });
+    // Now bob reads alice's raw messages in the dashboard too.
+    expect(JSON.stringify((await get(bobKey, "/api/dashboard/sessions/toggle-alice/messages")).body)).toContain("quasarword alice message");
+    expect(items((await get(bobKey, "/api/dashboard/search?q=quasarword")).body).map((r) => r.excerpt)).toContain("quasarword alice message");
+    expect((await postDreamer(ownerKey, id.bob!, { enabled: false })).status).toBe(200);
+    expect((await get(bobKey, "/api/dashboard/sessions/toggle-alice/messages")).body).toMatchObject({ transcript_hidden: true });
+  });
+
+  // The human owner's own MCP connection carries the narrow owner profile (it decides in the dashboard);
+  // the owner-only catalogue for an owner-type agent is covered in agent-contract.test.ts.
+  test("MCP catalogue: session_review reaches the dreamer and the steward, never an ordinary agent; agent_set_dreamer never the steward", async () => {
+    expect(await toolNames(stewardKey)).toContain("session_review");
+    expect(await toolNames(stewardKey)).not.toContain("agent_set_dreamer");
+    expect(await toolNames(bobKey)).not.toContain("session_review");
+    expect(await toolNames(bobKey)).not.toContain("agent_set_dreamer");
+    expect((await postDreamer(ownerKey, id.bob!, { enabled: true })).status).toBe(200);
+    try {
+      expect(await toolNames(bobKey)).toContain("session_review");
+      const review = await mcp(bobKey, "tools/call", { name: "session_review", arguments: { since: new Date(Date.now() - 86_400_000).toISOString() } });
+      expect(review.content[0].text).toContain("quasarword alice message");
+    } finally {
+      expect((await postDreamer(ownerKey, id.bob!, { enabled: false })).status).toBe(200);
+    }
   });
 });

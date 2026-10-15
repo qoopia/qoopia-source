@@ -25,7 +25,7 @@ describe("F-181: dashboard origin allowlist", () => {
 
   test("a trusted proxy's forwarded public host is allowed", () => {
     env.TRUST_PROXY = true;
-    const proxied = { host: "qoopia-corsair:3738", origin: "https://mcp.example", "x-forwarded-host": "mcp.example", "x-forwarded-proto": "https" };
+    const proxied = { host: "qoopia-server:3738", origin: "https://mcp.example", "x-forwarded-host": "mcp.example", "x-forwarded-proto": "https" };
     expect(originAllowed(request(proxied, { remoteAddress: "127.0.0.1" }))).toBe(true);
   });
 

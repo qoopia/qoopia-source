@@ -54,7 +54,7 @@ import { createHmac, randomBytes, timingSafeEqual as cryptoTimingSafeEqual } fro
 import { isIP } from "node:net";
 import { db } from "./db/connection.ts";
 import { authenticate, type AuthContext } from "./auth/middleware.ts";
-import { env } from "./utils/env.ts";
+import { env, isTrustedProxy } from "./utils/env.ts";
 import { ADMIN_TYPES } from "./auth/principal.ts";
 import { json } from "./utils/http-json.ts";
 import { HUMAN_OWNERS } from "./delivery/owner-onboarding.ts";
@@ -252,6 +252,10 @@ export function verifySession(value: string): SessionPayload | null {
     return null;
   }
   if (payload.exp !== null && payload.exp <= Math.floor(Date.now() / 1000)) return null;
+  // An owner session renews itself daily while in use (renewLocalOwnerSession). A copy nobody has
+  // used for the cookie's own lifetime is dead on the server too, not only in the browser that
+  // dropped it: a stolen value cannot outlive a year of silence (audit 5.0.21 A3-03).
+  if (payload.exp === null && payload.issued! <= Math.floor(Date.now() / 1000) - SESSION_TTL_SEC) return null;
   return payload;
 }
 
@@ -273,7 +277,7 @@ export function isHttps(req: IncomingMessage): boolean {
 
 /** X-Forwarded-* headers count only from a configured proxy peer with TRUST_PROXY on. */
 function fromTrustedProxy(req: IncomingMessage): boolean {
-  return env.TRUST_PROXY && env.TRUSTED_PROXIES.includes((req.socket?.remoteAddress || "").toLowerCase());
+  return isTrustedProxy(req.socket?.remoteAddress);
 }
 
 /** Build the Set-Cookie value for a freshly-signed dashboard session. */

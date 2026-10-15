@@ -23,7 +23,7 @@ import {createHash} from 'node:crypto';
 import {PUBLIC_SOURCE_EXCLUSIONS} from './bundle-signing.ts';
 
 const EXPORT_DIRS=['.github/','benchmarks/','docs/v4/','ios/','marketing-site/','migrations/','scripts/','sdk/','src/','templates/','tests/'];
-const EXPORT_FILES=new Set(['.dockerignore','DESIGN.md','Dockerfile','LICENSE','bun.lock','bunfig.toml','package.json','tsconfig.json',
+const EXPORT_FILES=new Set(['.dockerignore','.gitleaks.toml','DESIGN.md','Dockerfile','LICENSE','bun.lock','bunfig.toml','package.json','tsconfig.json',
  'deploy/docker-compose.release.yml','deploy/fleet-tools-contract.json','deploy/identity.Dockerfile','deploy/release-operator.env.example',
  'docs/10-as-is/README.md','docs/20-to-be/README.md','docs/30-migration/README.md','docs/BRIDGES.md','docs/INTERFACE-LANGUAGES.md',
  'docs/MEMORY-V1.md','docs/P1-AUTHORITY.md','docs/P2-LOOP.md','docs/P3-CONTRACT.md','docs/analytics/README.md','docs/v1-setup.md',
@@ -59,6 +59,11 @@ const RULES:[string,RegExp][]=[
  ['local-hostname',/@[A-Za-z0-9-]+\.local\b/],
  ['private-key',/-----BEGIN [A-Z ]*PRIVATE KEY-----/],
  ['token',/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|sk-ant-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})/],
+ // Qoopia's own credentials (32 random bytes, base64url), Resend API keys and Google OAuth client secrets.
+ ['qoopia-token',/\b(?:q|qa|qr|qc|qcs)_[A-Za-z0-9_-]{40,}/],
+ ['token',/\bre_[A-Za-z0-9]{8,}_[A-Za-z0-9]{16,}|\bGOCSPX-[A-Za-z0-9_-]{20,}/],
+ // Private network names: the tailnet, the production host and its containers.
+ ['internal-host',/\b[a-z0-9-]+\.tail[0-9a-f]{4,}\.ts\.net\b|\bcorsair-(?:main|\d)\b|\bqoopia-corsair\b/i],
 ];
 const EMAIL=/(?<![\\\w.%+-])[A-Za-z0-9._%+-]+@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})\b/g;
 const PUBLIC_EMAIL_DOMAIN=/(?:^|\.)(?:example\.(?:com|org|net)|example|test|invalid|localhost|users\.noreply\.github\.com|qoopia\.ai|github\.com|claude\.ai)$/i;
@@ -74,6 +79,18 @@ const REVIEWED:[string,string[]][]=[
  ['src/services/event-outbox.ts',['tailnet-ip']], // RFC 6598 range in the outbox address blocklist
  ['tests/security-v4.test.ts',['tailnet-ip']], // addresses the outbox blocklist must refuse
  ['tests/log-sanitize.test.ts',['private-key']], // synthetic redaction sample
+ ['tests/secret-guard.test.ts',['qoopia-token']], // synthetic detector samples
+ // Names the reference deployment runs under: the compose project/container and the operator scripts
+ // address them. They are configuration, not credentials; renaming them is a deployment change.
+ ['deploy/docker-compose.release.yml',['internal-host']],
+ ['scripts/analytics.py',['internal-host']],
+ ['scripts/mainmemory_migrate.ts',['internal-host']],
+ ['tests/mainmemory_migration.test.ts',['internal-host']],
+ ['scripts/wake_slo_probe.ts',['internal-host']],
+ ['scripts/wake_slo_alert_check.ts',['internal-host']],
+ ['tests/wake_slo_alert_check.test.ts',['internal-host']],
+ ['scripts/backlog_sweep_query.ts',['internal-host']],
+ ['migrations/021-entity-pages.sql',['internal-host']], // applied migration comment: immutable
 ];
 
 export type Hit={path:string,line:number,kind:string};

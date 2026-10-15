@@ -601,7 +601,7 @@ describe("ADR-017: /api/dashboard/oauth-consent/approve guards", () => {
     env.TRUST_PROXY = true;
     const r = await postApprove(ticketId, nonce, STEWARD_A_KEY, {
       origin: "https://mcp.qoopia.ai",
-      host: "qoopia-corsair:3738",
+      host: "qoopia-server:3738",
       "x-forwarded-host": "mcp.qoopia.ai",
       "x-forwarded-proto": "https",
     }).finally(() => { env.TRUST_PROXY = trustProxy; });

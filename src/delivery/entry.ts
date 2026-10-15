@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import {agentProtocol} from '../agent-kit/index.ts';
+import {agentProtocol,installationLanguage} from '../agent-kit/index.ts';
 import { redactSensitive } from "../utils/secret-guard.ts";
 import { diskFull } from "../utils/storage-degradation.ts";
 // This entry has no domain imports before an explicit isolated root is configured.
@@ -16,7 +16,7 @@ import { platformPaths } from './platform-paths.ts';
 import { privateDirectory } from '../utils/fs.ts';
 import { linuxLinger, linuxUserManagerEnvironment, UserAutostart } from './autostart.ts';
 import { installationLauncher, runForwardingSignals } from './launcher.ts';
-import { inspectInstallationRequirements } from './requirements.ts';
+import { inspectInstallationRequirements, requirementsRefusal } from './requirements.ts';
 import { nativeRuntimeEnvironment } from './native-provision.ts';
 import { PRODUCT_VERSION } from '../utils/product-version.ts';
 import {bindNativeOwnerHome} from './native-keychain.ts';
@@ -39,6 +39,22 @@ const failureText=(error:unknown,limit:number)=>String(diskFull(error)??redactSe
 export async function adopt(step:string,run:()=>unknown|Promise<unknown>) {
   try{await run();}catch(error){console.error(JSON.stringify({event:'start_step_failed',step,reason:failureText(error,300),next_action:'Qoopia keeps running; run qoopia doctor for the affected part.'}));}
 }
+/** AgentComm wake routes (AGENTCOMM_<NAME>_WEBHOOK_*) are the one operator setting the isolated server keeps:
+ * from the environment that started it, and for an app or package installation, which has no environment of
+ * its own, from agentcomm.env in its data folder (what wake-runner server-env writes) [A6-02]. */
+export function agentcommEnvironment(env:NodeJS.ProcessEnv,file?:string){
+  const out:Record<string,string>={};
+  for(const [key,value] of Object.entries(env))if(/^AGENTCOMM_[A-Z0-9_]+$/.test(key)&&value!==undefined)out[key]=value;
+  if(!file||!fs.existsSync(file))return out;
+  const stat=fs.lstatSync(file);
+  // It holds the runners' shared secrets: a file someone else could write or read is not trusted.
+  if(!stat.isFile()||stat.uid!==process.getuid?.()||(stat.mode&0o077)){
+    console.error(JSON.stringify({event:'start_step_failed',step:'agentcomm_env',reason:'agentcomm.env must be a regular file of this user with mode 600; it was not read.',next_action:'chmod 600 agentcomm.env in the Qoopia data folder, then restart Qoopia.'}));
+    return out;
+  }
+  for(const line of fs.readFileSync(file,'utf8').split('\n')){const m=/^(AGENTCOMM_[A-Z0-9_]+)=(.*)$/.exec(line.trim());if(m)out[m[1]!]=m[2]!;}
+  return out;
+}
 function configure(root:string,bundle:string,port=3737,layout?:ReturnType<typeof platformPaths>,instance?:string) {
   bindNativeOwnerHome(os.homedir());
   bindNativeClientDirectories(process.env);
@@ -47,9 +63,10 @@ function configure(root:string,bundle:string,port=3737,layout?:ReturnType<typeof
   // Deliberately ignore ambient Qoopia/.env/native/paid-API settings. No credential reads.
   const runtimeEnv={PATH:process.env.PATH??'/usr/bin:/bin',HOME:root,TMPDIR:process.env.TMPDIR??'/tmp',NODE_ENV:'production',
     QOOPIA_ROOT:root,QOOPIA_DATA_DIR:path.join(root,'data'),QOOPIA_LOG_DIR:layout?.logs??path.join(root,'logs'),QOOPIA_BACKUP_DIR:path.join(layout?.root??root,'backups'),
-    QOOPIA_SERVER_ROLE:'canonical',QOOPIA_PORT:String(port),QOOPIA_HOST:'127.0.0.1',QOOPIA_PUBLIC_URL:`http://127.0.0.1:${port}`,
+    QOOPIA_SERVER_ROLE:'canonical',QOOPIA_LANGUAGE:installationLanguage(process.env),QOOPIA_PORT:String(port),QOOPIA_HOST:'127.0.0.1',QOOPIA_PUBLIC_URL:`http://127.0.0.1:${port}`,
     QOOPIA_LOG_LEVEL:'error',QOOPIA_MANAGED_LOGS:layout?'true':'false',QOOPIA_BUNDLE_ASSETS:path.join(bundle,'assets'),QOOPIA_SKILLS:'true',QOOPIA_ENTITY_PAGES:'true',
     QOOPIA_STANDALONE:'true',...(instance?{QOOPIA_INSTANCE_ID:instance}:{}),QOOPIA_EXPECTED_RELEASE_SHA:QOOPIA_BUILD_SHA,QOOPIA_RELEASE_STAMP_PATH:path.join(bundle,'manifest.json'),QOOPIA_ADMIN_SECRET:randomBytes(32).toString('hex'),QOOPIA_SESSION_SECRET:layout?localSessionSecret(layout.root):randomBytes(32).toString('hex')};
+  Object.assign(runtimeEnv,agentcommEnvironment(process.env,layout?path.join(layout.root,'agentcomm.env'):undefined));
   if(layout){
     Object.assign(runtimeEnv,{QOOPIA_OPS_STATE_DIR:operationsDirectory(layout.root,readCurrent(layout.root)),QOOPIA_STANDALONE_LAYOUT:JSON.stringify({root:layout.root,logs:layout.logs}),QOOPIA_OPS_CHANNELS_FILE:path.join(layout.root,'ops-channels.json')});
     for(const directory of [layout.config,layout.state,layout.logs])privateDirectory(directory);
@@ -83,7 +100,7 @@ export async function claimInstallationPort(port:number,instance:string) {
  * USER/LOGNAME, which Bun's os.userInfo() reads for the first owner's name (without them it is "unknown"). */
 export function dispatchEnvironment(env:NodeJS.ProcessEnv){
   const keys=['TMPDIR','HOME','USER','LOGNAME','CODEX_HOME','CLAUDE_CONFIG_DIR','XDG_DATA_HOME','XDG_CONFIG_HOME','XDG_STATE_HOME'] as const;
-  return Object.fromEntries(keys.map(key=>[key,env[key]])) as NodeJS.ProcessEnv;
+  return {...Object.fromEntries(keys.map(key=>[key,env[key]])),...agentcommEnvironment(env)} as NodeJS.ProcessEnv;
 }
 /** start opens no browser: without an owner it must name the one command that creates the owner. */
 export function startedMessage(owner:boolean,port:number,root?:string){
@@ -128,6 +145,7 @@ async function main(){
    const output=await runMemoryHook(need('config'),JSON.parse(input));if(output)console.log(JSON.stringify(output));return;
  }
  if(cmd==='wake-runner'){const {wakeRunnerCli}=await import('./wake-runner.ts');await wakeRunnerCli(argv,arg,flag);return;}
+ if(cmd==='hermes-sync'){const {hermesSyncCli}=await import('./hermes-sync.ts');await hermesSyncCli(argv,arg,flag,platformPaths(arg('root')).root);return;}
  if(cmd==='client-link'){
    const {configureNativeClient}=await import('./client-config.ts');
    const input=readJson(safePath(need('file'))),clientRoot=platformPaths(arg('root')).root;
@@ -161,9 +179,9 @@ async function main(){
    emit(removeMemoryClient(platformPaths(arg('root')).root,runtime,flag('commit')));return;
  }
 
- if(cmd==='agent-guide'){const section=arg('section')??'protocol';if(!['protocol','connections','operations','soul'].includes(section))throw new Error('Unknown guide section');const language=arg('language')??'ru';if(language!=='ru'&&language!=='en')throw new Error('--language must be ru or en');emit(agentProtocol(section as 'protocol'|'connections'|'operations'|'soul',language));return;}
+ if(cmd==='agent-guide'){const section=arg('section')??'protocol';if(!['protocol','connections','operations','soul'].includes(section))throw new Error('Unknown guide section');const language=arg('language')??installationLanguage();if(language!=='ru'&&language!=='en')throw new Error('--language must be ru or en');emit(agentProtocol(section as 'protocol'|'connections'|'operations'|'soul',language));return;}
  if(cmd==='help')console.log('Quick start: qoopia open — opens your selected workspace. To use an existing server: qoopia use-server --url https://YOUR-SERVER --commit. This preserves local data; stop an existing local service with service uninstall --commit.');
- if(cmd==='help'){console.log('Qoopia '+PRODUCT_VERSION+' standalone candidate\nCommands: agent-guide [--section protocol|connections|operations|soul] [--language ru|en], connections '+CONNECTION_ACTIONS.join('|')+' --input ABSOLUTE_JSON, instructions refresh [--language ru|en] [--commit], instructions remove --runtime codex|claude_code [--config-directory ABSOLUTE_DIRECTORY] [--commit], setup, install, start, service install|uninstall, steward [--agent-id ID --commit --approve PLAN_DIGEST] [--owner-id ID], owner-login, memory-link --file CONNECTION [--config-directory ABSOLUTE_DIRECTORY] [--commit --approve PLAN_DIGEST], memory-unlink --runtime codex|claude_code [--commit], client-link --file CONNECTION [--commit --approve PLAN_DIGEST], client-auth --file BINDING [--commit --open], client-auth-status --file BINDING, client-stdio --file BINDING, connect, skill, runtime, doctor, diagnostic, support-preview, backup, restore, recover-ops, authorize-ops-replay, update, rollback, uninstall, migrate-source, maintenance, parser-smoke.\nsetup is read-only and resumes from the installation pointer, owner bindings and OAuth client connections (connections plan|apply|status); --runtime codex|claude_code selects the legacy native path (runtime provision, connect). It emits one exact next action and never logs in, opens a browser, starts a service/model, or reads credentials.\nDefaults use macOS Application Support/Logs or Linux XDG paths; --root ABSOLUTE_DIRECTORY isolates all data. Use owner-login --owner-name NAME once, then owner-login to sign in through UID-authenticated IPC.\nupdate --bundle ABSOLUTE_BUNDLE previews qoopia-update-plan/1 with installed and target versions; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST. Writes after preview are caught up from the final locked snapshot. A committed update keeps the selected and previous (rollback) generations and bundles and the two newest pre-update backups, removes older ones and reports freed_bytes. An older bundle is refused (UPDATE_DOWNGRADE_REFUSED); use rollback, or preview with --allow-downgrade to get a plan marked downgrade:true for explicit approval.\nconnect --runtime claude_code|codex --name NAME --config ABSOLUTE_FILE [--owner-id ID] (legacy; writes a scoped API key into the client config, prefer connections): stopped-installation scope/file/sample-memory preview; apply with --commit --approve EXACT_PREVIEW_DIGEST. Config parent must already be private (0700); existing file private (0600). Native qualification is NOT RUN.\ndiagnostic --input ABSOLUTE_JSON previews unless --commit is present; commit validates a connect-published config and exact loopback listener/build/instance before one identifiable write/read/recall fixture. doctor remains read-only.\nskill capture|compile|accept|assign|get|loop --input ABSOLUTE_JSON; runtime bind|start|sync|inspect|run|audit|cleanup|task --input ABSOLUTE_JSON. runtime provision --runtime claude_code|codex previews an installation-local package; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST and performs no login or model invocation. These are stopped-installation local owner operations; --commit explicitly applies. runtime run and runtime task serve the shipped loopback HTTP handler for one task and require an exact connect receipt plus explicit subscription-store or Claude subscription options. inspect performs no native/auth process.\nMutations require --commit. Test bundles require --allow-test-fixture. Install leaves autostart disabled; enable it only with service install --commit.');return;}
+ if(cmd==='help'){console.log('Qoopia '+PRODUCT_VERSION+'\nCommands: open, use-server --url https://YOUR-SERVER [--confirm-server] --commit, agent-guide [--section protocol|connections|operations|soul] [--language ru|en], connections '+CONNECTION_ACTIONS.join('|')+' --input ABSOLUTE_JSON, instructions refresh [--language ru|en] [--commit], instructions remove --runtime codex|claude_code [--config-directory ABSOLUTE_DIRECTORY] [--commit], setup, install, start, service install|uninstall, hermes-sync run|install|uninstall|status (delivers the conversations in a Hermes state.db into memory), steward [--agent-id ID --commit --approve PLAN_DIGEST] [--owner-id ID], owner-login, memory-link --file CONNECTION [--config-directory ABSOLUTE_DIRECTORY] [--commit --approve PLAN_DIGEST], memory-unlink --runtime codex|claude_code [--commit], client-link --file CONNECTION [--commit --approve PLAN_DIGEST], client-auth --file BINDING [--commit --open], client-auth-status --file BINDING, client-stdio --file BINDING, wake-runner check|add-agent|server-env|install|uninstall --config FILE (wakes Claude Code or Codex on this computer for AgentComm; see docs/operations/wake-runner.md), source-plan --kind qoopia|skillonomia --source FILE --origin ORIGIN (read-only import preview), connect, skill, runtime, doctor, diagnostic, support-preview, backup, restore, recover-ops, authorize-ops-replay, update, rollback, uninstall, migrate-source, maintenance [raw-retention], parser-smoke.\nsetup is read-only and resumes from the installation pointer, owner bindings and OAuth client connections (connections plan|apply|status); --runtime codex|claude_code selects the legacy native path (runtime provision, connect). It emits one exact next action and never logs in, opens a browser, starts a service/model, or reads credentials.\nDefaults use macOS Application Support/Logs or Linux XDG paths; --root ABSOLUTE_DIRECTORY isolates all data. Use owner-login --owner-name NAME once, then owner-login to sign in through UID-authenticated IPC.\nupdate --bundle ABSOLUTE_BUNDLE previews qoopia-update-plan/1 with installed and target versions; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST. Writes after preview are caught up from the final locked snapshot. A committed update keeps the selected and previous (rollback) generations and bundles and the two newest pre-update backups, removes older ones and reports freed_bytes. An older bundle is refused (UPDATE_DOWNGRADE_REFUSED); use rollback, or preview with --allow-downgrade to get a plan marked downgrade:true for explicit approval.\nconnect --runtime claude_code|codex --name NAME --config ABSOLUTE_FILE [--owner-id ID] (legacy; writes a scoped API key into the client config, prefer connections): stopped-installation scope/file/sample-memory preview; apply with --commit --approve EXACT_PREVIEW_DIGEST. Config parent must already be private (0700); existing file private (0600). Native qualification is NOT RUN.\ndiagnostic --input ABSOLUTE_JSON previews unless --commit is present; commit validates a connect-published config and exact loopback listener/build/instance before one identifiable write/read/recall fixture. doctor remains read-only.\nskill capture|compile|accept|assign|get|loop --input ABSOLUTE_JSON; runtime bind|start|sync|inspect|run|audit|cleanup|task --input ABSOLUTE_JSON. runtime provision --runtime claude_code|codex previews an installation-local package; apply with --commit --plan ABSOLUTE_PLAN_JSON --approve EXACT_PLAN_DIGEST and performs no login or model invocation. These are stopped-installation local owner operations; --commit explicitly applies. runtime run and runtime task serve the shipped loopback HTTP handler for one task and require an exact connect receipt plus explicit subscription-store or Claude subscription options. inspect performs no native/auth process.\nMutations require --commit. Test bundles require --allow-test-fixture. Install leaves autostart disabled; enable it only with service install --commit.');return;}
  if(cmd==='version'){emit({version:PRODUCT_VERSION,build_sha:QOOPIA_BUILD_SHA,platform:`${process.platform}-${process.arch}`,publisher_trust:bundleTrust(path.dirname(process.execPath),QOOPIA_PINNED_KEY)});return;}
  const layout=platformPaths(arg('root'));
  const root=layout.root,self=path.dirname(process.execPath),allow=flag('allow-test-fixture');
@@ -238,13 +256,15 @@ async function main(){
    // The server itself is only probed for reachability (read-only /health, no credentials).
    const local=fs.existsSync(path.join(root,'current.json'))?'inactive':'absent',server=await probeServerWorkspace(remote),reachable=server==='reachable';
    // The hooks still run on this computer and deliver to the server: their failures are only visible here.
-   const {memoryClientsCheck}=await import('./memory-client.ts');
-   const report={state:'SERVER_WORKSPACE',url:remote,data_location:'server',local_installation:local,server,memory_clients:memoryClientsCheck(root),
+   const {memoryClientsCheck}=await import('./memory-client.ts'),{wakeRunnerHealth}=await import('./wake-runner.ts'),{cliCommandCheck}=await import('./doctor-checks.ts');
+   // The wake runner and the command line also live on this computer, whatever server it opens.
+   let wake_runner;try{wake_runner=wakeRunnerHealth(root);}catch{wake_runner={status:'unknown' as const,reason:'CHECK_UNREADABLE',action:'Rerun doctor; the wake runner files could not be read.'};}
+   const report={state:'SERVER_WORKSPACE',url:remote,data_location:'server',local_installation:local,server,memory_clients:memoryClientsCheck(root),wake_runner,cli_command:cliCommandCheck(root),
      next_action:(reachable?'Memory runs on your Qoopia server: check its status in that dashboard, or run qoopia doctor where the server runs.':
        server==='unreachable'?'Your Qoopia server did not answer from this computer. Check the network and that the server is running, then run doctor again.':
        'The selected address does not answer as a Qoopia server. Select the right server with qoopia use-server --url https://YOUR-SERVER --commit.')+
        (local==='inactive'?' The earlier local installation here is inactive and preserved.':'')};
-   const findings=[...(reachable?[]:['SERVER_'+server.toUpperCase()]),...(report.memory_clients.status==='fail'?['memory_clients:'+report.memory_clients.reason]:[])],ok=!findings.length;
+   const findings=[...(reachable?[]:['SERVER_'+server.toUpperCase()]),...(report.memory_clients.status==='fail'?['memory_clients:'+report.memory_clients.reason]:[]),...(wake_runner.status==='fail'?['wake_runner:'+wake_runner.reason]:[])],ok=!findings.length;
    if(cmd==='doctor'){emit({ok,status:reachable?'server_workspace':'server_'+server,read_only:true,findings,...report});if(!ok)process.exitCode=1;return;}
    emit({format:'qoopia-support-preview/1',preview:true,automatic_send:false,findings,events:[],...report});return;
  }
@@ -325,14 +345,19 @@ async function main(){
    const prepared=prepareDesktopUpdate(delivery,self,QOOPIA_PINNED_KEY,allow);
    if(prepared.state==='first_install'){
      const requirements=inspectInstallationRequirements(verifyBundle(self,QOOPIA_PINNED_KEY,allow),root);
-     if(!requirements.ok)throw new Error('Installation requirements not met: '+requirements.blockers.join(','));
+     if(!requirements.ok)throw new Error(requirementsRefusal(requirements.blockers));
      const reserved=await reservePort(0);try{delivery.install(self,reserved.port);}finally{await reserved.close();}
      emit(prepareDesktopUpdate(delivery,self,QOOPIA_PINNED_KEY,allow));
    }else emit(prepared);
    return;
  }
  if(cmd==='support-preview'){emit(delivery.supportPreview(layout.logs));return;}
- if(cmd==='doctor'){const report=delivery.doctor(layout.logs);emit(report);if(!report.ok)process.exitCode=1;return;}
+ if(cmd==='doctor'){
+   const report=delivery.doctor(layout.logs),installed=report.checks.build?.version;
+   // Linux has no updater of its own; the Mac app's Sparkle reports updates itself.
+   const update=process.platform==='linux'&&typeof installed==='string'?await (await import('./desktop-update.ts')).linuxUpdateNotice(installed):null;
+   emit(update?{...report,update_available:update}:report);if(!report.ok)process.exitCode=1;return;
+ }
  if(cmd==='diagnostic'){
    if(!flag('commit')){emit({state:'PREVIEW',command:'diagnostic',requires:'--commit --input ABSOLUTE_JSON',write:false,doctor_read_only:true});return;}
    const selected=await dispatchInstalled(),current=readCurrent(root);
@@ -447,7 +472,7 @@ async function main(){
    const bundle=arg('bundle')??self,verified=verifyBundle(bundle,QOOPIA_PINNED_KEY,allow);
    const requirements=inspectInstallationRequirements(verified,root);
    if(!flag('commit')){emit({state:'PREVIEW',command:'install',requirements,requires:'--commit',data_preserved_by_default:true});return;}
-   if(!requirements.ok)throw new Error('Installation requirements not met: '+requirements.blockers.join(','));
+   if(!requirements.ok)throw new Error(requirementsRefusal(requirements.blockers));
    // A reinstall adopts the uninstalled installation and its port; a busy --port must not refuse it.
    const reservation=await reservePort(fs.existsSync(path.join(root,'uninstalled.json'))?0:Number(arg('port')??0));
    try{emit(withPortNote(delivery.install(bundle,reservation.port),arg('port')));}finally{await reservation.close();}return;
@@ -461,7 +486,9 @@ async function main(){
      +linked.map(runtime=>'qoopia memory-unlink --runtime '+runtime+' --commit').join('; ')+'.'}:{};
    emit(flag('commit')?{...delivery.uninstall(),...hooks}:{state:'PREVIEW',command:cmd,requires:'--commit',data_preserved_by_default:true,...hooks});return;
  }
- if(!['start','open','owner-login','parser-smoke','steward'].includes(cmd)&&!flag('commit')){emit({state:'PREVIEW',command:cmd,requires:'--commit',data_preserved_by_default:true});return;}
+ // The raw-retention report only reads, so it needs no --commit (ADR-022).
+ const readOnlyReport=cmd==='maintenance'&&argv[1]==='raw-retention';
+ if(!['start','open','owner-login','parser-smoke','steward'].includes(cmd)&&!readOnlyReport&&!flag('commit')){emit({state:'PREVIEW',command:cmd,requires:'--commit',data_preserved_by_default:true});return;}
  if(cmd==='backup'){emit(delivery.backup(safePath(need('out'))));return;}
 
  if(cmd==='rollback'){emit(delivery.rollback());return;}
@@ -485,7 +512,7 @@ async function main(){
  if(cmd==='open'){
    if(!fs.existsSync(path.join(root,'current.json'))){
      const verified=verifyBundle(self,QOOPIA_PINNED_KEY,allow),requirements=inspectInstallationRequirements(verified,root);
-     if(!requirements.ok)throw new Error('Installation requirements not met: '+requirements.blockers.join(','));
+     if(!requirements.ok)throw new Error(requirementsRefusal(requirements.blockers));
      const reserved=await reservePort(0);try{delivery.install(self,reserved.port);}finally{await reserved.close();}
    }else if(fs.existsSync(path.join(self,'manifest.json'))&&path.resolve(self)!==path.resolve(root,'bundles',readCurrent(root).bundle)){
      // A newer downloaded package is adopted, not silently handed to the older installed runtime.
@@ -494,8 +521,11 @@ async function main(){
      catch(error){
        // The exact commands: apply needs the saved plan and its digest, and an explicit --root must be repeated.
        const review=JSON.stringify(path.join(self,'qoopia'))+' update --bundle '+JSON.stringify(self)+(arg('root')?' --root '+JSON.stringify(root):'');
-       console.error(JSON.stringify({state:'update_not_applied',reason:failureText(error,300),
-       next_action:'This package was not installed and the installed Qoopia opens instead. Stop any running Qoopia (close its terminal, or service uninstall --commit) and run ./qoopia open from this package again, or review it explicitly: '+review+' > "$HOME/qoopia-update-plan.json", then apply it with '+review+' --plan "$HOME/qoopia-update-plan.json" --approve PLAN_DIGEST --commit (PLAN_DIGEST is the plan_digest in that file).'}));}
+       // Read by a person in a terminal: plain sentences, the reason on its own line [A6-05].
+       console.error(['Qoopia was not updated: this package was not installed, and the installed version opens instead.',
+         'Reason: '+failureText(error,300),
+         'Most often a Qoopia is still running. Stop it (close its terminal, or run: qoopia service uninstall --commit if it runs as a service), then run ./qoopia open from this package again.',
+         'To review the update yourself instead: '+review+' > "$HOME/qoopia-update-plan.json", then apply it with '+review+' --plan "$HOME/qoopia-update-plan.json" --approve PLAN_DIGEST --commit (PLAN_DIGEST is the plan_digest in that file).'].join('\n'));}
    }
  }
  const {current,bundle}=await dispatchInstalled();
@@ -563,6 +593,7 @@ async function main(){
      showWorkspace(response.code,nativeSource.PATH);
    }
    console.log('Qoopia: '+url);
+   if(process.platform==='linux')void import('./desktop-update.ts').then(m=>m.linuxUpdateNotice(PRODUCT_VERSION)).then(notice=>{if(notice)console.log(notice.next_action);});
    console.log(startedMessage(!!db.query('SELECT 1 FROM workspace_owners LIMIT 1').get(),current.port,arg('root')));return;
  }
  const release=lockInstallation(root);
@@ -572,11 +603,16 @@ async function main(){
      const {db}=await import('../db/connection.ts');
      const {stewardCommand}=await import('./steward.ts');
      emit(stewardCommand(db,{ownerId:arg('owner-id'),agentId:arg('agent-id'),commit:flag('commit'),approve:arg('approve')}));
+   }else if(cmd==='maintenance'&&argv[1]==='raw-retention'){
+     // ADR-022: read-only report of what raw retention would delete; counts per agent and session, no content.
+     const {rawRetentionReport}=await import('../services/retention.ts');emit(rawRetentionReport());
    }else if(cmd==='maintenance'){const {runOperationalMaintenance}=await import('../services/retention.ts');const result=await runOperationalMaintenance();emit(result);if(!result.ok)process.exitCode=1;}
    else if(cmd==='parser-smoke'){
      const {parseFileText}=await import('../services/files.ts');const file=safePath(need('file'));emit(await parseFileText(need('mime'),path.basename(file),fs.readFileSync(file)));
    }else throw new Error('Unknown command');
  }finally{release();}
 }
-// The binary is also its own file-text extraction worker (src/services/files.ts spawns it).
-if(import.meta.main)(process.env.QOOPIA_FILE_TEXT_WORKER?import('../services/file-text-worker.ts').then(m=>m.runFileTextWorker()):main()).catch((error:unknown)=>{console.error('Qoopia operation refused: '+failureText(error,1000));process.exitCode=1;});
+// The binary is also its own file-text extraction worker (src/services/files.ts spawns it) and its own
+// daily maintenance process (runMaintenanceProcess in src/services/retention.ts).
+if(import.meta.main)(process.env.QOOPIA_FILE_TEXT_WORKER?import('../services/file-text-worker.ts').then(m=>m.runFileTextWorker())
+  :process.env.QOOPIA_MAINTENANCE_WORKER?import('../services/maintenance-worker.ts').then(m=>m.runMaintenanceWorker()):main()).catch((error:unknown)=>{console.error('Qoopia operation refused: '+failureText(error,1000));process.exitCode=1;});

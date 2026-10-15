@@ -208,9 +208,9 @@ export function nativeLaunch(kind:RuntimeKind,sessionRoot:string,prompt:string,i
       env.QOOPIA_NATIVE_MCP_AUTH=mcp.bearer;
     }
   }
-  // Claude's variadic --tools must end before the positional prompt.
-  if(kind==='claude_code')args.push('--');
-  args.push(prompt);
+  // Options end before the positional prompt for both CLIs: Claude's variadic --tools needs it,
+  // and a prompt that starts with a dash must never be read as a Codex flag.
+  args.push('--',prompt);
   // The sole credential travels only to the official CLI environment. Accidental
   // JSON/console serialization of this launch description cannot expose it.
   const scrub=(text:string)=>[credential,mcp?.bearer,mcp?.bearer.slice(7)].filter((s):s is string=>!!s)

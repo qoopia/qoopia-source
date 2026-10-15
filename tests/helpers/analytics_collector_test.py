@@ -30,6 +30,14 @@ class CollectorTest(unittest.TestCase):
   self.assertEqual((c['total'],c['last_7d'],c['last_30d']),(4,3,3))
   self.assertEqual({(r['platform'],r['version']):r['clicks'] for r in c['by_release']},{('mac','5.0.14'):2,('linux','unknown'):1,('mac','5.0.13'):1})
   self.assertEqual(sum(r['clicks'] for r in c['daily']),4)
+ def test_site_downloads_summary_counts_server_redirects_only(self):
+  import time;now=int(time.time()*1000)
+  rows=[('a',now,'server','download_redirect','{"platform":"mac","version":"5.0.21","referrer":"internal"}'),('b',now-40*86400000,'server','download_redirect','{"platform":"linux","version":"5.0.20","referrer":"direct"}'),
+        ('c',now,'browser','download_redirect','{"platform":"mac"}'),('d',now,'browser','download_click','{"platform":"mac"}')]
+  self.s.db.executemany('insert into events values (?,?,?,?,?)',[(i,src,at,k,d) for i,at,src,k,d in rows])
+  d=self.s.export()['site_downloads']
+  self.assertEqual((d['total'],d['last_7d'],d['last_30d']),(2,1,1))
+  self.assertEqual({(r['platform'],r['version']):r['downloads'] for r in d['by_release']},{('mac','5.0.21'):1,('linux','5.0.20'):1})
  def test_stale_bridge_does_not_block_export_or_backup(self):
   stale=self.root/'stale.json';stale.write_text(json.dumps({'format':'qoopia-provider-metrics/1','observed_at':'2020-01-01T00:00:00+00:00','sources':{}}))
   report=self.root/'latest.json';backup=self.root/'backups'
@@ -71,4 +79,26 @@ class CollectorTest(unittest.TestCase):
   source=m.readonly(self.root/'source.sqlite')
   with self.assertRaises(sqlite3.OperationalError):source.execute('insert into x values(1)')
   source.close()
+class BackupTest(unittest.TestCase):
+ def setUp(self):self.temp=tempfile.TemporaryDirectory();self.root=pathlib.Path(self.temp.name)
+ def tearDown(self):self.temp.cleanup()
+ def test_backup_is_self_contained_while_the_store_writes(self):
+  s=m.Store(self.root/'analytics.sqlite');s.db.execute('PRAGMA wal_autocheckpoint=0')
+  for i in range(2000):s.observe('github','downloads',i,{'n':i},'gauge','2026-09-13T00:00:00+00:00')
+  s.db.commit();self.assertTrue((self.root/'analytics.sqlite-wal').stat().st_size>0)
+  m.daily_backup(s,self.root/'backups');s.db.close()
+  copies=list((self.root/'backups').iterdir());self.assertEqual(len(copies),1);self.assertTrue(copies[0].name.endswith('.sqlite'))
+  db=sqlite3.connect('file:'+str(copies[0])+'?mode=ro&immutable=1',uri=True)
+  self.assertEqual(db.execute('select count(*) from observations').fetchone()[0],2000);self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete');db.close()
+ def test_rotation_keeps_seven_daily_and_four_weekly(self):
+  import datetime as dt
+  start=dt.date(2026,8,1);names=[(start+dt.timedelta(days=i)).isoformat() for i in range(75)]
+  for n in names:(self.root/(n+'.sqlite')).write_bytes(b'x')
+  for leftover in ['2026-08-02.tmp','2026-08-02.tmp-wal','2026-08-02.tmp-shm']:(self.root/leftover).write_bytes(b'')
+  m.prune_backups(self.root)
+  left=sorted(p.name for p in self.root.iterdir())
+  self.assertEqual(left[-7:],[n+'.sqlite' for n in names[-7:]])
+  # 75 days ending 2026-10-14 (Wednesday): the dailies cover the two newest ISO weeks, so the weekly rule adds the newest copies of the two before them.
+  self.assertEqual(left[:-7],['2026-09-27.sqlite','2026-10-04.sqlite'])
+  self.assertFalse(any('.tmp' in n for n in left))
 if __name__=='__main__':unittest.main()

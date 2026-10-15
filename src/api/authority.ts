@@ -92,7 +92,7 @@ export function getOperation(auth: AuthContext, raw: unknown, database: Database
   const row = database.query("SELECT * FROM authority_commands WHERE id=? AND workspace_id=? AND actor_id=?")
     .get(a.id, p.workspace_id, p.id) as { response_json: string; operation: string; created_at_ms: number } | null;
   if (!row) throw new QoopiaError("NOT_FOUND", "Operation not found in requester scope");
-  const pending=row.operation==='skill_session_open'?database.query('SELECT state,attempt_count,last_error_code FROM memory_event_outbox WHERE aggregate_id=?').get(a.id) as {state:string;attempt_count:number;last_error_code:string|null}|null:null;
+  const pending=row.operation==='skill_session_open'?database.query("SELECT state,attempt_count,last_error_code FROM memory_event_outbox WHERE workspace_id=? AND aggregate_kind='authority_command' AND aggregate_id=?").get(p.workspace_id,a.id) as {state:string;attempt_count:number;last_error_code:string|null}|null:null;
   return { id: a.id, state: pending?.state??"completed", delivery:pending, operation: row.operation, created_at_ms: row.created_at_ms,
     result: JSON.parse(row.response_json), retryable: pending?.state==='failed', cancelable: false };
 }

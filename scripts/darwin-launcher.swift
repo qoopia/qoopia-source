@@ -141,7 +141,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
     }
     func startWorkspace(_ binary: URL, updated: Bool = false) {
         let process = Process(), pipe = Pipe(); process.executableURL = binary; process.arguments = ["open", "--desktop"]
-        var environment = ProcessInfo.processInfo.environment; environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"; process.environment = environment
+        var environment = ProcessInfo.processInfo.environment; environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"; environment["QOOPIA_LANGUAGE"] = ru ? "ru" : "en"; process.environment = environment
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice; child = process; outputBuffer = ""; rollbackArmed = updated
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let bytes = handle.availableData; guard !bytes.isEmpty else { handle.readabilityHandler = nil; return }
@@ -366,6 +366,17 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         catch { clientAuth = nil; connecting = false; sender.reply(toOpenOrPrint: .failure) }
     }
 
+}
+// Run from a terminal with a command (`Qoopia.app/Contents/MacOS/Qoopia --version`), the launcher is the
+// command line: it hands the arguments to the bundled qoopia and exits with its status. Starting the menu-bar
+// app instead left a `--version` process running for a day (A5-18). Finder passes none, or only -psn_/-NS…/-Apple….
+let cliArguments = Array(CommandLine.arguments.dropFirst())
+if let first = cliArguments.first, !first.hasPrefix("-psn_"), !first.hasPrefix("-NS"), !first.hasPrefix("-Apple") {
+    let command = Process()
+    command.executableURL = Bundle.main.resourceURL!.appendingPathComponent("bundle/qoopia")
+    command.arguments = cliArguments
+    do { try command.run(); command.waitUntilExit(); exit(command.terminationStatus) }
+    catch { FileHandle.standardError.write("Qoopia: the bundled command could not start.\n".data(using: .utf8)!); exit(127) }
 }
 let app = NSApplication.shared
 let launcher = Launcher()

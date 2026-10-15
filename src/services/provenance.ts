@@ -5,7 +5,7 @@ import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
-import { assertWriteScope, canReadRow, levelOf, seesWholeWorkspace } from "../auth/principal.ts";
+import { assertWriteScope, canReadRow, levelOf, seesWholeWorkspace, transcriptLevelOf } from "../auth/principal.ts";
 
 const PROVENANCE_SOURCE_KINDS = [
   "session_message",
@@ -57,7 +57,7 @@ function sourceVisible(
       const row = db.prepare(
         `SELECT agent_id FROM session_messages WHERE workspace_id = ? AND id = ?`,
       ).get(workspaceId, Number(sourceId)) as { agent_id: string | null } | undefined;
-      return !!row && (row.agent_id === auth.agent_id || levelOf(auth) > 0);
+      return !!row && (row.agent_id === auth.agent_id || transcriptLevelOf(auth) > 0);
     }
     case "file":
       return !!db.prepare(

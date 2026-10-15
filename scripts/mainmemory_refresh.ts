@@ -13,7 +13,7 @@
  * marker so the agent can detect schema drift without failing the
  * whole refresh.
  *
- * Usage (inside qoopia-corsair container):
+ * Usage (inside the server container):
  *
  *   bun run /app/scripts/mainmemory_refresh.ts \
  *     --slugs-file=/mnt/agent/mainmemory_refresh_slugs.txt \

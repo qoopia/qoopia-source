@@ -16,16 +16,17 @@
    const url=new URL(pkg.url);
    if(url.origin!=='https://github.com'||url.search||url.hash||!url.pathname.startsWith('/qoopia/qoopia-downloads/releases/download/'+r.tag+'/'))throw Error('Invalid artifact URL');
   }
-  return {source:r.source,tag:r.tag,packages};
+  return {source:r.source,tag:r.tag,version:r.tag.slice(1),packages};
  }
  function task(r){
   const name=client.value==='codex'?'Codex':'Claude Code';
   const labels=QI.language==='ru'?['Mac · Apple Silicon','Linux · x64']:['Mac · Apple Silicon','Linux · x64'];
-  const artifacts=r.packages.map((p,i)=>labels[i]+':\n'+p.url+'\nSHA-256: '+p.sha256).join('\n\n');
+  // The qoopia.ai address is counted on the server and redirects to the GitHub file shown next to it.
+  const artifacts=r.packages.map((p,i)=>labels[i]+':\nhttps://qoopia.ai/download/'+['mac','linux'][i]+'\n→ '+p.url+'\nSHA-256: '+p.sha256).join('\n\n');
   const release='https://github.com/qoopia/qoopia-downloads/releases/tag/'+r.tag;
   const publisherKey='publisher-public-key.pem';
   const trust='Developer ID Application: Askhat Soltanov (TW25T8SUKH)';
-  if(QI.language==='ru')return `Установи Qoopia V1 на этот компьютер и подключи ${name} к моей собственной локальной памяти. Доведи работу до реального проверенного подключения. Для входа и согласия дай мне конкретное действие и продолжи после него.
+  if(QI.language==='ru')return `Установи Qoopia ${r.version} на этот компьютер и подключи ${name} к моей собственной локальной памяти. Доведи работу до реального проверенного подключения. Для входа и согласия дай мне конкретное действие и продолжи после него.
 
 Разрешаю установить официальный пакет, запустить Qoopia, создать мою собственную установку, добавить отдельное подключение ${name} с чтением и добавлением записей, сохранив другие настройки и их резервные копии. Разрешаю одну небольшую синтетическую заметку для проверки. Дополнительные клиенты, серверы, внешний доступ, память сессий, модель по подписке и автозапуск включай по моему отдельному выбору.
 
@@ -38,9 +39,11 @@ Linux требует x64 и glibc 2.34+. Windows и Intel Mac не поддер�
 
 ${artifacts}
 
+Скачивай по адресу qoopia.ai с переходом по перенаправлению (curl -L) и сохрани файл под именем из ссылки GitHub.
+
 До запуска сверь SHA-256 и подпись. Mac: проверь подпись приложения и штатное принятие Gatekeeper; издатель ${trust}. Linux: публичный ключ ${publisherKey} находится в том же релизе, его SHA-256: 542bd3715cfbc89fbb2df47b8c40f4964e340993f316f0c32866a2972965e33b. Скопируй его в распакованную папку и выполни там openssl pkeyutl -verify -pubin -inkey publisher-public-key.pem -rawin -in manifest.json -sigfile manifest.sig (OpenSSL 3 или новее); ожидаемый ответ — Signature Verified Successfully. Перед установкой Qoopia сама сверяет каждый файл пакета с этим подписанным manifest. При несовпадении остановись; не отключай защиту и не удаляй quarantine.
 
-Открой Qoopia штатно (Mac: Applications; Linux: ./qoopia open из распакованного пакета). Мне предстоит вход через Google/email. Пароли, коды и согласие я ввожу в предназначенном интерфейсе, не в чате. Не подключай чужую память и не клонируй приватный репозиторий.
+Открой Qoopia штатно (Mac: Applications; Linux: ./qoopia open из распакованного пакета — команда работает, пока открыт терминал, поэтому запускай её в отдельном терминале или фоном, а не внутри своего инструмента с тайм-аутом; автозапуск как сервис — ./qoopia service install --commit, только если я его выберу). Мне предстоит вход через Google/email. Пароли, коды и согласие я ввожу в предназначенном интерфейсе, не в чате. Не подключай чужую память и не клонируй приватный репозиторий.
 
 Используй connections-agent.md и connections-guide-ru.html из проверенного пакета, help установленной версии и https://qoopia.ai/docs#connect. В Connections выбери ${name}, подготовь настройку, примени её и заверши отдельную OAuth-авторизацию. CLI: на Mac /Applications/Qoopia.app/Contents/Resources/bundle/qoopia, на Linux ./qoopia в распакованном пакете. Если работаешь через CLI, используй plan/apply/status/resume с одним request_key при повторах. ${client.value==='codex'?'Для OAuth Codex используй codex mcp login с фактическим именем созданного подключения.':'В Claude Code авторизуй подготовленное подключение через /mcp.'}
 
@@ -53,7 +56,7 @@ ${artifacts}
 Если нужен перезапуск клиента или действие в недоступном тебе интерфейсе, подготовь точный шаг для меня. Не закрывай несохранённую работу. Не обходи блокировки, не меняй verified вручную, не читай личные заметки/письма и не выводи секреты. При прерывании продолжай существующую настройку.
 
 В конце сообщи версию, местонахождение моей памяти и адрес дашборда, клиент/профиль, результаты MCP/hooks/модели по отдельности (PASS, FAIL, NOT_TESTED или BLOCKED), резервную копию настроек, как отключить доступ и что ещё нужно от меня. Установку не называй завершённой без реального вызова из клиента.`;
-  return `Install Qoopia V1 on this computer and connect ${name} to my own local memory. Complete the setup and verify real client calls. Give me a specific action when sign-in or consent requires me, then continue afterward.
+  return `Install Qoopia ${r.version} on this computer and connect ${name} to my own local memory. Complete the setup and verify real client calls. Give me a specific action when sign-in or consent requires me, then continue afterward.
 
 I authorize installing and launching the official package, creating my own installation, adding a separate ${name} connection with read-and-add access while preserving other settings and private backups, and creating one harmless synthetic test note. Enable additional clients, servers, external access, session capture, a subscription model or login autostart only if I separately choose them.
 
@@ -66,9 +69,11 @@ Linux requires x64 and glibc 2.34+. Windows and Intel Macs are unsupported.
 
 ${artifacts}
 
+Download from the qoopia.ai address following its redirect (curl -L) and save the file under the name in the GitHub link.
+
 Before execution, verify SHA-256 and the signature. Mac: verify the application signature and normal Gatekeeper acceptance; publisher ${trust}. Linux: ${publisherKey} is in the same release; its SHA-256 is 542bd3715cfbc89fbb2df47b8c40f4964e340993f316f0c32866a2972965e33b. Copy it into the extracted directory and run there openssl pkeyutl -verify -pubin -inkey publisher-public-key.pem -rawin -in manifest.json -sigfile manifest.sig (OpenSSL 3 or later); expect Signature Verified Successfully. Before installing, Qoopia itself checks every package file against that signed manifest. Stop on a mismatch; do not disable protections or remove quarantine.
 
-Open Qoopia normally (Mac: Applications; Linux: ./qoopia open from the extracted package). Hand Google/email sign-in to me. I enter passwords, codes and consent in their intended interfaces, never in chat. Do not connect someone else's memory or clone a private repository.
+Open Qoopia normally (Mac: Applications; Linux: ./qoopia open from the extracted package — it runs while its terminal stays open, so start it in a separate terminal or in the background, not inside a tool call with a timeout; start it as a service with ./qoopia service install --commit only if I choose autostart). Hand Google/email sign-in to me. I enter passwords, codes and consent in their intended interfaces, never in chat. Do not connect someone else's memory or clone a private repository.
 
 Use connections-agent.md and connections-guide-en.html in the verified package, its installed help and https://qoopia.ai/docs#connect. In Connections select ${name}, prepare and apply its configuration, then complete separate OAuth consent. The CLI is /Applications/Qoopia.app/Contents/Resources/bundle/qoopia on Mac and ./qoopia in the extracted Linux package. For CLI operations use plan/apply/status/resume, preserving the request_key on retries. ${client.value==='codex'?'Use codex mcp login with the actual prepared server name.':'Authenticate the prepared connection through /mcp in Claude Code.'}
 
@@ -94,7 +99,7 @@ Report the version, memory location and dashboard URL, client/profile, separate 
    }
    if(current!==revision)return;
    prompt.value=task(releases[key]);copy.disabled=false;
-   status.textContent=say('Qoopia V1 · current release. Review the task and copy it to your agent.','Qoopia V1 · текущий релиз. Прочитайте задание и скопируйте его своему агенту.');
+   status.textContent=say('Qoopia '+releases[key].version+' · current release. Review the task and copy it to your agent.','Qoopia '+releases[key].version+' · текущий релиз. Прочитайте задание и скопируйте его своему агенту.');
   }catch{
    if(current!==revision)return;
    status.textContent=say('Could not load the release. Reload this page or use the manual installation guide below.','Не удалось загрузить сведения о релизе. Обновите страницу или используйте ручную инструкцию ниже.');

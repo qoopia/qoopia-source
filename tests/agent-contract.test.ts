@@ -45,7 +45,7 @@ function advertised(auth:AuthContext) {
   const bootstrap=auth.legacy_skill_access===1?undefined:auth.authority_profile;
   registerTools(recorder,()=>auth,'full',{isSteward:auth.type==='steward'||auth.type==='owner',bootstrapProfile:bootstrap,agentToolProfile:normalizeAgentProfile(auth.tool_profile,auth.agent_name),grantedScope:auth.granted_scope});
   registerAuthorityTools(recorder,()=>auth,new Set(toolNames('full').filter(name=>bootstrapToolAllowed(name,bootstrap))));
-  registerBridgeTools(recorder,()=>auth);
+  registerBridgeTools(recorder,()=>auth,bootstrap);
   return names.filter(name=>name!=='qoopia_capabilities').sort();
 }
 
@@ -61,7 +61,7 @@ test('the contract lists exactly the tools a real connection is offered, for eve
 });
 
 test('F-256: owner-only memory tools reach only the owner; a read-scoped steward keeps memory_policy_list',()=>{
-  const ownerOnly=['memory_policy_set','memory_save_list','memory_save_decide'];
+  const ownerOnly=['memory_policy_set','memory_save_list','memory_save_decide','agent_set_dreamer'];
   const steward=authOf(agents.steward!),owner=authOf(agents.owner!),readSteward:AuthContext={...steward,granted_scope:['mcp:read']};
   for(const name of ownerOnly){
     expect([name,advertised(steward).includes(name),grantedTools(db,steward,authorityOperations).includes(name)]).toEqual([name,false,false]);
@@ -70,6 +70,18 @@ test('F-256: owner-only memory tools reach only the owner; a read-scoped steward
   expect(advertised(readSteward)).toContain('memory_policy_list');
   expect(grantedTools(db,readSteward,authorityOperations)).toContain('memory_policy_list');
   expect(grantedTools(db,readSteward,authorityOperations).sort()).toEqual(advertised(readSteward));
+});
+
+test('ADR-022: session_review reaches the dreamer (a client connection too), the steward and the owner, and the contract says so',()=>{
+  const reaches=(id:string)=>{const auth=authOf(id);const listed=advertised(auth).includes('session_review');
+    expect(grantedTools(db,auth,authorityOperations).includes('session_review')).toBe(listed);return listed;};
+  expect([reaches(agents.owner!),reaches(agents.steward!),reaches(agents.standard!),reaches(agents.worker!)]).toEqual([true,true,false,false]);
+  for(const id of [agents.standard!,agents.worker!])db.query("UPDATE agents SET metadata=json_set(metadata,'$.dreamer',json('true')) WHERE id=?").run(id);
+  try{
+    expect([reaches(agents.standard!),reaches(agents.worker!)]).toEqual([true,true]);
+    // A client connection without hooks also gets canon_match (kit revision 14).
+    expect(advertised(authOf(agents.worker!))).toContain('canon_match');
+  }finally{for(const id of [agents.standard!,agents.worker!])db.query("UPDATE agents SET metadata=json_remove(metadata,'$.dreamer') WHERE id=?").run(id);}
 });
 
 test('every registered tool belongs to a named mechanism',()=>{
@@ -206,4 +218,18 @@ test('a memory client linked in settings that has not delivered yet is waiting f
   const continuity=agentContractFor(db,workspace,linked,authorityOperations)!.mechanisms.find(m=>m.id==='memory.continuity')!;
   expect(continuity).toMatchObject({status:'needs_setup',served_by:'Qoopia Codex memory'});
   expect(continuity.reason).not.toContain('memory model reported an error');
+});
+
+test('Codex source failure is explicit, survives unrelated healthy capture, and clears on recovery',()=>{
+ const agent=createAgent({name:'contract-codex-source',workspaceSlug:'agent-contract-check'}).id;
+ const event={session_id:'codex:source-missing',project:'/synthetic',runtime:'codex' as const,event:'start',messages:[]};
+ const status=()=>agentContractFor(db,workspace,agent,authorityOperations)!.mechanisms.find(m=>m.id==='memory.continuity')!;
+ continuityEvent(workspace,agent,event);
+ expect(status().status).not.toBe('faulty'); // SessionStart may legitimately have no transcript yet.
+ continuityEvent(workspace,agent,{...event,event:'progress',capture_error:'CODEX_TRANSCRIPT_UNAVAILABLE'});
+ expect(status()).toMatchObject({status:'faulty'});expect(status().reason).toContain('neither a conversation transcript');
+ continuityEvent(workspace,agent,{...event,session_id:'codex:healthy-cli',event:'progress',messages:[{id:'cli1',role:'user',content:'Synthetic CLI'}]});
+ expect(status().status).toBe('faulty');
+ continuityEvent(workspace,agent,{...event,event:'progress',messages:[{id:'fixed1',role:'user',content:'Synthetic repaired Desktop'}]});
+ expect(status().status).not.toBe('faulty');
 });

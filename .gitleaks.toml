@@ -1,0 +1,35 @@
+# gitleaks configuration: the default rules plus allowlists for findings triaged as false
+# positives on 2026-10-04 (docs/qa/mcp-oauth-conformance.md, "gitleaks"). Findings that exist only
+# in history (removed files, superseded lines) are listed by fingerprint in .gitleaksignore.
+# Add an entry only after triage, with the reason next to it; never allowlist a real credential.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+# "(^|/)": git scans report repository-relative paths, directory scans absolute ones.
+description = "Synthetic credentials that exist to exercise the secret detectors and redaction"
+paths = [
+  '''(^|/)tests/secret-guard\.test\.ts$''',
+  '''(^|/)tests/secret-guard-vn1-forms\.test\.ts$''',
+  '''(^|/)tests/recall_log_redaction\.test\.ts$''',
+  # A throw-away test key value ("tv-key-1") seeded into synthetic databases.
+  '''(^|/)tests/helpers/source-fixtures\.ts$''',
+  '''(^|/)tests/p1-migration\.test\.ts$''',
+  # Commit SHAs of a release review, and a variable name in migration pseudo-code.
+  '''(^|/)docs/operations/(archive/)?quick-release-review-ru\.md$''',
+  '''(^|/)docs/30-migration/01-data-migration\.md$''',
+]
+
+[[allowlists]]
+description = "Idempotency keys in tests and SHA-256 pins of the public update-signing key"
+regexTarget = "line"
+regexes = [
+  '''idempotency_key:\s*"p0\d-[a-z0-9-]+"''',
+  '''(?i)(publisher_key_sha256|publisher key pin sha-256|sha-256 public key|test public key sha-256)''',
+]
+
+[[allowlists]]
+description = "Verified Git commit SHA expected by the auth release monitor, not an auth credential"
+regexTarget = "line"
+regexes = ['''^\s*"expected_auth_source": "[0-9a-f]{40}",?$''']

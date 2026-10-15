@@ -18,6 +18,7 @@ import { createNote, listNotes, updateNote } from "../src/services/notes.ts";
 import { logActivity } from "../src/services/activity.ts";
 import { saveMessage } from "../src/services/sessions.ts";
 import { recall } from "../src/services/recall.ts";
+import { env } from "../src/utils/env.ts";
 import { brief } from "../src/services/brief.ts";
 
 let WORKSPACE_ID = "";
@@ -133,7 +134,7 @@ describe("recall scope='sessions'", () => {
     );
   });
 
-  test("shows another agent's session messages only while shared context is on (ADR-020)", async () => {
+  test("another agent's session messages: never by default (ADR-022), with shared context when the setting is off (ADR-020)", async () => {
     saveMessage({
       workspace_id: WORKSPACE_ID,
       session_id: "qsl-session-B",
@@ -148,12 +149,16 @@ describe("recall scope='sessions'", () => {
       query: "okapi",
       scope: "sessions",
     });
-    expect((await search()).results.length).toBe(1);
+    // ADR-022: shared context on, but a sibling's raw transcript is for the dreamer, steward and owner.
+    expect((await search()).results.length).toBe(0);
     const steward = createAgent({ name: "qsl-steward", workspaceSlug: "qsearch-lifecycle", type: "steward" }).id;
-    setSharedContext({ workspace_id: WORKSPACE_ID, agent_id: AGENT_A_ID, enabled: false, actor_id: steward });
+    env.TRANSCRIPTS_OWN_ONLY = false;
     try {
+      expect((await search()).results.length).toBe(1);
+      setSharedContext({ workspace_id: WORKSPACE_ID, agent_id: AGENT_A_ID, enabled: false, actor_id: steward });
       expect((await search()).results.length).toBe(0);
     } finally {
+      env.TRANSCRIPTS_OWN_ONLY = true;
       setSharedContext({ workspace_id: WORKSPACE_ID, agent_id: AGENT_A_ID, enabled: true, actor_id: steward });
     }
   });

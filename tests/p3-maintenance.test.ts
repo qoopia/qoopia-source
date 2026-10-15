@@ -28,9 +28,9 @@ test('P3 maintenance really expires traces, keeps durable feedback and reports v
  const result=runMaintenance();expect(result.ok).toBe(true);expect((result.report.recall_trace_expiry as {deleted_traces:number}).deleted_traces).toBeGreaterThanOrEqual(1501);
  expect(db.query("SELECT COUNT(*) AS n FROM recall_traces WHERE expires_at<'2001'").get()).toEqual({n:0});
  expect(db.query("SELECT trace_id FROM recall_feedback WHERE id='p3-feedback'").get()).toEqual({trace_id:null});
- expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:49});
+ expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:51});
  const backups=fs.readdirSync(env.BACKUP_DIR).filter(n=>n.startsWith('qoopia-'));expect(backups.length).toBeGreaterThan(0);
- for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(49);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
+ for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(51);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
 });
 
 test('P3 task purge keeps only observable tombstones for immutable skill sources',()=>{
@@ -115,7 +115,7 @@ test('actual maintenance scheduler runs shared operational callback once, persis
  }finally{stopMaintenance();globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;}
 });
 
-test('round1 scheduled recovery preserves corrupt content and completes status after rotation',async()=>{
+test('round1 scheduled recovery preserves corrupt content, sets it aside once and completes status after rotation',async()=>{
  runMigrations();
  const os=await import('node:os');
  const {backupUnified}=await import('../src/delivery/snapshot.ts');
@@ -140,7 +140,9 @@ test('round1 scheduled recovery preserves corrupt content and completes status a
   const preserved=fs.readdirSync(corrupt).map(name=>({name,bytes:fs.readFileSync(path.join(corrupt,name))}));
   const result=runMaintenance();expect(result.ok).toBe(true);
   expect(readOps(env.OPS_STATE_DIR).last_run?.ok).toBe(true);expect(readOps(env.OPS_STATE_DIR).receipts).toEqual(state.receipts);expect(result.report.backups_deleted).toBe(1);
-  for(const item of preserved)expect(fs.readFileSync(path.join(corrupt,item.name))).toEqual(item.bytes);
+  // Kept whole for inspection, under a name rotation no longer checks every night [A1-02].
+  expect(fs.existsSync(corrupt)).toBe(false);expect(result.report.backups_damaged).toEqual([`damaged-${path.basename(corrupt)}`]);
+  for(const item of preserved)expect(fs.readFileSync(path.join(env.BACKUP_DIR,`damaged-${path.basename(corrupt)}`,item.name))).toEqual(item.bytes);
   expect(fs.existsSync(old)).toBe(false);expect(fs.existsSync(held)).toBe(true);expect(fs.readFileSync(path.join(unknown,'manual.txt'),'utf8')).toBe('preserve unknown member');
   const latest=fs.readdirSync(env.BACKUP_DIR).filter(n=>!n.includes('2000-01-01')).map(n=>path.join(env.BACKUP_DIR,n));expect(latest).toHaveLength(1);
   expect(verifyBackup(latest[0]!,instance).format).toBe('qoopia-backup/2');expect(readOps(latest[0]!)).toEqual(state);

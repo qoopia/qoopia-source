@@ -184,14 +184,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .agent-avatar { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem; flex-shrink:0; }
 .agent-name { font-weight: 600; font-size: 1rem; }
 .agent-meta { font-size: var(--qoopia-type-metadata); color: var(--text3); }
-.agent-avatar.alan { background: var(--accent-dim); color: var(--accent); }
-.agent-avatar.aizek { background: var(--surface); color: var(--text); }
-.agent-avatar.aidan { background: var(--surface); color: var(--text); }
-.agent-avatar.dan { background: var(--surface); color: var(--text); }
-.agent-avatar.liam { background: var(--surface); color: var(--text); }
-.agent-avatar.claude { background: var(--surface); color: var(--text); }
-.agent-avatar.gpt { background: var(--surface); color: var(--text); }
-.agent-avatar.other { background: var(--surface2); color: var(--text2); }
+.agent-avatar.tone-0 { background: var(--surface); color: var(--text); }
+.agent-avatar.tone-1 { background: var(--surface2); color: var(--text2); }
+.agent-avatar.tone-2 { background: var(--accent-dim); color: var(--accent); }
 
 /* ---- Knowledge ---- */
 .ent-list { display:flex; flex-direction:column; gap:10px; }
@@ -207,6 +202,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* ---- drill-down: tabs / sessions / transcript / notes (preserved) ---- */
 .detail-head { display:flex; align-items:center; gap:14px; margin-bottom:20px; }
 .detail-head .agent-avatar { width:48px; height:36px; font-size:1.15rem; }
+.detail-main { flex:1; min-width:0; }
 .detail-title { font-size:var(--qoopia-type-title); font-weight:600; }
 .detail-sub { font-size:var(--qoopia-type-label); color: var(--text3); margin-top:2px; }
 .tabs { display:flex; gap:2px; border-bottom:1px solid var(--border); margin-bottom:20px; }
@@ -283,10 +279,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .f-row:hover { background:var(--surface3); }
 .f-name { flex:1 1 180px; min-width:0; overflow-wrap:anywhere; font-weight:550; }
 .f-row .meta { color:var(--text2); font-size:var(--qoopia-type-metadata); }
+.search-count { font-size:var(--qoopia-type-metadata); color:var(--text3); margin-bottom:12px; }
 .f-row .btn-more { display:inline-flex; align-items:center; margin:0; padding:2px 8px; }
 /* Phones keep a usable target without turning one-line rows into tall boxes. */
 /* A feed chip stays compact; its touch area reaches 44px through ::before. */
-@media(pointer:coarse),(max-width:600px) { .feed .frow>.chip,.f-row .btn-more { min-height:32px; } .feed .frow>.chip.click { position:relative; } .feed .frow>.chip.click::before { content:''; position:absolute; inset:-6px 0; } }
+@media(pointer:coarse),(max-width:600px) { .feed .frow>.chip { min-height:32px; } .f-row .btn-more { min-height:44px; padding:2px 12px; } .feed .frow>.chip.click { position:relative; } .feed .frow>.chip.click::before { content:''; position:absolute; inset:-6px 0; } }
 .sel { max-width:100%; padding:7px 10px; border-radius:8px; border:1px solid var(--border); background: var(--surface); color: var(--text); font-size:var(--qoopia-type-metadata); font-family:var(--font); outline:none; }
 
 /* ---- AgentComm reader (messenger view) ---- */
@@ -655,10 +652,10 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
    container (Overview column, phone) the row wraps into three lines and the switches name
    themselves. */
 .agent-table { container-type:inline-size; }
-.agent-row { display:grid; grid-template-columns:minmax(150px,1fr) minmax(170px,1.4fr) 88px 100px repeat(3,minmax(44px,58px)); align-items:center; column-gap:10px; padding:3px 6px; min-height:34px; border-bottom:1px solid var(--border); }
+.agent-row { display:grid; grid-template-columns:minmax(150px,1fr) minmax(170px,1.4fr) 88px 100px 72px repeat(3,minmax(44px,58px)); align-items:center; column-gap:10px; padding:3px 6px; min-height:34px; border-bottom:1px solid var(--border); }
 .agent-row:not(.agent-row-head):hover { background:var(--surface); }
 .agent-row-head { min-height:0; padding-block:0 5px; color:var(--text2); font-size:var(--qoopia-type-metadata); }
-.agent-row-head>:nth-child(n+5),.ar-num { text-align:right; }
+.agent-row-head>:nth-child(n+6),.ar-num { text-align:right; }
 .agent-row .agent-card { display:flex; align-items:center; gap:var(--qoopia-space-compact); min-width:0; padding:2px 0; background:none; border:0; border-radius:var(--qoopia-radius-detail); cursor:pointer; }
 .agent-row .agent-card:hover .agent-name { text-decoration:underline; text-underline-offset:3px; }
 .agent-row .agent-avatar { width:22px; height:22px; border-radius:var(--qoopia-radius-navigation); font-size:var(--qoopia-type-metadata); font-weight:650; }
@@ -711,8 +708,8 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
 .qswitch-thumb { position:absolute; top:2px; left:2px; width:9px; height:9px; border-radius:50%; background:var(--text2); transition:transform .15s, background .15s; }
 .qswitch[aria-checked="true"] { background:var(--text); border-color:var(--text); }
 .qswitch[aria-checked="true"] .qswitch-thumb { transform:translateX(11px); background:var(--bg); }
-.qswitch:hover:not(:disabled) { border-color:var(--text); }
-.qswitch:disabled { opacity:.45; cursor:not-allowed; }
+.qswitch:hover:not([aria-disabled="true"]) { border-color:var(--text); }
+.qswitch[aria-disabled="true"] { border-style:dashed; cursor:not-allowed; }
 .qswitch[aria-busy="true"] { cursor:progress; }
 .qswitch:focus-visible { outline:2px solid var(--text); outline-offset:3px; }
 .qswitch::before { content:''; position:absolute; inset:-8px -6px; }

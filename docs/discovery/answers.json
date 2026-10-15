@@ -1,8 +1,12 @@
 {
   "version": 1,
-  "reviewed_date": "2026-09-14",
-  "review_again_by": "2026-10-14",
-  "source_sha": "c32f2e5e7b29e2ac9e48ac14a0fafd48e6014f87",
+  "reviewed_date": "2026-10-14",
+  "review_again_by": "2026-11-14",
+  "source_sha": "f9a554ed3589f33d44740f3e99d04fa3ca8d7c20",
+  "summary": {
+    "en": "When Qoopia helps, what installation needs and where your data lives: reviewed answers for people and AI assistants evaluating Qoopia.",
+    "ru": "Когда Qoopia полезна, что нужно для установки и где хранятся данные: проверенные ответы для людей и ИИ-ассистентов."
+  },
   "items": [
     {
       "id": "fit",
@@ -38,18 +42,17 @@
       "id": "phone",
       "en": {
         "question": "Can I start from a phone?",
-        "answer": "Use your existing Qoopia dashboard on iPhone, including memory, agents, connections, files and chat. On a server installation, open its HTTPS address in Safari, sign in with the email linked to that workspace, then add it to Home Screen as a web app; the server must stay running. A Mac or Linux installation keeps its dashboard on that computer, so open it there. The phone does not run the Mac/Linux agent runtime or create a second memory database. A managed MCP endpoint is for agent tools, not dashboard access."
+        "answer": "Qoopia for iPhone is a free TestFlight beta for iOS 17 or later. It opens the dashboard of a server installation reachable over HTTPS: memory, agents, connections, files and chat; the server must stay running. A Mac or Linux installation keeps its dashboard on that computer, listening only on its local address, so the iPhone app cannot open it yet: use the dashboard on that computer. The phone does not run the agent runtime or create a second memory database. A managed MCP address is for agent tools, not dashboard access."
       },
       "ru": {
         "question": "Можно начать с телефона?",
-        "answer": "На iPhone доступен существующий дашборд Qoopia: память, агенты, подключения, файлы и чат. На серверной установке откройте её HTTPS-адрес в Safari, войдите с почтой, привязанной к этому пространству, и добавьте на экран «Домой» как веб-приложение; сервер должен оставаться включённым. У установки на Mac или Linux дашборд остаётся на этом компьютере — открывайте его там. Телефон не запускает рантайм Mac/Linux и не создаёт вторую базу памяти. Управляемый MCP-адрес предназначен для инструментов агента, а не для входа в дашборд."
+        "answer": "Qoopia для iPhone — бесплатная бета в TestFlight для iOS 17 и новее. Приложение открывает дашборд серверной установки, доступной по HTTPS: память, агенты, подключения, файлы и чат; сервер должен оставаться включённым. У установки на Mac или Linux дашборд остаётся на этом компьютере и слушает только локальный адрес, поэтому приложение на iPhone пока не может его открыть: пользуйтесь дашбордом на самом компьютере. Телефон не запускает рантайм агентов и не создаёт вторую базу памяти. Управляемый MCP-адрес предназначен для инструментов агента, а не для входа в дашборд."
       },
       "sources": [
+        "docs/operations/ios-direct-dashboard.md",
+        "src/delivery/mcp-edge.ts",
         "src/agent-kit/MCP-CONNECTIONS.md",
-        "docs/v1-setup.md",
-        "docs/operations/connections.md",
-        "src/http/web-app.ts",
-        "src/public/app.webmanifest"
+        "docs/operations/connections.md"
       ]
     },
     {
@@ -71,11 +74,11 @@
       "id": "platforms",
       "en": {
         "question": "What does installation require?",
-        "answer": "Current V1 packages support Apple Silicon Macs with macOS 15 or later and Linux x64 with glibc 2.34 or later. Intel Macs, Windows and a standalone phone installation are not supported by these packages. The packages do not require a separate Bun, Docker or Ollama installation. Opening a website profile does not deploy your personal memory. Local search and embeddings are bundled; cloud model access is authorized separately."
+        "answer": "Current packages support Apple Silicon Macs with macOS 15 or later and Linux x64 with glibc 2.34 or later and the ps command (procps), run as a normal user rather than root. Intel Macs, Windows and a standalone phone installation are not supported by these packages. The packages do not require a separate Bun, Docker or Ollama installation. Opening a website profile does not deploy your personal memory. Local search and embeddings are bundled; cloud model access is authorized separately."
       },
       "ru": {
         "question": "Что нужно для установки?",
-        "answer": "Текущие пакеты V1 поддерживают Mac на Apple Silicon с macOS 15 и новее и Linux x64 с glibc 2.34 и новее. Intel Mac, Windows и отдельная установка на телефон этими пакетами не поддерживаются. Отдельно устанавливать Bun, Docker или Ollama не требуется. Регистрация профиля на сайте не разворачивает личную память. Локальный поиск и embeddings включены в пакет; доступ к облачной модели авторизуется отдельно."
+        "answer": "Текущие пакеты поддерживают Mac на Apple Silicon с macOS 15 и новее и Linux x64 с glibc 2.34 и новее и командой ps (procps), запуск от обычного пользователя, не от root. Intel Mac, Windows и отдельная установка на телефон этими пакетами не поддерживаются. Отдельно устанавливать Bun, Docker или Ollama не требуется. Регистрация профиля на сайте не разворачивает личную память. Локальный поиск и embeddings включены в пакет; доступ к облачной модели авторизуется отдельно."
       },
       "sources": [
         "docs/v1-setup.md",
@@ -131,11 +134,11 @@
       "id": "bridges",
       "en": {
         "question": "Can two independent environments exchange materials?",
-        "answer": "Bridges provide selective exchange between separate Qoopia installations. You choose an invitation, materials and permissions. Publishing catalog titles and descriptions is different from sending file contents. Received material is not automatically installed or added to ordinary memory; previously received copies cannot be recalled. A broader automatically connected agent network is a future direction, not a current V1 promise."
+        "answer": "Bridges provide selective exchange between separate Qoopia installations. You choose an invitation, materials and permissions. Publishing catalog titles and descriptions is different from sending file contents. Received material is not automatically installed or added to ordinary memory; previously received copies cannot be recalled. A broader automatically connected agent network is a future direction, not a current promise."
       },
       "ru": {
         "question": "Можно соединить две независимые среды?",
-        "answer": "Мосты позволяют выборочно обмениваться материалами между отдельными установками Qoopia. Вы выбираете приглашение, материалы и разрешения. Публикация названий и описаний каталога отличается от передачи содержимого файлов. Полученное не устанавливается и не попадает в обычную память автоматически; уже полученную копию нельзя отозвать. Более широкая автоматически связанная сеть агентов — будущее направление, не обещание текущей V1."
+        "answer": "Мосты позволяют выборочно обмениваться материалами между отдельными установками Qoopia. Вы выбираете приглашение, материалы и разрешения. Публикация названий и описаний каталога отличается от передачи содержимого файлов. Полученное не устанавливается и не попадает в обычную память автоматически; уже полученную копию нельзя отозвать. Более широкая автоматически связанная сеть агентов — будущее направление, не обещание текущей версии."
       },
       "sources": [
         "src/bridges/service.ts",
@@ -161,14 +164,15 @@
       "id": "messages",
       "en": {
         "question": "What is AgentComm?",
-        "answer": "AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard."
+        "answer": "AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard. Since 5.0.20 a message can also wake a Claude Code or Codex agent through qoopia wake-runner. Its operator configures this on a server (Docker) installation; the Mac and Linux packages do not offer it yet."
       },
       "ru": {
         "question": "Что такое AgentComm?",
-        "answer": "AgentComm сохраняет обмен сообщениями между авторизованными агентами в системе. Пользователь может посмотреть общение, а не полагаться только на финальный пересказ агента. Отправка сообщения не доказывает, что адресат его прочитал или выполнил; агенты и каналы доставки должны быть подключены и работать. Обмен можно просматривать в дашборде."
+        "answer": "AgentComm сохраняет обмен сообщениями между авторизованными агентами в системе. Пользователь может посмотреть общение, а не полагаться только на финальный пересказ агента. Отправка сообщения не доказывает, что адресат его прочитал или выполнил; агенты и каналы доставки должны быть подключены и работать. Обмен можно просматривать в дашборде. С версии 5.0.20 сообщение может разбудить агента Claude Code или Codex через qoopia wake-runner. Это настраивает оператор серверной (Docker) установки; пакеты для Mac и Linux пока этого не дают."
       },
       "sources": [
-        "src/agent-kit/qoopia-protocol.md"
+        "src/agent-kit/qoopia-protocol.md",
+        "src/services/agent-wake.ts"
       ]
     },
     {

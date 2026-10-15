@@ -6,6 +6,7 @@ import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { getNote } from "./notes.ts";
 import { nextNoteWriteTimestamp, supersedePathExists } from "./note-temporal.ts";
 import { logActivity } from "./activity.ts";
+import { assertAutomaticMemoryAllowed } from "./memory-policy.ts";
 import { recordConflict } from "../utils/observability.ts";
 import { assertCanModifyNote, assertWriteScope, seesWholeWorkspace } from "../auth/principal.ts";
 
@@ -271,6 +272,11 @@ export function createNoteRelation(input: {
         : null;
       return { created: false, relation: relationOut(existing), chain: state };
     }
+    // Superseding archives the target: a manual agent leaves that to the owner, as with
+    // note_update. A replay of an edge that already exists (above) writes nothing and passes.
+    if (input.relation_type === "supersedes") {
+      assertAutomaticMemoryAllowed(input.auth.workspace_id, input.auth.agent_id);
+    }
 
     db.prepare(
       `INSERT INTO note_relations
@@ -353,6 +359,7 @@ export function createNoteRelation(input: {
       workspace_id: input.auth.workspace_id,
       agent_id: input.auth.agent_id,
       action: "relation_created",
+      event: "note.relation.created",
       entity_type: "note_relation",
       entity_id: id,
       project_id: null,

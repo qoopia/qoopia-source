@@ -25,6 +25,13 @@ async function download(url:string,sha:string){
  }
  throw new Error('Linux support download failed: '+url);
 }
+const LOADER='/lib64/ld-linux-x86-64.so.2';
+/** The bundled libraries are loaded for bwrap alone, through the glibc loader: LD_LIBRARY_PATH would be
+ * inherited by every process inside the sandbox and load Debian 12 libraries into the host's binaries.
+ * Where AppArmor lets only the system bwrap create user namespaces (Ubuntu 24.04), that one is used [A7-07]. */
+export const BWRAP_WRAPPER='#!/bin/sh\ndir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1\n'+
+ 'if [ -x /usr/bin/bwrap ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then exec /usr/bin/bwrap "$@"; fi\n'+
+ 'exec '+LOADER+' --library-path "$dir/lib" "$dir/bwrap.bin" "$@"\n';
 /** Build-only Debian extraction. End users receive the small helper and its
  * libraries; no apt, developer tooling or global environment changes at runtime. */
 export async function prepareLinuxSupport(out:string) {
@@ -42,8 +49,9 @@ export async function prepareLinuxSupport(out:string) {
   const sourceDir=path.join(out,'source');fs.mkdirSync(sourceDir);
   for(const source of sources)fs.writeFileSync(path.join(sourceDir,source.file),await download(sourceBase+source.file,source.sha256));
   fs.writeFileSync(path.join(out,'PROVENANCE.json'),JSON.stringify({packages,sources,glibc_min:'2.34',source_note:'Corresponding bubblewrap source and Debian build instructions are included in source/. No binary modifications.'},null,2));
-  fs.writeFileSync(path.join(out,'bwrap'),'#!/bin/sh\ndir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1\nLD_LIBRARY_PATH="$dir/lib" exec "$dir/bwrap.bin" "$@"\n',{mode:0o755});fs.chmodSync(path.join(out,'bwrap.bin'),0o755);
-  if(spawnSync(path.join(out,'bwrap'),['--version'],{encoding:'utf8'}).stdout?.trim()!=='bubblewrap 0.8.0')throw new Error('Bundled Linux helper failed to start');
+  fs.writeFileSync(path.join(out,'bwrap'),BWRAP_WRAPPER,{mode:0o755});fs.chmodSync(path.join(out,'bwrap.bin'),0o755);
+  // The bundled copy itself, whatever the build host has in /usr/bin.
+  if(spawnSync(LOADER,['--library-path',path.join(out,'lib'),path.join(out,'bwrap.bin'),'--version'],{encoding:'utf8'}).stdout?.trim()!=='bubblewrap 0.8.0')throw new Error('Bundled Linux helper failed to start');
   return notices;
  }finally{fs.rmSync(temp,{recursive:true,force:true});}
 }

@@ -18,7 +18,7 @@
  *                             apply manifest; stale plans remain unusable.
  *
  * Default invocation: `bun /app/scripts/sync_conflicts.ts <subcommand> [...]`
- * inside the qoopia-corsair container.
+ * inside the server container.
  */
 import { Database } from "bun:sqlite";
 import path from "node:path";

@@ -24,12 +24,12 @@ test('account continuation uses the existing workspace owner and browser, reject
   fs.writeFileSync(path.join(root,'config/owner-identity.json'),JSON.stringify({ownerId:owner.agent_id,email:'owner@example.test'}),{mode:0o600});
   const broker=loginBroker(remote,{origin:LOGIN_ORIGIN,resendKey:'test',from:'test@example.test',googleClientId:'test',googleClientSecret:'test'},fakeFetch(async()=>{throw Error('No email should be sent');}));
   const local=localIdentityLogin(root,db,fakeFetch(async(input,init)=>broker(new Request(String(input),init),'test')));
-  const handoff=accountHandoff(remote),jar=new Map<string,string>();
+  const handoff=accountHandoff(remote),jar=new Map<string,string>();let host='workspace.example.test';
   const call=async(route:string,body:Record<string,unknown>={},cookies=jar)=>{
     let status=0,result='';const headers:Record<string,string>={};
     const response={setHeader:(k:string,v:string)=>headers[k]=v,writeHead:(s:number,h:Record<string,string>)=>{status=s;Object.assign(headers,h);},end:(b:string)=>result=b} as unknown as ServerResponse;
     const cookie=[...cookies].map(([k,v])=>k+'='+v).join('; ');
-    await local({method:'POST',headers:{host:'workspace.example.test',origin:'https://workspace.example.test','x-forwarded-proto':'https',cookie},socket:{remoteAddress:'127.0.0.1'}} as unknown as IncomingMessage,response,route,body);
+    await local({method:'POST',headers:{host,origin:'https://workspace.example.test','x-forwarded-proto':'https',cookie},socket:{remoteAddress:'127.0.0.1'}} as unknown as IncomingMessage,response,route,body);
     if(headers['set-cookie']){const c=headers['set-cookie'].split(';')[0]!,i=c.indexOf('=');cookies.set(c.slice(0,i),c.slice(i+1));}
     return {status,body:JSON.parse(result),headers};
   };
@@ -40,6 +40,8 @@ test('account continuation uses the existing workspace owner and browser, reject
     return new URLSearchParams(new URL(redirect).hash.slice(1)).get('account_code')!;
   };
   try{
+    // A3b-06: the return address is the configured public origin, whatever Host the request names.
+    host='spoofed.example.test';await begin();host='workspace.example.test';
     const code=await begin();expect((await call('/poll')).body).toEqual({pending:true});
     expect((await call('/poll',{accountCode:code},new Map())).status).toBe(400);
     expect((await call('/poll',{accountCode:code})).status).toBe(200);

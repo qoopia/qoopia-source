@@ -23,6 +23,7 @@ import {
   sessionSearch,
   sessionSummarize,
   sessionExpand,
+  sessionReview,
 } from "../services/sessions.ts";
 import { listActivity } from "../services/activity.ts";
 import {
@@ -37,13 +38,14 @@ import { registerCompatTools } from "./compat.ts";
 import { adminTools } from "./admin-tools.ts";
 import { entityTools } from "./entity_tools.ts";
 import { skillTools } from "./skill_tools.ts";
+import { canonTools } from "./canon-tools.ts";
 import { fileList, fileGet, filePut } from "../services/files.ts";
 import { assertInstanceWriteAllowed, isReadOnlyInstance } from "../utils/instance-role.ts";
 import { enabledV4Tools } from "./v4-tools.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
 import { db } from "../db/connection.ts";
 import { bootstrapToolAllowed, currentToolAuth } from "../auth/policy.ts";
-import { levelOf, seesWholeWorkspace } from "../auth/principal.ts";
+import { levelOf, readsAllTranscripts, seesWholeWorkspace } from "../auth/principal.ts";
 import { autosaveReminder, canManagePolicy } from "../services/memory-policy.ts";
 import { boundedMetadata, boundedTags, isToolAllowedForProfile, type AgentToolProfile, type RiskClass } from "./profiles.ts";
 
@@ -72,12 +74,14 @@ export interface ToolDef {
   risk: RiskClass;
   rawSchema: z.ZodRawShape;
   handler: (args: Record<string, unknown>, auth: AuthContext) => unknown | Promise<unknown>;
+  /** ADR-022: offered only to the dreamer, the steward and the owner (dreamerAllowed). */
+  dreamerOnly?: true;
 }
 
 /** Read tools whose results carry text other principals wrote (notes, messages,
  * sessions, activity summaries, files, skills, entity pages). */
 const UNTRUSTED_CONTENT_TOOLS = new Set([
-  "recall", "brief", "note_get", "note_list", "session_recent", "session_search", "session_expand",
+  "recall", "brief", "note_get", "note_list", "session_recent", "session_search", "session_expand", "session_review",
   "activity_list", "agent_inbox", "file_get", "skill_get", "skill_search", "skill_render_runbook",
   "entity_get", "entity_search", "entity_page_render",
 ]);
@@ -492,7 +496,7 @@ const tools: ToolDef[] = [
       query: z.string().min(1).max(1000),
       session_id: z.string().optional(),
       scope: z.enum(["own_agent", "workspace", "all"]).optional().describe(
-        "own_agent (default) | workspace (your transcripts plus every agent of your workspace while your shared context is on; the steward and the owner always read all) | all (the same as workspace: no search leaves your own workspace). With shared context off you get own_agent.",
+        "own_agent (default) | workspace (your transcripts; other agents' raw transcripts only for the dreamer, the steward and the owner) | all (the same as workspace: no search leaves your own workspace).",
       ),
       limit: z.number().int().min(1).max(100).optional(),
       since: z.string().optional(),
@@ -511,6 +515,33 @@ const tools: ToolDef[] = [
         is_admin: seesWholeWorkspace(auth),
       });
     },
+  },
+  {
+    name: "session_review",
+    risk: "read",
+    dreamerOnly: true,
+    description:
+      "The dreamer's nightly read (also the steward's and the owner's): every session message of this " +
+      "workspace created between since and until (at most 31 days), oldest first by message id, grouped " +
+      "by session with its agent, title and the summaries covering those messages. Pages of up to 500 " +
+      "messages (~200k characters): pass next_after_id as after_id until has_more is false. Never reads " +
+      "another workspace.",
+    rawSchema: {
+      since: z.string().min(1).describe("Window start: ISO time or YYYY-MM-DD"),
+      until: z.string().optional().describe("Window end (default now)"),
+      after_id: z.number().int().nonnegative().optional().describe("next_after_id of the previous page"),
+      limit: z.number().int().min(1).max(500).optional(),
+    },
+    handler: (args, auth) =>
+      sessionReview({
+        workspace_id: auth.workspace_id,
+        agent_id: auth.agent_id,
+        type: auth.type,
+        since: String(args.since),
+        until: args.until as string | undefined,
+        after_id: args.after_id as number | undefined,
+        limit: args.limit as number | undefined,
+      }),
   },
   {
     name: "session_summarize",
@@ -814,6 +845,9 @@ if (process.env.QOOPIA_SKILLS === "true") {
   tools.push(...skillTools);
 }
 
+// Canon: rules loaded into context by the server (5.0.21). Always on: brief, hooks and wakes use it too.
+tools.push(...canonTools);
+
 // V4 tools are canonical and additive, but each bounded context stays absent
 // until its explicit feature flag is enabled. Export/import bindings are owned
 // by P08 and intentionally do not appear here yet.
@@ -919,6 +953,7 @@ export function registerTools(
     if (profile === "memory" && !MEMORY_TOOLS.has(tool.name)) continue;
     if (!isToolAllowedForProfile(tool.risk, agentProfile)) continue;
     if (!grantedScopeAllowsRisk(grantedScope, tool.risk)) continue;
+    if (tool.dreamerOnly && !dreamerAllowed(authProvider())) continue;
     server.registerTool(
       tool.name,
       { description: tool.description,
@@ -958,7 +993,9 @@ export function registerTools(
   // V2 backward-compatibility aliases are disabled by default so agents only
   // see/use canonical V3 Qoopia tools. Keep an explicit rollback switch for
   // legacy clients during migration.
-  if (profile !== "memory" && process.env.QOOPIA_ENABLE_V2_COMPAT === "true") {
+  // A bootstrapped connection carries only the tools its access profile names; the aliases
+  // would reach note_create/update/delete around that list, so it never gets them.
+  if (profile !== "memory" && !opts?.bootstrapProfile && process.env.QOOPIA_ENABLE_V2_COMPAT === "true") {
     registerCompatTools(server, authProvider, toolCallback, agentProfile, grantedScope);
   }
 }
@@ -992,12 +1029,17 @@ export function ownerAllowed(auth: AuthContext | null): boolean {
   return !auth || canManagePolicy(auth.workspace_id, auth.agent_id);
 }
 
+/** ADR-022: dreamer tools are offered to the dreamer, the steward and the owner; listed without an auth context. */
+export function dreamerAllowed(auth: AuthContext | null): boolean {
+  return !auth || readsAllTranscripts(auth);
+}
+
 /** Every registered tool with what gates it. The agent contract derives per-agent
  * availability from this list, so the catalogue cannot drift from the real registry. */
-export function toolCatalog(): { name: string; risk: RiskClass; admin: boolean; ownerOnly: boolean }[] {
+export function toolCatalog(): { name: string; risk: RiskClass; admin: boolean; ownerOnly: boolean; dreamerOnly: boolean }[] {
   return [
-    ...tools.map((t) => ({ name: t.name, risk: t.risk, admin: false, ownerOnly: false })),
-    ...adminTools.map((t) => ({ name: t.name, risk: t.risk, admin: true, ownerOnly: t.ownerOnly === true })),
+    ...tools.map((t) => ({ name: t.name, risk: t.risk, admin: false, ownerOnly: false, dreamerOnly: t.dreamerOnly === true })),
+    ...adminTools.map((t) => ({ name: t.name, risk: t.risk, admin: true, ownerOnly: t.ownerOnly === true, dreamerOnly: false })),
   ];
 }
 

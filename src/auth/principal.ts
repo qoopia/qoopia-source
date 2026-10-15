@@ -15,6 +15,7 @@ import type { AuthContext } from "./middleware.ts";
 import { grantedScopeAllowsRisk } from "./oauth.ts";
 import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
+import { env } from "../utils/env.ts";
 
 /**
  * ADR-020: workspace MANAGE rights (OAuth client registration and consent, audit rows through
@@ -75,7 +76,37 @@ export function visibleRowSql(alias?: string): string {
   return `(${a}agent_id = ? OR CASE ? WHEN 2 THEN 1 WHEN 1 THEN ${shared} ELSE 0 END)`;
 }
 
-/** A session transcript row the caller may read; transcripts have no private flag. Binds (caller agent id, ReadLevel). */
+/**
+ * ADR-022: the dreamer role, agents.metadata.dreamer === true. Only the workspace owner grants it.
+ * A dreamer reads every raw transcript of its workspace (the nightly review) and nothing more:
+ * no MANAGE right and no other agent's private notes. Read on every call, like sharesContext.
+ */
+export function isDreamer(agentId: string, database: Database = db): boolean {
+  const row = database.query("SELECT metadata FROM agents WHERE id = ? AND active = 1").get(agentId) as { metadata: string } | null;
+  return !!row && safeJsonParse<Record<string, unknown> | null>(row.metadata, {})?.dreamer === true;
+}
+
+/** The steward, the owner and the dreamer read every raw transcript of the workspace. */
+export function readsAllTranscripts(auth: { agent_id: string; type: string }, database: Database = db): boolean {
+  return seesWholeWorkspace(auth) || isDreamer(auth.agent_id, database);
+}
+
+/**
+ * ADR-022: the level visibleTranscriptSql binds. Other agents' raw transcripts belong to the dreamer,
+ * the steward and the owner (2). With QOOPIA_TRANSCRIPTS_OWN_ONLY on (the 5.0.21 default) every other
+ * agent reads only its own (0), whatever its shared-context toggle says; turned off, the ADR-020 rule
+ * returns and the toggle opens the siblings' transcripts too. Summaries and notes keep readLevel.
+ * `wholeWorkspace` is seesWholeWorkspace(auth), or true for a trusted server-side caller.
+ */
+export function transcriptLevel(agentId: string, wholeWorkspace: boolean, database: Database = db): ReadLevel {
+  if (wholeWorkspace || isDreamer(agentId, database)) return 2;
+  return env.TRANSCRIPTS_OWN_ONLY ? 0 : readLevel(agentId, false, database);
+}
+
+export const transcriptLevelOf = (auth: { agent_id: string; type: string }): ReadLevel =>
+  transcriptLevel(auth.agent_id, seesWholeWorkspace(auth));
+
+/** A session transcript row the caller may read; transcripts have no private flag. Binds (caller agent id, transcriptLevel). */
 export function visibleTranscriptSql(alias?: string): string {
   return `(${alias ? `${alias}.` : ""}agent_id = ? OR ? > 0)`;
 }

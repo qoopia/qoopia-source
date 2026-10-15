@@ -3,7 +3,7 @@ import { PRODUCT_VERSION } from "./utils/product-version.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { install } from "./admin/install.ts";
 import { assertSchemaCurrent, getPendingMigrations } from "./db/migrate.ts";
 import {
@@ -68,6 +68,8 @@ Commands:
   admin enable-autosession --workspace <slug> --cwd-prefix <path>
   admin disable-autosession --workspace <slug> --cwd-prefix <path>
   admin list-claude-agents --workspace <slug>
+  canon import-rules --workspace <slug|id> [--commit]  Plan (or with --commit write) canons from rule notes
+  dreamer --workspace <slug|id> --agent <name|id> --on|--off  Grant or withdraw the dreamer role for the owner (ADR-022)
   v4-contract                                    Validate the frozen P05 live tool contract
   v4-smoke --fixture-workspace                   Run a test-only scratch brief/recall smoke
 `);
@@ -210,9 +212,9 @@ async function main() {
           return;
         }
         if (follow) {
-          execSync(`tail -f "${file}"`, { stdio: "inherit" });
+          execFileSync("tail", ["-f", file], { stdio: "inherit" });
         } else {
-          execSync(`tail -n 50 "${file}"`, { stdio: "inherit" });
+          execFileSync("tail", ["-n", "50", file], { stdio: "inherit" });
         }
         return;
       }
@@ -276,6 +278,31 @@ async function main() {
         const to = arg("to", path.join(env.BACKUP_DIR, `qoopia-manual-${Date.now()}.db`))!;
         const report = createVerifiedBackup({ source: DB_PATH, output: path.resolve(to) });
         console.log(`Backup written to ${report.output} (${report.size_bytes} bytes, sha256 ${report.sha256}, mode 0600)`);
+        return;
+      }
+      case "canon": {
+        if (argv[1] !== "import-rules") throw new Error("Usage: canon import-rules --workspace <slug|id> [--commit]");
+        const ref = need("workspace", arg("workspace"));
+        const ws = db.query("SELECT id FROM workspaces WHERE id = ? OR slug = ?").get(ref, ref) as { id: string } | null;
+        if (!ws) throw new Error(`Workspace '${ref}' not found`);
+        const { importRuleCanons } = await import("./services/canon.ts");
+        // The plan lists note ids and reasons only: rule text stays out of terminals and logs.
+        console.log(JSON.stringify(importRuleCanons({ workspace_id: ws.id, commit: argv.includes("--commit") }), null, 2));
+        return;
+      }
+      case "dreamer": {
+        // ADR-022: the server operator records the owner's decision; it acts as the workspace's human owner.
+        const ref = need("workspace", arg("workspace")), name = need("agent", arg("agent"));
+        const on = argv.includes("--on"), off = argv.includes("--off");
+        if (on === off) throw new Error("Usage: dreamer --workspace <slug|id> --agent <name|id> --on|--off");
+        const ws = db.query("SELECT id FROM workspaces WHERE id = ? OR slug = ?").get(ref, ref) as { id: string } | null;
+        if (!ws) throw new Error(`Workspace '${ref}' not found`);
+        const owner = db.query("SELECT actor_id FROM workspace_owners WHERE workspace_id = ?").get(ws.id) as { actor_id: string } | null;
+        if (!owner) throw new Error("This workspace has no human owner to act for");
+        const agent = db.query("SELECT id FROM agents WHERE workspace_id = ? AND active = 1 AND (id = ? OR name = ?)").all(ws.id, name, name) as { id: string }[];
+        if (agent.length !== 1) throw new Error(`Agent '${name}' ${agent.length ? "is ambiguous" : "not found"} in this workspace`);
+        const { setDreamer } = await import("./admin/agents.ts");
+        console.log(JSON.stringify(setDreamer({ workspace_id: ws.id, agent_id: agent[0]!.id, enabled: on, actor_id: owner.actor_id }), null, 2));
         return;
       }
       case "admin": {

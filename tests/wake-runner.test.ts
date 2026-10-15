@@ -16,7 +16,7 @@ import { db } from "../src/db/connection.ts";
 import { agentSend } from "../src/services/agent-comm.ts";
 import { drainAgentWakeQueue } from "../src/services/agent-wake.ts";
 import { wakeReply } from "../src/services/wake-reply.ts";
-import { WakeRunner, addWakeRunnerAgent, loadWakeRunnerConfig, wakeRunnerServerEnv, wakeRunnerService, type WakeRunnerConfig } from "../src/delivery/wake-runner.ts";
+import { WakeRunner, addWakeRunnerAgent, executableReplaced, wakePrompt, loadWakeRunnerConfig, wakeRunnerServerEnv, wakeRunnerService, loadService, type WakeRunnerConfig } from "../src/delivery/wake-runner.ts";
 
 let ws = "", alice = "", bob = "", carol = "";
 const SECRET_A = "a".repeat(40), SECRET_B = "b".repeat(40);
@@ -124,6 +124,100 @@ describe("wake runner: the whole loop", () => {
   });
 });
 
+describe("wake runner: recovery", () => {
+  test("a runtime session that cannot be resumed is forgotten once and the turn runs in a new one [A2-06]", async () => {
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    bind(port);
+    // A runtime whose stored history is gone: every --resume fails.
+    const lost = path.join(tmp, "fake-claude-lost.sh");
+    fs.writeFileSync(lost, `#!/bin/sh\ncase "$*" in *--resume*) printf '%s\\n' "turn $*" >> '${turns}'; echo 'No conversation found' >&2; exit 1;; esac\nexec '${fakeClaude}' "$@"\n`, { mode: 0o755 });
+    const c = config(port);
+    c.agents[1] = { ...c.agents[1]!, command: lost };
+    runner = new WakeRunner(c, path.join(tmp, `state-${port}`), serverFetch);
+    runner.start();
+    const first = agentSend({ workspace_id: ws, agent_id: carol, to_agent: bob, body: "one", topic: "lost history" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 1);
+    agentSend({ workspace_id: ws, agent_id: carol, to_agent: bob, body: "two", session_id: first.session_id });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 2);
+    const lines = fs.readFileSync(turns, "utf8").trim().split("\n");
+    expect(lines.map((l) => l.includes("--resume") ? "resume" : l.includes("--session-id") ? "new" : "?")).toEqual(["new", "resume", "new"]);
+    expect(replies[1]!.status).toBe(200);
+    expect((db.prepare(`SELECT body FROM agent_comm_messages WHERE id = ?`).get(replies[1]!.body.id) as any).body).toBe("ANSWER from runtime");
+    expect(fs.readFileSync(path.join(tmp, `state-${port}`, "runner.log"), "utf8")).toContain('"event":"resume_reset"');
+  });
+
+  test("an answer survives a server that is down longer than the turn, and is sent when it returns [A2-07]", async () => {
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    bind(port);
+    let down = 6;
+    const flaky = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (down > 0) { down--; return Response.json({ error: "unavailable" }, { status: 503 }); }
+      return serverFetch(url, init);
+    }) as unknown as typeof fetch;
+    const state = path.join(tmp, `state-${port}`);
+    runner = new WakeRunner(config(port), state, flaky, 40);
+    runner.start();
+    agentSend({ workspace_id: ws, agent_id: carol, to_agent: bob, body: "answer me later", topic: "outage" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 1);
+    expect(replies[0]!.status).toBe(200);
+    expect(down).toBe(0);
+    expect(fs.readdirSync(path.join(state, "replies"))).toEqual([]);
+  });
+
+  test("a job file that cannot be read is set aside and the agent still wakes for the next message [A1-04]", async () => {
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    bind(port);
+    const state = path.join(tmp, `state-${port}`);
+    fs.mkdirSync(path.join(state, "spool", bob), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(state, "spool", bob, "0000-broken.json"), "{not json", { mode: 0o600 });
+    runner = new WakeRunner(config(port), state, serverFetch);
+    runner.start();
+    agentSend({ workspace_id: ws, agent_id: carol, to_agent: bob, body: "after the broken file", topic: "broken spool" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 1);
+    expect(fs.readdirSync(path.join(state, "spool", bob, "rejected"))).toEqual(["0000-broken.json"]);
+    expect(fs.readdirSync(path.join(state, "spool", bob)).filter((f) => f.endsWith(".json"))).toEqual([]);
+  });
+
+  test("the workspace canon sent with a wake is in the prompt before the quoted message", async () => {
+    const job = { message_id: "M1", session_id: "S1", from_agent: "x", from_agent_id: "x", topic: "t", kind: "request", body: "the body", created_at: "now" };
+    const prompt = wakePrompt({ name: "bob" }, { ...job, canon_text: "Rule 1: answer in Russian.\nRule 2: never deploy without GO." });
+    expect(prompt.indexOf("Rule 1: answer in Russian.")).toBeGreaterThan(0);
+    expect(prompt.indexOf("Rule 2: never deploy without GO.")).toBeLessThan(prompt.indexOf("From: x"));
+    expect(prompt).toContain("> the body");
+    expect(wakePrompt({ name: "bob" }, job)).not.toContain("canon");
+    // Through the runner: the canon in the wake payload reaches the spooled job and the turn's stdin.
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    const seen = path.join(tmp, `prompt-${port}.txt`);
+    const capture = path.join(tmp, `fake-claude-capture-${port}.sh`);
+    fs.writeFileSync(capture, `#!/bin/sh\ncat > '${seen}'\nprintf '{"type":"result","is_error":false,"result":"ok","session_id":"s"}\\n'\n`, { mode: 0o755 });
+    const c = config(port); c.agents[1] = { ...c.agents[1]!, command: capture };
+    runner = new WakeRunner(c, path.join(tmp, `state-${port}`), serverFetch);
+    runner.start();
+    const wake = JSON.stringify({ event_type: "agentcomm_wake", to_agent_id: bob, canon_text: "CANON: be brief.", messages: [{ ...job, message_id: "MCANON", kind: "status" }] });
+    const response = await fetch(`http://127.0.0.1:${port}/hooks/agentcomm/wr-bob`, { method: "POST", body: wake,
+      headers: { "x-webhook-signature": createHmac("sha256", SECRET_B).update(wake).digest("hex") } });
+    expect(await response.json()).toEqual({ accepted: true, queued: 1 });
+    await until(() => fs.existsSync(seen) && fs.readFileSync(seen, "utf8").includes("> the body"));
+    const text = fs.readFileSync(seen, "utf8");
+    expect(text.indexOf("CANON: be brief.")).toBeLessThan(text.indexOf("> the body"));
+  });
+
+  test("a binary replaced under the running runner is detected; a deleted one is not a replacement [A7-02]", () => {
+    const file = path.join(tmp, "qoopia-binary");
+    fs.writeFileSync(file, "old");
+    const ino = fs.statSync(file).ino;
+    expect(executableReplaced(file, ino)).toBe(false);
+    fs.writeFileSync(file + ".new", "new"); fs.renameSync(file + ".new", file);
+    expect(executableReplaced(file, ino)).toBe(true);
+    fs.rmSync(file);
+    expect(executableReplaced(file, ino)).toBe(false);
+  });
+});
+
 describe("wake runner: refusals", () => {
   test("a bad signature, another agent's wake and a replayed message are not accepted as new work", async () => {
     const port = 20000 + Math.floor(Math.random() * 20000);
@@ -190,4 +284,18 @@ describe("wake runner: config", () => {
     }
     expect(wakeRunnerService("/opt/q/qoopia", "/home/example/wr/config.json", "darwin", "/home/example").bytes).toContain("/home/example/wr/wake-runner.err");
   });
+});
+
+test('a reinstall waits for launchd to let the old job go instead of leaving the service unloaded', () => {
+  const calls: string[] = [];let busy = 2;
+  const spawn = (cmd: string, args: string[]) => {
+    calls.push(args[0]!);
+    if (args[0] === 'bootstrap' && busy-- > 0) return { status: 5, stderr: 'Bootstrap failed: 5: Input/output error' };
+    return { status: args[0] === 'bootout' ? 3 : 0, stderr: '' };
+  };
+  const load = [['/bin/launchctl', 'bootout', 'gui/501/ai.qoopia.wake-runner'], ['/bin/launchctl', 'bootstrap', 'gui/501']];
+  loadService(load, '/x.plist', spawn, () => {});
+  expect(calls).toEqual(['bootout', 'bootstrap', 'bootstrap', 'bootstrap']);
+  // Any other bootstrap failure is reported at once, not retried.
+  expect(() => loadService(load, '/x.plist', () => ({ status: 1, stderr: 'Bootstrap failed: 37: Operation already in progress' }), () => {})).toThrow('bootstrap failed');
 });

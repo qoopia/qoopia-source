@@ -27,7 +27,11 @@ test('P3 local capability session uses existing owner cookie authority and denie
   const headers={host:`127.0.0.1:${env.PORT}`,origin:`http://127.0.0.1:${env.PORT}`};
   const good=request(owner.agent_id,headers);expect(good.status).toBe(200);expect(good.headers['set-cookie']).toContain('HttpOnly');expect(good.headers['set-cookie']).toContain('SameSite=Strict');expect(good.headers['set-cookie']).not.toContain('Secure');expect(good.body).toBe('{"ok":true}');
   const cookieRequest={headers:{...headers,cookie:good.headers['set-cookie']!.split(';')[0]},socket:{remoteAddress:'127.0.0.1'}} as IncomingMessage;
-  const now=Date.now(),clock=spyOn(Date,'now').mockReturnValue(now+366*86400000);
+  const now=Date.now();
+  // A3-03: a copy unused for the cookie's whole lifetime is refused by the server too; one in use renews daily.
+  const idle=spyOn(Date,'now').mockReturnValue(now+366*86400000);
+  try{expect(checkDashboardAuth(cookieRequest)).toBeNull();}finally{idle.mockRestore();}
+  const clock=spyOn(Date,'now').mockReturnValue(now+300*86400000);
   try {
    expect(checkDashboardAuth(cookieRequest)?.agent_id).toBe(owner.agent_id);
    let renewed='';renewLocalOwnerSession(cookieRequest,{setHeader:(_k:string,v:string)=>{renewed=v;}} as unknown as ServerResponse);
@@ -76,8 +80,11 @@ test('hosted owner login requires explicit enablement, trusted HTTPS and same or
   env.TRUST_PROXY=false;expect(ownerIdentityRequestAllowed(req)).toBe(false);env.TRUST_PROXY=true;
   localOwnerLoginHandler(req,res,owner.agent_id);expect(status).toBe(200);expect(cookie).toContain('Secure');
   const authenticated={...req,headers:{...req.headers,cookie:cookie.split(';')[0]}} as IncomingMessage;
-  const clock=spyOn(Date,'now').mockReturnValue(Date.now()+366*86400000);
+  // A3-03: outlives a long pause; a copy idle for the cookie's whole lifetime does not.
+  const clock=spyOn(Date,'now').mockReturnValue(Date.now()+300*86400000);
   try{expect(checkDashboardAuth(authenticated)?.agent_id).toBe(owner.agent_id);}finally{clock.mockRestore();}
+  const idle=spyOn(Date,'now').mockReturnValue(Date.now()+366*86400000);
+  try{expect(checkDashboardAuth(authenticated)).toBeNull();}finally{idle.mockRestore();}
   db.query('UPDATE agents SET session_version=session_version+1 WHERE id=?').run(owner.agent_id);
   expect(checkDashboardAuth(authenticated)).toBeNull();
   await localIdentityLogin(root,db)(req,res,'/setup',{code:'unused'});expect(status).toBe(400);

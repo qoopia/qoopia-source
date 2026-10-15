@@ -3,7 +3,7 @@ import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { getNote } from "./notes.ts";
-import { levelOf, seesWholeWorkspace, visibleRowSql, visibleTranscriptSql, ADMIN_TYPES } from "../auth/principal.ts";
+import { levelOf, seesWholeWorkspace, transcriptLevelOf, visibleRowSql, visibleTranscriptSql, ADMIN_TYPES } from "../auth/principal.ts";
 import { hash } from "../utils/fs.ts";
 
 export const RECALL_PIPELINE_VERSION = "v4.0.0-p04.1";
@@ -120,7 +120,7 @@ function resultStillVisible(auth: AuthContext, item: TraceItemRow): boolean {
   return !!db.prepare(
     `SELECT 1 FROM session_messages
       WHERE workspace_id = ? AND id = ? AND ${visibleTranscriptSql()}`,
-  ).get(auth.workspace_id, Number(item.result_id), auth.agent_id, levelOf(auth));
+  ).get(auth.workspace_id, Number(item.result_id), auth.agent_id, transcriptLevelOf(auth));
 
 }
 

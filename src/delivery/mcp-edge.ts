@@ -3,7 +3,7 @@ import {pipeline} from 'node:stream';
 import {readRequestBody, repeatsSingletonHeader, RequestBodyError, unreadBody} from '../utils/http-json.ts';
 import {isIP} from 'node:net';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
-import {CONTINUITY_MAX_BODY_BYTES, MAX_BODY_BYTES} from '../utils/http-json.ts';
+import {CONTINUITY_MAX_BODY_BYTES, CANON_MAX_BODY_BYTES, MAX_BODY_BYTES} from '../utils/http-json.ts';
 
 /** The tunnel targets this loopback listener, never the dashboard listener. */
 interface McpEdgeOptions {
@@ -44,10 +44,12 @@ const routes: Record<string, readonly string[]> = {
   '/oauth/revoke': ['POST', 'OPTIONS'],
   // Session memory hooks of an agent on another computer. Key-authenticated writes only.
   '/memory/continuity': ['POST'],
+  // Canon for a session start or a user turn of that same hook. Key-authenticated reads.
+  '/memory/canon': ['POST'],
 };
 /** Routes that carry no OAuth discovery: a request without a bearer credential never reaches the installation. */
-const bearerRequired = new Set(['/memory/continuity']);
-const routeBodyLimit: Record<string, number> = {'/memory/continuity': CONTINUITY_MAX_BODY_BYTES};
+const bearerRequired = new Set(['/memory/continuity', '/memory/canon']);
+const routeBodyLimit: Record<string, number> = {'/memory/continuity': CONTINUITY_MAX_BODY_BYTES, '/memory/canon': CANON_MAX_BODY_BYTES};
 // Explicit allowlists also remove proxy credentials, cookies and spoofed identity headers.
 const requestHeaders = ['authorization', 'accept', 'accept-language', 'content-type', 'origin', 'mcp-protocol-version', 'mcp-method', 'mcp-name', 'mcp-session-id',
   'last-event-id', 'access-control-request-method', 'access-control-request-headers'];

@@ -1,4 +1,4 @@
-import {agentProtocol,MCP_INSTRUCTIONS} from '../agent-kit/index.ts';
+import {agentProtocol,installationLanguage,MCP_INSTRUCTIONS} from '../agent-kit/index.ts';
 import {z} from "zod";
 import {verifyClientConnection,observeClientProtocol} from "../services/client-connections.ts";
 import {QoopiaError} from "../utils/errors.ts";
@@ -53,12 +53,12 @@ export function createMcpServer(
   // tests/mcp-error-shape.test.ts fails if an SDK upgrade renames it.
   (server as unknown as {createToolError:(message:string)=>unknown}).createToolError=sdkToolError;
   server.registerTool('qoopia_protocol',{
-    description:'Read the versioned Qoopia operating protocol before using this connection. Includes ChatGPT/Claude MCP reconnect, memory, agents, health and bridges. Documentation only; discover actual tools/scopes separately. language en returns the English text (default ru).',
-    inputSchema:z.object({section:z.enum(['protocol','connections','operations','soul']).default('protocol'),language:z.enum(['ru','en']).default('ru')}).strict(),
+    description:'Read the versioned Qoopia operating protocol before using this connection. Includes ChatGPT/Claude MCP reconnect, memory, agents, health and bridges. Documentation only; discover actual tools/scopes separately. language ru or en; without it, the language of this Qoopia installation.',
+    inputSchema:z.object({section:z.enum(['protocol','connections','operations','soul']).default('protocol'),language:z.enum(['ru','en']).optional()}).strict(),
     annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
   },async({section,language})=>{
     try{const auth=authProvider();if(!auth)throw new QoopiaError('UNAUTHENTICATED','Authentication required');
-      const text=JSON.stringify(agentProtocol(section,language));observeClientProtocol(auth);
+      const text=JSON.stringify(agentProtocol(section,language??installationLanguage()));observeClientProtocol(auth);
       return {content:[{type:'text' as const,text}]};
     }catch(error){return fail(error);}
   });
@@ -74,7 +74,7 @@ export function createMcpServer(
   });
   registerTools(server, authProvider, profile, opts);
   registerAuthorityTools(server, authProvider, new Set(toolNames(profile).filter((name) => bootstrapToolAllowed(name, opts?.bootstrapProfile))));
-  registerBridgeTools(server,authProvider);
+  registerBridgeTools(server,authProvider,opts?.bootstrapProfile);
   // ponytail: the SDK answers an unknown tool with a JSON-RPC error echoing the whole name; this
   // keeps it a bounded NOT_FOUND tool result through its private handler map (same test guards it).
   const handlers=(server.server as unknown as {_requestHandlers:Map<string,(request:unknown,ctx:unknown)=>Promise<unknown>>})._requestHandlers;

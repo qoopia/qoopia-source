@@ -21,10 +21,13 @@
   let language = fixed || preferred || (navigator.language.toLowerCase().startsWith('ru') ? 'ru' : 'en');
   const nonce = 'q' + Array.from(crypto.getRandomValues(new Uint32Array(2)), n => n.toString(36)).join('');
   const pattern = new RegExp('\\uE000' + nonce + ':([0-9]+)\\uE001', 'g');
-  const messages = [], bindings = new Map(), tokenValues = new Map();
+  // id → {entry,key}; ids only grow, so Map order is age order.
+  const messages = new Map(), bindings = new Map(), tokenValues = new Map();
+  let nextId = 0;
+  const LIMIT = 20000; // A4-21: see prune().
   const translate = source => language === 'ru' ? (catalog[source] ?? source) : source;
   const resolve = template => String(template).replace(pattern, (_, id) => {
-    const entry = messages[Number(id)];
+    const entry = messages.get(Number(id))?.entry;
     if (!entry) return '';
     if (entry.kind === 'number') return new Intl.NumberFormat(language,{maximumFractionDigits:1}).format(entry.value);
     if (entry.kind === 'pair') return language==='ru'?entry.ru:entry.en;
@@ -33,8 +36,24 @@
     if (entry.kind === 'relative') return new Intl.RelativeTimeFormat(language, {numeric:'auto'}).format(entry.value,entry.unit);
     return translate(entry.source).replace(/\{(\w+)\}/g, (whole, name) => String(entry.params[name] ?? whole));
   });
-  const token = entry => {const key=JSON.stringify(entry);if(!tokenValues.has(key))tokenValues.set(key,'\uE000'+nonce+':'+(messages.push(entry)-1)+'\uE001');return tokenValues.get(key);};
   const cache = new Map();
+  const token = entry => {
+    const key=JSON.stringify(entry);let value=tokenValues.get(key);
+    if(!value){const id=nextId++;messages.set(id,{entry,key});tokenValues.set(key,value='\uE000'+nonce+':'+id+'\uE001');if(messages.size>LIMIT)prune();}
+    return value;
+  };
+  // A4-21: a page that polls for hours created a token per new date, count or parameter set and kept them all.
+  // Past LIMIT the oldest tokens no live node, attribute or plain message uses are dropped, down to half.
+  // ponytail: a token held only in a JS string for longer than LIMIT/2 newer tokens resolves to ''; raise LIMIT if one does.
+  function prune() {
+    const live = new Set(), mark = text => { for (const m of String(text).matchAll(pattern)) live.add(Number(m[1])); };
+    for (const binding of bindings.values()) for (const template of binding.values()) mark(template);
+    for (const value of cache.values()) mark(value);
+    for (const [id, {key}] of messages) {
+      if (messages.size <= LIMIT / 2) break;
+      if (!live.has(id)) { messages.delete(id); tokenValues.delete(key); }
+    }
+  }
   const msg = (source, params) => {
     if (params) return token({source,params});
     if (!cache.has(source)) cache.set(source, token({source,params:{}}));

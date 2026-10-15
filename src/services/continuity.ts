@@ -9,7 +9,9 @@ import {QoopiaError,safeJsonParse} from '../utils/errors.ts';
 import {redactMemory} from '../utils/secret-guard.ts';
 import {backgroundFailure} from '../utils/logger.ts';
 import {scrubTelegramTransit} from './telegram-store.ts';
+import {memoryModelAlert} from './memory-alerts.ts';
 import {duringManual,expireSaveRequests,hasManualHistory,LIVE_SESSION_MS,memoryPolicy,memoryPolicyUnchanged} from './memory-policy.ts';
+import {embedPendingCanons} from './canon.ts';
 
 const FORMAT='qoopia-session-context/1';
 const dashboardSnapshot=z.object({
@@ -18,8 +20,8 @@ const dashboardSnapshot=z.object({
 });
 function dashboardPredecessor(metadata:Record<string,any>){const parsed=dashboardSnapshot.safeParse(metadata.dashboard_context);return parsed.success?parsed.data:null;}
 const sessionId=z.string().min(1).max(200);
-const continuityEventSchema=z.object({session_id:sessionId,project:z.string().max(2048),runtime:z.enum(['claude_code','codex']),
-  event:z.enum(['start','progress','precompact','end','restore']),context_percent:z.number().min(0).max(100).optional(),
+const continuityEventSchema=z.object({session_id:sessionId,project:z.string().max(2048),runtime:z.enum(['claude_code','codex','hermes']),
+  event:z.enum(['start','progress','precompact','end','restore']),capture_error:z.enum(['CODEX_TRANSCRIPT_UNAVAILABLE']).optional(),context_percent:z.number().min(0).max(100).optional(),
   previous_session_id:sessionId.optional(),messages:z.array(z.object({id:z.string().min(1).max(240),role:z.enum(['user','assistant','tool']),
     content:z.string().max(100_000),timestamp:z.string().max(80).optional()})).max(100).default([])}).strict();
 interface ContextNote {id:string;text:string;metadata:string}
@@ -128,7 +130,7 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
     const acknowledge={session_id:event.session_id,note_id:null,context:'',revision:0,through_message_id:0,tail:[],
       tail_truncated:false,instruction:'',accepted:event.messages.map(m=>m.id)};
     // A bare ping about a session this server never recorded opens nothing.
-    if(!existing&&!event.messages.length&&event.event!=='start')return acknowledge;
+    if(!existing&&!event.messages.length&&event.event!=='start'&&!event.capture_error)return acknowledge;
     // Anything else falls through: the session is created even when its resuming batch is
     // dropped, so capture continues from the next batch. Returning here instead would lose the
     // whole session whenever its start event was not the first delivery to land.
@@ -152,6 +154,8 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
       .run(event.project,event.runtime,event.event==='end'?1:0,
         ['precompact','end'].includes(event.event)||contextGrowth?1:(metadata.continuity_priority??0),event.context_percent??metadata.continuity_percent??0,
         new Date().toISOString(),event.session_id);
+    if(event.capture_error)db.query("UPDATE sessions SET metadata=json_set(metadata,'$.capture_error',?) WHERE id=?").run(event.capture_error,event.session_id);
+    else db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.capture_error') WHERE id=?").run(event.session_id);
     const copied=inPredecessors(workspace,agent,metadata.continuity_previous,fresh);
     for(const message of fresh) {
       if(copied.has(message.id))continue;
@@ -295,48 +299,95 @@ export async function processMemoryMaintenance() {
         // failed inference and a WARN every tick. The first success resumes the normal pace.
         if(r.error){embedFailures++;embedRetryAt=Date.now()+Math.min(600_000,5000*2**embedFailures);break;}
         embedFailures=0;embedRetryAt=0;
-      }})().catch(embeddingFailed).finally(()=>{indexing=false;});
+      }
+      // Canons imported in bulk wait for their vector here; a new canon embeds itself when written.
+      if(!embedFailures)await embedPendingCanons(16);})().catch(embeddingFailed).finally(()=>{indexing=false;});
     }
     if(memoryModelBusy())return;
-    const sessions=db.query(`SELECT s.id,s.workspace_id,s.agent_id FROM sessions s JOIN agents a ON a.id=s.agent_id AND a.active=1
-      WHERE a.memory_mode='auto' AND json_extract(s.metadata,'$.continuity_enabled')=1 AND s.last_active>=?
-      AND COALESCE(json_extract(s.metadata,'$.continuity_retry_at'),0)<?
-      AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
-        FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0))
-      ORDER BY COALESCE(json_extract(s.metadata,'$.continuity_priority'),0) DESC,s.last_active DESC LIMIT 16`)
-      .all(new Date(Date.now()-LIVE_SESSION_MS).toISOString(),Date.now()) as Array<{id:string;workspace_id:string;agent_id:string}>;
-    for(const session of sessions) {
-      // A workspace without a usable profile steps out of the window for a while instead of
-      // aborting the tick or starving the sessions ranked after it, in any workspace.
-      let profile=null,invalid=false;
-      try{profile=memoryProfile(session.workspace_id);}catch{invalid=true;}
-      if(!profile) {
-        // Recorded either way: without a code the agent card read «catching up» while nothing could ever be summarised.
-        db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',?,'$.continuity_error',?) WHERE id=?`)
-          .run(Date.now()+300_000,invalid?'INVALID_PROFILE':'MODEL_NOT_CONNECTED',session.id);
-        continue;
-      }
-      try {const result=await checkpointSession(session.workspace_id,session.agent_id,session.id);if(result.state==='saved')break;}
-      catch(error){
-        const code=error instanceof QoopiaError?error.code:'DEPENDENCY_UNAVAILABLE';
-        // Yielded to an interactive call: nothing failed, the next idle tick retries.
-        if(code==='MODEL_BUSY')break;
-        // Sign-in, quota and an unusable runtime belong to the workspace's profile, so the cooldown
-        // covers all its pending sessions: the next tick must not launch the same failing model
-        // for the next session. Other errors stay with this session. The journal keeps everything.
-        const profileWide=['UNAUTHENTICATED','MODEL_QUOTA','MODEL_UNAVAILABLE','UNSUPPORTED'].includes(code);
-        const backoff=profileWide?0:(db.query("SELECT json_extract(metadata,'$.continuity_backoff') AS n FROM sessions WHERE id=?").get(session.id) as {n:number|null}|null)?.n??0;
-        // Only the live sessions this loop could pick: finished ones are never retried, so a mark on
-        // them would outlive the cause and grow with the workspace's history.
-        const retryAt=Date.now()+Math.min(6*3600_000,300_000*2**backoff);
-        if(profileWide)db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?)
-          WHERE workspace_id=? AND json_extract(metadata,'$.continuity_enabled')=1 AND last_active>=?`)
-          .run(code,retryAt,session.workspace_id,new Date(Date.now()-LIVE_SESSION_MS).toISOString());
-        else db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?) WHERE id=?`).run(code,retryAt,session.id);
-        break;
+    const live=new Date(Date.now()-LIVE_SESSION_MS).toISOString();
+    if(await summarizeOne(candidates('s.last_active>=?1',`COALESCE(json_extract(s.metadata,'$.continuity_priority'),0) DESC,s.last_active DESC LIMIT 16`,live,false))!=='idle')return;
+    // Live conversations come first; with nothing to do there, one that went quiet with its tail unsummarised
+    // is caught up, newest first. Before 5.0.21 such a conversation never got its note: after a sign-in
+    // outage 95 of them stayed without one [A2-01]. An empty look pauses the scan for a minute, so a caught-up
+    // installation does not walk its whole history every 5 s.
+    if(Date.now()<catchUpIdleUntil)return;
+    if(await summarizeOne(candidates('s.last_active<?1','s.last_active DESC LIMIT 4',live,true))==='idle')catchUpIdleUntil=Date.now()+60_000;
+  } finally {running=false;}
+}
+/** A conversation whose journal runs past its context note. */
+const PENDING=`EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
+  FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0))`;
+/** Codes that belong to the workspace's memory profile, not to one conversation. */
+const PROFILE_WIDE=['UNAUTHENTICATED','MODEL_QUOTA','MODEL_UNAVAILABLE','UNSUPPORTED'];
+let catchUpIdleUntil=0;
+/** Workspaces whose profile failed or is missing, until when. Live sessions also carry the mark the agent's
+ * status reads; this keeps the quiet history of the same workspace from launching the same failing model
+ * and from taking the places of other workspaces in the catch-up.
+ * ponytail: in memory, so a restart tries the model once more before pausing again. */
+const paused=new Map<string,number>();
+/** A fresh sign-in answers the failure: quiet conversations are looked at on the next tick, not after a pause. */
+export function resumeMemoryCatchUp(workspace?:string){catchUpIdleUntil=0;if(workspace)paused.delete(workspace);else paused.clear();}
+/** Live sessions keep their own pause marks; only the catch-up skips paused workspaces. */
+function candidates(window:string,order:string,live:string,skipPaused:boolean) {
+  const now=Date.now();
+  for(const [workspace,until] of paused)if(until<=now)paused.delete(workspace);
+  return db.query(`SELECT s.id,s.workspace_id,s.agent_id FROM sessions s JOIN agents a ON a.id=s.agent_id AND a.active=1
+    WHERE a.memory_mode='auto' AND json_extract(s.metadata,'$.continuity_enabled')=1 AND ${window}
+    AND COALESCE(json_extract(s.metadata,'$.continuity_retry_at'),0)<?2 AND s.workspace_id NOT IN (SELECT value FROM json_each(?3))
+    AND ${PENDING} ORDER BY ${order}`)
+    .all(live,now,JSON.stringify(skipPaused?[...paused.keys()]:[])) as Array<{id:string;workspace_id:string;agent_id:string}>;
+}
+/** At most one model call: 'saved' after a summary, 'stopped' after a failure or a yield, 'idle' when none of
+ * these sessions needed the model now. */
+async function summarizeOne(sessions:Array<{id:string;workspace_id:string;agent_id:string}>):Promise<'saved'|'stopped'|'idle'> {
+  for(const session of sessions) {
+    // A workspace without a usable profile steps out of the window for a while instead of
+    // aborting the tick or starving the sessions ranked after it, in any workspace.
+    let profile=null,invalid=false;
+    try{profile=memoryProfile(session.workspace_id);}catch{invalid=true;}
+    if(!profile) {
+      // Recorded either way: without a code the agent card read «catching up» while nothing could ever be summarised.
+      db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',?,'$.continuity_error',?) WHERE id=?`)
+        .run(Date.now()+300_000,invalid?'INVALID_PROFILE':'MODEL_NOT_CONNECTED',session.id);
+      paused.set(session.workspace_id,Date.now()+300_000);
+      continue;
+    }
+    try {
+      const result=await checkpointSession(session.workspace_id,session.agent_id,session.id);
+      if(result.state==='saved') {
+        // The model answered, so a sign-in, quota or runtime mark left on any other conversation is over:
+        // it no longer reads as the agent's state, and those conversations need not wait out their pause.
+        paused.delete(session.workspace_id);
+        db.query(`UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_error','$.continuity_retry_at')
+          WHERE workspace_id=? AND json_extract(metadata,'$.continuity_error') IN (SELECT value FROM json_each(?))`).run(session.workspace_id,JSON.stringify(PROFILE_WIDE));
+        memoryModelAlert(null);
+        return 'saved';
       }
     }
-  } finally {running=false;}
+    catch(error){
+      const code=error instanceof QoopiaError?error.code:'DEPENDENCY_UNAVAILABLE';
+      // Yielded to an interactive call: nothing failed, the next idle tick retries.
+      if(code==='MODEL_BUSY')return 'stopped';
+      // Sign-in, quota and an unusable runtime belong to the workspace's profile, so the cooldown
+      // covers all its pending sessions: the next tick must not launch the same failing model
+      // for the next session. Other errors stay with this session. The journal keeps everything.
+      const profileWide=PROFILE_WIDE.includes(code);
+      const backoff=profileWide?0:(db.query("SELECT json_extract(metadata,'$.continuity_backoff') AS n FROM sessions WHERE id=?").get(session.id) as {n:number|null}|null)?.n??0;
+      const retryAt=Date.now()+Math.min(6*3600_000,300_000*2**backoff);
+      if(profileWide) {
+        // Marked: this conversation and the live ones, which the agent's status reads. The quiet history of the
+        // workspace waits through its pause instead of a mark on every row of it.
+        paused.set(session.workspace_id,retryAt);
+        db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?)
+          WHERE workspace_id=? AND json_extract(metadata,'$.continuity_enabled')=1 AND (last_active>=? OR id=?)`)
+          .run(code,retryAt,session.workspace_id,new Date(Date.now()-LIVE_SESSION_MS).toISOString(),session.id);
+        memoryModelAlert(code);
+      }
+      else db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?) WHERE id=?`).run(code,retryAt,session.id);
+      return 'stopped';
+    }
+  }
+  return 'idle';
 }
 const maintenanceFailed=backgroundFailure('Memory maintenance');
 export function memoryMaintenanceTick(){return processMemoryMaintenance().catch(maintenanceFailed);}

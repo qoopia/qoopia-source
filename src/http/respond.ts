@@ -1,8 +1,11 @@
 /** Shared request and response plumbing of the HTTP server: CORS allowlist, client IP,
  * bounded body reads, JSON/text/HTML replies and the security headers of every HTML page. */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { isHttps } from "../dashboard-api.ts";
-import { env } from "../utils/env.ts";
+import { SAFE_HOST } from "../auth/dcr-policy.ts";
+import { isTrustedProxy } from "../utils/env.ts";
 import { readRequestBody } from "../utils/http-json.ts";
 import { edgeClientKey } from "../delivery/mcp-edge.ts";
 import { MAX_BODY_BYTES } from "../utils/http-json.ts";
@@ -29,13 +32,29 @@ export function getAllowedOrigin(req: IncomingMessage): string {
 // Trust proxy-hop headers ONLY when TRUST_PROXY=true AND the connection arrives
 // from one of TRUSTED_PROXIES (default: loopback). Иначе — socket address, чтобы
 // предотвратить header spoofing от сетевого атакующего.
-const TRUSTED_PROXIES_SET = new Set(env.TRUSTED_PROXIES);
+/** A probe from this machine itself: a loopback socket with no proxy or edge hop in front of it.
+ * cloudflared also connects over loopback, but it always names the client it forwards. */
+export function isLocalProbe(req: IncomingMessage): boolean {
+  const remote = (req.socket?.remoteAddress || "").toLowerCase();
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote) || edgeClientKey(req)) return false;
+  return !["cf-connecting-ip", "x-forwarded-for", "x-forwarded-proto", "x-real-ip", "forwarded"].some((name) => req.headers[name] !== undefined);
+}
+
+/** Fields of /health and /ready that only this machine's own tools read (installer port claim,
+ * `qoopia status`, the functional diagnostic). The public monitors (release-health, the remote
+ * workspace probe) read status, version, release_sha, schema_version, server_role and checks. */
+const LOCAL_ONLY_HEALTH = ["instance_id", "uptime", "feature_flags", "embeddings", "protocol_kit_revision", "degradation"];
+export function publicHealth<T extends Record<string, unknown>>(req: IncomingMessage, body: T): T {
+  if (isLocalProbe(req)) return body;
+  return Object.fromEntries(Object.entries(body).filter(([key]) => !LOCAL_ONLY_HEALTH.includes(key))) as T;
+}
+
 export function getClientIp(req: IncomingMessage): string {
   // Remote MCP traffic arrives over loopback from the in-process edge: key it per client, apart from local clients.
   const edge = edgeClientKey(req);
   if (edge) return edge;
   const remote = req.socket?.remoteAddress || "unknown";
-  if (env.TRUST_PROXY && TRUSTED_PROXIES_SET.has(remote)) {
+  if (isTrustedProxy(remote)) {
     return (
       (req.headers["cf-connecting-ip"] as string) ||
       (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
@@ -148,6 +167,26 @@ export function nodeReqToFetchRequest(req: IncomingMessage, body?: Buffer): Requ
  *     be ignored (per RFC 6797) or, worse, "stick" if the request was
  *     proxied by a TLS-terminating tunnel and break local debugging.
  */
+/** A redirect URI's origin as a CSP source, or undefined when its host is not a plain DNS name or IP
+ * literal: a host such as `*` or one carrying `;` would widen or split the policy (A3c-02). */
+export function cspOrigin(uri: string): string | undefined {
+  try {
+    const url = new URL(uri);
+    if (!["http:", "https:"].includes(url.protocol) || !SAFE_HOST.test(url.hostname)) return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+export const HSTS = "max-age=15552000; includeSubDomains";
+
+/** Every response that reached us over HTTPS carries HSTS, not only the HTML pages (A3-06): an API or
+ * /health answer is often the first a client fetches. Plain-http (local) answers never do. */
+export function applyTransportSecurity(req: IncomingMessage, res: ServerResponse): void {
+  if (isHttps(req)) res.setHeader("strict-transport-security", HSTS);
+}
+
 export function securityHeaders(req: IncomingMessage, allowNavOrigin?: string): Record<string, string> {
   // OAuth consent fix: the approve form's submission redirects (302:
   // /approve → client callback with the code) to the registered client
@@ -157,7 +196,8 @@ export function securityHeaders(req: IncomingMessage, allowNavOrigin?: string): 
   // SILENTLY BLOCKED — the Approve button appears to do nothing, the client
   // never receives the code, and the browser retries (storm) / shows "already
   // used". The consent page therefore must allow the OAuth client's origin.
-  const extra = allowNavOrigin ? ` ${allowNavOrigin}` : "";
+  const navOrigin = allowNavOrigin ? cspOrigin(allowNavOrigin) : undefined;
+  const extra = navOrigin ? ` ${navOrigin}` : "";
   const csp = [
     "default-src 'self'",
     "script-src 'self'",
@@ -182,11 +222,27 @@ export function securityHeaders(req: IncomingMessage, allowNavOrigin?: string): 
     "x-frame-options": "DENY",
     "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
   };
-  if (isHttps(req)) {
-    headers["strict-transport-security"] =
-      "max-age=15552000; includeSubDomains";
-  }
+  if (isHttps(req)) headers["strict-transport-security"] = HSTS;
   return headers;
+}
+
+// A4-22: text assets (dashboard.js, i18n.js, CSS, SVG) went out uncompressed, ~650 KB on a first visit.
+// Each distinct body is compressed once per encoding; the font and images are sent as they are.
+const encoded = new Map<string, Buffer>();
+export function encodeAsset(req: IncomingMessage, type: string, body: Buffer): { body: Buffer; headers: Record<string, string> } {
+  if (!/^(text\/|image\/svg)|javascript|json/.test(type) || body.length < 1024) return { body, headers: {} };
+  const accept = String(req.headers["accept-encoding"] ?? "");
+  const encoding = /\bbr\b/.test(accept) ? "br" : /\bgzip\b/.test(accept) ? "gzip" : null;
+  if (!encoding) return { body, headers: { vary: "accept-encoding" } };
+  const key = encoding + ":" + createHash("sha256").update(body).digest("base64");
+  let out = encoded.get(key);
+  if (!out) {
+    out = encoding === "br" ? brotliCompressSync(body, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 9 } }) : gzipSync(body, { level: 9 });
+    // ponytail: dropped wholesale past 64 bodies (about 12 text assets × 2 encodings per revision); an LRU if that churns.
+    if (encoded.size > 64) encoded.clear();
+    encoded.set(key, out);
+  }
+  return { body: out, headers: { "content-encoding": encoding, vary: "accept-encoding" } };
 }
 
 export { escapeHtml } from "../utils/html.ts";

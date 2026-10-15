@@ -67,9 +67,14 @@ type MemoryStatus={state:'not_connected'|'selected'|'ready'|'auth_required'|'quo
 const states=new Map<string,MemoryStatus>();
 /** The last answer no longer stands (a new sign-in): the status falls back to what is known without a call. */
 export function resetMemoryModelStatus(workspace:string){states.delete(workspace);}
+/** A4-19: a readable name for any model id, so the dashboard holds no model list: claude-haiku-4-5 → "Claude · Haiku", gpt-5.6-luna → "ChatGPT · Luna". */
+export function memoryModelLabel(model:string|null){
+  const cap=(s:string)=>s.charAt(0).toUpperCase()+s.slice(1),m=model?.match(/^claude-([a-z]+)/)??null,g=model?.match(/^gpt-[0-9.]+-([a-z]+)$/)??null;
+  return m?'Claude · '+cap(m[1]!):g?'ChatGPT · '+cap(g[1]!):model;
+}
 export function memoryModelStatus(workspace:string) {
   const profile=memoryProfile(workspace);
-  return {runtime:profile?.runtime??null,model:profile?.model??null,...(states.get(workspace)??(profile&&lastSummary(workspace))??{state:profile?'selected':'not_connected'})};
+  return {runtime:profile?.runtime??null,model:profile?.model??null,model_label:memoryModelLabel(profile?.model??null),...(states.get(workspace)??(profile&&lastSummary(workspace))??{state:profile?'selected':'not_connected'})};
 }
 /** Nothing is checked yet after a restart: a session summary written since this subscription was
  * chosen is the model's last answer, so the status does not ask for a sign-in that is not needed. */

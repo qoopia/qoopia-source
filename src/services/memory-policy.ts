@@ -193,8 +193,8 @@ export function resolveAgentByName(workspace:string,name:string):MemoryPolicy {
   throw new QoopiaError('CONFLICT',`Several agents are named ${name}. Use the agent id: ${matches.map(m=>m.id).join(', ')}`);
 }
 
-/** Only a conversation active this recently is summarised. A finished one is already stored whole
- * and searchable, so catching up its backlog would spend subscription calls on nothing. */
+/** A conversation active this recently is live: it is summarised first, and a sign-in or quota pause
+ * marks it. A quieter one with an unsummarised tail is caught up when no live one needs the model. */
 export const LIVE_SESSION_MS=2*3600_000;
 /** How far the agent's last call may run ahead of its last hook capture before capture counts as stopped. */
 export const CAPTURE_STALE_MS=3600_000;
@@ -214,14 +214,15 @@ export function noteAgentWork(agent:string,tool:string,at=Date.now()){if(!POLLIN
 export const AUTOSAVE_INSTRUCTION="Autosave is on for this agent: at the end of every reply, call session_save once with {user: the user's message, assistant: your reply}. Do it without asking or announcing it; the owner turns it off with the Autosave switch in Qoopia.";
 const AUTOSAVE_OFF="Autosave is off for this agent: do not save conversations. To keep something the user asks for, use note_create; the owner confirms it.";
 const AUTOSAVE_REMINDER_MS=2*60_000;
-/** hooked: capture Qoopia does itself (the Claude Code/Codex hooks, the built-in agent, the session tailer), the
- * only writers of continuity_runtime; hooks: the Claude Code/Codex hooks among them, which `qoopia doctor` repairs.
+/** hooked: capture Qoopia does itself (the Claude Code/Codex hooks, hermes-sync, the built-in agent, the session tailer),
+ * the only writers of continuity_runtime; hooks: the client-side capture among them (the Claude Code/Codex hooks and
+ * hermes-sync), which runs on another computer and is checked there by `qoopia doctor`.
  * native: a Claude Code/Codex client whose hooks deliver, or will once trusted. turns: the last conversation turn
  * (a user and an assistant message) saved this week. recent: any save in the last two minutes. */
 function autosaveFacts(workspace:string,agent:string,database:Database,now=Date.now()) {
   return database.query(`SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1
       AND json_extract(s.metadata,'$.continuity_runtime') IS NOT NULL) AS hooked,
-    EXISTS(SELECT 1 FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1 AND json_extract(s.metadata,'$.continuity_runtime') IN ('claude_code','codex')) AS hooks,
+    EXISTS(SELECT 1 FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1 AND json_extract(s.metadata,'$.continuity_runtime') IN ('claude_code','codex','hermes')) AS hooks,
     EXISTS(SELECT 1 FROM client_connections c WHERE c.workspace_id=?1 AND c.agent_id=?2 AND c.surface IN ('claude_code','codex'))
       OR EXISTS(SELECT 1 FROM agents a WHERE a.id=?2 AND json_extract(a.metadata,'$.memory_client') IS NOT NULL) AS native,
     (SELECT MAX(s.last_active) FROM sessions s WHERE s.agent_id=?2 AND s.workspace_id=?1 AND s.last_active>=?3
@@ -259,15 +260,16 @@ export function agentMemoryStatus(workspace:string,agent:string,database:Databas
   const policy=memoryPolicy(workspace,agent,database);
   const capture=database.query('SELECT MAX(created_at) AS at FROM session_messages WHERE workspace_id=? AND agent_id=?').get(workspace,agent) as {at:string|null};
   const summary=database.query("SELECT MAX(json_extract(metadata,'$.updated_at_ms')) AS at FROM notes WHERE workspace_id=? AND agent_id=? AND source='qoopia-continuity' AND deleted_at IS NULL").get(workspace,agent) as {at:number|null};
-  // An error counts only on a session that still waits for its summary. A workspace-wide pause also marks
-  // conversations already summarised or no longer live; nothing ever retries those, so their mark would
-  // keep the agent faulty after the cause was gone.
+  // An error counts only on a session that still waits for its summary: a workspace-wide pause also marks
+  // conversations already summarised. A quiet conversation still waits (the worker catches it up), so it
+  // counts however long ago it ended: a sign-in failure no longer vanishes from the status after two hours
+  // of silence while the sign-in is still broken [A2-02]. The first summary clears the profile-wide marks.
   const backlog=database.query(`WITH pending AS (SELECT s.last_active,json_extract(s.metadata,'$.continuity_error') AS error
-    FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1 AND s.last_active>=?3
+    FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1
       AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
         FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0)))
     SELECT COUNT(*) AS pending,(SELECT error FROM pending WHERE error IS NOT NULL ORDER BY last_active DESC LIMIT 1) AS error FROM pending`)
-    .get(workspace,agent,new Date(Date.now()-LIVE_SESSION_MS).toISOString()) as {pending:number;error:string|null};
+    .get(workspace,agent) as {pending:number;error:string|null};
   const signIn=['MODEL_NOT_CONNECTED','SIGN_IN_REQUIRED','MODEL_QUOTA','UNAUTHENTICATED'];
   // Hooks that stopped (removed, untrusted after an update, a broken launcher) leave the last capture
   // behind while the same agent keeps working: every tool call writes transcript lines that a working
@@ -284,8 +286,12 @@ export function agentMemoryStatus(workspace:string,agent:string,database:Databas
   const at=facts.hooked?capture.at:facts.turns;
   const work=lastWork.get(agent),captured=Date.parse(at??'');
   const stopped=!!at&&!seen.registered&&work!==undefined&&work-captured>CAPTURE_STALE_MS&&Date.now()-captured>CAPTURE_STALE_MS;
-  // Only the Claude Code/Codex hooks can stop between turns; the built-in agent saves when a run ends.
-  const error=backlog.error??(stopped&&facts.hooks?'CAPTURE_STOPPED':null);
+  // Only client-side capture (the Claude Code/Codex hooks, hermes-sync) can stop between turns; the built-in agent saves when a run ends.
+  const sourceFailure=database.query(`SELECT json_extract(metadata,'$.capture_error') AS error FROM sessions
+    WHERE workspace_id=? AND agent_id=? AND last_active>=? AND json_extract(metadata,'$.continuity_closed')=0
+      AND json_extract(metadata,'$.capture_error') IS NOT NULL ORDER BY last_active DESC LIMIT 1`)
+    .get(workspace,agent,new Date(Date.now()-LIVE_SESSION_MS).toISOString()) as {error:string}|null;
+  const error=sourceFailure?.error??backlog.error??(stopped&&facts.hooks?'CAPTURE_STOPPED':null);
   const state:MemoryChannelState=policy.mode==='manual'?'manual':error?(signIn.includes(error)?'sign_in':'error')
     // Without hooks an agent whose model stopped saving its turns, or saved none lately, is not saving automatically.
     :!at||!facts.hooked&&(stopped||Date.now()-captured>UNHOOKED_CAPTURE_MS)?'waiting':backlog.pending>1?'behind':'working';

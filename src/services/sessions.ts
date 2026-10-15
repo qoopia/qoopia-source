@@ -2,10 +2,10 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { sanitizeFtsQuery } from "./recall.ts";
-import { readLevel, visibleTranscriptSql } from "../auth/principal.ts";
+import { readsAllTranscripts, transcriptLevel, visibleTranscriptSql } from "../auth/principal.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, duringManual, type MemoryOrigin } from "./memory-policy.ts";
-import { parseTimeBound } from "../utils/temporal.ts";
+import { parseTimeBound, timeBoundSql } from "../utils/temporal.ts";
 import { hash } from "../utils/fs.ts";
 
 const MAX_CONTENT = 100_000;
@@ -66,6 +66,10 @@ export function saveTurn(input: Pick<SessionSaveInput, "workspace_id" | "agent_i
   })();
 }
 
+/** Messages in one session. Both callers have already checked that the session is in the caller's
+ * workspace; filtering by workspace_id here as well read every row of the session (the column is not in
+ * idx_session_messages_session), so each write to a long session cost more than the last [A1-06]. */
+export const SESSION_MESSAGE_COUNT = `SELECT COUNT(*) as c FROM session_messages WHERE session_id = ?`;
 export function saveMessage(input: SessionSaveInput) {
   if (!input.content || input.content.length === 0) {
     throw new QoopiaError("INVALID_INPUT", "content is required");
@@ -168,11 +172,7 @@ export function saveMessage(input: SessionSaveInput) {
     db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_enabled',1) WHERE id=?").run(input.session_id);
     if (input.capture) db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_runtime',?) WHERE id=?").run(input.capture, input.session_id);
 
-    const seqRow = db
-      .prepare(
-        `SELECT COUNT(*) as c FROM session_messages WHERE session_id = ? AND workspace_id = ?`,
-      )
-      .get(input.session_id, input.workspace_id) as { c: number };
+    const seqRow = db.prepare(SESSION_MESSAGE_COUNT).get(input.session_id) as { c: number };
 
     return { saved: true, id, session_id: input.session_id, seq: seqRow.c };
   })();
@@ -242,11 +242,7 @@ export function sessionRecent(p: SessionRecentParams) {
 
   rows.reverse();
 
-  const totalRow = db
-    .prepare(
-      `SELECT COUNT(*) as c FROM session_messages WHERE session_id = ? AND workspace_id = ?`,
-    )
-    .get(sessionId, p.workspace_id) as { c: number };
+  const totalRow = db.prepare(SESSION_MESSAGE_COUNT).get(sessionId) as { c: number };
 
   let summaries: Array<{
     id: string;
@@ -294,7 +290,7 @@ export interface SessionSearchParams {
   /** ADR-020: "workspace" and "all" are the same search of the caller's own workspace. */
   scope?: "own_agent" | "workspace" | "all";
   /** The steward or the owner (seesWholeWorkspace): every agent's transcript, as recall
-   * scope 'sessions' gives it; otherwise the caller's shared-context toggle decides. */
+   * scope 'sessions' gives it; otherwise transcriptLevel decides (the dreamer reads all). */
   is_admin?: boolean;
   limit?: number;
   since?: string;
@@ -309,10 +305,10 @@ export function sessionSearch(p: SessionSearchParams) {
   const where: string[] = [`session_messages_fts MATCH ?`];
   const params: any[] = [sanitized];
 
-  // ADR-020: never another workspace. Siblings' transcripts need the steward/owner
-  // role or the caller's shared-context toggle — the same rule as recall scope 'sessions'.
+  // ADR-020/022: never another workspace. Siblings' transcripts need the steward, owner or
+  // dreamer role (or, with QOOPIA_TRANSCRIPTS_OWN_ONLY off, the shared-context toggle).
   where.push(`sm.workspace_id = ?`, visibleTranscriptSql("sm"));
-  params.push(p.workspace_id, p.agent_id, scope === "own_agent" ? 0 : readLevel(p.agent_id, p.is_admin === true));
+  params.push(p.workspace_id, p.agent_id, scope === "own_agent" ? 0 : transcriptLevel(p.agent_id, p.is_admin === true));
 
   if (p.session_id) {
     where.push(`sm.session_id = ?`);
@@ -480,5 +476,79 @@ export function sessionExpand(p: {
     has_more: hasMore,
     next_start_id: hasMore ? rows[rows.length - 1]!.id + 1 : null,
     cost: { tokens_returned: tokens },
+  };
+}
+
+const REVIEW_MAX_DAYS = 31;
+const REVIEW_PAGE = 500;
+// ponytail: a page stops at ~200k characters (always at least one message); a longer night takes more pages.
+const REVIEW_MAX_CHARS = 200_000;
+
+export interface SessionReviewParams {
+  workspace_id: string;
+  agent_id: string;
+  /** The caller's agent type: the steward and the owner read every transcript like the dreamer. */
+  type: string;
+  since: string;
+  until?: string;
+  /** The page cursor: next_after_id of the previous page. */
+  after_id?: number;
+  limit?: number;
+}
+
+/**
+ * ADR-022: the dreamer's nightly read. Every raw message of the caller's workspace created in the
+ * since/until window (at most 31 days), in chronological insertion order (message id ascending), a
+ * page at a time, grouped by session with the session's agent, title and the summaries that cover
+ * the page's messages. Only the dreamer, the steward and the owner; never another workspace.
+ */
+export function sessionReview(p: SessionReviewParams) {
+  if (!readsAllTranscripts({ agent_id: p.agent_id, type: p.type }))
+    throw new QoopiaError("FORBIDDEN", "session_review is for the dreamer, the steward and the owner; only the workspace owner grants the dreamer role");
+  const since = parseTimeBound(p.since, "since");
+  const until = parseTimeBound(p.until ?? new Date().toISOString(), "until");
+  const span = Date.parse(until) - Date.parse(since);
+  if (span < 0) throw new QoopiaError("INVALID_INPUT", "until must not be before since");
+  if (span > REVIEW_MAX_DAYS * 86_400_000) throw new QoopiaError("INVALID_INPUT", `The window is at most ${REVIEW_MAX_DAYS} days; read a longer period window by window`);
+  const limit = Math.min(Math.max(p.limit || 200, 1), REVIEW_PAGE);
+  const from = timeBoundSql("m.created_at", "since", since), to = timeBoundSql("m.created_at", "until", until);
+  const rows = db.query(
+    `SELECT m.id, m.session_id, m.agent_id, m.role, m.content, m.created_at FROM session_messages m
+     WHERE m.workspace_id = ? AND m.id > ? AND ${from.sql} AND ${to.sql} ORDER BY m.id LIMIT ?`,
+  ).all(p.workspace_id, p.after_id ?? 0, ...from.params, ...to.params, limit + 1) as Array<{
+    id: number; session_id: string; agent_id: string | null; role: string; content: string; created_at: string;
+  }>;
+  let chars = 0, taken = 0;
+  for (const row of rows.slice(0, limit)) {
+    if (taken > 0 && chars + row.content.length > REVIEW_MAX_CHARS) break;
+    chars += row.content.length;
+    taken++;
+  }
+  const page = rows.slice(0, taken), hasMore = taken < rows.length;
+
+  const bySession = new Map<string, typeof page>();
+  for (const row of page) bySession.set(row.session_id, [...(bySession.get(row.session_id) ?? []), row]);
+  const sessionInfo = db.query(
+    `SELECT s.id, s.agent_id, a.name AS agent_name, s.title, s.created_at, s.last_active
+     FROM sessions s LEFT JOIN agents a ON a.id = s.agent_id WHERE s.id = ? AND s.workspace_id = ?`,
+  );
+  const coveringSummaries = db.query(
+    `SELECT id, agent_id, content, msg_start_id, msg_end_id, level, created_at FROM summaries
+     WHERE session_id = ? AND workspace_id = ? AND msg_end_id >= ? AND msg_start_id <= ? ORDER BY msg_start_id, level`,
+  );
+  const sessions = [...bySession].map(([id, messages]) => ({
+    ...(sessionInfo.get(id, p.workspace_id) as { id: string; agent_id: string | null; agent_name: string | null; title: string | null; created_at: string; last_active: string }),
+    summaries: coveringSummaries.all(id, p.workspace_id, messages[0]!.id, messages.at(-1)!.id),
+    messages: messages.map(({ session_id: _session, ...m }) => m),
+  }));
+  return {
+    since,
+    until,
+    order: "message_id_ascending",
+    sessions,
+    count: page.length,
+    has_more: hasMore,
+    next_after_id: hasMore ? page.at(-1)!.id : null,
+    cost: { tokens_returned: Math.ceil(chars / 4) },
   };
 }
