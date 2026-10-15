@@ -160,6 +160,18 @@ A connection's catalogue follows its stored access profile; a URL parameter such
 cannot widen it (only principals that predate migration 036 keep the legacy full catalogue). OAuth scope
 narrows the agent's own answer, not the owner's overview.
 
+## Who reads raw transcripts, and how long they are kept (ADR-022, 5.0.21)
+
+- An agent reads its own raw conversations. Other agents' raw conversations are read only by the
+  dreamer (granted by the owner on the agent card or with `agent_set_dreamer`), the steward and the
+  owner. Notes and session summaries stay shared under the shared-context toggle.
+  `QOOPIA_TRANSCRIPTS_OWN_ONLY=false` restores the ADR-020 rule.
+- The dreamer reads a night with `session_review {since, until}` (at most 31 days, paged).
+- Raw messages older than `QOOPIA_RAW_RETENTION_DAYS` (30) in a fully summarized session may be
+  deleted by the daily maintenance; summaries and canons are kept. Deletion stays off until
+  `QOOPIA_RAW_RETENTION_DELETE=true`. Check first: `qoopia maintenance raw-retention` (counts per
+  agent and session, no content).
+
 ## Runtime support
 
 | Runtime | Automatic capture | PreCompact / SessionEnd | Note |
