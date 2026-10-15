@@ -36,8 +36,16 @@ test('scanner flags every marker kind and passes documented placeholders',()=>{
     'home-path':'cd /Us'+'ers/alice/project','tailnet-ip':'host 10'+'0.101.2.3','ssh-target':'ssh deploy'+at+'10.0.0.5',
     'agent-home':'~/.duct'+'or-main/workspace','local-hostname':'me'+at+'Mac-mini-2.lo'+'cal','email':'someone'+at+'gmail.c'+'om',
     'private-key':'-----BEGIN RSA PRIV'+'ATE KEY-----','token':'gh'+'p_'+'A1'.repeat(18),
+    'qoopia-token':'key '+'q'+'_'+'Ab3-_'.repeat(9),'internal-host':'https://mac'+'-mini.tail'+'0abc12.ts.'+'net:443',
   };
   for(const [kind,line] of Object.entries(markers))expect(scanText('src/x.ts',line).map(h=>h.kind)).toContain(kind);
+  // A3-07: Qoopia's own key formats, Resend and Google client secrets, and the production host names.
+  for(const [kind,line] of [['qoopia-token','qc'+'s_'+'x'.repeat(43)],['qoopia-token','q'+'a_'+'Z9'.repeat(22)],['qoopia-token','q'+'r_'+'k'.repeat(43)],
+    ['token','r'+'e_'+'Ab12Cd34_'+'EfGhIjKlMnOpQrStUv'],['token','GOC'+'SPX-'+'a1B2c3D4e5F6g7H8i9J0k1L2m3N4'],['token','AI'+'za'+'S'.repeat(35)],
+    ['internal-host','container qoopia'+'-corsair'],['internal-host','agent cor'+'sair-main']] as const)
+    expect([line,scanText('src/x.ts',line).map(h=>h.kind)]).toEqual([line,[kind]]);
+  // Short prefixes in ordinary code are not keys.
+  expect(scanText('src/x.ts','const q_index=1, qa_ready=true; re_try(); corsair_like')).toEqual([]);
   expect(scanText('src/x.ts','/Us'+'ers/example/a /ho'+'me/node/b user'+at+'example.com bot'+at+'users.noreply.github.com 01ARZ3NDEKTSV4RRFFQ69G5FAV')).toEqual([]);
 });
 

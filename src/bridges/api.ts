@@ -4,7 +4,7 @@ import type {McpServer} from '@modelcontextprotocol/server';
 import type {AuthContext} from '../auth/middleware.ts';
 import {db} from '../db/connection.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
-import {currentToolAuth} from '../auth/policy.ts';
+import {bootstrapToolAllowed,currentToolAuth} from '../auth/policy.ts';
 import {addToolRisk,annotationsFor,type RiskClass} from '../mcp/tools.ts';
 import {QoopiaError} from '../utils/errors.ts';
 import {bridgeService} from './service.ts';
@@ -43,7 +43,7 @@ const bridgeRisk=(name:string):RiskClass=>BRIDGE_READ_TOOLS.includes(name)?'read
 for(const name of BRIDGE_TOOL_NAMES)addToolRisk(name,bridgeRisk(name));
 /** Why this principal cannot use bridges, or null when it can. */
 export function bridgeRefusal(auth:AuthContext){try{bridges.view(auth);return null;}catch(error){return error instanceof QoopiaError?error.message:'Bridges are unavailable';}}
-export function registerBridgeTools(server:McpServer,authProvider:()=>AuthContext|null) {
+export function registerBridgeTools(server:McpServer,authProvider:()=>AuthContext|null,bootstrapProfile?:string) {
   const initial=authProvider();if(!initial)return;
   try {bridges.view(initial);}catch{return;}
   const operations=[
@@ -55,6 +55,8 @@ export function registerBridgeTools(server:McpServer,authProvider:()=>AuthContex
     {name:'bridge_stage',description:'Propose a fixed material in your own For sending folder. This does not publish its metadata or transmit its content; a human owner must review and publish it.',schema:z.object({id,title:label,description:z.string().max(400),kind:z.enum(['note','file','skill']),filename:z.string().min(1).max(180),mime:z.string().max(100),content_base64:z.string().max(Math.ceil(MAX_FILE/3)*4)}).strict(),run:bridges.stage},
   ];
   for(const op of operations) {
+    // A bootstrapped connection carries only the tools its access profile names, bridges included.
+    if(!bootstrapToolAllowed(op.name,bootstrapProfile))continue;
     try{currentToolAuth(db,initial,bridgeRisk(op.name));}catch{continue;}
     server.registerTool(op.name,{description:op.description,inputSchema:op.schema,annotations:annotationsFor(bridgeRisk(op.name))},async(args:unknown)=>{
     try {

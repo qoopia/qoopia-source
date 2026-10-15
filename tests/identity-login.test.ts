@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {randomBytes,createHash} from 'node:crypto';
 import type {IncomingMessage,ServerResponse} from 'node:http';
-import {loginBroker,releaseStampSha} from '../src/identity/broker.ts';
+import {loginBroker,releaseStampSha,routeClass} from '../src/identity/broker.ts';
 import {SESSION_DAYS} from '../src/identity/profile.ts';
 import {localIdentityLogin,ownerIdentity,LOGIN_ORIGIN} from '../src/identity/local.ts';
 import {issueLocalLogin} from '../src/delivery/local-login.ts';
@@ -71,8 +71,11 @@ test('email needs a one-use link, Google needs nothing more; logout, restart and
   local=localIdentityLogin(root,db,transport);jar.clear();
   expect((await call('/start',{method:'email',email:'owner@example.com'})).status).toBe(200);await confirm();expect((await call('/poll')).status).toBe(200);
   expect(ownerIdentity(root)?.ownerId).toBe(owner.agent_id);
-  // F-126: another address is refused at /start, before any e-mail is sent.
-  const sent=mails.length;expect((await call('/start',{method:'email',email:'stranger@example.com'})).status).toBe(400);expect(mails).toHaveLength(sent);
+  // F-126: another address never gets an e-mail. A3-04: and the answer is the one a real start gets,
+  // so /start and /poll do not tell a visitor whether an address is the owner's.
+  const sent=mails.length,strange=await call('/start',{method:'email',email:'stranger@example.com'});
+  expect(strange.status).toBe(200);expect(strange.data).toEqual({email:'stranger@example.com'});expect(mails).toHaveLength(sent);
+  expect(await call('/poll')).toMatchObject({status:200,data:{pending:true}});
   expect(ownerIdentity(root)?.email).toBe('owner@example.com');
   // Google itself proves the account: no confirmation email, the dashboard is signed in at once.
   const mailed=mails.length;await google();expect((await call('/poll')).status).toBe(200);expect(ownerIdentity(root)?.googleSub).toBe('stable-google-account');
@@ -112,6 +115,48 @@ test('the privacy page states the real profile session lifetime and the opt-in-f
  expect(SESSION_DAYS).toBe(365);
  expect(page).toContain('Profile sessions last one year and renew when you visit');
  expect(page).not.toContain('seven days;');
- expect(page).toContain('download button clicks are counted anonymously for everyone');
+ expect(page).toContain('Installer downloads through qoopia.ai/download are counted by this service');
  expect(page).not.toContain('After you confirm your email');
+});
+
+test('/download/<platform> counts once on the server and redirects to the current GitHub installer (A9-01)',async()=>{
+ const db=new Database(':memory:'),events:Record<string,unknown>[]=[];let manifests=0;
+ const asset=(file:string)=>'https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.20/'+file;
+ const handler=loginBroker(db,{origin:LOGIN_ORIGIN,resendKey:'fixture',from:'Qoopia <login@mail.qoopia.ai>',googleClientId:'fixture-client',googleClientSecret:'fixture-secret',recordEvent:e=>events.push(e)},
+  (async(input:string|URL|Request)=>{manifests++;expect(String(input)).toBe('https://qoopia.ai/release.json');
+   return Response.json({version:'5.0.20',availability:'public',packages:{mac:{url:asset('qoopia-5.0.20-darwin-arm64.dmg')},linux:{url:asset('qoopia-5.0.20-linux-x64.tar.gz')}}});}) as typeof fetch);
+ const get=(path:string,headers:Record<string,string>={},method='GET')=>handler(new Request(LOGIN_ORIGIN+path,{method,headers}),'203.0.113.9');
+ const mac=await get('/download/mac',{referer:'https://qoopia.ai/'});
+ expect(mac.status).toBe(302);expect(mac.headers.get('location')).toBe(asset('qoopia-5.0.20-darwin-arm64.dmg'));expect(mac.headers.get('cache-control')).toBe('no-store');
+ expect((await get('/download/linux')).headers.get('location')).toBe(asset('qoopia-5.0.20-linux-x64.tar.gz'));
+ // Not counted: a HEAD probe, a crawler, a privacy signal. Still redirected.
+ for(const response of [await get('/download/mac',{},'HEAD'),await get('/download/mac',{'user-agent':'Mozilla/5.0 (compatible; Googlebot/2.1)'}),await get('/download/mac',{'sec-gpc':'1'})])expect(response.status).toBe(302);
+ expect((await get('/download/windows')).status).toBe(404);expect((await get('/download/')).status).toBe(404);
+ expect(events).toEqual([{kind:'download_redirect',platform:'mac',version:'5.0.20',referrer:'internal'},{kind:'download_redirect',platform:'linux',version:'5.0.20',referrer:'direct'}]);
+ expect(JSON.stringify(events)).not.toContain('203.0.113');expect(manifests).toBe(1); // cached between downloads
+});
+
+test('/download falls back to the release page when the manifest is unusable and never redirects off GitHub',async()=>{
+ for(const manifest of [{version:'5.0.20',availability:'public',packages:{mac:{url:'https://evil.example/q.dmg'},linux:{url:'https://evil.example/q.tgz'}}},{version:'5.0.20',availability:'owner_preview',packages:{}},'not json']){
+  const handler=loginBroker(new Database(':memory:'),{origin:LOGIN_ORIGIN,resendKey:'fixture',from:'Qoopia <login@mail.qoopia.ai>',googleClientId:'fixture-client',googleClientSecret:'fixture-secret'},
+   (async()=>new Response(typeof manifest==='string'?manifest:JSON.stringify(manifest))) as unknown as typeof fetch);
+  const response=await handler(new Request(LOGIN_ORIGIN+'/download/mac'),'test-device');
+  expect(response.status).toBe(302);expect(response.headers.get('location')).toBe('https://github.com/qoopia/qoopia-downloads/releases/latest');
+ }
+});
+
+test('sign-in /ready answers the loopback healthcheck with check names only; failures log a route class, never a path',async()=>{
+ const config={origin:LOGIN_ORIGIN,resendKey:'fixture',from:'Qoopia <login@mail.qoopia.ai>',googleClientId:'fixture-client',googleClientSecret:'fixture-secret'};
+ const store=new Database(':memory:'),handler=loginBroker(store,config);
+ const ready=await handler(new Request('http://127.0.0.1:3740/ready'),'local');
+ expect(ready.status).toBe(200);
+ expect(await ready.json()).toEqual({status:'ready',version:expect.any(String),release_sha:null,checks:{store:'ok',providers:'ok'}});
+ const unconfigured=await loginBroker(new Database(':memory:'),{...config,resendKey:''})(new Request('http://127.0.0.1:3740/ready'),'local');
+ expect(unconfigured.status).toBe(503);
+ expect(((await unconfigured.json()) as {checks:unknown}).checks).toEqual({store:'ok',providers:'missing'});
+ store.close();
+ expect(((await (await handler(new Request('http://127.0.0.1:3740/ready'),'local')).json()) as {checks:{store:string}}).checks.store).toBe('failed');
+ expect(routeClass('/profile/dashboard')).toBe('profile');
+ expect(routeClass('/news/unsubscribe/secret-token')).toBe('news');
+ expect(routeClass('/user@example.com')).toBe('other');
 });

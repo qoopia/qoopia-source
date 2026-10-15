@@ -8,11 +8,13 @@ from pathlib import Path
 URLS = {
     'home':'https://qoopia.ai/', 'docs':'https://qoopia.ai/docs',
     'releases':'https://qoopia.ai/releases', 'understand':'https://qoopia.ai/understand',
-    'understand-ru':'https://qoopia.ai/understand-ru', 'mobile':'https://qoopia.ai/mobile',
+    'understand-ru':'https://qoopia.ai/ru/understand', 'mobile':'https://qoopia.ai/mobile',
     'home-ru':'https://qoopia.ai/ru/', 'docs-ru':'https://qoopia.ai/ru/docs',
     'releases-ru':'https://qoopia.ai/ru/releases', 'mobile-ru':'https://qoopia.ai/ru/mobile',
     'robots':'https://qoopia.ai/robots.txt','sitemap':'https://qoopia.ai/sitemap.xml',
-    'release':'https://qoopia.ai/release.json',
+    'release':'https://qoopia.ai/release.json','llms':'https://qoopia.ai/llms.txt',
+    # Not a page of the site: the www name only ever redirects. Unavailable is a warning, not a finding.
+    'www':'https://www.qoopia.ai/',
     'source-readme':'https://raw.githubusercontent.com/qoopia/qoopia-source/main/README.md',
     'source-manifest':'https://raw.githubusercontent.com/qoopia/qoopia-source/main/SOURCE-MANIFEST.json',
     'source-facts':'https://raw.githubusercontent.com/qoopia/qoopia-source/main/docs/discovery/answers.json',
@@ -22,18 +24,22 @@ UA='QoopiaDiscovery/1.0 (+https://qoopia.ai)'
 MAX_BYTES=2_000_000
 class Page(html.parser.HTMLParser):
     def __init__(self):
-        super().__init__();self.title=[];self.h1=0;self.meta={};self.canon=[];self.links=[];self.in_title=False
+        super().__init__();self.title=[];self.h1=0;self.meta={};self.canon=[];self.links=[];self.alternates={};self.in_title=False;self.ld=[];self.in_ld=False
     def handle_starttag(self,tag,attrs):
         a=dict(attrs)
         if tag=='title':self.in_title=True
         if tag=='h1':self.h1+=1
         if tag=='meta':self.meta[a.get('name',a.get('property',''))]=a.get('content','')
         if tag=='link' and a.get('rel')=='canonical':self.canon.append(a.get('href'))
+        if tag=='link' and a.get('rel')=='alternate' and a.get('hreflang'):self.alternates[a['hreflang']]=a.get('href')
+        if tag=='script' and a.get('type')=='application/ld+json':self.in_ld=True;self.ld.append('')
         if tag=='a':self.links.append(a.get('href',''))
     def handle_endtag(self,tag):
         if tag=='title':self.in_title=False
+        if tag=='script':self.in_ld=False
     def handle_data(self,text):
         if self.in_title:self.title.append(text)
+        if self.in_ld:self.ld[-1]+=text
 
 def fetch(url, out, curl='curl'):
     if url not in URLS.values():raise ValueError('URL outside fixed public allowlist')
@@ -84,6 +90,39 @@ def inspect(key,text,record):
         except (ValueError,KeyError,TypeError):issue('JSON_INVALID','Missing or invalid contract')
     return findings
 
+def cross(texts,www_status=None):
+    """Checks that need several surfaces (A9-19). Returns (findings, warnings); warnings never fail the run."""
+    findings,warnings=[],[]
+    def issue(surface,code,detail):findings.append({'surface':surface,'code':code,'detail':detail})
+    try:version=json.loads(texts.get('release') or 'null')['version']
+    except (TypeError,KeyError,ValueError):version=None
+    pages={}
+    for key in PAGES:
+        if texts.get(key) is None:continue
+        p=Page();p.feed(texts[key]);pages[key]=p
+        # A script injected in front of the site (Cloudflare JS Detections) is blocked by the CSP on every page.
+        if 'challenge-platform' in texts[key]:issue(key,'INJECTED_SCRIPT','challenge-platform')
+    if version:
+        for key in ('home','home-ru','llms'):
+            if texts.get(key) is not None and version not in texts[key]:issue(key,'RELEASE_VERSION_ABSENT',version)
+    if 'home' in pages:
+        try:
+            graph=json.loads(pages['home'].ld[0])['@graph']
+            app=next(n for n in graph if n.get('@type')=='SoftwareApplication')
+            if version and app.get('softwareVersion')!=version:issue('home','JSONLD_VERSION',str(app.get('softwareVersion')))
+        except (IndexError,KeyError,StopIteration,TypeError,ValueError):issue('home','JSONLD_INVALID','SoftwareApplication with softwareVersion expected')
+    by_url={URLS[k]:k for k in pages}
+    for key,p in pages.items():
+        for lang,href in p.alternates.items():
+            other=by_url.get(href)
+            if other is None:
+                if href in by_url or lang=='x-default':continue
+                issue(key,'HREFLANG_TARGET',lang+' '+str(href));continue
+            if URLS[key] not in pages[other].alternates.values():issue(key,'HREFLANG_NOT_RECIPROCAL',lang+' '+href)
+    # www.qoopia.ai should answer with a redirect to qoopia.ai; redirects are not followed here.
+    if www_status not in (301,302,307,308):warnings.append({'surface':'www','code':'WWW_UNAVAILABLE','detail':f'www.qoopia.ai answered {www_status}; owner adds a proxied record and a 301 to qoopia.ai'})
+    return findings,warnings
+
 def run(output,curl='curl'):
     output.mkdir(parents=True,exist_ok=True)
     with (output/'.lock').open('w') as lock:
@@ -96,7 +135,8 @@ def run(output,curl='curl'):
         for key,url in URLS.items():
             try:record,text=fetch(url,folder/(key+'.body'),curl)
             except (OSError,subprocess.TimeoutExpired) as e:record,text={'url':url,'result':'INSUFFICIENT DATA','error_class':type(e).__name__},None
-            report['results'][key]=record;report['findings']+=inspect(key,text,record)
+            report['results'][key]=record
+            if key!='www':report['findings']+=inspect(key,text,record)
             texts[key]=text
             time.sleep(.25)
         if texts.get('source-facts'):
@@ -109,6 +149,7 @@ def run(output,curl='curl'):
                                 report['findings'].append({'surface':key,'code':'FACT_PARITY','detail':item['id']})
             except (KeyError,TypeError,ValueError):
                 report['findings'].append({'surface':'source-facts','code':'FACT_CONTRACT_INVALID','detail':'Cannot compare facts'})
+        extra,report['warnings']=cross(texts,report['results'].get('www',{}).get('http_status'));report['findings']+=extra
         prior=json.loads((output/'latest.json').read_text()) if (output/'latest.json').exists() else {}
         signature=lambda r: sorted((x['surface'],x['code'],x['detail']) for x in r.get('findings',[]))
         report['changed_findings']=signature(report)!=signature(prior)

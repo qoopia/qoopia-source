@@ -2,25 +2,58 @@
 
 > A lasting memory for your AI agents, on your computer or your own server. Keep context, find knowledge and share selectively with Qoopia.
 
-Each page exists in English and Russian with the same content.
+Each page exists in English and Russian with the same content. Full text for AI assistants: https://qoopia.ai/llms-full.txt
+
+## Current release
+
+- Qoopia 5.0.21, released 2026-10-15 (source b559e64). Machine-readable manifest: https://qoopia.ai/release.json
+- macOS Apple Silicon, DMG: https://qoopia.ai/download/mac (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.21/qoopia-5.0.21-darwin-arm64.dmg), SHA-256 a150e8cd8904ac3517bf733a5e9f6096f4d0a6e86f7cc7576e25a3c30ac80caa
+- Linux x64, TAR.GZ: https://qoopia.ai/download/linux (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.21/qoopia-5.0.21-linux-x64.tar.gz), SHA-256 0758c0b90de56a80aab60c001b9a6c12e510505dcaa36eae3b065f777f0c4d8f
+
+## Requirements
+
+- Mac: Apple Silicon Mac, macOS 15.0 or newer. Intel Macs and Windows are not supported.
+- Linux: Linux x64 with glibc 2.34 or newer. Not every Linux distribution is supported. The ps command (procps) must be installed. Run as a normal user, not root.
+- No separate Bun, Docker or Ollama. Cloud model features need internet access and your own supported subscription.
+- iPhone: a free TestFlight beta (iOS 17+) that opens the dashboard of a server installation reachable over HTTPS. A Mac or Linux installation keeps its dashboard on that computer.
+
+## Install
+
+1. Download the package for your computer and check its SHA-256.
+2. Mac: open the DMG, move Qoopia to Applications and open it. Linux: extract the TAR.GZ and run ./qoopia open; to keep it running without a terminal, run ./qoopia service install --commit, and on a server also loginctl enable-linger $USER.
+3. Sign in with Google or email, then connect your agents in Connections.
+
+A local Codex or Claude Code session can do this for you: https://qoopia.ai/docs#agent-install
+
+## Works with
+
+- Claude Code and Codex: memory tools and native session capture.
+- Claude Desktop on macOS.
+- Claude in a browser and ChatGPT Web/Desktop through external HTTPS access prepared in Connections. ChatGPT last passed real-client acceptance on 15 September 2026; the current consent flow has not been re-verified since.
+- Other MCP clients with a separate agent identity.
+
+## Price and license
+
+Qoopia is free; its source is MIT-licensed. Model subscriptions and server hosting are separate costs.
 
 ## English
 
 - [Qoopia — Pick up where you left off](https://qoopia.ai/): A lasting memory for your AI agents, on your computer or your own server. Keep context, find knowledge and share selectively with Qoopia.
-- [Install, connect, continue — Qoopia](https://qoopia.ai/docs): Install Qoopia V1, connect your agents, understand permissions and share selectively through Bridges.
+- [Install, connect, continue — Qoopia](https://qoopia.ai/docs): Install Qoopia, connect your agents, understand permissions and share selectively through Bridges.
 - [Qoopia for iPhone](https://qoopia.ai/mobile): Qoopia for iPhone: your existing dashboard, agents and memory in one app. A free beta through Apple TestFlight.
 - [Release notes — Qoopia](https://qoopia.ai/releases): Qoopia releases: signed installers, supported platforms, release notes and limitations.
-- [Is Qoopia right for you? — Qoopia](https://qoopia.ai/understand): Qoopia is useful when multiple agents or tools work on the same project and need an explicitly shared, persistent memory with defined permissions. If one Claude or ChatGPT conversation already meets your needs, another system may add unnecessary setup. Qoopia complements those products; it does not replace their models or subscriptions.
+- [Is Qoopia right for you? — Qoopia](https://qoopia.ai/understand): When Qoopia helps, what installation needs and where your data lives: reviewed answers for people and AI assistants evaluating Qoopia.
 
 ## Русский
 
 - [Qoopia — продолжайте с того же места](https://qoopia.ai/ru/): Долговременная память ваших ИИ-агентов на вашем компьютере или сервере. Сохраняйте контекст, находите знания и делитесь выбранным с Qoopia.
-- [Установите, подключите, продолжайте — Qoopia](https://qoopia.ai/ru/docs): Установите Qoopia V1, подключите агентов, настройте разрешения и делитесь выбранными материалами через Мосты.
+- [Установите, подключите, продолжайте — Qoopia](https://qoopia.ai/ru/docs): Установите Qoopia, подключите агентов, разберитесь с правами и делитесь выборочно через мосты.
 - [Qoopia для iPhone](https://qoopia.ai/ru/mobile): Qoopia для iPhone: ваш дашборд, агенты и память в одном приложении. Бесплатная бета-версия через Apple TestFlight.
 - [Заметки о выпусках — Qoopia](https://qoopia.ai/ru/releases): Выпуски Qoopia: подписанные установщики, поддерживаемые платформы, заметки о выпусках и ограничения.
-- [Подходит ли вам Qoopia? — Qoopia](https://qoopia.ai/understand-ru): Когда несколько агентов или инструментов работают над одним проектом и им нужна общая долговременная память с заданными правами. Если вам достаточно одного Claude или ChatGPT, дополнительная система может быть избыточной. Qoopia дополняет эти продукты, а не заменяет модели и подписки.
+- [Подходит ли вам Qoopia? — Qoopia](https://qoopia.ai/ru/understand): Когда Qoopia полезна, что нужно для установки и где хранятся данные: проверенные ответы для людей и ИИ-ассистентов.
 
 ## Source
 
 - [Qoopia source](https://github.com/qoopia/qoopia-source): MIT-licensed source code
 - [Signed installers](https://github.com/qoopia/qoopia-downloads/releases): macOS (Apple Silicon) and Linux (x64)
+- [Report a problem](https://github.com/qoopia/qoopia-source/issues)

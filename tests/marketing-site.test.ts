@@ -101,12 +101,12 @@ test('visitors on Windows, phones, tablets and ARM Linux are told no package run
  const chrome='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36';
  for(const [name,platform,agent,selected] of [['Mac','MacIntel','Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)','mac'],['Linux x64','Linux x86_64',chrome,'linux']] as const){
   const card=await downloadCard(platform,agent);
-  expect(card.notice,name).toBeUndefined();expect(card.platform,name).toBe(selected);expect(card.download,name).toStartWith('https://github.com/');
+  expect(card.notice,name).toBeUndefined();expect(card.platform,name).toBe(selected);expect(card.download,name).toBe('/download/'+selected);
  }
  for(const [name,platform,agent,touch] of [['Windows','Win32','Mozilla/5.0 (Windows NT 10.0; Win64; x64)',0],['Linux arm64','Linux aarch64',chrome.replace('x86_64','aarch64'),0],
   ['Android','Linux armv81','Mozilla/5.0 (Linux; Android 14; Pixel 8) Mobile',5],['iPhone','iPhone','Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',5],['iPad','MacIntel','Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',5]] as const){
   const card=await downloadCard(platform,agent,touch);
-  expect(card.notice,name).toBe(notice);expect(card.download,name).toStartWith('https://github.com/');
+  expect(card.notice,name).toBe(notice);expect(card.download,name).toStartWith('/download/');
  }
 });
 
@@ -121,18 +121,19 @@ function runAnalytics(pathname:string,stored:string|null=null){
   {referrer:'',readyState:'loading',createElement:node,querySelector:()=>null,addEventListener:(type:string,fn:()=>void)=>{on[type]=fn;}},
   {addEventListener(){}},1440,(_url:string,init:{body:string})=>{sent.push(JSON.parse(init.body));return Promise.resolve();},
   {getEntriesByType:()=>[]},class{observe(){}},Element);
- return {sent,click:()=>on.click({type:'click',target:new Element()}),optIn:()=>{inputs[0].checked=true;on.change();}};
+ return {sent,click:()=>on.click?.({type:'click',target:new Element()}),optIn:()=>{inputs[0].checked=true;on.change();}};
 }
 
-// Owner decision 2026-10-02 (as in PR #94): every download click is counted anonymously without
-// opt-in; page views wait for the opt-in; docs#privacy says exactly this.
-test('download clicks are counted without opt-in; page views wait for it',()=>{
+// 5.0.21 (A9-01, A9-03): downloads are counted on the server at /download/<platform>; the browser sends
+// nothing for a download, and page views still wait for the opt-in at a path blockers do not match.
+test('a download click sends nothing from the browser; page views wait for the opt-in',()=>{
  const page=runAnalytics('/');
- page.click();expect(page.sent.map(event=>event.kind)).toEqual(['download_click']);
- expect(Object.keys(page.sent[0]!).sort()).toEqual(['id','kind','page','platform','referrer','version']);
+ page.click();expect(page.sent).toEqual([]);
  page.optIn();page.click();
- expect(page.sent.map(event=>event.kind)).toEqual(['download_click','site_view','download_click']);
- expect(read('docs.html')).toContain('Download button clicks are counted anonymously for everyone');
+ expect(page.sent.map(event=>event.kind)).toEqual(['site_view']);
+ expect(read('analytics.js')).toContain("'https://auth.qoopia.ai/e/v1'");expect(read('analytics.js')).not.toContain('/analytics/event');
+ expect(read('docs.html')).toContain('Installer downloads through qoopia.ai/download are counted on our server');
+ expect(read('_redirects')).toContain('/download/:platform https://auth.qoopia.ai/download/:platform 302');
 });
 
 test('opted-in page views carry a page label the event service accepts',async()=>{
@@ -161,13 +162,43 @@ test('one working skip link per page, unique ids and no duplicate attributes',()
  }
 });
 
-test('release notes show one language: each block is translated, or marked lang and hidden in the other language',()=>{
- const sections=[...read('releases.html').matchAll(/<section data-release-version="[^"]+">([\s\S]*?)<\/section>/g)].map(m=>m[1]);
+test('release notes show one language: each block is translated, or marked lang and kept only on its own page (A9-07)',()=>{
+ const sections=[...readFileSync(new URL('../scripts/site-releases.html',import.meta.url),'utf8').matchAll(/<section data-release-version="[^"]+">([\s\S]*?)<\/section>/g)].map(m=>m[1]);
  expect(sections.length).toBeGreaterThan(5);
  for(const section of sections)for(const [block] of section.matchAll(/<(h2|h3|p|li)\b[^>]*>[\s\S]*?<\/\1>/g))
   // Exactly one mechanism: a translated block marked lang would vanish in the other language.
   expect(/\slang="(en|ru)"/.test(block),block.slice(0,90)).toBe(!/data-i18n=/.test(block));
- expect(read('style.css')).toContain('html[lang=en] [data-release-version] [lang=ru],html[lang=ru] [data-release-version] [lang=en]{display:none}');
+ for(const [file,other] of [['releases.html','ru'],['ru/releases.html','en']])expect(read(file),file).not.toMatch(new RegExp(`<(p|span)\\b[^>]*\\slang="${other}"`));
+});
+
+// A9-02, A9-06, A9-10, A6-10: readers and crawlers without JavaScript see the current release.
+test('the current release, its download links and checksums are in the raw HTML, llms.txt and JSON-LD',()=>{
+ const release=JSON.parse(read('release.json'));
+ for(const file of ['index.html','ru/index.html','releases.html','ru/releases.html']){
+  const html=read(file);
+  expect(html,file).toContain(release.version);
+  for(const [platform,pkg] of Object.entries(release.packages as Record<string,{sha256:string}>)){
+   expect(html,file).toContain(`href="/download/${platform}" data-platform="${platform}" data-version="${release.version}"`);expect(html,file).toContain(pkg.sha256);
+  }
+ }
+ const app=JSON.parse(/<script type="application\/ld\+json">(.*?)<\/script>/s.exec(read('index.html'))![1]!)['@graph'].find((n:{'@type':string})=>n['@type']==='SoftwareApplication');
+ expect([app.softwareVersion,app.offers.price,app.downloadUrl]).toEqual([release.version,'0',['https://qoopia.ai/download/mac','https://qoopia.ai/download/linux']]);
+ const llms=read('llms.txt');
+ for(const text of [`Qoopia ${release.version}`,'https://qoopia.ai/download/mac','https://qoopia.ai/download/linux',release.packages.mac.sha256,'MIT','procps','service install --commit','TestFlight','https://qoopia.ai/llms-full.txt'])expect(llms).toContain(text);
+ expect(read('llms-full.txt')).toContain('## Setup guide');
+ expect(read('sitemap.xml').match(/<lastmod>\d{4}-\d{2}-\d{2}<\/lastmod>/g)?.length).toBe(10);
+});
+
+// A9-08, A9-11: the locale runtime never blocks rendering, and a year-long cache is only for hashed URLs.
+test('i18n.js is deferred before the page scripts, and immutable assets are always referenced with a hash',()=>{
+ const immutable=[...read('_headers').matchAll(/^(\/[^\s]+)\n  Cache-Control: public, max-age=31536000, immutable$/gm)].map(m=>m[1]!);
+ expect(immutable.length).toBeGreaterThan(4);
+ const html=[...readdirSync(site).filter(f=>f.endsWith('.html')),...russianPages];
+ for(const page of html){
+  const text=read(page),scripts=[...text.matchAll(/<script\b[^>]*\ssrc="([^"]+)"[^>]*>/g)];
+  if(text.includes('/brand/i18n.js')){expect(scripts[0]![0],page).toContain('defer');expect(scripts[0]![1],page).toStartWith('/brand/i18n.js?v=');}
+  for(const asset of immutable)for(const m of text.matchAll(new RegExp(`(?:src|href)="${asset.replaceAll('.','\\.')}([^"]*)"`,'g')))expect(m[1],page+' '+asset).toMatch(/^\?v=[0-9a-f]{12}$/);
+ }
 });
 
 test('internal links use the canonical extensionless URLs, not .html redirects',()=>{
@@ -179,7 +210,7 @@ test('internal links use the canonical extensionless URLs, not .html redirects',
 test('every published site file is referenced by the site or is an intentional public file',()=>{
  const files=(readdirSync(site,{recursive:true}) as string[]).filter(f=>!f.split('/').some(part=>part.startsWith('.'))&&statSync(new URL(f,site)).isFile());
  const texts=files.filter(f=>/\.(html|js|css|json|xml)$/.test(f)).map(f=>[f,read(f)]);
- const intentional=['_headers','_redirects','robots.txt','sitemap.xml','release.json','candidate-release.json','ios-release.json','updates/macos/appcast.xml','brand/Manrope-OFL.txt','llms.txt'];
+ const intentional=['_headers','_redirects','robots.txt','sitemap.xml','release.json','ios-release.json','updates/macos/appcast.xml','brand/Manrope-OFL.txt','llms.txt','llms-full.txt'];
  const orphans=files.filter(f=>!f.endsWith('.html')&&!intentional.includes(f)&&!texts.some(([other,text])=>other!==f&&text.includes(f.split('/').pop()!)));
  expect(orphans).toEqual([]);
 });
@@ -240,7 +271,8 @@ test('the agent task and the package say how to check manifest.sig and where the
 test('each page has a server-rendered Russian copy that is current, self-canonical and linked by hreflang',async()=>{
  const {render,routes}=await import('../scripts/build-site-languages.ts');
  for(const [file,content] of render())expect(read(file)===content,file+' is stale: run bun scripts/build-site-languages.ts').toBe(true);
- expect(russianPages.sort()).toEqual(routes.map(([file])=>'ru/'+file+'.html').sort());
+ // ru/understand.html is rendered by scripts/discovery-content.py.
+ expect(russianPages.filter(f=>f!=='ru/understand.html').sort()).toEqual(routes.map(([file])=>'ru/'+file+'.html').sort());
  const head=(html:string)=>({lang:/<html lang="([a-z]+)"/.exec(html)?.[1],canonical:/<link href="([^"]+)" rel="canonical"/.exec(html)?.[1],
   alternates:[...html.matchAll(/<link href="([^"]+)" hreflang="([a-z-]+)" rel="alternate"\/>/g)].map(m=>m[2]+' '+m[1]),locale:/<meta content="([a-zA-Z_]+)" property="og:locale"\/>/.exec(html)?.[1]});
  const russian=(key:string)=>ru[decode(key)];

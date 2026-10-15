@@ -1,6 +1,6 @@
 # Qoopia public claim policy
 
-Owner: Qoopia maintainer. Reviewed 2026-09-14; next substantive review by 2026-10-14, sooner on a relevant release. Never refresh dates merely because a job ran.
+Owner: Qoopia maintainer. Reviewed 2026-10-14 (phone, platforms, messages and bridges updated for 5.0.20); next substantive review by 2026-11-14, sooner on a relevant release. Never refresh dates merely because a job ran.
 
 `answers.json` is the reviewed public explanation input. Each stable claim ID includes RU/EN wording and source evidence paths. `discovery-content.py` renders both website and repository explanations. Runtime capabilities must be verified against the shipped package source, not presumed from latest main. Dates are review dates, not release dates. Source-code evidence does not prove a user's successful installation.
 

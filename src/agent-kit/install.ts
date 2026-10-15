@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {agentKit,agentKitManifest,type AgentKitLanguage} from './index.ts';
+import {agentKit,agentKitManifest,installationLanguage,type AgentKitLanguage} from './index.ts';
 import {safePath,privateDirectory,durableWrite,hash,hasNulOrNewline} from '../utils/fs.ts';
 import {QoopiaError,type QoopiaErrorCode} from '../utils/errors.ts';
 import {nativeOwnerHome} from '../delivery/native-keychain.ts';
@@ -34,7 +34,7 @@ export function planAgentInstructions(directory:string,runtime:'codex'|'claude_c
   const overrides=runtime==='codex'?read(path.join(root,'AGENTS.override.md')):null;
   const entry=path.join(root,runtime==='codex'&&overrides?.trim()?'AGENTS.override.md':runtime==='codex'?'AGENTS.md':'CLAUDE.md');
   // An explicit choice (the owner's dashboard language, refresh --language) wins; otherwise the profile keeps its language.
-  const language=requestedLanguage??receipt?.language??'ru',kit=agentKit(language);
+  const language=requestedLanguage??receipt?.language??installationLanguage(),kit=agentKit(language);
   const manifest=agentKitManifest(language),changes:Change[]=[];
   // A removed kit, or a block the owner deleted, stays out until an explicit connect or link (relink).
   if(!relink&&receipt&&(receipt.state==='removed'||receipt.state==='installed'&&!entryFiles(runtime).some(name=>read(path.join(root,name))?.includes(BEGIN))))

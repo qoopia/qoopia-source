@@ -54,6 +54,9 @@ export function isChatGptRedirectArray(actual: unknown): boolean {
   );
 }
 
+/** A redirect host Qoopia accepts at all: a plain DNS name or an IP literal (URL.hostname form). */
+export const SAFE_HOST = /^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])$/i;
+
 export function isLoopbackRedirectHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
   return (

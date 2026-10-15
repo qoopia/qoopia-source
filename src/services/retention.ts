@@ -1,7 +1,8 @@
+import { fileURLToPath } from "node:url";
 import { retainManagedLogs } from "../utils/managed-logs.ts";
 import { recordMaintenance, opsSummary, readOps } from "../delivery/ops-state.ts";
 import { deliverOpsAlerts, readOwnerAlertChannels } from "./ops-alerts.ts";
-import { backupUnified, verifyBackup, backupMembers, unifiedSnapshotSchema } from "../delivery/snapshot.ts";
+import { backupUnified, backupIntact, backupMembers, rememberVerifiedBackup, unifiedSnapshotSchema } from "../delivery/snapshot.ts";
 import { safePath, syncDirectory } from "../utils/fs.ts";
 import { standaloneRoot } from "../utils/standalone.ts";
 import { createVerifiedBackup } from "./backup.ts";
@@ -16,13 +17,14 @@ import { nextNoteWriteTimestamp } from "./note-temporal.ts";
 import { ensureSafeDir } from "../utils/fs-perms.ts";
 import { AGENT_WAKE_MAX_ATTEMPTS } from "./agent-wake.ts";
 import { tableExists } from "../db/introspect.ts";
+import { pruneCanonApplications } from "./canon.ts";
 
 /**
  * Daily maintenance job:
  *  1. Task-bound purge (notes/sessions/messages bound to closed tasks > 1h old)
  *  2. Expired idempotency keys
  *  3. Old activity (> N days) and recall_log (> 90 days)
- *  4. Terminal AgentComm wake events
+ *  4. Terminal AgentComm wake events; raw messages of fully summarized sessions (ADR-022, off by default)
  *  5. Expired oauth codes/access tokens
  *  6. Daily backup via VACUUM INTO
  *  7. Rotate backups (keep N latest)
@@ -42,6 +44,75 @@ export function pruneTerminalAgentWakeEvents(): number {
         )`,
   ).run(`-${env.RETENTION_AGENT_WAKE_DAYS} days`, AGENT_WAKE_MAX_ATTEMPTS);
   return deleted.changes;
+}
+
+/** Delivery records that only grew: Telegram inbox and outbox rows of finished runs, and delivered memory
+ * events, after a month. Nothing queued, sending, uncertain or retryable is touched [A1-07, A1-08]. */
+export function pruneDeliveredTransit(days = 30, now = Date.now()) {
+  const cutoff = now - days * 86_400_000, iso = new Date(cutoff).toISOString();
+  return db.transaction(() => ({
+    telegram_inbox: db.query(`DELETE FROM qoopia_telegram_inbox WHERE state IN ('done','failed','cancelled') AND created_at < ?`).run(cutoff).changes,
+    // Outbox rows carry no time of their own; their run's does. Its delivery record is settled by then.
+    telegram_outbox: db.query(`DELETE FROM qoopia_telegram_outbox WHERE state IN ('sent','cancelled')
+      AND run_id IN (SELECT id FROM qoopia_agent_runs WHERE created_at < ?)`).run(iso).changes,
+    memory_events: db.query(`DELETE FROM memory_event_outbox WHERE state = 'delivered' AND delivered_at < ?`).run(iso).changes,
+  }))();
+}
+
+/**
+ * ADR-022 raw retention: per session, the raw messages older than QOOPIA_RAW_RETENTION_DAYS, only in a
+ * session whose summaries reach its last message (fully summarized; the continuity summary and
+ * session_summarize both write `summaries`). A session that skill evidence or a runtime loadout still
+ * holds is left whole. Counts, ids and dates only — never message content.
+ */
+function rawRetentionCandidates(days: number) {
+  const held = [
+    tableExists(db, 'skill_captures') ? `EXISTS (SELECT 1 FROM skill_captures c WHERE c.workspace_id=m.workspace_id
+      AND c.source_kind='session' AND json_extract(c.source_refs,'$.source_id')=m.session_id)` : '0',
+    tableExists(db, 'session_loadouts') ? `EXISTS (SELECT 1 FROM session_loadouts l WHERE l.workspace_id=m.workspace_id AND l.qoopia_session_id=m.session_id)` : '0',
+  ].join(' OR ');
+  return db.query(`WITH covered AS (
+      SELECT su.session_id FROM summaries su GROUP BY su.session_id
+      HAVING MAX(su.msg_end_id) >= (SELECT MAX(x.id) FROM session_messages x WHERE x.session_id = su.session_id))
+    SELECT m.workspace_id, m.agent_id, a.name AS agent_name, m.session_id, COUNT(*) AS messages, MIN(m.created_at) AS oldest
+    FROM session_messages m JOIN covered c ON c.session_id = m.session_id LEFT JOIN agents a ON a.id = m.agent_id
+    WHERE datetime(m.created_at) < datetime('now', ?) AND NOT (${held})
+    GROUP BY m.workspace_id, m.agent_id, m.session_id ORDER BY m.workspace_id, a.name, m.session_id`)
+    .all(`-${days} days`) as Array<{ workspace_id: string; agent_id: string | null; agent_name: string | null; session_id: string; messages: number; oldest: string }>;
+}
+
+/** What raw retention would delete now (`qoopia maintenance raw-retention`): counts per agent and session. */
+export function rawRetentionReport(days = env.RAW_RETENTION_DAYS) {
+  const rows = rawRetentionCandidates(days);
+  const byAgent = new Map<string, { workspace_id: string; agent_id: string | null; agent_name: string | null; sessions: number; messages: number; oldest: string }>();
+  for (const r of rows) {
+    const key = `${r.workspace_id}|${r.agent_id}`, agent = byAgent.get(key);
+    if (!agent) byAgent.set(key, { workspace_id: r.workspace_id, agent_id: r.agent_id, agent_name: r.agent_name, sessions: 1, messages: r.messages, oldest: r.oldest });
+    else { agent.sessions++; agent.messages += r.messages; if (r.oldest < agent.oldest) agent.oldest = r.oldest; }
+  }
+  return {
+    dry_run: true,
+    retention_days: days,
+    delete_enabled: env.RAW_RETENTION_DELETE,
+    sessions: rows.length,
+    messages: rows.reduce((n, r) => n + r.messages, 0),
+    by_agent: [...byAgent.values()],
+    // ponytail: the session list stops at 1000 rows; the totals above stay exact.
+    by_session: rows.slice(0, 1000).map(({ agent_name: _name, ...r }) => r),
+  };
+}
+
+/** Deletes what rawRetentionReport lists, one short transaction per session. Off unless QOOPIA_RAW_RETENTION_DELETE=true. */
+export function pruneRawTranscripts(days = env.RAW_RETENTION_DAYS) {
+  if (!env.RAW_RETENTION_DELETE) return { enabled: false, sessions: 0, messages_deleted: 0 };
+  let sessions = 0, deleted = 0;
+  const remove = db.transaction((session: string) => {
+    db.prepare(`DELETE FROM session_messages WHERE session_id = ? AND datetime(created_at) < datetime('now', ?)`).run(session, `-${days} days`);
+    // F-280: changes() counts only the rows the DELETE removed, not the FTS trigger's writes.
+    return (db.query("SELECT changes() AS n").get() as { n: number }).n;
+  });
+  for (const r of rawRetentionCandidates(days)) { deleted += remove(r.session_id); sessions++; }
+  return { enabled: true, sessions, messages_deleted: deleted };
 }
 
 export function runMaintenance(): { ok: boolean; report: Record<string, unknown> } {
@@ -177,6 +248,16 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
 
     // 4. Terminal AgentComm wake events. Retryable work is never pruned.
     report.agent_wake_events_deleted = pruneTerminalAgentWakeEvents();
+    report.canon_applications_deleted = pruneCanonApplications();
+    report.delivered_transit_deleted = pruneDeliveredTransit();
+
+    // ADR-022: raw messages of fully summarized sessions past the retention window. Off by default;
+    // a failure is reported and must not stop token expiry or the daily backup.
+    try { report.raw_retention = pruneRawTranscripts(); }
+    catch (error) {
+      purgeFailure ??= 'RAW_RETENTION_FAILED';
+      logger.error("Maintenance raw retention failed", { error_code: 'RAW_RETENTION_FAILED', error_class: (error as Error)?.name ?? 'Error' });
+    }
 
     // 5. Expired oauth tokens (codes, access, AND refresh) + revoked tokens older than 7 days
     // H3 fix: normalize expires_at comparison via datetime()
@@ -200,7 +281,7 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
     // Scheduled unified backups use the SAME recovery manifest as the local restore command.
     const backup = unifiedSnapshotSchema(schema) ? backupUnified(path.join(env.DATA_DIR,'qoopia.db'),backupPath,installation,env.OPS_STATE_DIR)
       : createVerifiedBackup({ source: path.join(env.DATA_DIR, 'qoopia.db'), output: backupPath });
-    report.backup = { sha256: backup.sha256, schema, verified: true, unified_restore: unifiedSnapshotSchema(schema) };
+    report.backup = { name: backupName, sha256: backup.sha256, schema, verified: true, unified_restore: unifiedSnapshotSchema(schema) };
     const backups = fs.readdirSync(env.BACKUP_DIR).filter(f => /^qoopia-\d{4}-\d{2}-\d{2}T[0-9Z-]+\.(db|backup)$/.test(f)).sort().reverse();
     const days = new Set<string>(), weeks = new Set<string>(), keep = new Set<string>();
     for (const name of backups) {
@@ -208,20 +289,29 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
       if (days.size < env.BACKUP_KEEP && !days.has(day)) { days.add(day); keep.add(name); }
       if (weeks.size < 4 && !weeks.has(week)) { weeks.add(week); keep.add(name); }
     }
-    let deleted = 0;
+    let deleted = 0;const damaged: string[] = [];
     for (const name of backups) if (!keep.has(name)) {
       const file = path.join(env.BACKUP_DIR, name), stat = fs.lstatSync(file);
       if (stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.uid === process.getuid?.()) { fs.unlinkSync(file); deleted++; }
       else if(stat.isDirectory() && stat.uid===process.getuid?.() && name.endsWith('.backup')) {
         // Never recursively remove unknown additions or a corrupt backup as ordinary rotation.
         let members: string[];
-        try { members=backupMembers(file); verifyBackup(file); } catch { continue; }
+        try { members=backupMembers(file); } catch { continue; }
+        // The streamed file checksum is enough to delete safely; a full verification (private copy and
+        // logical hash) cost another pass of the database per old backup [A1-02]. A damaged backup is kept
+        // for inspection under a name rotation does not match, so it is not checked again every night.
+        try { backupIntact(file); } catch {
+          const aside = path.join(env.BACKUP_DIR, 'damaged-' + name);
+          if (!fs.existsSync(aside)) { fs.renameSync(file, aside); damaged.push('damaged-' + name); logger.error("Damaged backup set aside", { backup: 'damaged-' + name }); }
+          continue;
+        }
         for(const member of members)fs.unlinkSync(safePath(path.join(file,member)));
         fs.rmdirSync(file);deleted++;
       }
     }
     syncDirectory(env.BACKUP_DIR);
     report.backups_kept = keep.size; report.backups_deleted = deleted;
+    if (damaged.length) report.backups_damaged = damaged;
 
     stage = 'STATUS';
     const failure = purgeFailure ?? logFailure;
@@ -254,7 +344,43 @@ let maintenanceRunning: Promise<unknown> | null = null, lastAttemptAt = 0;
 function runScheduled() {
   if (maintenanceRunning) return maintenanceRunning;
   lastAttemptAt = Date.now();
-  return maintenanceRunning = runOperationalMaintenance().finally(() => { maintenanceRunning = null; });
+  return maintenanceRunning = runMaintenanceProcess().finally(() => { maintenanceRunning = null; });
+}
+/** While the daily run's process writes the operations journal, the server leaves it alone. */
+export const maintenanceInProgress = () => maintenanceRunning !== null;
+
+type MaintenanceResult = Awaited<ReturnType<typeof runOperationalMaintenance>>;
+/** The daily run is synchronous SQLite and file work (integrity check, VACUUM INTO, hashes): 15-20 s on a
+ * large installation, during which the server answered nothing, hook capture included [A1-02]. The server
+ * runs it as its own process, the same callback as `qoopia maintenance`, and only waits for the result.
+ * The child gets this server's resolved directories, so both work on exactly the same installation. */
+export async function runMaintenanceProcess(): Promise<MaintenanceResult> {
+  const command = import.meta.url.startsWith('file:///$bunfs/') ? [process.execPath]
+    : [process.execPath, '--no-env-file', fileURLToPath(new URL('./maintenance-worker.ts', import.meta.url))];
+  let result: MaintenanceResult | undefined;
+  try {
+    const child = Bun.spawn(command, { stdio: ['ignore', 'inherit', 'inherit'], timeout: 3_600_000, killSignal: 'SIGKILL',
+      env: { ...process.env, QOOPIA_MAINTENANCE_WORKER: '1', QOOPIA_DATA_DIR: env.DATA_DIR, QOOPIA_LOG_DIR: env.LOG_DIR,
+        QOOPIA_BACKUP_DIR: env.BACKUP_DIR, QOOPIA_OPS_STATE_DIR: env.OPS_STATE_DIR },
+      ipc(message) { result = message as MaintenanceResult; } });
+    await child.exited;
+  } catch { /* No process at all (fork limit, binary gone): recorded below like a crash. */ }
+  if (!result) {
+    // A crash, a kill or a refused start leaves no status of its own: record one, or the failure stays silent.
+    const report: Record<string, unknown> = { ok: false, error: 'MAINTENANCE_PROCESS_FAILED' };
+    logger.error("Maintenance failed", { error_code: 'MAINTENANCE_PROCESS_FAILED' });
+    try {
+      const instance = (db.query("SELECT instance_id FROM authority_instance WHERE id='local'").get() as {instance_id:string} | null)?.instance_id ?? 'local';
+      recordMaintenance(env.OPS_STATE_DIR, instance, 'MAINTENANCE_PROCESS_FAILED');
+      await deliverOpsAlerts(env.OPS_STATE_DIR, readOwnerAlertChannels(process.env.QOOPIA_OPS_CHANNELS_FILE));
+    } catch { report.status_error = 'STATUS_WRITE_FAILED'; }
+    report.operations = opsSummary(env.OPS_STATE_DIR);
+    return { ok: false, report };
+  }
+  const name = (result.report.backup as {name?: unknown} | undefined)?.name;
+  // That process verified the backup it made; the dashboard does not need to copy and hash it again.
+  if (typeof name === 'string' && /^qoopia-[0-9TZ-]+\.backup$/.test(name)) try { rememberVerifiedBackup(path.join(env.BACKUP_DIR, name)); } catch { /* verified on first inspection */ }
+  return result;
 }
 
 /** Long timers do not follow the wall clock on a sleeping laptop (and miss clock or timezone changes):

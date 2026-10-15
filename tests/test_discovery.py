@@ -17,10 +17,26 @@ class DiscoveryTests(unittest.TestCase):
  def test_understand_pages_publish_the_reviewed_answers_as_faq_data(self):
   import re
   facts=json.loads((ROOT/'docs/discovery/answers.json').read_text())
-  for lang,file in (('en','understand'),('ru','understand-ru')):
+  for lang,file in (('en','understand'),('ru','ru/understand')):
    faq=json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>',(ROOT/f'marketing-site/{file}.html').read_text()).group(1))
    self.assertEqual((faq['@type'],faq['inLanguage'],faq['url']),('FAQPage',lang,f'https://qoopia.ai/{file}'))
    self.assertEqual([(q['name'],q['acceptedAnswer']['text']) for q in faq['mainEntity']],[(i[lang]['question'],i[lang]['answer']) for i in facts['items']])
+ def local_texts(self):
+  texts={'release':(ROOT/'marketing-site/release.json').read_text(),'llms':(ROOT/'marketing-site/llms.txt').read_text()}
+  for key in m.PAGES:
+   path=m.urllib.parse.urlparse(m.URLS[key]).path;texts[key]=(ROOT/f"marketing-site/{(path+'index' if path.endswith('/') else path).lstrip('/')}.html").read_text()
+  return texts
+ def test_cross_checks_pass_on_the_committed_site_and_www_is_only_a_warning(self):
+  findings,warnings=m.cross(self.local_texts())
+  self.assertEqual(findings,[]);self.assertEqual([w['code'] for w in warnings],['WWW_UNAVAILABLE'])
+  self.assertEqual(m.cross(self.local_texts(),301)[1],[])
+ def test_cross_checks_catch_stale_version_broken_jsonld_hreflang_and_injected_script(self):
+  texts=self.local_texts();version=json.loads(texts['release'])['version']
+  texts['release']=texts['release'].replace('"version": "'+version+'"','"version": "9.9.9"')
+  texts['docs-ru']=texts['docs-ru'].replace('<link href="https://qoopia.ai/docs" hreflang="en"','<link href="https://qoopia.ai/mobile" hreflang="en"')
+  texts['mobile']=texts['mobile'].replace('</body>',"<script>'/cdn-cgi/challenge-platform/scripts/jsd/main.js'</script></body>")
+  codes={(f['surface'],f['code']) for f in m.cross(texts,301)[0]}
+  self.assertTrue({('home','RELEASE_VERSION_ABSENT'),('home-ru','RELEASE_VERSION_ABSENT'),('llms','RELEASE_VERSION_ABSENT'),('home','JSONLD_VERSION'),('docs-ru','HREFLANG_NOT_RECIPROCAL'),('mobile','INJECTED_SCRIPT')}<=codes,codes)
  def test_current_sitemap_and_unexpected_extra(self):
   xml=(ROOT/'marketing-site/sitemap.xml').read_text()
   self.assertEqual(m.inspect('sitemap',xml,{}),[])

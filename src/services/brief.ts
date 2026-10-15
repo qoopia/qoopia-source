@@ -1,6 +1,7 @@
 import { db } from "../db/connection.ts";
 import { safeJsonParse, QoopiaError } from "../utils/errors.ts";
 import { readLevel, visibleRowSql } from "../auth/principal.ts";
+import { selectCanons } from "./canon.ts";
 
 interface BriefParams {
   workspace_id: string;
@@ -132,7 +133,8 @@ export function brief(p: BriefParams) {
          AND type IN ('note', 'memory', 'decision', 'knowledge', 'context')
          AND deleted_at IS NULL ${notArchived}
          ${extraSql}
-       ORDER BY created_at DESC
+       -- A session's working-context note is rewritten in place: recent means recently changed.
+       ORDER BY updated_at_ms DESC, created_at DESC
        LIMIT ?`,
     )
     .all(p.workspace_id, ...extraParams, limit) as NoteRowLite[];
@@ -188,9 +190,7 @@ export function brief(p: BriefParams) {
     agentActivityWhere.push(`a.name = ?`);
     agentActivityParams.push(p.agent);
   }
-  const notesTodayProjectFilter = projectId
-    ? `AND n.project_id = '${projectId.replace(/'/g, "''")}'`
-    : "";
+  const notesTodayProjectFilter = projectId ? `AND n.project_id = ?` : "";
   const agents = db
     .prepare(
       // F-275: the raw created_at bound (two days back tolerates any stored
@@ -204,7 +204,7 @@ export function brief(p: BriefParams) {
        FROM agents a WHERE ${agentActivityWhere.join(" AND ")}
        ORDER BY a.last_seen DESC`,
     )
-    .all(...visible, ...agentActivityParams) as Array<{
+    .all(...visible, ...(projectId ? [projectId] : []), ...agentActivityParams) as Array<{
     id: string;
     name: string;
     last_seen: string | null;
@@ -235,6 +235,11 @@ export function brief(p: BriefParams) {
   }).length;
   const tokensReturned = Math.ceil(totalBytes / 4);
 
+  // Canon: the caller's always rules, and its project's rules when brief is for a project.
+  const canon = selectCanons({ workspace_id: p.workspace_id, agent_id: p.caller_agent_id, project: projectId ?? undefined,
+    surface: "brief", include_contextual: !!projectId });
+  const canonItems = [...canon.always, ...canon.contextual].map((m) => ({ id: m.canon.id, text: m.canon.text, scope: m.canon.scope, mode: m.canon.mode }));
+
   return {
     workspace_id: p.workspace_id,
     project: projectName,
@@ -252,6 +257,7 @@ export function brief(p: BriefParams) {
     ...(activeDealsTotal.c ? { active_deals: { total: activeDealsTotal.c, items: activeDeals.map(preview) } } : {}),
     ...(!p.project && !p.agent && !openTasksTotalRow.c && !recentNotesTotal.c && !activeDealsTotal.c
       ? { empty_workspace: { next: "Read qoopia_protocol; save the first memory with note_create; search it later with recall." } } : {}),
+    ...(canonItems.length ? { canon: { note: "Rules the owner, the steward and this agent keep. Follow them unless the user's current message says otherwise; canon_match finds the ones a task calls for.", items: canonItems } } : {}),
     agent_activity: agentActivity,
     cost: { tokens_returned: tokensReturned },
   };

@@ -6,6 +6,8 @@ import {installAgentInstructions,planAgentInstructions,refreshAgentInstructions,
 import {agentKitFiles,agentKitFilesEn,agentKitManifest,agentProtocol,managedAgentInstructions,AGENT_KIT_REVISION} from '../src/agent-kit/index.ts';
 import {hash,privateDirectory,durableWrite} from '../src/utils/fs.ts';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+// These cases describe a Russian installation; without a choice the kit follows the installation's language (A6-11).
+process.env.QOOPIA_LANGUAGE='ru';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {createMcpServer} from '../src/mcp/server.ts';
 import type {AuthContext} from '../src/auth/middleware.ts';
@@ -104,6 +106,7 @@ test('completed writes with pending receipt finalize; reconnect preserves the st
 // digest recorded, which is also the moment a reader decides the change is worth
 // re-publishing to every profile.
 const PUBLISHED_REVISIONS: Record<number, string> = {
+  14: '535220e878306c4a049e0961f8303f853d905407641f15784235d5710206a32e',
   13: 'e34f15f352ef42ea7f73923831728bf744b77efdef6f65dadb4c6a08d435047c',
   12: '9536e8b7e48f1e644349dfc5a462a0abea4114e54a1cb8ebac0fd995d49b82b7',
   11: 'b6025f88543dcabd1d660225501eb3a9099dfe7d0c48da343ad839d35d08de94',
@@ -312,7 +315,7 @@ test('a block Qoopia wrote in an earlier revision stays managed after the Codex 
 test('every tool the kit names is a real MCP tool, and the corrected claims stay corrected',()=>{
   const source=['src/mcp','src/api'].flatMap(dir=>fs.readdirSync(dir).filter(name=>name.endsWith('.ts')).map(name=>fs.readFileSync(path.join(dir,name),'utf8'))).join('\n');
   const tools=new Set([...source.matchAll(/(?:name: ?|registerTool\()['"]([a-z_]+)['"]/g)].map(match=>match[1]));
-  const named=new Set([agentKitFiles,agentKitFilesEn].flatMap(kit=>Object.values(kit)).flatMap(text=>[...text.matchAll(/`((?:note|session|agent|memory|skill|entity|extraction|connection|qoopia|recall|file)_[a-z_]+)`/g)].map(match=>match[1]!))
+  const named=new Set([agentKitFiles,agentKitFilesEn].flatMap(kit=>Object.values(kit)).flatMap(text=>[...text.matchAll(/`((?:note|session|agent|memory|skill|entity|extraction|connection|qoopia|recall|file|canon)_[a-z_]+)`/g)].map(match=>match[1]!))
     .filter(name=>!/_(id|name|key|url|mode)$/.test(name)&&name!=='qoopia_memory'));
   expect(named.size).toBeGreaterThan(10);
   for(const name of named)expect(tools.has(name)?name:'missing '+name).toBe(name);
@@ -322,5 +325,8 @@ test('every tool the kit names is a real MCP tool, and the corrected claims stay
     // A prepared /mcp/c/ connection requires idempotency_key on note_create; strict schemas refuse unknown flags.
     expect(kit['qoopia-protocol.md']).toContain('`idempotency_key`');
     expect(kit['qoopia-protocol.md']).not.toMatch(/игнорируются|are ignored/);
+    // Revision 14 (ADR-022): shared context no longer opens other agents' raw transcripts; Canon is described.
+    expect(kit['qoopia-protocol.md']).not.toMatch(/заметки и транскрипты всех агентов|notes and transcripts of every agent/);
+    for (const name of ['`session_review`', 'dreamer', '`canon_match`', '`canon_create`', '`canon_list`']) expect(kit['qoopia-protocol.md']).toContain(name);
   }
 });

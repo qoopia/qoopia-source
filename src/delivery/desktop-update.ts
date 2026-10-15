@@ -52,3 +52,13 @@ export function preparePackageUpdate(delivery:Delivery,bundle:string,trust:strin
   if(Bun.semver.order(target.manifest.version,installed)<=0)return {state:'not_newer' as const,installed,package:target.manifest.version};
   return adopt(delivery,bundle,current);
 }
+/** Linux has no app updater: a newer public release is named, with how to install it [A6-05]. One request,
+ * three seconds, never throws; null when current, offline or unreadable. */
+export async function linuxUpdateNotice(installed:string,fetcher:typeof fetch=fetch){
+  try{
+    const response=await fetcher('https://qoopia.ai/release.json',{signal:AbortSignal.timeout(3000),redirect:'error'});
+    const latest=(await response.json() as {version?:unknown}).version;
+    if(!response.ok||typeof latest!=='string'||!/^\d+\.\d+\.\d+$/.test(latest)||Bun.semver.order(latest,installed)<=0)return null;
+    return {latest,installed,next_action:`Qoopia ${latest} is available (installed: ${installed}). Download the Linux package from https://qoopia.ai, extract it, stop the running Qoopia (close its terminal, or qoopia service uninstall --commit), then run ./qoopia open from the new folder. Your data and connections are kept.`};
+  }catch{return null;}
+}

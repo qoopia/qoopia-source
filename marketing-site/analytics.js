@@ -1,5 +1,5 @@
 (() => {
- const key='qoopia.site-analytics.v1',endpoint='https://auth.qoopia.ai/analytics/events';
+ const key='qoopia.site-analytics.v1',endpoint='https://auth.qoopia.ai/e/v1';
  const privacySignal=()=>navigator.globalPrivacyControl===true||navigator.doNotTrack==='1';
  let enabled=false,viewSent=false;
  try{enabled=localStorage.getItem(key)==='allow'&&!privacySignal();}catch{}
@@ -27,23 +27,12 @@
  const render=()=>{
   const msg=text=>window.QI?.msg(text)||text;
   summary.textContent=msg('Website statistics');
-  description.textContent=msg('Download button clicks are counted anonymously: platform, version, page and the kind of referring source only. Optional: also share page views, language, screen size category and loading times. No cookies, persistent visitor ID, full referrer address or page content are sent.');
+  description.textContent=msg('Downloads are counted on our server without cookies or identifiers: platform, version and the kind of referring source only. Optional: also share page views, language, screen size category and loading times. No cookies, persistent visitor ID, full referrer address or page content are sent.');
   labelText.textContent=msg(privacySignal()?'Your browser privacy signal has disabled website statistics.':'Allow technical website statistics');
  };
  render();document.querySelector('footer')?.append(details);window.addEventListener('qoopia:language',render);
  check.addEventListener('change',()=>{enabled=check.checked&&!privacySignal();try{localStorage.setItem(key,enabled?'allow':'deny');}catch{}view();});
- // Download clicks are an anonymous count sent without opt-in: no cookies, no stored
- // identifier, no IP. Only platform, public release version, page and referral category.
- // Browser privacy signals (GPC/DNT) still suppress it. fetch keepalive never delays the download.
- const downloadClick=link=>{
-  if(privacySignal()||!crypto.randomUUID)return;
-  const platform=['mac','linux'].includes(link.dataset.platform)?link.dataset.platform:'other',version=link.dataset.version||'';
-  const body=JSON.stringify({id:crypto.randomUUID(),kind:'download_click',page,platform,referrer:referral(),...(/^\d{1,3}\.\d{1,3}\.\d{1,3}(-[0-9A-Za-z.-]{1,40})?$/.test(version)?{version}:{})});
-  try{fetch(endpoint,{method:'POST',headers:{'content-type':'text/plain'},body,credentials:'omit',keepalive:true,mode:'cors',cache:'no-store'}).catch(()=>{});}
-  catch{try{navigator.sendBeacon?.(endpoint,new Blob([body],{type:'text/plain'}));}catch{}}
- };
- const onDownload=event=>{if(event.type==='auxclick'&&event.button!==1)return;const link=event.target instanceof Element?event.target.closest('#download-action a'):null;if(link)downloadClick(link);};
- document.addEventListener('click',onDownload);document.addEventListener('auxclick',onDownload);
+ // Downloads are counted on the server as /download/<platform> redirects to GitHub: nothing is sent from here.
  view();
  const timing=()=>{const entry=performance.getEntriesByType('navigation')[0];if(!entry)return;for(const [measurement,value] of [['dom_ready',entry.domContentLoadedEventEnd],['load',entry.loadEventEnd]])if(value>0)send('site_performance',{measurement,value:Math.min(300000,Math.round(value))});};
  if(document.readyState==='complete')timing();else window.addEventListener('load',()=>setTimeout(timing,0),{once:true});

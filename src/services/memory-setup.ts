@@ -13,6 +13,7 @@ import {RUNTIMES} from '../delivery/runtime-versions.ts';
 import {createAgent} from '../admin/agents.ts';
 import {sha256Hex} from '../auth/api-keys.ts';
 import {embeddingCoverage} from './embedding-store.ts';
+import {resumeMemoryCatchUp} from './continuity.ts';
 import {memoryClientConnectionPath,memoryProfile,memoryRoot,memoryModelStatus,memoryText,resetMemoryModelStatus,selectMemoryProfile,type MemoryProfile} from './memory-model.ts';
 import {QoopiaError} from '../utils/errors.ts';
 import {localServiceOrigin} from '../utils/standalone.ts';
@@ -90,7 +91,7 @@ async function login(workspace:string,profile:MemoryProfile) {
   child.once('error',()=>finish(false));child.once('close',code=>finish(code===0));
 }
 /** Conversations parked on a failure retry at the next maintenance tick. */
-function resume(workspace:string){db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);}
+function resume(workspace:string){db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_retry_at','$.continuity_error','$.continuity_backoff') WHERE workspace_id=?").run(workspace);resumeMemoryCatchUp(workspace);}
 type StoredConnection={format:'qoopia-memory-connection/1';url:string;agent_id:string;key:string;runtime:'codex'|'claude_code'};
 /** The stored memory connection while its agent is active with that key. 5.0.16 stored the tunnel
  * origin, which never serves /memory/continuity: the same agent moves to loopback. */

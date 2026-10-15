@@ -3,7 +3,7 @@ import type {AuthContext} from '../auth/middleware.ts';
 import {authorize,bootstrapToolAllowed,currentToolAuth,type AuthorityAction} from '../auth/policy.ts';
 import {grantedScopeAllowsRisk} from '../auth/oauth.ts';
 import {isAdmin} from '../auth/principal.ts';
-import {isToolAllowedForProfile,normalizeAgentProfile,ownerAllowed,toolCatalog,toolNames,type RiskClass} from '../mcp/tools.ts';
+import {dreamerAllowed,isToolAllowedForProfile,normalizeAgentProfile,ownerAllowed,toolCatalog,toolNames,type RiskClass} from '../mcp/tools.ts';
 import {assertInstanceWriteAllowed} from '../utils/instance-role.ts';
 import {BRIDGE_READ_TOOLS,BRIDGE_TOOL_NAMES,bridgeRefusal} from '../bridges/api.ts';
 import {agentMemoryStatus,AUTOSAVE_INSTRUCTION,autosaveIsModels} from '../services/memory-policy.ts';
@@ -24,11 +24,12 @@ const MECHANISMS:{id:string;title:string;match:RegExp;flag?:string}[]=[
   {id:'memory.sessions',title:'Session log, search and expansion',match:/^session_/},
   {id:'agentcomm',title:'Messages between agents, inbox, reply and wake',match:/^agent_(send|inbox|reply|status|session_)/},
   {id:'skills',title:'Skills',match:/^(skill_|runtime_|operation_get$)/},
+  {id:'canon',title:'Canon: rules loaded into context',match:/^canon_/},
   {id:'knowledge',title:'Knowledge pages',match:/^entity_/,flag:'QOOPIA_ENTITY_PAGES'},
   {id:'bridges',title:'Bridges and external material',match:/^bridge_/},
   {id:'files',title:'Files',match:/^file_/},
   {id:'transfer',title:'Export and import',match:/^(export_|import_)/},
-  {id:'management',title:'Agents, access and memory policy',match:/^(connection_prepare$|agent_(onboard|list|deactivate|set_profile|set_shared_context)$|memory_(policy|save)_)/},
+  {id:'management',title:'Agents, access and memory policy',match:/^(connection_prepare$|agent_(onboard|list|deactivate|set_profile|set_shared_context|set_dreamer)$|memory_(policy|save)_)/},
 ];
 
 /** What this connection really got, when the transport recorded it; otherwise the default rule. */
@@ -44,7 +45,7 @@ export function grantedTools(database:Database,auth:AuthContext,operations:reado
   // enforces: on a follower or with storage exhausted a write tool exists but always refuses,
   // and reporting it as available would be a promise the server cannot keep.
   const writable=(risk:RiskClass)=>{try{assertInstanceWriteAllowed(risk,'contract');return true;}catch{return false;}};
-  const registry=toolCatalog().filter(t=>(!t.admin||steward)&&(!t.ownerOnly||ownerAllowed(auth))&&bootstrapToolAllowed(t.name,bootstrap)&&isToolAllowedForProfile(t.risk,profile)&&grantedScopeAllowsRisk(auth.granted_scope,t.risk)&&writable(t.risk)).map(t=>t.name);
+  const registry=toolCatalog().filter(t=>(!t.admin||steward)&&(!t.ownerOnly||ownerAllowed(auth))&&(!t.dreamerOnly||dreamerAllowed(auth))&&bootstrapToolAllowed(t.name,bootstrap)&&isToolAllowedForProfile(t.risk,profile)&&grantedScopeAllowsRisk(auth.granted_scope,t.risk)&&writable(t.risk)).map(t=>t.name);
   const taken=new Set(toolNames('full').filter(name=>bootstrapToolAllowed(name,bootstrap)));
   const authority=operations.filter(op=>!op.humanOnly&&!taken.has(op.name)).filter(op=>{try{authorize(database,auth,op.action);return true;}catch{return false;}}).map(op=>op.name);
   const bridges=bridgeRefusal(auth)?[]:BRIDGE_TOOL_NAMES.filter(name=>{try{currentToolAuth(database,auth,BRIDGE_READ_TOOLS.includes(name)?'read':'write-low');return true;}catch{return false;}});
@@ -79,6 +80,7 @@ function channelMechanism(base:ContinuityBase,memory:ReturnType<typeof agentMemo
   if(memory.state==='manual')return {...base,status:'forbidden',reason:'The owner set this agent to save only on request.',
     action:'Reading and search keep working. note_create prepares the note for the owner to confirm; the owner can turn automatic saving back on.'};
   if(memory.state==='working')return {...base,status:'available',reason:null,action:null};
+  if(memory.error_code==='CODEX_TRANSCRIPT_UNAVAILABLE')return {...base,status:'faulty',reason:'Codex runs the lifecycle hooks but supplies neither a conversation transcript nor prompt and final-answer text.',action:'Update or reconnect this Codex client, then run qoopia doctor and verify a new conversation.'};
   if(memory.error_code==='CAPTURE_STOPPED')return {...base,status:'faulty',reason:'This agent keeps working, but its sessions stopped arriving: the lifecycle hooks no longer deliver.',
     action:'The owner runs qoopia doctor on the computer where this runtime runs; it names the failing hook and what to do. Saved memory stays readable.'};
   // Behind is capture working with summaries catching up (the dashboard says so), not a fault.

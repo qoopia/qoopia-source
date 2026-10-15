@@ -34,8 +34,8 @@ test('P3 pinned bundle rejects tamper, foreign key, unsupported target, links an
 });
 test('P3 install/backup/update rollback preserve matching data; post-cutover writes refuse rollback',()=>{
  const f=fixture();try{
-  const b=f.bundle('first'),next=f.bundle('next');const installed=f.delivery.install(b,3737);const before=snapshotInfo(dataFile(f.install,installed));
-  const backup=path.join(f.root,'backup');f.delivery.backup(backup);expect(verifyBackup(backup).logical_hash).toBe(before.logical_hash);
+  const b=f.bundle('first'),next=f.bundle('next');const installed=f.delivery.install(b,3737);
+  const backup=path.join(f.root,'backup');f.delivery.backup(backup);expect(verifyBackup(backup).logical_hash).toBe(snapshotInfo(dataFile(f.install,installed),2).logical_hash);
   f.delivery.update(next);expect(readCurrent(f.install).bundle).not.toBe(installed.bundle);expect(f.delivery.rollback()).toEqual(installed);
   const updated=f.delivery.update(next);const d=new Database(dataFile(f.install,updated));d.query("UPDATE workspaces SET name='new post-cutover write'").run();d.close();
   expect(()=>f.delivery.rollback()).toThrow('Post-cutover');expect(readCurrent(f.install).generation).toBe(updated.generation);

@@ -87,8 +87,9 @@ test("another workspace sees only its own rows", async () => {
   expect(body.items[0]!.agent_id).toBe(id.other!);
 });
 
-test("ADR-020: shared context searches siblings, off searches only itself; private notes stay with their author", async () => {
-  expect((await search("b", "zebraquartz")).body.items.length).toBe(2);
+test("ADR-020/022: shared context searches siblings' notes, off searches only itself; private notes stay with their author", async () => {
+  // ADR-022: b finds a's note, but a's raw message only the dreamer, the steward and the owner.
+  expect((await search("b", "zebraquartz")).body.items.map((h) => h.kind)).toEqual(["note"]);
   expect((await search("b", "privatetoken")).body.items.length).toBe(1);
   expect((await search("a", "privatetoken")).body.items).toEqual([]);
   // The steward sees what the Notes tab already shows it.

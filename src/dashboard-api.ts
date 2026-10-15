@@ -25,18 +25,20 @@ import { getSupersedeChain } from "./services/note-relations.ts";
 import { confirmMemory, getMemoryLifecycle, setMemoryPin } from "./services/memory-lifecycle.ts";
 import { listExtractionRuns, getExtractionRun, reviewExtractionCandidate } from "./services/extraction.ts";
 import { recordRecallFeedback } from "./services/recall-feedback.ts";
+import { activityEvent } from "./services/activity.ts";
 import { assertNoSecrets } from "./utils/secret-guard.ts";
 import { assignmentReadiness, compatibility, type Assignment } from "./skills/loop.ts";
-import { ADMIN_TYPES, levelOf, seesWholeWorkspace, sharesContext, visibleRowSql } from "./auth/principal.ts";
+import { ADMIN_TYPES, isDreamer, levelOf, seesWholeWorkspace, sharesContext, transcriptLevelOf, visibleRowSql } from "./auth/principal.ts";
 import { attachmentDisposition, json, readRequestBody, RequestBodyError } from "./utils/http-json.ts";
 import { agentMemoryStatus, canManagePolicy, setMemoryPolicy, type MemoryMode } from "./services/memory-policy.ts";
-import { setSharedContext } from "./admin/agents.ts";
+import { setDreamer, setSharedContext } from "./admin/agents.ts";
 import { connectedApps } from "./services/browser-connections.ts";
 import { decideSaveRequest, listSaveRequests } from "./services/memory-save-requests.ts";
 import { agentContractFor } from "./api/agent-contract.ts";
 import { wakeDelivery } from "./services/agent-wake.ts";
 import { authorityOperations } from "./api/authority.ts";
 import { QoopiaError, safeJsonParse } from "./utils/errors.ts";
+import { createCanon, getCanon, listCanons, retireCanon, updateCanon } from "./services/canon.ts";
 import {
   dashboardPrincipal,
   DashboardAuth,
@@ -326,6 +328,7 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
   const items = rows.map((a) => {
     const memory = agentMemoryStatus(auth.workspace_id, a.id);
     const sharedContext = seesWholeWorkspace(a) ? null : sharesContext(a.id);
+    const dreamer = seesWholeWorkspace(a) ? null : isDreamer(a.id);
     const s = countSessions.get(a.id) as { c: number };
     const n = countNotes.get(a.id, auth.agent_id, level) as { c: number };
     const m = countMessages.get(a.id) as { c: number };
@@ -348,6 +351,9 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
       // ADR-020: null for the steward and the owner, who always read the whole workspace.
       shared_context: sharedContext,
       can_switch_shared_context: owner && sharedContext !== null,
+      // ADR-022: null for the steward and the owner, who already read every transcript.
+      dreamer,
+      can_switch_dreamer: owner && dreamer !== null,
       // Lets the list render the autosave switch as the owner's control instead of failing on click.
       can_manage_memory: owner,
       runtime: agentRuntime(a.name, surfaces.get(a.id), safeJsonParse<{ description?: unknown } | null>(a.metadata, {})?.description, clients.get(a.id)),
@@ -363,20 +369,25 @@ function listSessions(
   auth: DashboardAuth,
   agentId: string,
   limit = 100,
+  before: string | null = null,
 ) {
   if (denyIfNotOwn(res, auth, agentId)) return;
   const workspaceId = auth.workspace_id;
-  const rows = db
+  // A4-06: `before` is the last row's "last_active|id"; the next page continues after it.
+  const [at, after] = before?.includes("|") ? before.split("|") : [null, null];
+  const lim = Math.min(Math.max(limit, 1), 500);
+  const page = db
     .prepare(
       `SELECT s.id, s.workspace_id, s.agent_id, s.title, s.metadata,
               s.created_at, s.last_active,
               (SELECT COUNT(*) FROM session_messages WHERE session_id = s.id) as message_count
        FROM sessions s
        WHERE s.agent_id = ? AND s.workspace_id = ?
-       ORDER BY s.last_active DESC
+         AND (? IS NULL OR s.last_active < ? OR (s.last_active = ? AND s.id < ?))
+       ORDER BY s.last_active DESC, s.id DESC
        LIMIT ?`,
     )
-    .all(agentId, workspaceId, Math.min(Math.max(limit, 1), 500)) as Array<{
+    .all(agentId, workspaceId, at, at, at, after, lim + 1) as Array<{
     id: string;
     workspace_id: string;
     agent_id: string;
@@ -386,6 +397,7 @@ function listSessions(
     last_active: string;
     message_count: number;
   }>;
+  const rows = page.slice(0, lim);
 
   const items = rows.map((r) => ({
     id: r.id,
@@ -396,7 +408,7 @@ function listSessions(
     message_count: r.message_count,
   }));
 
-  return json(res, 200, { items, total: items.length, agent_id: agentId });
+  return json(res, 200, { items, total: items.length, agent_id: agentId, next_before: page.length > lim ? `${rows[lim - 1]!.last_active}|${rows[lim - 1]!.id}` : null });
 }
 
 // ---- /api/dashboard/sessions/:session_id/messages ----
@@ -405,6 +417,7 @@ function sessionMessages(
   auth: DashboardAuth,
   sessionId: string,
   limit = 500,
+  before: number | null = null,
 ) {
   const workspaceId = auth.workspace_id;
   const sess = db
@@ -425,16 +438,22 @@ function sessionMessages(
   if (!sess) return json(res, 404, { error: "session_not_found" });
   // Non-admin: session must belong to the authenticated agent.
   if (denyIfNotOwn(res, auth, sess.agent_id)) return;
+  // ADR-022: a sibling's summaries stay shared; its raw messages only for the dreamer, steward and owner.
+  const hidden = sess.agent_id !== auth.agent_id && transcriptLevelOf(auth) === 0;
 
-  const rows = db
+  // A4-06: the newest messages first come back (in reading order); `before` (a message id) pages to older ones.
+  const lim = Math.min(Math.max(limit, 1), 2000);
+  const page = hidden ? [] : db
     .prepare(
       `SELECT id, role, content, metadata, token_count, created_at
        FROM session_messages
-       WHERE session_id = ?
-       ORDER BY id ASC
+       WHERE session_id = ? AND id < ?
+       ORDER BY id DESC
        LIMIT ?`,
     )
-    .all(sessionId, Math.min(Math.max(limit, 1), 2000)) as Array<{
+    .all(sessionId, before ?? Number.MAX_SAFE_INTEGER, lim + 1) as Array<{ id: number }>;
+  const hasMore = page.length > lim;
+  const rows = page.slice(0, lim).reverse() as Array<{
     id: number;
     role: string;
     content: string;
@@ -459,6 +478,9 @@ function sessionMessages(
     })),
     summaries,
     total: rows.length,
+    count: (db.prepare(`SELECT COUNT(*) AS c FROM session_messages WHERE session_id = ?`).get(sessionId) as { c: number }).c,
+    next_before: hasMore ? rows[0]!.id : null,
+    ...(hidden ? { transcript_hidden: true } : {}),
   });
 }
 
@@ -556,6 +578,10 @@ function searchMessages(
   // Shared FTS5 builder (F-101): operators and unindexable tokens are dropped
   // instead of being required by the AND-join. All words must match, no prefix.
   const cleaned = buildFtsMatch(query, "AND", false);
+  // ADR-022: another agent's raw messages only for the dreamer, the steward and the owner.
+  if (agentId !== auth.agent_id && transcriptLevelOf(auth) === 0) {
+    return json(res, 200, { items: [], total: 0, query, transcript_hidden: true });
+  }
   if (!cleaned) {
     return json(res, 200, { items: [], total: 0, query });
   }
@@ -632,6 +658,8 @@ function dashboardSearch(
   const level = levelOf(auth);
   const own = level > 0 ? "" : " AND ag.id = ?";
   const ownParams = level > 0 ? [] : [auth.agent_id];
+  // ADR-022: other agents' raw messages only for the dreamer, the steward and the owner.
+  const allMessages = transcriptLevelOf(auth) > 0;
   try {
     const messages = db
       .prepare(
@@ -640,11 +668,11 @@ function dashboardSearch(
          FROM session_messages m
          JOIN agents ag ON ag.id = m.agent_id AND ag.workspace_id = m.workspace_id AND ag.active = 1
          WHERE m.rowid IN (SELECT rowid FROM session_messages_fts WHERE session_messages_fts MATCH ?)
-           AND m.workspace_id = ?${own}${mc ? ` AND ${mc.sql}` : ""}
+           AND m.workspace_id = ?${allMessages ? "" : " AND ag.id = ?"}${mc ? ` AND ${mc.sql}` : ""}
          ORDER BY m.created_at DESC, m.id DESC
          LIMIT ?`,
       )
-      .all(match, auth.workspace_id, ...ownParams, ...(mc?.params ?? []), lim + 1) as Array<Record<string, any>>;
+      .all(match, auth.workspace_id, ...(allMessages ? [] : [auth.agent_id]),...(mc?.params ?? []), lim + 1) as Array<Record<string, any>>;
     // ponytail: every match is sorted by time (~3 µs a row: 60 ms for 21k matching notes) and a note's
     // first 8,000 characters feed its excerpt (a later match shows the note's start). Rank or pre-limit
     // the FTS rowids if workspaces reach 10^5 matches per word.
@@ -955,7 +983,7 @@ function ccActivity(
   try {
     const rows = db
       .prepare(
-        `SELECT a.id, a.action, a.entity_type, a.entity_id, a.summary,
+        `SELECT a.id, a.action, a.entity_type, a.entity_id, a.summary, a.details,
                 a.agent_id, ag.name AS agent_name, a.created_at, a.origin_host
          FROM activity a
          LEFT JOIN agents ag ON ag.id = a.agent_id
@@ -965,7 +993,7 @@ function ccActivity(
       )
       .all(...params, lim) as any[];
     return json(res, 200, {
-      items: rows,
+      items: rows.map(({ details, ...row }) => ({ ...row, ...activityEvent({ ...row, details: safeJsonParse(details, {}) }) })),
       total: rows.length,
       next_before: rows.length ? `${rows[rows.length - 1].created_at}|${rows[rows.length - 1].id}` : null,
     });
@@ -1418,7 +1446,8 @@ async function memoryOwnerPost(req: IncomingMessage, res: ServerResponse, auth: 
     if (error instanceof RequestBodyError) return json(res, error.status, { error: error.message });
     const code = error instanceof QoopiaError ? error.code : "INTERNAL";
     const status = { FORBIDDEN: 403, NOT_FOUND: 404, STALE_REVISION: 409, CONFLICT: 409, EXPIRED: 410, INVALID_INPUT: 400 }[code as string] ?? 500;
-    return json(res, status, { error: code.toLowerCase(), error_description: status === 500 ? "Could not complete the memory change" : (error as Error).message });
+    return json(res, status, { error: code.toLowerCase(), error_description: status === 500 ? "Could not complete the memory change" : (error as Error).message,
+      ...(status !== 500 && error instanceof QoopiaError && error.details ? { details: error.details } : {}) });
   }
 }
 
@@ -1442,10 +1471,28 @@ const sharedContextPost = (req: IncomingMessage, res: ServerResponse, auth: Dash
     return setSharedContext({ workspace_id: auth.workspace_id, agent_id: agentId, enabled: body.enabled as boolean, actor_id: auth.agent_id });
   });
 
+/** ADR-022: the owner's dreamer switch on the agent card; setDreamer itself refuses anyone else. */
+const dreamerPost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, agentId: string) =>
+  memoryOwnerPost(req, res, auth, (body) =>
+    setDreamer({ workspace_id: auth.workspace_id, agent_id: agentId, enabled: body.enabled as boolean, actor_id: auth.agent_id }));
+
 const memorySavePost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, requestId: string) =>
   memoryOwnerPost(req, res, auth, (body) => {
     if (typeof body.accept !== "boolean") throw new QoopiaError("INVALID_INPUT", "accept must be true or false");
     return decideSaveRequest({ workspace_id: auth.workspace_id, actor_id: auth.agent_id, id: requestId, accept: body.accept });
+  });
+
+/** Canon from the dashboard: the owner writes, retires and rewords; the same rules as canon_* tools. */
+const canonPost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, id: string | undefined, action: string | undefined) =>
+  memoryOwnerPost(req, res, auth, (body) => {
+    // Agents write their own canons over MCP; the dashboard is the owner's.
+    if (!canManagePolicy(auth.workspace_id, auth.agent_id))
+      throw new QoopiaError("FORBIDDEN", "Only the workspace owner changes canons in the dashboard");
+    const actor = { agent_id: auth.agent_id, type: auth.type }, str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    if (!id) return createCanon({ workspace_id: auth.workspace_id, actor, source: "dashboard", text: String(body.text ?? ""), scope: str(body.scope) as never,
+      agent: str(body.agent), project: str(body.project), mode: str(body.mode) as never, triggers: body.triggers, supersedes_id: str(body.supersedes_id), on_conflict: str(body.on_conflict) as never });
+    if (action === "retire") return retireCanon({ workspace_id: auth.workspace_id, actor, id, reason: str(body.reason) });
+    return updateCanon({ workspace_id: auth.workspace_id, actor, id, text: str(body.text), mode: str(body.mode) as never, triggers: body.triggers });
   });
 
 async function dashboardV4Post(req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, path: string) {
@@ -1626,6 +1673,28 @@ export function handleDashboardApi(
     return true;
   }
 
+  const dreamerRoute = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/dreamer$/);
+  if (method === "POST" && dreamerRoute) {
+    const auth = checkDashboardAuth(req);
+    if (!auth) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    void dreamerPost(req, res, auth, decodeURIComponent(dreamerRoute[1]!));
+    return true;
+  }
+
+  const canonRoute = path.match(/^\/api\/dashboard\/canons(?:\/([^/]+)(?:\/(retire))?)?$/);
+  if (canonRoute && method === "POST") {
+    const auth = checkDashboardAuth(req);
+    if (!auth) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    void canonPost(req, res, auth, canonRoute[1] ? decodeURIComponent(canonRoute[1]) : undefined, canonRoute[2]);
+    return true;
+  }
+
   const saveRoute = path.match(
 /^\/api\/dashboard\/memory-saves(?:\/([^/]+))?$/);
   if (saveRoute && (saveRoute[1] ? method === "POST" : method === "GET")) {
@@ -1709,7 +1778,7 @@ export function handleDashboardApi(
   let m = path.match(/^\/api\/dashboard\/agents\/([^/]+)\/sessions$/);
   if (m) {
     const limit = intParam("limit", 100);
-    listSessions(res, auth, decodeURIComponent(m[1]!), limit);
+    listSessions(res, auth, decodeURIComponent(m[1]!), limit, u.searchParams.get("before"));
     return true;
   }
 
@@ -1725,8 +1794,8 @@ export function handleDashboardApi(
   // /api/dashboard/sessions/:session_id/messages
   m = path.match(/^\/api\/dashboard\/sessions\/([^/]+)\/messages$/);
   if (m) {
-    const limit = intParam("limit", 500);
-    sessionMessages(res, auth, decodeURIComponent(m[1]!), limit);
+    const limit = intParam("limit", 500), before = intParam("before", 0);
+    sessionMessages(res, auth, decodeURIComponent(m[1]!), limit, before > 0 ? before : null);
     return true;
   }
 
@@ -1779,6 +1848,18 @@ export function handleDashboardApi(
     const q = u.searchParams.get("q");
     const limit = intParam("limit", 100);
     ccEntities(res, auth, type, q, limit);
+    return true;
+  }
+  if (path === "/api/dashboard/canons" || path.startsWith("/api/dashboard/canons/")) {
+    const actor = { agent_id: auth.agent_id, type: auth.type }, id = path.slice("/api/dashboard/canons/".length);
+    try {
+      if (path !== "/api/dashboard/canons") json(res, 200, getCanon({ workspace_id: auth.workspace_id, actor, id: decodeURIComponent(id) }));
+      else json(res, 200, listCanons({ workspace_id: auth.workspace_id, actor, agent: u.searchParams.get("agent") ?? undefined,
+        status: (u.searchParams.get("status") ?? "active") as never, query: u.searchParams.get("q") || undefined, limit: intParam("limit", 200) }));
+    } catch (error) {
+      const code = error instanceof QoopiaError ? error.code : "INTERNAL";
+      json(res, code === "NOT_FOUND" ? 404 : code === "FORBIDDEN" ? 403 : code === "INVALID_INPUT" ? 400 : 500, { error: code.toLowerCase() });
+    }
     return true;
   }
   if (path === "/api/dashboard/skills") {

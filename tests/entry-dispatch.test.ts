@@ -69,6 +69,14 @@ test('uninstall without --commit is preview-only', () => {
   expect(tree(home)).toEqual([]);
 }, 20_000);
 
+test('maintenance raw-retention is a read-only report: no --commit needed, and no installation is created for it', () => {
+  const result = entry('maintenance', 'raw-retention', '--root', root);
+  expect(result.stdout).not.toContain('PREVIEW');
+  expect(result.status).not.toBe(0);
+  expect(fs.existsSync(path.join(root, 'current.json'))).toBe(false);
+  expect(entry('help').stdout).toContain('maintenance [raw-retention]');
+}, 20_000);
+
 test('uninstall preview names linked memory hooks, which run the bundles it deletes, and the command that removes them', () => {
   fs.mkdirSync(path.join(root, 'memory-clients', 'claude_code'), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(root, 'memory-clients', 'claude_code', 'connection.json'), '{}', { mode: 0o600 });

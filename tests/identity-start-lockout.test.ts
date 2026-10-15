@@ -66,13 +66,17 @@ describe("F-126: pending sign-ins cannot be filled by anonymous callers", () => 
     expect(await owner("/poll")).toEqual({ status: 200, data: { pending: true } });
   });
 
-  test("an e-mail start for an address other than the linked one is refused before the broker", async () => {
+  test("an e-mail start for another address never reaches the broker and looks like the owner's (A3-04)", async () => {
     const login = localIdentityLogin(root, db, stubBroker);
     const before = brokerRequests.length;
-    const refused = await client(login, "10.1.1.1")("/start", { method: "email", email: "victim@example.org" });
-    expect(refused.status).toBe(400);
+    const stranger = client(login, "10.1.1.1");
+    const decoy = await stranger("/start", { method: "email", email: "victim@example.org" });
     expect(brokerRequests.length).toBe(before);
-    expect((await client(login, "10.1.1.1")("/start", { method: "email", email: "Owner@example.com" })).status).toBe(200);
+    const owner = client(login, "10.1.1.2");
+    const real = await owner("/start", { method: "email", email: "Owner@example.com" });
+    expect(brokerRequests.length).toBe(before + 1);
+    expect([decoy.status, Object.keys(decoy.data)]).toEqual([real.status, Object.keys(real.data)]);
+    expect(await stranger("/poll")).toEqual({ status: 200, data: { pending: true } });
   });
 });
 

@@ -34,7 +34,7 @@ export function selectServerWorkspace(root: string, input: string) {
 export type ServerReachability = 'reachable' | 'not_qoopia' | 'unreachable';
 /** Read-only: GET <origin>/health with no credentials, cookies or redirects and a short deadline.
  * A Qoopia server answers JSON naming its version, status and role; anything else is not one. */
-export async function probeServerWorkspace(input: string, request: typeof fetch = fetch, timeoutMs = 3000): Promise<ServerReachability> {
+export async function probeServerWorkspace(input: string, request: typeof fetch = fetch, timeoutMs = 10_000): Promise<ServerReachability> {
   let response: Response;
   try {
     response = await request(new URL('/health', serverWorkspaceUrl(input)).href,

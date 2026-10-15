@@ -55,18 +55,21 @@ class Store:
         github=json.loads(ecosystem['payload']).get('report') if ecosystem else None
         history=[dict(r) for r in self.db.execute("SELECT metric,dimensions,substr(observed_at,1,10) AS day,value FROM (SELECT *,row_number() OVER(PARTITION BY metric,dimensions,substr(observed_at,1,10) ORDER BY observed_at DESC) AS n FROM observations WHERE source='github_ecosystem' AND observed_at>=datetime('now','-90 days')) WHERE n=1 ORDER BY day DESC LIMIT 10000")]
         for r in history:r['dimensions']=json.loads(r['dimensions'])
-        # Website download-button clicks (anonymous browser counts; not completed downloads or people).
-        where="FROM events WHERE source='browser' AND kind='download_click'"
-        dims="coalesce(json_extract(data,'$.platform'),'other') AS platform,coalesce(json_extract(data,'$.version'),'unknown') AS version"
-        first=self.db.execute("SELECT min(received_at) "+where).fetchone()[0]
-        clicks={'total':self.db.execute("SELECT count(*) "+where).fetchone()[0],
-                'last_7d':self.db.execute("SELECT count(*) "+where+" AND received_at>=(strftime('%s','now','-7 days')*1000)").fetchone()[0],
-                'last_30d':self.db.execute("SELECT count(*) "+where+" AND received_at>=(strftime('%s','now','-30 days')*1000)").fetchone()[0],
-                'since':datetime.datetime.fromtimestamp(first/1000,UTC).isoformat() if first else None,
-                'by_release':[dict(r) for r in self.db.execute("SELECT "+dims+",count(*) AS clicks,max(received_at) AS last_at "+where+" GROUP BY platform,version ORDER BY version DESC,platform LIMIT 500")],
-                'daily':[dict(r) for r in self.db.execute("SELECT date(received_at/1000,'unixepoch') AS day,"+dims+",coalesce(json_extract(data,'$.page'),'other') AS page,count(*) AS clicks "+where+" GROUP BY day,platform,version,page ORDER BY day DESC,platform,version,page LIMIT 2000")],
-                'note':'Anonymous website download-button clicks (UTC days). Not completed downloads, installs or unique people; browsers with GPC/DNT are not counted.'}
-        return {'download_clicks':clicks,'github_ecosystem':github,'github_history':history,'provider_freshness':freshness,'generated_at':utc(),'coverage':'Owned services and provider APIs only; independent user installations are not reporting telemetry. Browser events are untrusted counts, not unique users.','latest':latest,'source_runs':runs,'event_daily':events}
+        def summary(where,count,note):
+            dims="coalesce(json_extract(data,'$.platform'),'other') AS platform,coalesce(json_extract(data,'$.version'),'unknown') AS version"
+            first=self.db.execute("SELECT min(received_at) "+where).fetchone()[0]
+            return {'total':self.db.execute("SELECT count(*) "+where).fetchone()[0],
+                    'last_7d':self.db.execute("SELECT count(*) "+where+" AND received_at>=(strftime('%s','now','-7 days')*1000)").fetchone()[0],
+                    'last_30d':self.db.execute("SELECT count(*) "+where+" AND received_at>=(strftime('%s','now','-30 days')*1000)").fetchone()[0],
+                    'since':datetime.datetime.fromtimestamp(first/1000,UTC).isoformat() if first else None,
+                    'by_release':[dict(r) for r in self.db.execute("SELECT "+dims+",count(*) AS "+count+",max(received_at) AS last_at "+where+" GROUP BY platform,version ORDER BY version DESC,platform LIMIT 500")],
+                    'daily':[dict(r) for r in self.db.execute("SELECT date(received_at/1000,'unixepoch') AS day,"+dims+",coalesce(json_extract(data,'$.page'),'other') AS page,count(*) AS "+count+" "+where+" GROUP BY day,platform,version,page ORDER BY day DESC,platform,version,page LIMIT 2000")],
+                    'note':note}
+        # Server-counted downloads: qoopia.ai/download/<platform> redirects through the account service (5.0.21+).
+        downloads=summary("FROM events WHERE source='server' AND kind='download_redirect'",'downloads','Installer downloads started from qoopia.ai/download links, counted by the account service on the redirect to GitHub (UTC days). Not completed downloads, installs or unique people; known crawlers and GPC/DNT requests are not counted.')
+        # Website download-button clicks (browser counts until 5.0.21; not completed downloads or people).
+        clicks=summary("FROM events WHERE source='browser' AND kind='download_click'",'clicks','Anonymous website download-button clicks sent by the browser before 5.0.21 (UTC days). Not completed downloads, installs or unique people; browsers with GPC/DNT or blockers are not counted.')
+        return {'site_downloads':downloads,'download_clicks':clicks,'github_ecosystem':github,'github_history':history,'provider_freshness':freshness,'generated_at':utc(),'coverage':'Owned services and provider APIs only; independent user installations are not reporting telemetry. Browser events are untrusted counts, not unique users.','latest':latest,'source_runs':runs,'event_daily':events}
 
 def get(url,headers=None):
     req=urllib.request.Request(url,headers={'User-Agent':'Qoopia-Analytics/1','Accept':'application/json',**(headers or {})})
@@ -230,15 +233,29 @@ def operations(store,root):
         health=data.get('Health',{}).get('Status')
         if health is not None:store.observe('operations','container_healthy',int(health=='healthy'),{'container':name})
 
+BACKUP_KEEP_DAILY,BACKUP_KEEP_WEEKLY=7,4
 def daily_backup(store,directory):
     root=Path(directory);root.mkdir(parents=True,exist_ok=True,mode=0o700)
     file=root/(datetime.datetime.now(UTC).date().isoformat()+'.sqlite')
-    if file.exists():return
-    temp=file.with_suffix('.tmp')
-    with sqlite3.connect(temp) as target:
-        store.db.backup(target)
-        if target.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise RuntimeError('analytics backup integrity failed')
-    temp.replace(file)
+    if not file.exists():
+        temp=file.with_suffix('.tmp');target=sqlite3.connect(temp)
+        try:
+            store.db.backup(target)
+            # The copy inherits WAL mode; fold the WAL into the file before it is renamed, or the renamed file misses pages.
+            target.execute('PRAGMA journal_mode=DELETE')
+            if target.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise RuntimeError('analytics backup integrity failed')
+        finally:target.close()
+        temp.replace(file)
+    prune_backups(root)
+
+def prune_backups(root,daily=BACKUP_KEEP_DAILY,weekly=BACKUP_KEEP_WEEKLY):
+    """Keep the newest `daily` copies plus the newest copy of each of the last `weekly` ISO weeks; drop the rest and leftover temp files."""
+    files=sorted(p for p in Path(root).glob('????-??-??.sqlite'))
+    weeks={}
+    for f in files:weeks[datetime.date.fromisoformat(f.stem).isocalendar()[:2]]=f
+    keep=set(files[-daily:])|set(sorted(weeks.values())[-weekly:])
+    for f in [*files,*Path(root).glob('*.tmp'),*Path(root).glob('*.tmp-wal'),*Path(root).glob('*.tmp-shm')]:
+        if f not in keep:f.unlink(missing_ok=True)
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--db',required=True);p.add_argument('--auth-db');p.add_argument('--memory-db');p.add_argument('--events-db');p.add_argument('--github',action='store_true');p.add_argument('--provider-import');p.add_argument('--export');p.add_argument('--owner-export');p.add_argument('--backup');p.add_argument('--backup-directory');p.add_argument('--operations',action='store_true');a=p.parse_args();os.umask(0o077)
@@ -254,7 +271,7 @@ def main():
     if a.export:
         dest=Path(a.export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(s.export(),ensure_ascii=False,indent=2)+'\n');temp.replace(dest)
     if a.owner_export:
-        data=s.export();data={k:data[k] for k in ['generated_at','latest','event_daily','source_runs','github_ecosystem','github_history','download_clicks']}
+        data=s.export();data={k:data[k] for k in ['generated_at','latest','event_daily','source_runs','github_ecosystem','github_history','site_downloads','download_clicks']}
         dest=Path(a.owner_export);temp=dest.with_suffix('.tmp');temp.write_text(json.dumps(data,ensure_ascii=False)+'\n')
         temp.replace(dest)
     if a.backup:

@@ -5,15 +5,15 @@ import { readRecoveryOps, validateRecoveryOps, opsJournalError, OpsJournalError,
 import type { Database } from 'bun:sqlite';
 import { openReadonlyDatabase, openWritableDatabase, assertDatabaseIntegrity } from '../db/sqlite.ts';
 import { createVerifiedBackup, sha256File } from '../services/backup.ts';
-import { computeLogicalDatabaseHash } from '../db/v4-migrations.ts';
+import { computeLogicalDatabaseHash, type LogicalHashFormat } from '../db/v4-migrations.ts';
 import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJsonBytes, MAX_JSON_BYTES, safePath, preflightSpace } from '../utils/fs.ts';
 import { tableExists } from '../db/introspect.ts';
 
 /** Schemas a unified snapshot can carry. One list: backup, retention and restore read it from here. */
-const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48,49] as const;
+const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48,49,50,51] as const;
 export const unifiedSnapshotSchema=(schema:number)=>(UNIFIED_SNAPSHOT_SCHEMAS as readonly number[]).includes(schema);
 
-export function inspectSnapshot(database: Database) {
+export function inspectSnapshot(database: Database, format: LogicalHashFormat = 1) {
   assertDatabaseIntegrity(database, 'Snapshot');
   const tables = new Set((database.query("SELECT name FROM sqlite_master WHERE type='table'").all() as {name:string}[]).map(r => r.name));
   const schema = (database.query('SELECT max(version) n FROM schema_versions').get() as {n:number}).n;
@@ -36,14 +36,15 @@ export function inspectSnapshot(database: Database) {
   const counts: Record<string,number> = {};
   for (const table of ['notes','sessions','files','skill_versions','skill_draft_revisions','skill_outcomes','workspace_owners','migration_origins','publisher_keys']) if (tables.has(table)) counts[table] = count(table);
   const publicKeys = tables.has('publisher_keys') ? count('publisher_keys') : 0;
-  return { instance, schema, logical_hash: computeLogicalDatabaseHash(database), counts, packages, inline_bytes: bytes,
+  return { instance, schema, logical_hash: computeLogicalDatabaseHash(database, format), ...(format === 2 ? {logical_hash_format: 2 as const} : {}), counts, packages, inline_bytes: bytes,
     ...(tables.has('bridge_identities')?{bridge_identity:{installations:count('bridge_identities'),private_keys:'included_in_private_database_snapshot',restore:'Stop the original installation before resuming the same bridge identity on a replacement'}}:{}),
     key_recovery: { public_trust_preserved: true, private_keys: 'not_custodied_by_qoopia', registered_public_keys: publicKeys,
       signing_continuity: publicKeys ? 'CONDITIONAL: external private recovery required' : 'no_registered_publisher', live_access: 'reissue_on_new_machine' } };
 }
-export function snapshotInfo(file: string) {
+/** Format 1 by default: update plans and cutover pointers hold format-1 hashes without saying so. */
+export function snapshotInfo(file: string, format: LogicalHashFormat = 1) {
   safePath(file); const database = openReadonlyDatabase(file);
-  try { return inspectSnapshot(database); } finally { database.close(); }
+  try { return inspectSnapshot(database, format); } finally { database.close(); }
 }
 export function snapshotExtent(file: string) {
   const database = openReadonlyDatabase(safePath(file));
@@ -54,7 +55,8 @@ export function snapshotExtent(file: string) {
 }
 export function backupUnified(source: string, output: string, expectedInstance?: string, operationsDir?: string) {
   safePath(source); if (fs.existsSync(output)) throw new Error('Backup destination must be new');
-  const sourceInfo = snapshotInfo(source);
+  // Backups carry format 2 (bounded memory); no binary older than this snapshot's schema restores it anyway.
+  const sourceInfo = snapshotInfo(source, 2);
   if (expectedInstance && sourceInfo.instance !== expectedInstance) throw new Error('Backup instance mismatch');
   const operationsBytes = operationsDir ? Buffer.from(serializeOps(readRecoveryOps(operationsDir, sourceInfo.instance))) : undefined;
   // Use the current SQLite page extent for staging planning, with a separate
@@ -65,7 +67,7 @@ export function backupUnified(source: string, output: string, expectedInstance?:
   try {
     const snapshot = createVerifiedBackup({source, output:path.join(output,'snapshot.db')});
     fs.chmodSync(snapshot.output,0o600);
-    const info = snapshotInfo(snapshot.output);
+    const info = snapshotInfo(snapshot.output, 2);
     if (info.instance !== sourceInfo.instance) throw new Error('Snapshot instance changed');
     if (operationsBytes) durableWrite(opsFile(output), operationsBytes);
     const manifest = { format:operationsBytes ? 'qoopia-backup/2' : 'qoopia-backup/1', data_scope:`complete-schema-${info.schema}-installation`, created_at:snapshot.created_at, sha256:snapshot.sha256, size:snapshot.size_bytes, ...info,
@@ -103,13 +105,19 @@ export function backupOperations(root: string, manifest: BackupManifest): OpsSta
   try { value = JSON.parse(bytes.toString('utf8')); } catch { throw new OpsJournalError('OPS_JOURNAL_INVALID'); }
   return validateRecoveryOps(value, manifest.instance);
 }
-export function verifyBackup(root: string, expectedInstance?: string) {
+/** Members, operations journal and the snapshot's file checksum, all streamed: no private copy and no
+ * logical hash. Enough for rotation to tell a backup it may delete from a damaged one it must keep. */
+export function backupIntact(root: string, expectedInstance?: string) {
   backupMembers(root);
   const m = readJson<BackupManifest>(path.join(root,'manifest.json'));
   if (expectedInstance && m.instance !== expectedInstance) throw new Error('Backup format or instance mismatch');
   backupOperations(root, m);
   const file = safePath(path.join(root,'snapshot.db'));
   if (fs.statSync(file).size !== m.size || sha256File(file) !== m.sha256) throw new Error('Backup checksum mismatch');
+  return m;
+}
+export function verifyBackup(root: string, expectedInstance?: string) {
+  const m = backupIntact(root, expectedInstance), file = path.join(root,'snapshot.db');
   // SQLite may create sidecars even for a readonly WAL header. Inspect only a private copy.
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'qoopia-verify-backup-'));
   try {
@@ -118,11 +126,37 @@ export function verifyBackup(root: string, expectedInstance?: string) {
     const prepared = openWritableDatabase(copy);
     try {
       prepared.query('SELECT count(*) FROM sqlite_master').get();
-      const actual = snapshotInfo(copy);
-      if (JSON.stringify(actual) !== JSON.stringify({instance:m.instance,schema:m.schema,logical_hash:m.logical_hash,counts:m.counts,packages:m.packages,inline_bytes:m.inline_bytes,...(m.schema>=39?{bridge_identity:m.bridge_identity}:{}),key_recovery:m.key_recovery})) throw new Error('Backup inventory mismatch');
+      const actual = snapshotInfo(copy, m.logical_hash_format === 2 ? 2 : 1);
+      if (JSON.stringify(actual) !== JSON.stringify({instance:m.instance,schema:m.schema,logical_hash:m.logical_hash,...(m.logical_hash_format === 2 ? {logical_hash_format:2} : {}),counts:m.counts,packages:m.packages,inline_bytes:m.inline_bytes,...(m.schema>=39?{bridge_identity:m.bridge_identity}:{}),key_recovery:m.key_recovery})) throw new Error('Backup inventory mismatch');
     } finally { prepared.close(); }
   } finally { fs.rmSync(scratch, {recursive:true,force:true}); }
   return m;
+}
+/** Full verification copies and hashes the whole snapshot: seconds and a large share of memory on a
+ * big installation, on the thread that serves every request, and the dashboard overview asks every 5 s
+ * [A1-01]. A backup folder is never rewritten, so one verification (passed or failed) stands while its
+ * members keep the same size, mtime, ctime and inode. Only the latest folder is remembered: that is the one ever inspected.
+ * ponytail: in memory, so a restarted server verifies the latest backup once more. */
+let verified: {root:string; identity:string; manifest?:BackupManifest; error?:unknown} | undefined;
+const backupIdentity = (root: string) => JSON.stringify(backupMembers(root).map(member => {
+  const stat = fs.statSync(path.join(root, member));
+  return [member, stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino];
+}));
+export function verifyBackupOnce(folder: string, expectedInstance?: string): BackupManifest {
+  const root = safePath(folder);
+  const identity = backupIdentity(root);
+  if (verified?.root !== root || verified.identity !== identity) {
+    // A failure is remembered as well: a damaged latest backup must not be copied and hashed every 5 s either.
+    try { verified = {root, identity, manifest: verifyBackup(root)}; } catch (error) { verified = {root, identity, error}; }
+  }
+  if (!verified.manifest) throw verified.error;
+  if (expectedInstance && verified.manifest.instance !== expectedInstance) throw new Error('Backup format or instance mismatch');
+  return verified.manifest;
+}
+/** A backup this installation just made and verified itself (scheduled maintenance) needs no second pass. */
+export function rememberVerifiedBackup(folder: string) {
+  const root = safePath(folder);
+  verified = {root, identity: backupIdentity(root), manifest: readJson<BackupManifest>(path.join(root, 'manifest.json'))};
 }
 /** Resets every key, grant, pairing and native binding in a restored copy. Used for a new-machine copy, and
  * for a same-machine restore whose current database is unreadable (later revocations cannot be known).
@@ -150,7 +184,7 @@ export function invalidateRestoredAccess(file: string) {
 }
 
 type AccessAgent = { id: string; name: string; api_key_hash: string; active: number; session_version: number; policy_epoch: number; tool_profile: string; principal_kind: string; authority_profile: string | null;
-  type: string; legacy_skill_access: number; shared: number | null; memory_mode?: string; memory_mode_revision?: number; memory_mode_updated_at_ms?: number | null; memory_mode_actor_id?: string | null };
+  type: string; legacy_skill_access: number; shared: number | null; dreamer: number | null; memory_mode?: string; memory_mode_revision?: number; memory_mode_updated_at_ms?: number | null; memory_mode_actor_id?: string | null };
 export type Reconnect = { agent_id: string; name: string; surface?: string; reason: string };
 const TOOL_RANK: Record<string, number> = { 'read-only': 0, 'no-destructive': 1, full: 2 };
 /** Same installation, same machine. The restored copy keeps its keys, grants and pairings, and every
@@ -169,7 +203,7 @@ export function carryAccessForward(file: string, liveFile: string): Reconnect[] 
     // Memory policy (schema 45+) is the owner's privacy decision: manual set after the backup stays manual.
     const memory = columns('agents').includes('memory_mode') ? ',memory_mode,memory_mode_revision,memory_mode_updated_at_ms,memory_mode_actor_id' : '';
     const agentSql = `SELECT id,name,api_key_hash,active,session_version,policy_epoch,tool_profile,principal_kind,authority_profile,type,legacy_skill_access,
-      json_extract(metadata,'$.shared_context') shared${memory} FROM agents`;
+      json_extract(metadata,'$.shared_context') shared,json_extract(metadata,'$.dreamer') dreamer${memory} FROM agents`;
     const current = new Map(all<AccessAgent>(live, agentSql).map(a => [a.id, a])), restored = new Map(all<AccessAgent>(d, agentSql).map(a => [a.id, a]));
     const surfaces = new Map(has('client_connections') ? all<{agent_id:string;surface:string}>(live, "SELECT agent_id,surface FROM client_connections WHERE state<>'revoked'").map(c => [c.agent_id, c.surface]) : []);
     const ask = (a: AccessAgent, reason: string) => { if (a.principal_kind !== 'human') reconnect.push({ agent_id: a.id, name: a.name, ...(surfaces.has(a.id) ? { surface: surfaces.get(a.id) } : {}), reason }); };
@@ -182,11 +216,13 @@ export function carryAccessForward(file: string, liveFile: string): Reconnect[] 
         // Authority profiles are not ordered by power: the current one is the owner's latest decision, so a role
         // lowered after the backup stays lowered.
         // So are the agent type (a steward demoted after the backup is not a steward again), the shared-context
-        // toggle and the memory policy; the old skill API stays only if both copies allow it.
+        // toggle, the dreamer role (ADR-022) and the memory policy; the old skill API stays only if both copies allow it.
         d.query(`UPDATE agents SET api_key_hash=?,active=?,session_version=?,policy_epoch=?,tool_profile=?,authority_profile=?,type=?,legacy_skill_access=?,
           metadata=CASE WHEN ? IS NULL THEN json_remove(metadata,'$.shared_context') ELSE json_set(metadata,'$.shared_context',json('false')) END WHERE id=?`)
           .run(c.api_key_hash, Math.min(a.active, c.active), Math.max(a.session_version, c.session_version), Math.max(a.policy_epoch, c.policy_epoch), tool, c.authority_profile,
             c.type, Math.min(a.legacy_skill_access, c.legacy_skill_access), c.shared === 0 ? 0 : null, a.id);
+        d.query(`UPDATE agents SET metadata=CASE WHEN ? THEN json_set(metadata,'$.dreamer',json('true')) ELSE json_remove(metadata,'$.dreamer') END WHERE id=?`)
+          .run(c.dreamer === 1 ? 1 : 0, a.id);
         if (memory) d.query('UPDATE agents SET memory_mode=?,memory_mode_revision=?,memory_mode_updated_at_ms=?,memory_mode_actor_id=? WHERE id=?')
           .run(c.memory_mode!, Math.max(a.memory_mode_revision ?? 0, c.memory_mode_revision ?? 0), c.memory_mode_updated_at_ms ?? null, c.memory_mode_actor_id ?? null, a.id);
         if (c.active && !a.active) ask(c, 'disabled in the backup: enable it again in Qoopia');

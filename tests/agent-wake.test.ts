@@ -5,6 +5,7 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { bootstrapOwner } from "../src/auth/pairings.ts";
 import { db } from "../src/db/connection.ts";
+import { createCanon } from "../src/services/canon.ts";
 import {
   AGENT_WAKE_MAX_ATTEMPTS,
   drainAgentWakeQueue,
@@ -163,6 +164,28 @@ describe("durable AgentComm wake lifecycle", () => {
     server = null;
     delete process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_URL;
     delete process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_TOKEN;
+  });
+
+  test("the recipient's canon rides with the wake, apart from the quoted messages", async () => {
+    let payload: any = null;
+    server = Bun.serve({ port: 0, fetch: async (request) => { payload = await request.json(); return accepted(); } });
+    process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_URL = `http://127.0.0.1:${server.port}/wake`;
+    process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_TOKEN = "test-only-wake-token";
+    const canon = createCanon({ workspace_id: workspaceId, actor: { agent_id: targetId, type: "standard" }, text: "Перед ответом на запрос проверь бэкап.", mode: "always" }).canon;
+    try {
+      const { eventId } = seedWake({ body: "wake with canon" });
+      await drainAgentWakeQueue({ eventId });
+      expect(payload.canon_ids).toEqual([canon.id]);
+      expect(payload.canon_text).toContain("Перед ответом на запрос проверь бэкап.");
+      expect(String(payload.messages_text).startsWith(payload.canon_text)).toBe(true);
+      expect(payload.body).toBe("wake with canon");
+    } finally {
+      db.prepare("DELETE FROM canon_applications WHERE canon_id = ?").run(canon.id);
+      db.prepare("DELETE FROM canons WHERE id = ?").run(canon.id);
+      server.stop(); server = null;
+      delete process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_URL;
+      delete process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_TOKEN;
+    }
   });
 
   test("messages_text frames bodies as quoted data so a body or topic cannot forge headers", async () => {
@@ -414,6 +437,31 @@ describe("durable AgentComm wake lifecycle", () => {
     const [result] = await drainAgentWakeQueue({ eventId });
     expect(result).toMatchObject({ status: "failed", error: "runtime_did_not_confirm_acceptance" });
     expect(wakeRow(eventId).delivered_at).toBeNull();
+  });
+
+  test("a runtime away for longer than the first retries is still woken when it returns, without a new message [A2-05]", async () => {
+    let up = false;
+    server = Bun.serve({ port: 0, fetch: () => (up ? accepted() : new Response("down", { status: 503 })) });
+    process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_URL = `http://127.0.0.1:${server.port}/wake`;
+    process.env.AGENTCOMM_WAKE_TARGET_WEBHOOK_TOKEN = "test-only-wake-token";
+    const { eventId } = seedWake();
+    const delays: number[] = [];
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      const [result] = await drainAgentWakeQueue({ eventId });
+      expect(result).toMatchObject({ status: "failed", error: "http_503" });
+      const row = wakeRow(eventId);
+      delays.push(Date.parse(row.next_attempt_at!) - Date.now());
+      // An hour later the same wake is retried, past the old ten-minute stale window.
+      db.prepare(`UPDATE agent_wake_events SET next_attempt_at = ?, created_at = ? WHERE id = ?`)
+        .run(new Date(Date.now() - 1_000).toISOString(), new Date(Date.now() - attempt * 60 * 60_000).toISOString(), eventId);
+    }
+    // Backoff doubles; the schedule as a whole spans hours, not the old fifteen seconds.
+    expect(delays[7]!).toBeGreaterThan(100_000);
+    expect(AGENT_WAKE_MAX_ATTEMPTS).toBeGreaterThanOrEqual(20);
+    up = true;
+    const [delivered] = await drainAgentWakeQueue({ eventId });
+    expect(delivered?.status).toBe("delivered");
+    expect(wakeRow(eventId)).toMatchObject({ status: "delivered", attempt_count: 9 });
   });
 
   test("an expired queued claim at the attempt ceiling is retired without another POST", async () => {

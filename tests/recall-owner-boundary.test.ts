@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { runMigrations } from "../src/db/migrate.ts";
 import { db } from "../src/db/connection.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
-import { createAgent } from "../src/admin/agents.ts";
+import { createAgent, setDreamer } from "../src/admin/agents.ts";
 import { legacyPrivilegedAgent } from "./helpers/legacy-agent.ts";
 import { bootstrapOwner } from "../src/auth/pairings.ts";
 import { saveMessage } from "../src/services/sessions.ts";
@@ -17,7 +17,7 @@ import { currentToolAuth } from "../src/auth/policy.ts";
 import type { AuthContext } from "../src/auth/middleware.ts";
 
 const suffix = randomUUID();
-let a = "", privA = "", ownerA = "", stdA = "", stewardA = "", c = "", cOriginalOwner = "";
+let a = "", privA = "", ownerA = "", stdA = "", stewardA = "", dreamerA = "", c = "", cOriginalOwner = "";
 let stub: ReturnType<typeof Bun.serve> | null = null;
 const savedEnv = { ...process.env };
 
@@ -50,6 +50,8 @@ beforeAll(() => {
   stdA = createAgent({ name: `xw-std-${suffix}`, workspaceSlug: wa.slug }).id;
   stewardA = createAgent({ name: `xw-steward-${suffix}`, workspaceSlug: wa.slug, type: "steward" }).id;
   ownerA = bootstrapOwner(db, `xw owner A ${suffix}`, undefined, wa.id).agent_id;
+  dreamerA = createAgent({ name: `xw-dreamer-${suffix}`, workspaceSlug: wa.slug }).id;
+  setDreamer({ workspace_id: wa.id, agent_id: dreamerA, enabled: true, actor_id: ownerA });
   bootstrapOwner(db, `xw owner B ${suffix}`, undefined, wb.id); // independent owner of B
   cOriginalOwner = bootstrapOwner(db, `xw owner C ${suffix}`, undefined, wc.id).agent_id;
   // Legacy same-installation owner identity: C records A's owner explicitly.
@@ -110,20 +112,24 @@ test("setup: A has its own transcript", () => {
   saveMessage({ workspace_id: a, agent_id: stdA, session_id: `xw-a-${suffix}`, role: "user", content: "home transcript quokka" });
 });
 
-for (const who of ["claude-privileged", "owner", "steward", "standard"] as const) {
-  const id = () => (who === "owner" ? ownerA : who === "claude-privileged" ? privA : who === "steward" ? stewardA : stdA);
+// ADR-022: the home transcript belongs to the standard agent; claude-privileged, an ordinary agent,
+// no longer reads it, the dreamer does — and the dreamer stays in A like everyone else.
+for (const who of ["claude-privileged", "owner", "steward", "standard", "dreamer"] as const) {
+  const id = () => (who === "owner" ? ownerA : who === "claude-privileged" ? privA : who === "steward" ? stewardA : who === "dreamer" ? dreamerA : stdA);
+  const type = who === "dreamer" ? "standard" : who;
+  const home = who === "claude-privileged" ? [] : ["home transcript quokka"];
 
   test(`${who} of A: recall cross_workspace stays in A on every channel`, async () => {
-    const r = await run(id(), who, "recall", { query: "quokka", cross_workspace: true, scope: "all", limit: 50 });
+    const r = await run(id(), type, "recall", { query: "quokka", cross_workspace: true, scope: "all", limit: 50 });
     expect(JSON.stringify(r)).not.toContain("tenantb");
     expect(JSON.stringify(r)).not.toContain("tenantc");
-    expect(texts(r)).toContain("home transcript quokka");
+    expect(texts(r).filter((t) => t.startsWith("home transcript"))).toEqual(home);
   });
 
   test(`${who} of A: hybrid vector channels never load B's or C's embeddings`, async () => {
     process.env.QOOPIA_RECALL_MODE = "hybrid";
     try {
-      const r = await run(id(), who, "recall", { query: "wantvec-xw", cross_workspace: true, scope: "notes", limit: 50 });
+      const r = await run(id(), type, "recall", { query: "wantvec-xw", cross_workspace: true, scope: "notes", limit: 50 });
       expect(JSON.stringify(r)).not.toContain("tenantb");
       expect(JSON.stringify(r)).not.toContain("tenantc");
     } finally {
@@ -132,7 +138,15 @@ for (const who of ["claude-privileged", "owner", "steward", "standard"] as const
   });
 
   test(`${who} of A: session_search scope 'all' is A only`, async () => {
-    const r = await run(id(), who, "session_search", { query: "quokka", scope: "all" });
-    expect(texts(r)).toEqual(["home transcript quokka"]);
+    const r = await run(id(), type, "session_search", { query: "quokka", scope: "all" });
+    expect(texts(r)).toEqual(home);
   });
 }
+
+test("dreamer of A: session_review reads A's transcripts and never B's or C's", async () => {
+  const r = await run(dreamerA, "standard", "session_review", { since: new Date(Date.now() - 86_400_000).toISOString() });
+  const text = JSON.stringify(r);
+  expect(text).toContain("home transcript quokka");
+  expect(text).not.toContain("tenantb");
+  expect(text).not.toContain("tenantc");
+});

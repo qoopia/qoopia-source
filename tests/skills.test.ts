@@ -74,7 +74,7 @@ let AGENT_ID = "";
 function validMetadata(overrides: Partial<SkillMetadata> = {}): SkillMetadata {
   return {
     skill_version: "1.0.0",
-    owner_agent: "corsair-main",
+    owner_agent: "main-agent",
     trigger_conditions: ["test trigger"],
     scope: "test scope",
     prerequisites: ["test prereq"],
@@ -488,7 +488,7 @@ describe("integration — 3 skills + agentcomm-protocol link + entity_search + r
       title: "Integration AgentComm E2E verification marker-unique-int-token",
       summary: "Integration skill 1 of 3.",
       metadata: validMetadata({
-        owner_agent: "corsair-main",
+        owner_agent: "main-agent",
         related_incidents: ["phase1-item-7-agentcomm-trust-rebuild"],
       }),
     });
@@ -500,7 +500,7 @@ describe("integration — 3 skills + agentcomm-protocol link + entity_search + r
       title: "Integration provider guard repair",
       summary: "Integration skill 2 of 3.",
       metadata: validMetadata({
-        owner_agent: "corsair-main",
+        owner_agent: "main-agent",
         related_incidents: ["phase1-item-7-provider-guard-fork"],
       }),
     });
@@ -511,7 +511,7 @@ describe("integration — 3 skills + agentcomm-protocol link + entity_search + r
       title: "Integration vault retrieval proof",
       summary: "Integration skill 3 of 3.",
       metadata: validMetadata({
-        owner_agent: "corsair-main",
+        owner_agent: "main-agent",
         related_incidents: ["phase1-item-6-vault-bootstrap"],
       }),
     });

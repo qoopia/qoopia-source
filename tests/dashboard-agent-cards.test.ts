@@ -39,8 +39,8 @@ test("an agent row carries both owner switches; a steward reads the whole worksp
   expect(owned).toMatch(/data-switch="autosave"[^>]*aria-checked="true"/);
   expect(owned).toMatch(/data-switch="shared"[^>]*aria-checked="false"/);
   expect(owned).not.toContain(" disabled");
-  // Without the owner's authority the switches stay visible but say why they cannot change.
-  expect(ctx.agentCard(agent({ shared_context: true, can_switch_shared_context: false, can_manage_memory: false }))).toContain("disabled title=");
+  // Without the owner's authority the switches stay visible and focusable; the reason is on the page (A4-13).
+  expect(ctx.agentCard(agent({ shared_context: true, can_switch_shared_context: false, can_manage_memory: false }))).toContain('aria-disabled="true" aria-describedby="switchLockReason"');
   const steward = ctx.agentCard(agent({ type: "steward", shared_context: null, can_manage_memory: true }));
   expect(steward).not.toContain('data-switch="shared"');
   expect(steward).toContain('data-switch="autosave"');
@@ -52,6 +52,18 @@ test("an agent row carries both owner switches; a steward reads the whole worksp
   expect(visibleText(owner)).toContain("Whole workspace");
   // Saves waiting for the owner open the agent directly.
   expect(ctx.agentCard(agent({ memory: { mode: "manual", state: "manual", revision: 1, pending_saves: 2 } }))).toContain('data-open="a"');
+});
+
+test("ADR-022: the dreamer switch sits on an agent's row for the owner; the steward and the owner rows have none", () => {
+  const { ctx } = board();
+  const agent = (extra: Record<string, unknown>) => ({ id: "a", name: "alpha", type: "standard", last_seen: ago(30), shared_context: true, ...extra });
+  expect(ctx.agentCard(agent({ dreamer: true, can_switch_dreamer: true }))).toMatch(/data-switch="dreamer"[^>]*aria-checked="true"(?![^>]*disabled)/);
+  expect(ctx.agentCard(agent({ dreamer: false, can_switch_dreamer: false }))).toMatch(/data-switch="dreamer"[^>]*aria-checked="false"[^>]*disabled/);
+  expect(ctx.agentCard(agent({ type: "steward", shared_context: null, dreamer: null }))).not.toContain('data-switch="dreamer"');
+  // The head names the column, so the grid keeps one column per cell.
+  const { el } = board();
+  ctx.paintAgentsBoard(el, [agent({ dreamer: false })]);
+  expect(visibleText(el.html)).toContain("Dreamer");
 });
 
 test("the owner leads the list, then the steward, then each runtime in order, then the rest by activity", () => {

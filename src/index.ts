@@ -14,6 +14,7 @@ import {
 import { shutdownHttpServer, startHttpServer } from "./http.ts";
 import { logger } from "./utils/logger.ts";
 import { isReadOnlyInstance } from "./utils/instance-role.ts";
+import { installProcessGuards } from "./utils/process-guards.ts";
 
 // QSA-D / Codex QSA-003 (2026-04-28): production startup must not silently
 // apply pending migrations. Two reasons:
@@ -69,7 +70,10 @@ if (!isReadOnlyInstance()) {
 }
 const server = startHttpServer();
 
-function shutdown(signal: string) {
+let stopping = false;
+function shutdown(signal: string, code = 0) {
+  if (stopping) return;
+  stopping = true;
   logger.info(`Received ${signal}, shutting down...`);
   stopMaintenance();
   stopMemoryMaintenance();
@@ -79,9 +83,10 @@ function shutdown(signal: string) {
   // server from closing; the helper gives up after 5 s like the old fallback.
   void shutdownHttpServer(server).finally(() => {
     closeDb();
-    process.exit(0);
+    process.exit(code);
   });
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+installProcessGuards((reason) => shutdown(reason, 1));

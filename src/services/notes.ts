@@ -380,6 +380,7 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
         // B становится известным, и пересечения нет.
         close_ms: timestamp.ms,
         visibility,
+        successor_agent_id: input.agent_id,
       });
       logActivity({
         workspace_id: input.workspace_id,
@@ -518,6 +519,12 @@ export function listNotes(p: NoteListParams) {
   const where: string[] = [`workspace_id = ?`];
   const params: any[] = [p.workspace_id];
   if (!p.include_deleted) where.push(`deleted_at IS NULL`);
+  // A deleted note is gone for everyone but its author, the steward and the owner: shared
+  // context reads live notes, never what a sibling took back.
+  else if (!p.is_admin) {
+    where.push(`(deleted_at IS NULL OR agent_id = ?)`);
+    params.push(p.caller_agent_id);
+  }
   // ADR-020: own notes, siblings' shared notes with the toggle on, all for steward/owner.
   where.push(visibleRowSql());
   params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
@@ -844,6 +851,9 @@ export function deleteNote(
     throw new QoopiaError("NOT_FOUND", `note ${id} not found`);
   }
   assertCanModifyNote(existing, agent_id, isAdmin);
+  // A manual agent changes memory only through the owner. A held delete has no decision row to
+  // land in (memory_save_decisions records creates and updates), so it is refused outright.
+  assertAutomaticMemoryAllowed(workspace_id, agent_id);
 
   // H6 fix: wrap soft-delete + logActivity atomically
   // M12 fix: remove from FTS index on soft-delete to prevent monotonic index growth

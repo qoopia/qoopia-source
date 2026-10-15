@@ -1,7 +1,8 @@
 import {test,expect} from 'bun:test';
 import {Database} from 'bun:sqlite';
 import {randomUUID} from 'node:crypto';
-import {bridgeRelay} from '../src/bridges/relay.ts';
+import {readFileSync} from 'node:fs';
+import {INVITE_WORDMARK,bridgeRelay} from '../src/bridges/relay.ts';
 import {BRIDGE_RELAY,newIdentity,peerId,signRPC,sealPacket,openPacket,secret,sha,publicIdentity} from '../src/bridges/protocol.ts';
 import {ownerFixture} from './helpers/p1-fixtures.ts';
 import {bridgeService} from '../src/bridges/service.ts';
@@ -187,4 +188,16 @@ test('the public invite page allows its one script by hash and nothing inline be
   const script=/<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
   expect(csp).toContain("script-src 'sha256-"+new Bun.CryptoHasher('sha256').update(script).digest('base64')+"'");
   expect(script).toContain('navigator.clipboard.writeText');expect(html.match(/<script/g)).toHaveLength(1);
+});
+
+// A4-09: the first Qoopia page an invited person sees used the former identity (Georgia, gold) and English only.
+test('the invite page uses Graphite Focus and the exact wordmark, in English or Russian',async()=>{
+  const relay=bridgeRelay(new Database(':memory:'));
+  const ru=await (await relay(new Request(BRIDGE_RELAY+'/invite',{headers:{'accept-language':'ru-RU,ru;q=0.9'}}),'fixture')).text();
+  const en=await (await relay(new Request(BRIDGE_RELAY+'/invite?lang=en',{headers:{'accept-language':'ru'}}),'fixture')).text();
+  expect(ru).toContain('<html lang="ru">');expect(ru).toContain('Код приглашения');expect(ru).toContain('data-copied="Скопировано.');
+  expect(en).toContain('<html lang="en">');expect(en).toContain('Invitation code');
+  for(const html of [ru,en]){expect(html).toContain('#111110');expect(html).toContain('Manrope');expect(html).not.toMatch(/Georgia|#d6c590|#171a16/);}
+  expect(INVITE_WORDMARK).toBe(readFileSync(new URL('../src/public/brand/graphite/qoopia-wordmark-ivory.svg',import.meta.url),'utf8').trim());
+  expect(ru).toContain(INVITE_WORDMARK);
 });

@@ -180,13 +180,21 @@ function stableValue(value: unknown): unknown {
   return value;
 }
 
+/** Format 1 collects every row of a table as JSON and sorts it in memory: about twice the largest
+ * table (+840 MB for a 392 MB database). Format 2 hashes the same row encoding as SQLite streams it
+ * in the order of all its columns, so its sorter spills to disk and memory stays flat. Rowid order
+ * would not do: VACUUM INTO may renumber a table without an INTEGER PRIMARY KEY. The format is
+ * recorded beside every stored hash; a record without one is format 1 and is checked by format 1. */
+export type LogicalHashFormat = 1 | 2;
+
 /**
  * Hash a database by schema and row values without emitting any row content.
  * This is deliberately logical rather than a file hash so interrupted/resumed
  * backfills compare equal despite harmless SQLite page-layout differences.
  */
-export function computeLogicalDatabaseHash(db: Database): string {
+export function computeLogicalDatabaseHash(db: Database, format: LogicalHashFormat = 1): string {
   const hash = createHash("sha256");
+  if (format === 2) hash.update("qoopia-logical-hash/2\n");
   const tables = db
     .query(
       `SELECT name, sql FROM sqlite_master
@@ -201,6 +209,14 @@ export function computeLogicalDatabaseHash(db: Database): string {
       .query(`PRAGMA table_info(${quoteIdentifier(table.name)})`)
       .all() as Array<{ name: string }>;
     const names = columns.map((column) => column.name);
+    if (format === 2) {
+      // BINARY on every column: rows that tie are then identical, so their order cannot change the hash.
+      const order = names.map((name) => `${quoteIdentifier(name)} COLLATE BINARY`).join(", ");
+      for (const row of db.query(`SELECT * FROM ${quoteIdentifier(table.name)} ORDER BY ${order}`).iterate() as IterableIterator<Record<string, unknown>>) {
+        hash.update(`${JSON.stringify(names.map((name) => stableValue(row[name])))}\n`);
+      }
+      continue;
+    }
     const encoded: string[] = [];
     for (const row of db.query(`SELECT * FROM ${quoteIdentifier(table.name)}`).iterate() as IterableIterator<Record<string, unknown>>) {
       encoded.push(JSON.stringify(names.map((name) => stableValue(row[name]))));

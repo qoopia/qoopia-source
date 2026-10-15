@@ -10,7 +10,7 @@
  * Alert sinks (both, independently):
  *   Sink A: Qoopia note via `createNote` (type='context', tags include
  *           'phase-1-item-1','wake-slo','alert','P2').
- *   Sink B: AgentComm message to corsair-main via `agentSend` with
+ *   Sink B: AgentComm message to the main agent via `agentSend` with
  *           a unique topic.
  *
  * NO Telegram raw-alert sink (Q-P2-9). NO probe body bytes ever appear

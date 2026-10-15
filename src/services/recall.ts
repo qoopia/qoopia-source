@@ -15,7 +15,7 @@ import { runV4Recall, v4RecallRequested, type V4RecallResponse } from "./recall/
 import { boundDefaultRecall, type FullBodyRequest } from "./recall/response-envelope.ts";
 import { chooseRerankBackend, rerankResults } from "./recall/rerank.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
-import { readLevel, visibleRowSql, visibleTranscriptSql } from "../auth/principal.ts";
+import { readLevel, transcriptLevel, visibleRowSql, visibleTranscriptSql } from "../auth/principal.ts";
 import {
   archivedExclusionSql,
   resolveTemporalFilter,
@@ -409,7 +409,7 @@ async function vectorNoteCandidates(
     // notes BEFORE scoring. bge-m3 collapses 1-few-word labels and short
     // completion-strings to corpus-mean-ish vectors that score 0.40+
     // against almost any query, poisoning RRF. type='memory' is NOT
-    // covered — short memory anchors ("Aidan port 18789") must remain
+    // covered — short memory anchors ("gateway port 18789") must remain
     // reachable via vector. Lookup (type, length) for the embedding ids
     // with hydrateFusedNotes' eligibility WHERE, without selecting text.
     const minLen = getVectorTypeFilterMaxLen();
@@ -1028,12 +1028,12 @@ export async function recallBaseline(p: RecallParams) {
   }
 
   if (scope === "sessions" || scope === "all") {
-    // session_messages_fts — ADR-020: siblings' transcripts with shared context.
+    // session_messages_fts — ADR-022: siblings' transcripts for the dreamer, steward and owner.
     const workspaces = workspaceScope(p, "m.workspace_id");
     const where: string[] = [`session_messages_fts MATCH ?`, workspaces.sql];
     const params: any[] = [sanitized, ...workspaces.params];
     where.push(visibleTranscriptSql("m"));
-    params.push(p.caller_agent_id, readLevel(p.caller_agent_id, p.is_admin));
+    params.push(p.caller_agent_id, transcriptLevel(p.caller_agent_id, p.is_admin));
     const sql = `
       SELECT m.id, m.role as type, m.content as text, m.metadata, NULL as project_id,
              m.created_at, m.workspace_id, m.session_id, rank
@@ -1112,9 +1112,9 @@ export async function recallBaseline(p: RecallParams) {
   } catch(error){modelFailure=error instanceof QoopiaError?error.code:'MODEL_INVALID_RESPONSE';finalResults=finalResults.slice(0,limit);}
   else finalResults=finalResults.slice(0,limit);
   if(JSON.stringify(principalQuery.get(p.caller_agent_id,p.workspace_id))!==principalBefore)throw new QoopiaError('REVOKED','Authority changed during recall');
-  const level=readLevel(p.caller_agent_id,p.is_admin);
+  const level=readLevel(p.caller_agent_id,p.is_admin),transcripts=transcriptLevel(p.caller_agent_id,p.is_admin);
   const liveNotes=new Map(hydrateFusedNotes(p,finalResults.filter(r=>r.source==='notes').map(r=>({id:r.id,rrf:0})),50).map(r=>[r.id,r]));
-  finalResults=finalResults.filter(r=>r.source==='notes'?liveNotes.get(r.id)?.text===r.text:r.source==='sessions'?!!db.query(`SELECT 1 FROM session_messages WHERE id=? AND workspace_id=? AND ${visibleTranscriptSql()}`).get(r.id,r.workspace_id,p.caller_agent_id,level):r.source==='activity'?!!db.query(`SELECT 1 FROM activity WHERE id=? AND workspace_id=? AND ${visibleRowSql()}`).get(r.id,r.workspace_id,p.caller_agent_id,level):true);
+  finalResults=finalResults.filter(r=>r.source==='notes'?liveNotes.get(r.id)?.text===r.text:r.source==='sessions'?!!db.query(`SELECT 1 FROM session_messages WHERE id=? AND workspace_id=? AND ${visibleTranscriptSql()}`).get(r.id,r.workspace_id,p.caller_agent_id,transcripts):r.source==='activity'?!!db.query(`SELECT 1 FROM activity WHERE id=? AND workspace_id=? AND ${visibleRowSql()}`).get(r.id,r.workspace_id,p.caller_agent_id,level):true);
 
   results.push(...finalResults);
   if (p._v4_diagnostics && diagnostics) {

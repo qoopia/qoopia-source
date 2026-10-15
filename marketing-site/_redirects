@@ -1,1 +1,4 @@
 /profile https://auth.qoopia.ai/profile 302
+/download/:platform https://auth.qoopia.ai/download/:platform 302
+/understand-ru /ru/understand 301
+/favicon.ico /brand/graphite/favicon.svg 301

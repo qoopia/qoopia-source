@@ -11,6 +11,7 @@ import { getClientIp } from '../http/respond.ts';
 import { loginEmail, type LoginIdentity } from './broker.ts';
 import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
 import { parseCookies } from '../utils/cookies.ts';
+import { env } from '../utils/env.ts';
 
 export const LOGIN_ORIGIN = 'https://auth.qoopia.ai';
 type Binding = LoginIdentity & {ownerId:string};
@@ -81,18 +82,24 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         // shared host (any visitor of a hosted dashboard) reaches this page: only the launcher's setup claim,
         // a capability of the owner's OS account, may start one. A linked server signs in with owner-login.
         if(body.method==='device'&&!claim)throw new Error(DEVICE_CODE_LAUNCHER_ONLY);
-        // /poll would refuse any other address anyway; refusing here spends no e-mail on it.
-        if(body.method==='email'&&binding&&loginEmail(body.email)!==binding.email)throw new Error('Use the email or Google account already linked to this workspace');
-        if(body.method==='account'&&(!binding||!isHttps(req)))throw new Error('Sign in with email to connect this workspace');
+        // /poll would refuse any other address anyway, so no e-mail is spent on it. The answer matches a real
+        // start (A3-04): a visitor of a hosted dashboard must not learn whether an address is the owner's.
+        const decoy=body.method==='email'&&!!binding&&loginEmail(body.email)!==binding.email;
+        // The account flow returns to this dashboard: its address is the configured public origin, never
+        // the request's Host header.
+        const publicDashboard=new URL('/dashboard',env.PUBLIC_URL);
+        if(body.method==='account'&&(!binding||!isHttps(req)||publicDashboard.protocol!=='https:'))throw new Error('Sign in with email to connect this workspace');
         const owner=localOwner(database,binding?.ownerId??claim!.ownerId),verifier=randomToken();
         // F-125: e-mail and Google sign-ins finish only from the network of this browser, which the broker
         // cannot see behind this server (account continuation has its own one-use code).
         // A device code is confirmed on another device signed in to the account: its possession is the binding.
         const bind=body.method==='email'||body.method==='google',device=body.method==='device';
         let data:Record<string,unknown>;
-        try{data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:'https://'+req.headers.host+'/dashboard'}:{}),...(bind?{bind:'network',starter_ip:getClientIp(req)}:{}),...(device?{label:installationLabel()}:{}),challenge:hash(verifier)});}
+        // ponytail: a decoy answers without the broker's round trip; equalize timing if that ever matters.
+        if(decoy)data={id:''};
+        else try{data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:publicDashboard.href}:{}),...(bind?{bind:'network',starter_ip:getClientIp(req)}:{}),...(device?{label:installationLabel()}:{}),challenge:hash(verifier)});}
         catch(error){throw device&&error instanceof Error&&error.message==='Invalid sign-in request'?new Error(DEVICE_CODE_UNSUPPORTED):error;}
-        if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new Error('Invalid sign-in service response');
+        if(!decoy&&(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id)))throw new Error('Invalid sign-in service response');
         const step=device?deviceCodeStep(data):undefined;
         // A client keeps its two newest pending sign-ins and the table its 20 newest, so anonymous
         // starts can never refuse the owner's. ponytail: the broker's per-server hourly start
@@ -100,14 +107,15 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         const ip=getClientIp(req),own=[...attempts].filter(([,attempt])=>attempt.ip===ip);
         if(own.length>=2)attempts.delete(own[0]![0]);
         if(attempts.size>=20)attempts.delete(attempts.keys().next().value!);
-        const token=randomToken();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:data.id,verifier,expires:now+600_000,busy:false,ip});
+        const token=randomToken();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:String(data.id),verifier,expires:now+600_000,busy:false,ip});
         res.setHeader('set-cookie',`${pendingCookie}=${token}; HttpOnly; SameSite=Strict; Path=/api/dashboard/identity; Max-Age=600${isHttps(req)?'; Secure':''}`);
         return json(res,200,step??(body.method==='account'?{accountUrl:LOGIN_ORIGIN+'/profile?app=ios&request='+data.id}:body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id}:{email:loginEmail(body.email)}));
       }
       if(route==='/poll'){
         const token=cookie(req,pendingCookie),attempt=attempts.get(token);
         if(!attempt)throw new Error('Sign-in expired. Please start again');
-        if(attempt.busy)return json(res,200,{pending:true});
+        // A decoy start (an address that is not the owner's) waits like a real one until it expires.
+        if(attempt.busy||!attempt.id)return json(res,200,{pending:true});
         attempt.busy=true;
         try{
           const identity=await broker('/redeem',{id:attempt.id,verifier:attempt.verifier,...(body.accountCode?{account_code:body.accountCode}:{})});

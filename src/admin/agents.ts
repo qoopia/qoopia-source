@@ -3,7 +3,7 @@ import { db } from "../db/connection.ts";
 import { generateApiKey, sha256Hex } from "../auth/api-keys.ts";
 import { revokeAllAgentTokens } from "../auth/oauth.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
-import { seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
+import { isDreamer, seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
 import { canManagePolicy } from "../services/memory-policy.ts";
 import { logActivity } from "../services/activity.ts";
 import { hasColumn } from "../db/introspect.ts";
@@ -114,7 +114,8 @@ export function setAgentType(
 
 /**
  * ADR-020: switch one agent's shared-context toggle. On (absent from agents.metadata, the
- * onboarding default) it reads its siblings' notes and transcripts; off, only its own. The
+ * onboarding default) it reads its siblings' notes and session summaries (raw transcripts too only
+ * with QOOPIA_TRANSCRIPTS_OWN_ONLY off, ADR-022); off, only its own. The
  * workspace owner or the workspace's steward may switch it, and every change is audited.
  */
 export function setSharedContext(input: { workspace_id: string; agent_id: string; enabled: boolean; actor_id: string }) {
@@ -138,6 +139,8 @@ export function setSharedContext(input: { workspace_id: string; agent_id: string
         workspace_id: input.workspace_id,
         agent_id: input.actor_id,
         action: "agent_shared_context_changed",
+        event: input.enabled ? "agent.shared_context.on" : "agent.shared_context.off",
+        params: { name: target.name },
         entity_type: "agent",
         entity_id: target.id,
         project_id: null,
@@ -146,6 +149,43 @@ export function setSharedContext(input: { workspace_id: string; agent_id: string
       });
     }
     return { agent_id: target.id, name: target.name, shared_context: input.enabled, changed };
+  }).immediate();
+}
+
+/**
+ * ADR-022: grant or withdraw the dreamer role (agents.metadata.dreamer). A dreamer reads every raw
+ * transcript of its workspace for the nightly review; it gains no MANAGE right. Only the workspace
+ * owner decides it (the memory_policy_set rule) — never the steward, never the agent itself. Audited.
+ */
+export function setDreamer(input: { workspace_id: string; agent_id: string; enabled: boolean; actor_id: string }) {
+  if (typeof input.enabled !== "boolean") throw new QoopiaError("INVALID_INPUT", "enabled must be true or false");
+  return db.transaction(() => {
+    if (!canManagePolicy(input.workspace_id, input.actor_id))
+      throw new QoopiaError("FORBIDDEN", "Only the workspace owner can grant or withdraw the dreamer role");
+    const target = db.query("SELECT id, name, type FROM agents WHERE id = ? AND workspace_id = ? AND active = 1")
+      .get(input.agent_id, input.workspace_id) as { id: string; name: string; type: string } | null;
+    if (!target) throw new QoopiaError("NOT_FOUND", "Agent unavailable");
+    if (seesWholeWorkspace(target))
+      throw new QoopiaError("INVALID_INPUT", "The steward and the owner already read every transcript of the workspace");
+    const changed = isDreamer(target.id) !== input.enabled;
+    if (changed) {
+      db.query(input.enabled
+        ? "UPDATE agents SET metadata = json_set(metadata, '$.dreamer', json('true')) WHERE id = ?"
+        : "UPDATE agents SET metadata = json_remove(metadata, '$.dreamer') WHERE id = ?").run(target.id);
+      logActivity({
+        workspace_id: input.workspace_id,
+        agent_id: input.actor_id,
+        action: "agent_dreamer_changed",
+        event: input.enabled ? "agent.dreamer.on" : "agent.dreamer.off",
+        params: { name: target.name },
+        entity_type: "agent",
+        entity_id: target.id,
+        project_id: null,
+        summary: `Dreamer role of '${target.name}' turned ${input.enabled ? "on" : "off"}`,
+        details: { agent_name: target.name, dreamer: input.enabled },
+      });
+    }
+    return { agent_id: target.id, name: target.name, dreamer: input.enabled, changed };
   }).immediate();
 }
 

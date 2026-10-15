@@ -34,9 +34,11 @@ test('recovery streams snapshot files and BLOB scans while preserving legacy dig
       .run(`stream-${i}`,fixture.owner.workspace_id,fixture.owner.agent_id,'streaming',`chunk-${i}.bin`,chunk.length,hash(chunk),chunk,fixture.owner.agent_id,'2026-09-07T00:00:00Z');
     const oracle=legacyLogicalHash(fixture.database);
     expect(computeLogicalDatabaseHash(fixture.database)).toBe(oracle);
+    // Backups are written in format 2 (streamed); format 1 keeps the legacy semantics above.
+    const streamed=computeLogicalDatabaseHash(fixture.database,2);
     durableWrite(source,fixture.database.serialize());fixture.database.close();
     const backup=path.join(root,'backup'),manifest=backupUnified(source,backup);
-    expect(manifest.logical_hash).toBe(oracle);
+    expect(manifest).toMatchObject({logical_hash:streamed,logical_hash_format:2});
 
     const originalRead=fs.readFileSync,originalQuery=Database.prototype.query;
     (fs as unknown as {readFileSync:typeof fs.readFileSync}).readFileSync=((file:fs.PathOrFileDescriptor,...args:unknown[])=>{
@@ -51,7 +53,7 @@ test('recovery streams snapshot files and BLOB scans while preserving legacy dig
       return statement;
     } as typeof Database.prototype.query;
     try{
-      expect(verifyBackup(backup).logical_hash).toBe(oracle);
+      expect(verifyBackup(backup).logical_hash).toBe(streamed);
       const bundle=journalBundleFixture(root),target=new Delivery(path.join(root,'restored'),bundle.trust,true,()=>{});
       const restored=target.restoreNew(backup,bundle.bundle,4141);
       const restoredFile=dataFile(target.root,restored.current),db=new Database(restoredFile,{readonly:true});

@@ -19,10 +19,10 @@ import { z } from "zod";
 import { db } from "../db/connection.ts";
 import type { AuthContext } from "../auth/middleware.ts";
 import { QoopiaError } from "../utils/errors.ts";
-import { createAgent, deactivateAgent, setSharedContext } from "../admin/agents.ts";
+import { createAgent, deactivateAgent, setDreamer, setSharedContext } from "../admin/agents.ts";
 import { AGENT_NAME_RE, AGENT_NAME_HINT, normalizeAgentName, sameAgentName } from "../utils/agent-name.ts";
 import { currentToolAuth } from "../auth/policy.ts";
-import { seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
+import { isDreamer, seesWholeWorkspace, sharesContext } from "../auth/principal.ts";
 import { surfaces, connectionId, connectionResource } from "../services/connection-identity.ts";
 import { localServiceOrigin } from "../utils/standalone.ts";
 import { logActivity } from "../services/activity.ts";
@@ -53,6 +53,12 @@ function activeTarget(auth: AuthContext, name: string) {
   }
   return db.query("SELECT id, name, type, tool_profile FROM agents WHERE id = ? AND workspace_id = ? AND active = 1")
     .get(id, auth.workspace_id) as { id: string; name: string; type: string; tool_profile: string };
+}
+
+/** An agent id passed as is, or a name that resolves to exactly one active agent of the workspace. */
+function targetId(auth: AuthContext, requested: string): string {
+  try { return memoryPolicy(auth.workspace_id, requested).agent_id; }
+  catch { return resolveAgentByName(auth.workspace_id, requested).agent_id; }
 }
 
 function assertSteward(auth: AuthContext) {
@@ -178,6 +184,8 @@ export const adminTools: AdminToolDef[] = [
           workspace_id: auth.workspace_id,
           agent_id: auth.agent_id, // steward is the actor
           action: "agent_onboarded",
+          event: roleName ? "agent.onboarded_with_role" : "agent.onboarded",
+          params: { name: created.name, role: roleName || null },
           entity_type: "agent",
           entity_id: created.id,
           project_id: null,
@@ -239,6 +247,7 @@ export const adminTools: AdminToolDef[] = [
           created_at: a.created_at,
           workspace: a.workspace_slug,
           shared_context: seesWholeWorkspace(a) ? null : sharesContext(a.id),
+          dreamer: seesWholeWorkspace(a) ? null : isDreamer(a.id),
         })),
         total: all.length,
       };
@@ -287,6 +296,8 @@ export const adminTools: AdminToolDef[] = [
         workspace_id: auth.workspace_id,
         agent_id: auth.agent_id,
         action: "agent_deactivated",
+        event: "agent.deactivated",
+        params: { name: targetName, tokens: result.tokens_revoked },
         entity_type: "agent",
         entity_id: result.agent_id,
         project_id: null,
@@ -393,6 +404,8 @@ export const adminTools: AdminToolDef[] = [
         workspace_id: auth.workspace_id,
         agent_id: auth.agent_id,
         action: "agent_profile_changed",
+        event: "agent.profile_changed",
+        params: { name: targetName, from: result.previous_profile, to: newProfile },
         entity_type: "agent",
         entity_id: result.agent_id,
         project_id: null,
@@ -419,8 +432,9 @@ export const adminTools: AdminToolDef[] = [
     risk: "admin",
     description:
       "Turn one agent's shared context on or off. On (the default for every new agent) it reads " +
-      "the notes and conversation transcripts of every agent in this workspace; off it reads only its " +
-      "own. Private notes stay with their author, the steward and the owner. The steward and the " +
+      "the notes and session summaries of every agent in this workspace; off it reads only its " +
+      "own. Raw conversation transcripts of other agents are read only by the dreamer, the steward " +
+      "and the owner. Private notes stay with their author, the steward and the owner. The steward and the " +
       "owner always read the whole workspace; no agent reads another workspace. Audited; repeating " +
       "a command that already holds is not an error.",
     rawSchema: {
@@ -433,20 +447,41 @@ export const adminTools: AdminToolDef[] = [
     },
     handler: (args, auth) => {
       assertSteward(auth);
-      const requested = args.agent as string;
-      let target: string;
-      try {
-        target = memoryPolicy(auth.workspace_id, requested).agent_id;
-      } catch {
-        target = resolveAgentByName(auth.workspace_id, requested).agent_id;
-      }
       return setSharedContext({
         workspace_id: auth.workspace_id,
-        agent_id: target,
+        agent_id: targetId(auth, args.agent as string),
         enabled: args.enabled as boolean,
         actor_id: auth.agent_id,
       });
     },
+  },
+
+  // --- agent_set_dreamer (ADR-022) ---
+  {
+    name: "agent_set_dreamer",
+    risk: "admin",
+    ownerOnly: true,
+    description:
+      "Grant or withdraw the dreamer role of one agent. A dreamer reads every session and raw " +
+      "transcript of this workspace (session_review) for the nightly review and writes its digests " +
+      "and proposals as ordinary notes; it gets no management right and never reads another " +
+      "workspace. Only the workspace owner may change it; a steward may not. Audited; repeating " +
+      "a command that already holds is not an error.",
+    rawSchema: {
+      agent: z
+        .string()
+        .min(1)
+        .max(128)
+        .describe("Agent id, or its exact name when that name is unique in the workspace"),
+      enabled: z.boolean().describe("true = grant the dreamer role, false = withdraw it"),
+    },
+    handler: (args, auth) =>
+      setDreamer({
+        workspace_id: auth.workspace_id,
+        agent_id: targetId(auth, args.agent as string),
+        enabled: args.enabled as boolean,
+        actor_id: auth.agent_id,
+      }),
   },
 
   // --- memory_policy_list ---
@@ -525,6 +560,8 @@ export const adminTools: AdminToolDef[] = [
           workspace_id: auth.workspace_id,
           agent_id: auth.agent_id,
           action: "agent_memory_policy_changed",
+          event: result.mode === "auto" ? "agent.autosave.on" : "agent.autosave.off",
+          params: { name: result.name },
           entity_type: "agent",
           entity_id: result.agent_id,
           project_id: null,

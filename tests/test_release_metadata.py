@@ -58,7 +58,9 @@ class MetadataGateTests(unittest.TestCase):
             fixture = Path(directory)
             copy_release_files(fixture)
             release = json.loads((fixture / 'marketing-site/release.json').read_text())
-            public, schema = release['version'], release['schema_version']
+            public = release['version']
+            # The preview adds one migration after every one the branch already carries.
+            schema = max(int(p.name[:3]) for p in (fixture / 'migrations').glob('[0-9][0-9][0-9]-*.sql'))
             (fixture / 'migrations' / '{:03d}-preview.sql'.format(schema + 1)).write_text('SELECT 1;\n')
 
             def preview(version):

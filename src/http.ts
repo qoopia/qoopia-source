@@ -33,6 +33,7 @@ import { QoopiaError } from "./utils/errors.ts";
 import { myAgentState, submitMyAgentAction, readAgentArtifact, recoverMyAgentRuns, stopMyAgents } from './services/my-agent.ts';
 import { telegramState, telegramAction, startTelegramChannels, stopTelegramChannels } from './services/my-agent-telegram.ts';
 import { db } from "./db/connection.ts";
+import { HUMAN_OWNERS } from "./delivery/owner-onboarding.ts";
 import { getPendingMigrations, latestShippedMigration } from "./db/migrate.ts";
 import { env } from "./utils/env.ts";
 import { cookieSigningSecretIssue } from "./utils/runtime-config.ts";
@@ -51,8 +52,8 @@ import { WAKE_REPLY_MAX_BYTES, WAKE_REPLY_PATH, wakeReply } from "./services/wak
 import { getVerifiedReleaseBaseline } from "./utils/release-baseline.ts";
 import { PRODUCT_VERSION } from "./utils/product-version.ts";
 import { apiError, handleAuthorityRequest } from "./api/authority.ts";
-import { attachmentDisposition, CONTINUITY_MAX_BODY_BYTES, parseJsonObject, REQUEST_TIMEOUTS, RequestBodyError, repeatsSingletonHeader, unreadBody } from "./utils/http-json.ts";
-import { MAX_UPLOAD_BYTES, dropHeadBody, getAllowedOrigin, getClientIp, json, methodNotAllowed, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
+import { attachmentDisposition, CANON_MAX_BODY_BYTES, CONTINUITY_MAX_BODY_BYTES, parseJsonObject, REQUEST_TIMEOUTS, RequestBodyError, repeatsSingletonHeader, unreadBody } from "./utils/http-json.ts";
+import { MAX_UPLOAD_BYTES, applyTransportSecurity, publicHealth, dropHeadBody, encodeAsset, getAllowedOrigin, getClientIp, json, methodNotAllowed, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
 import { dashboardVersion, serveDashboard } from "./http/dashboard-static.ts";
 import { DASHBOARD_COOKIE, parseCookies } from "./dashboard-session.ts";
 import { handleServiceOwner, serviceOwnerEmail } from './http/service-owner.ts';
@@ -121,6 +122,8 @@ function ownerSession(req: IncomingMessage, res: ServerResponse) {
   const auth=checkDashboardAuth(req);
   if(!auth||auth.source!=='cookie')return void json(res,401,{error_description:'Sign in as owner'},req);
   if(isReadOnlyInstance())return void json(res,403,{error_description:'Canonical workspace required'},req);
+  // A4-04: an agent's own session is signed in but is not the owner; these pages answer 403, not a misleading 400.
+  if(!db.query(`SELECT 1 FROM ${HUMAN_OWNERS} WHERE a.id=? AND a.active=1`).get(auth.agent_id))return void json(res,403,{error:'forbidden',error_description:'Only the workspace owner can open this.'},req);
   return auth;
 }
 /** The JSON body of a same-origin owner POST; undefined once 403 `refused` is sent. */
@@ -343,6 +346,7 @@ function rateLimit429(
 }
 
 async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
+  applyTransportSecurity(req, res);
   // Claude.ai adds a trailing slash to connector URLs (19facaa). Canonicalize the connection paths once,
   // so MCP, its 401 resource_metadata and discovery all see the connection instead of the general flow.
   if (req.url && CONNECTION_SLASH.test(req.url)) req.url = req.url.replace(/\/(?=\?|$)/, "");
@@ -364,8 +368,9 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       // dashboard.html names its assets ?v=<content revision>: that exact URL never changes, so it is
       // cached for a year. Unversioned and stale-revision URLs revalidate.
       const current=!!dashboardVersion&&new URLSearchParams(rawUrl.split('?')[1]??'').get('v')===dashboardVersion;
-      res.writeHead(200,{'content-type':asset.type,'cache-control':current?'public, max-age=31536000, immutable':'no-cache',...securityHeaders(req)});
-      return res.end(method==='HEAD'?undefined:asset.body);
+      const sent=encodeAsset(req,asset.type,asset.body);
+      res.writeHead(200,{'content-type':asset.type,'cache-control':current?'public, max-age=31536000, immutable':'no-cache',...sent.headers,...securityHeaders(req)});
+      return res.end(method==='HEAD'?undefined:sent.body);
     }
   }
 
@@ -540,8 +545,12 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     // Pairing redemption is the one anonymous write; its handler refuses more than 1 KiB.
     const auth = authenticate(new Request(`http://local${rawUrl}`, { headers }));
     const redeem = url === "/api/v1/agent-pairings/redeem";
+    // Redemption turns an unauthenticated code into an API key: it is held to the login limit,
+    // and every refused code is audited like a refused credential.
+    if (redeem && rateLimit429(authLimiter, "auth", clientIp, res)) return;
     const body = read || (!auth && !redeem) ? undefined : await readBodyLimited(req, redeem ? 4096 : 4 * 1024 * 1024);
     const response = await handleAuthorityRequest(new Request(`http://local${rawUrl}`, { method: read ? "GET" : method, headers, body }), undefined, auth);
+    if (redeem && !response.ok) audit({ event: "auth_failure", result: "deny", ip: clientIp, scope: "agent_pairing_redeem", detail: String(response.status) });
     // Authenticated reads and the pairing redemption (a new API key) must not be cached or sniffed.
     res.writeHead(response.status, { ...Object.fromEntries(response.headers), "cache-control": "no-store", "x-content-type-options": "nosniff" });
     res.end(await response.text());
@@ -555,7 +564,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     const schemaVersion = readSchemaVersion(db);
     const featureFlags = getV4FeatureFlags();
     const storage = storageDegradation();
-    return json(res, 200, {
+    return json(res, 200, publicHealth(req, {
       status: storage.degraded ? "degraded" : "ok",
       version: PRODUCT_VERSION,
       release_sha: release?.commitSha ?? process.env.QOOPIA_EXPECTED_RELEASE_SHA ?? null,
@@ -572,14 +581,14 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       embeddings: embeddingHealth(),
       ...(storage.degraded ? { degradation: storage } : {}),
       uptime: Math.round(process.uptime()),
-    }, req);
+    }), req);
   }
 
   if (url === "/ready") {
     if (!read) return methodNotAllowed(res, "GET, HEAD", req);
     const release = getVerifiedReleaseBaseline();
     const readiness = evaluateReadiness(db, getPendingMigrations, { latestShippedMigration, ...writeReadiness });
-    return json(res, readiness.ready ? 200 : 503, {
+    return json(res, readiness.ready ? 200 : 503, publicHealth(req, {
       status: readiness.ready ? "ready" : "not_ready",
       version: PRODUCT_VERSION,
       release_sha: release?.commitSha ?? process.env.QOOPIA_EXPECTED_RELEASE_SHA ?? null,
@@ -594,7 +603,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       writes_enabled: !isReadOnlyInstance() && !storageDegradation().degraded && (readiness.checks.db_write ?? "ok") === "ok",
       checks: readiness.checks,
       ...(storageDegradation().degraded ? { degradation: storageDegradation() } : {}),
-    }, req);
+    }), req);
   }
 
   if (url === "/") {
@@ -804,7 +813,7 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     const body = await readBody(req);
     return handleRevoke(req, body, res, clientIp);
   }
-  if (url === "/oauth/revoke" || url === "/oauth/revoke/" || url === "/memory/continuity" || url === "/ingest/session") {
+  if (url === "/oauth/revoke" || url === "/oauth/revoke/" || url === "/memory/continuity" || url === "/memory/canon" || url === "/ingest/session") {
     if (method !== "POST") return methodNotAllowed(res, "POST", req);
   }
   if (url === "/ingest/allowlist" && method !== "GET") return methodNotAllowed(res, "GET", req);
@@ -821,6 +830,23 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       currentToolAuth(db,auth,'write-low');
       return json(res,200,continuityEvent(auth.workspace_id,auth.agent_id,body),req);
     }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='NOT_FOUND'?404:400,{error:'Continuity request refused'},req);}
+  }
+
+  // Canon for a memory hook: the always rules at session start, the turn's contextual rules on each
+  // user prompt. Same key and limiter as /memory/continuity; a server without it answers 404 and
+  // the hook simply adds nothing.
+  if(url==='/memory/canon'&&method==='POST') {
+    res.setHeader('cache-control','no-store');
+    if(rateLimit429(ingestLimiter,'continuity',clientIp,res))return;
+    const auth=authenticate(nodeReqToFetchRequest(req));
+    if(!auth)return json(res,401,{error:'unauthenticated'},req);
+    try {
+      const {currentToolAuth}=await import('./auth/policy.ts');
+      const {canonHookRequest}=await import('./services/canon.ts');
+      const body=JSON.parse((await readBodyLimited(req,CANON_MAX_BODY_BYTES)).toString());
+      currentToolAuth(db,auth,'read');
+      return json(res,200,await canonHookRequest(auth.workspace_id,auth.agent_id,body),req);
+    }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,400,{error:'Canon request refused'},req);}
   }
 
   // --- Ingest endpoints (ingest-daemon only, 500 req/min per IP) ---

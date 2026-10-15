@@ -5,12 +5,19 @@ import { nowIso } from "../utils/errors.ts";
 import { readBoundedText } from "../utils/http-json.ts";
 import { logger } from "../utils/logger.ts";
 import { logActivity } from "./activity.ts";
+import { matchCanons, renderCanon } from "./canon.ts";
 
 const DELIVERY_TIMEOUT_MS = 5_000;
 /** The acknowledgement is {"accepted": true}; anything larger is not one. */
 const MAX_ACK_BYTES = 16 * 1024;
 const WORKER_INTERVAL_MS = 1_000;
-export const AGENT_WAKE_MAX_ATTEMPTS = 5;
+/**
+ * A runtime on a computer is away for minutes (a launchd restart, a deploy) or hours (a sleeping
+ * MacBook). Retries back off 1 s, 2 s, 4 s … to one hour, so the last of 24 attempts comes about
+ * twelve hours after the first [A2-05]. Only a wake that never left the queue goes stale.
+ */
+export const AGENT_WAKE_MAX_ATTEMPTS = 24;
+const RETRY_CAP_MS = 60 * 60_000;
 const STALE_AFTER_MS = 10 * 60_000;
 const BATCH_SIZE = 25;
 
@@ -57,7 +64,8 @@ type WebhookResolution =
       | "invalid_webhook_url"
       | "stale_direct_callback_disabled"
       | "unbound_webhook_config"
-      | "ambiguous_webhook_config";
+      | "ambiguous_webhook_config"
+      | "insecure_bearer_webhook";
   };
 
 type WakeDeliveryResult = {
@@ -124,7 +132,8 @@ function pendingMessagesFor(row: WakeEventRow): PendingMessageRow[] {
         WHERE w.workspace_id = ?
           AND w.target_agent_id = ?
           AND w.delivered_at IS NULL
-          AND m.delivered_at IS NULL
+          -- A request read from the inbox keeps its own wake (markDeliveredOnRead): it is carried as the trigger.
+          AND (m.delivered_at IS NULL OR w.id = ?)
           AND sender.active = 1
           -- The integrity rules deliver() holds the trigger to, so a corrupt or
           -- imported row cannot ride along where it would be refused on its own.
@@ -138,6 +147,7 @@ function pendingMessagesFor(row: WakeEventRow): PendingMessageRow[] {
   ).all(
     row.workspace_id,
     row.target_agent_id,
+    row.id,
     row.id,
     row.created_at,
     new Date(Date.now() - BATCH_LOOKBACK_MS).toISOString(),
@@ -210,12 +220,15 @@ export function markDeliveredOnRead(messageIds: string[]): string | null {
       `UPDATE agent_comm_messages SET delivered_at = ?
         WHERE delivered_at IS NULL AND id IN (${placeholders})`,
     ).run(deliveredAt, ...ids);
+    // A request keeps its wake: reading it is not answering it, and the runtime's turn is what answers.
+    // Without this a glance at the inbox during the retries cancelled the reply for good [A2-12].
     db.prepare(
       `UPDATE agent_wake_events
           SET status = 'ignored', next_attempt_at = NULL, last_error = 'read_from_inbox'
         WHERE delivered_at IS NULL AND status IN ('queued', 'failed')
-          AND message_id IN (${placeholders})`,
-    ).run(...ids);
+          AND message_id IN (${placeholders})
+          AND message_id NOT IN (SELECT id FROM agent_comm_messages WHERE kind = 'request' AND id IN (${placeholders}))`,
+    ).run(...ids, ...ids);
   })();
   return deliveredAt;
 }
@@ -228,7 +241,8 @@ export function wakeDelivery(
   wake: { status?: string | null; last_error?: string | null; attempt_count?: number | null } | null,
 ): WakeDelivery {
   if (wake?.status === "delivered") return "woken";
-  if (messageDeliveredAt) return "read_without_wake";
+  // Only a request read from the inbox still has a wake in flight: its runtime turn is on its way.
+  if (messageDeliveredAt && wake?.status !== "queued" && !(wake?.status === "failed" && (wake.attempt_count ?? 0) < AGENT_WAKE_MAX_ATTEMPTS)) return "read_without_wake";
   if (!wake?.status) return "no_runtime";
   if (wake.status === "queued") return "waking";
   if (wake.status === "failed") return (wake.attempt_count ?? 0) < AGENT_WAKE_MAX_ATTEMPTS ? "waking" : "wake_failed";
@@ -331,6 +345,15 @@ function resolveWebhookConfig(
   }
 
   const rawAuth = (process.env[`${prefix}_AUTH`] || "hmac").trim().toLowerCase();
+  // Bearer mode sends the shared secret itself, and the same secret signs the runner's replies:
+  // plain http may carry it only inside this computer. HMAC never puts the key on the wire.
+  if (rawAuth === "bearer" && url.protocol === "http:" && !/^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(url.hostname)) {
+    if (!quiet) logger.warn("AgentComm wake not pushed: a bearer webhook needs https or loopback", {
+      env_prefix: prefix,
+      target_agent_id: row.target_agent_id,
+    });
+    return { ignored: "insecure_bearer_webhook" };
+  }
   return {
     config: {
       url: url.toString(),
@@ -437,7 +460,7 @@ function claim(row: WakeEventRow): number | null {
 
 function retryAt(attempt: number): string | null {
   if (attempt >= AGENT_WAKE_MAX_ATTEMPTS) return null;
-  const delayMs = Math.min(60_000, 1_000 * 2 ** Math.max(0, attempt - 1));
+  const delayMs = Math.min(RETRY_CAP_MS, 1_000 * 2 ** Math.max(0, attempt - 1));
   return new Date(Date.now() + delayMs).toISOString();
 }
 
@@ -474,6 +497,8 @@ function recordOutcome(
       workspace_id: row.workspace_id,
       agent_id: row.sender_agent_id,
       action: `agent_wake_${result.status}`,
+      event: ({ delivered: "agentcomm.wake.woken", failed: "agentcomm.wake.failed", ignored: "agentcomm.wake.ignored" } as const)[result.status],
+      params: { name: row.target_name },
       entity_type: "agent_wake_event",
       entity_id: row.id,
       project_id: null,
@@ -510,7 +535,9 @@ async function runtimeAcceptedPayload(response: Response): Promise<boolean> {
 }
 
 async function deliver(row: WakeEventRow): Promise<WakeDeliveryResult> {
-  if (Date.now() - new Date(row.created_at).getTime() > STALE_AFTER_MS) {
+  // A queued notification that never left (the server was down) is not replayed late; a wake already
+  // in its retries keeps them, however long the runtime has been away.
+  if (row.attempt_count === 0 && Date.now() - new Date(row.created_at).getTime() > STALE_AFTER_MS) {
     return {
       event_id: row.id,
       status: "ignored",
@@ -599,6 +626,18 @@ async function deliver(row: WakeEventRow): Promise<WakeDeliveryResult> {
     }),
   ].join("\n\n");
 
+  // The recipient's canon travels with the wake: its always rules and the ones these messages
+  // call for. A canon failure never costs the delivery.
+  let canonText = "", canonIds: string[] = [];
+  try {
+    const canon = await matchCanons({ workspace_id: row.workspace_id, agent_id: row.target_agent_id, surface: "wake", session_id: row.session_id,
+      prompt: messages.map((m) => `${m.topic}\n${m.body}`).join("\n\n").slice(0, 8000) });
+    canonText = renderCanon(canon, "Qoopia canon of the recipient");
+    canonIds = [...canon.always, ...canon.contextual].map((m) => m.canon.id);
+  } catch (error) {
+    logger.warn(`wake canon skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   const payload = JSON.stringify({
     event_type: "agentcomm_wake",
     // The triggering message stays at the top level so a runtime whose prompt
@@ -619,7 +658,10 @@ async function deliver(row: WakeEventRow): Promise<WakeDeliveryResult> {
     kind: row.kind,
     message_count: messages.length,
     messages,
-    messages_text: messagesText,
+    // Runtimes that render {{messages_text}} get the recipient's canon ahead of the quoted messages.
+    messages_text: canonText ? `${canonText}\n${messagesText}` : messagesText,
+    // Rules of the recipient, server-written: kept apart from the quoted messages above.
+    ...(canonText ? { canon_text: canonText, canon_ids: canonIds } : {}),
   });
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (resolved.config.auth === "bearer") {

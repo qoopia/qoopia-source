@@ -5,6 +5,42 @@ import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { timeBoundSql } from "../utils/temporal.ts";
 import { readLevel, visibleRowSql } from "../auth/principal.ts";
 
+/**
+ * A4-02: every event Qoopia records itself carries a stable code and its parameters in
+ * details.event / details.params. Clients (the dashboard, activity_list) phrase the event from
+ * them in the reader's language; `summary` stays an English sentence for older clients.
+ */
+export const ACTIVITY_EVENTS = [
+  "note.created", "note.updated", "note.deleted", "note.superseded", "note.relation.created",
+  "file.uploaded", "file.deleted",
+  "agentcomm.session.created", "agentcomm.session.closed", "agentcomm.message.sent",
+  "agentcomm.wake.woken", "agentcomm.wake.failed", "agentcomm.wake.ignored",
+  "agent.onboarded", "agent.onboarded_with_role", "agent.deactivated", "agent.profile_changed",
+  "agent.autosave.on", "agent.autosave.off", "agent.shared_context.on", "agent.shared_context.off",
+  "agent.dreamer.on", "agent.dreamer.off",
+  "canon.created", "canon.superseded", "canon.retired", "canon.imported",
+  "extraction.candidate.accepted", "extraction.candidate.edited", "extraction.candidate.rejected",
+] as const;
+export type ActivityEvent = (typeof ACTIVITY_EVENTS)[number];
+type ActivityParams = Record<string, string | number | boolean | null>;
+
+// Rows written by notes.ts (and rows from before A4-02) name their event only by action.
+const LEGACY_EVENTS: Record<string, ActivityEvent> = {
+  "note:created": "note.created", "note:updated": "note.updated", "note:deleted": "note.deleted",
+  "note:note_superseded": "note.superseded", "note_relation:relation_created": "note.relation.created",
+  "agent_comm_session:agent_session_close": "agentcomm.session.closed",
+};
+const KNOWN = new Set<string>(ACTIVITY_EVENTS);
+
+/** The event code and parameters of a stored row; null for an event Qoopia did not phrase (an agent's own summary). */
+export function activityEvent(row: { action: string; entity_type: string; details: unknown }): { event: ActivityEvent | null; params: ActivityParams | null } {
+  const d = row.details as { event?: unknown; params?: unknown } | null;
+  if (d && typeof d.event === "string" && KNOWN.has(d.event))
+    return { event: d.event as ActivityEvent, params: d.params && typeof d.params === "object" ? d.params as ActivityParams : {} };
+  const legacy = LEGACY_EVENTS[row.entity_type + ":" + row.action];
+  return legacy ? { event: legacy, params: {} } : { event: null, params: null };
+}
+
 interface ActivityInput {
   workspace_id: string;
   agent_id: string | null;
@@ -14,6 +50,8 @@ interface ActivityInput {
   project_id: string | null;
   summary: string;
   details?: Record<string, unknown>;
+  event?: ActivityEvent;
+  params?: ActivityParams;
   /**
    * QTHIRD-001: stamp the activity row with the visibility of the entity
    * it describes. listActivity / recall(scope='activity'|'all') filter on
@@ -25,10 +63,11 @@ interface ActivityInput {
 }
 
 export function logActivity(input: ActivityInput): string {
+  const details = input.event ? { ...input.details, event: input.event, params: input.params ?? {} } : input.details;
   // Secret guard: reject if summary or details contain an API key pattern
   assertNoSecrets(input.summary, "activity.summary");
-  if (input.details) {
-    assertNoSecrets(JSON.stringify(input.details), "activity.details");
+  if (details) {
+    assertNoSecrets(JSON.stringify(details), "activity.details");
   }
 
   const id = ulid();
@@ -45,7 +84,7 @@ export function logActivity(input: ActivityInput): string {
     input.entity_id,
     input.project_id,
     input.summary,
-    JSON.stringify(input.details || {}),
+    JSON.stringify(details || {}),
     visibility,
     nowIso(),
   );
@@ -138,10 +177,10 @@ export function listActivity(p: ActivityListParams) {
     .get(...params) as { c: number };
 
   return {
-    items: items.map((r) => ({
-      ...r,
-      details: safeParse(r.details),
-    })),
+    items: items.map((r) => {
+      const details = safeParse(r.details);
+      return { ...r, details, ...activityEvent({ ...r, details }) };
+    }),
     total: totalRow.c,
     limit,
   };

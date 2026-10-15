@@ -124,7 +124,7 @@ export const entityTools: ToolDef[] = [
         relation_type: String(args.relation_type),
         confidence: args.confidence as number | undefined,
         source: args.source as string | undefined,
-      }),
+      }, auth),
   },
   {
     name: "entity_page_render",

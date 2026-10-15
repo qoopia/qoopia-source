@@ -69,7 +69,7 @@ export function vectorCosineThreshold(): number {
  * needs vector recall (FTS5 keyword channel still surfaces them).
  *
  * type='memory' is INTENTIONALLY excluded — memory is the primary
- * recall target, and short anchor notes ("Aidan port 18789",
+ * recall target, and short anchor notes ("gateway port 18789",
  * "Tailscale IP <host-ip>") must remain reachable via vector
  * similarity. Memory hygiene is a separate task.
  *

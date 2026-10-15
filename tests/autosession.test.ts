@@ -181,7 +181,7 @@ test('tailer with hundreds of session files shares one allowlist request, backs 
 test('admin CLI registers, lists, pauses and resumes the autosession allowlist', () => {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-agents-'))), data = path.join(directory, 'data');
   fs.mkdirSync(data, { mode: 0o700 });
-  const fixture = p1Database(49), owner = bootstrapOwner(fixture, 'Tailer owner', 'Tailer workspace');
+  const fixture = p1Database(51), owner = bootstrapOwner(fixture, 'Tailer owner', 'Tailer workspace');
   const slug = (fixture.query('SELECT slug FROM workspaces WHERE id=?').get(owner.workspace_id) as { slug: string }).slug;
   fs.writeFileSync(path.join(data, 'qoopia.db'), fixture.serialize());
   fixture.close();

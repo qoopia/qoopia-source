@@ -125,5 +125,7 @@ export async function readBoundedText(response: Response, maxBytes: number): Pro
 /** Largest /memory/continuity request body the server reads. The memory hook client
  * sizes its batches from the same constant so the two limits cannot drift apart. */
 export const CONTINUITY_MAX_BODY_BYTES = 512 * 1024;
+/** Largest /memory/canon request body: one user turn (the hook sends at most 8000 characters). */
+export const CANON_MAX_BODY_BYTES = 64 * 1024;
 /** Largest ordinary request body the server reads; the MCP edge refuses larger bodies with the same limit. */
 export const MAX_BODY_BYTES = 1_048_576; // 1 MB

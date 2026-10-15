@@ -36,14 +36,16 @@
     }
   }
   // An answer without a human sentence names the failure in words, never as "HTTP 502" or a snake_case code.
+  // A4-03: the server's sentence goes through the catalog (tests/server-messages-translated.test.ts).
   function failure(r, data) {
-    const error = Object.assign(new Error(''), { status: r.status, code: data.code, retryAfter: Number(r.headers.get('retry-after')) || 0 });
-    error.message = data.error_description || data.error?.message || (typeof data.error === 'string' && data.error.includes(' ') ? data.error : QI.resolve(errReason(error)));
+    const error = Object.assign(new Error(''), { status: r.status, code: data.code, details: data.details, retryAfter: Number(r.headers.get('retry-after')) || 0 });
+    const said = data.error_description || data.error?.message || (typeof data.error === 'string' && data.error.includes(' ') ? data.error : '');
+    error.message = QI.resolve(said ? QI.msg(said) : errReason(error));
     return error;
   }
   async function api(path) {
     const r = await send(BASE + path, { credentials: 'same-origin', signal: AbortSignal.timeout(15000) });
-    if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+    if (r.status === 401) { showLogin(true); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw failure(r, data);
     return data;
@@ -54,7 +56,7 @@
       headers: { 'content-type': 'application/json', 'X-Qoopia-CSRF': '1' },
       body: JSON.stringify(body),
     });
-    if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+    if (r.status === 401) { showLogin(true); throw new Error('unauthorized'); }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw failure(r, data);
     return data;
@@ -131,7 +133,8 @@
   $('#deviceLoginBtn').onclick=startDeviceLogin;
   $('#emailLoginForm').onsubmit=e=>{e.preventDefault();startEmailLogin('email');};
   $('#googleLoginBtn').onclick=()=>startEmailLogin('google');
-  function showLogin() { chat?.dispose();chat=null;localWorkspace=null; $('#sessionCheck')?.remove(); $('#loginView').style.display = 'flex'; $('#appView').style.display = 'none'; pollFn = null; }
+  // A4-11: a session that ends while the dashboard is open says so on the sign-in card.
+  function showLogin(expired) { if (expired === true && $('#appView').style.display === 'block') { $('#loginErr').textContent = QI.msg('Your session has ended. Sign in again.'); $('#loginErr').style.display = 'block'; } chat?.dispose();chat=null;localWorkspace=null; $('#sessionCheck')?.remove(); $('#loginView').style.display = 'flex'; $('#appView').style.display = 'none'; pollFn = null; }
   function showApp() { $('#sessionCheck')?.remove(); $('#loginView').style.display = 'none'; $('#appView').style.display = 'block'; }
   function consumeSafeNext() {
     const next = new URLSearchParams(window.location.search).get('next') || '';
@@ -220,12 +223,16 @@
     const d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),m=Math.floor(sec%3600/60);
     return d?QI.msg('{d}d {h}h',{d,h}):h?QI.msg('{h}h {m}m',{h,m}):m?QI.msg('{m}m',{m}):QI.msg('{s}s',{s:Math.floor(sec)});
   }
+  // A4-19: an avatar tone from the name itself; the product names no particular agents.
   function avatarClass(name) {
-    const n = (name || '').toLowerCase();
-    if (['alan','aizek','aidan','dan','liam','claude','gpt'].includes(n)) return n;
-    return 'other';
+    let h = 0; for (const c of String(name || '')) h = (h * 31 + c.codePointAt(0)) >>> 0;
+    return 'tone-' + (h % 3);
   }
-  function initial(name) { return (name || '?').charAt(0).toUpperCase(); }
+  // A4-15: smooth scrolling only when the reader has not asked for reduced motion.
+  const motion = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  // A4-16: a search field takes focus on open only with a mouse or trackpad; on a phone that would pop the keyboard.
+  const focusField = el => { if (matchMedia('(pointer: fine)').matches) el.focus(); };
+  function initial(name) { return esc((name || '?').charAt(0).toUpperCase()); }
   // Activity in words, appended to a meta line; the old dots were identical and hover-only (F-322).
   function liveStatus(iso) {
     if (!iso) return '';
@@ -263,6 +270,7 @@
   // ---------- Errors ----------
   // A failed load says what failed and why in words and offers Retry; codes stay off the page (F-323).
   function errReason(e) {
+    if (e?.status === 403) return QI.msg('This is available only to the workspace owner.');
     if (e?.status === 429) return QI.msg('Too many requests. Try again in {s} s.', { s: e.retryAfter || 60 });
     if (e?.status) return QI.msg('The server could not complete the request.');
     return QI.msg('Could not reach the server. Check your connection.');
@@ -284,15 +292,18 @@
     { id: 'agentcomm', label: (QI.msg("Agent conversations")), icon: '<path d="M8 10h8M8 14h5"/><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12z"/>' },
     { id: 'bridges', label: (QI.msg("Bridges")), icon: '<circle cx="5" cy="12" r="3"/><circle cx="19" cy="5" r="3"/><circle cx="19" cy="19" r="3"/><path d="m8 10 8-4M8 14l8 4"/>' },
     { id:'external',label:QI.msg('External folder'),icon:'<path d="M3 7h7l2 2h9v11H3zM3 7V4h7l2 3"/>' },
+    { id: 'canon', label: (QI.msg("Canon")), icon: '<path d="M6 3h12v18l-6-4-6 4z"/><path d="M9 8h6M9 12h4"/>' },
     { id: 'skills', label: (QI.msg("Skills")), icon: '<path d="M12 3l9 5-9 5-9-5zM3 12l9 5 9-5M3 17l9 5 9-5"/>' },
     { id: 'files', label: (QI.msg("Files")), icon: '<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/>' },
     { id: 'search', label: (QI.msg("Search")), icon: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>' },
   ];
-  const navOrder=['overview','work','agents','connections','agentcomm','skills','bridges','external','files','search'];
+  const navOrder=['overview','work','canon','agents','connections','agentcomm','skills','bridges','external','files','search'];
   NAV.sort((a,b)=>navOrder.indexOf(a.id)-navOrder.indexOf(b.id));
   let navBadges = {};
+  // A4-04: pages only the workspace owner can open; an agent's own view does not list them.
+  const OWNER_PAGES=['work','connections','bridges','external'];
   function renderNav() {
-    $('#nav').innerHTML = NAV.filter(n => (!['work','connections','my-agent'].includes(n.id) || localWorkspace)).map(n => {
+    $('#nav').innerHTML = NAV.filter(n => !OWNER_PAGES.includes(n.id) || localWorkspace).map(n => {
       const b = navBadges[n.id];
       const attn = '';
       const pill = (b != null && b !== '') ? '<span class="pill">' + b + '</span>' : '';
@@ -312,7 +323,7 @@
     const hash=location.hash.slice(1),page=hash==='memory'?'work':hash;
     if(hash==='my-agent'){chat?.open();return 'overview';}
     if(page==='profile'||page==='owner'&&serviceOwner)return page;
-    return NAV.some(n=>n.id===page)&&(!['work','connections'].includes(page)||localWorkspace)?page:'overview';
+    return NAV.some(n=>n.id===page)&&(!OWNER_PAGES.includes(page)||localWorkspace)?page:'overview';
   }
   function go(page) {
     if(page==='my-agent'){chat?.open();return;}
@@ -321,7 +332,37 @@
     history.pushState(null,'',location.pathname+location.search+'#'+(page==='work'?'memory':page));
     state={page:pageFromHash(),drill:null};Promise.resolve(route()).then(()=>{if(document.contains(main))main.focus({preventScroll:true});});
   }
-  window.addEventListener('hashchange',()=>{if($('#appView').style.display!=='none'){state={page:pageFromHash(),drill:null};Promise.resolve(route()).then(()=>{if(document.contains(main))main.focus({preventScroll:true});});}});
+  // A4-05: an agent (and its tab), a session and an agent conversation have their own address, so Back,
+  // reload and a shared link return to them: #agents/<id>[/<tab>], #agents/<id>/sessions/<sid>, #agentcomm/<first>/<second>.
+  function drillHash(page, d) {
+    if (!d) return page === 'work' ? 'memory' : page;
+    const id = encodeURIComponent;
+    if (d.kind === 'agent') return 'agents/' + id(d.agent.id) + (d.tab && d.tab !== 'sessions' ? '/' + id(d.tab) : '');
+    if (d.kind === 'session') return 'agents/' + id(d.agent.id) + '/sessions/' + id(d.session.id);
+    return 'agentcomm/' + id(d.pair.agent_a.id) + '/' + id(d.pair.agent_b.id);
+  }
+  function parseDrillHash(hash) {
+    let p; try { p = hash.split('/').map(decodeURIComponent); } catch { return null; }
+    if (p[0] === 'agents' && p[1]) return p[2] === 'sessions' && p[3] ? { kind: 'session', agent: p[1], session: p[3] } : { kind: 'agent', agent: p[1], tab: p[2] || 'sessions' };
+    if (p[0] === 'agentcomm' && p[1] && p[2]) return { kind: 'acthread', a: p[1], b: p[2] };
+    return null;
+  }
+  function openDrill(page, drill, replace) {
+    state = { page, drill };
+    history[replace ? 'replaceState' : 'pushState'](null, '', location.pathname + location.search + '#' + drillHash(page, drill));
+    return route();
+  }
+  async function stateFromHash() {
+    const want = parseDrillHash(location.hash.slice(1));
+    if (!want) return { page: pageFromHash(), drill: null };
+    if (!agentsCache) try { agentsCache = (await api('/api/dashboard/agents')).items; } catch { /* The list page below reports the failure. */ }
+    const find = id => (agentsCache || []).find(a => a.id === id);
+    if (want.kind === 'acthread') return { page: 'agentcomm', drill: { kind: 'acthread', pair: { agent_a: find(want.a) || { id: want.a }, agent_b: find(want.b) || { id: want.b } } } };
+    const agent = find(want.agent);
+    if (!agent) return { page: 'agents', drill: null };
+    return { page: 'agents', drill: want.kind === 'session' ? { kind: 'session', agent, session: { id: want.session, title: null } } : { kind: 'agent', agent, tab: want.tab, noteType: null } };
+  }
+  window.addEventListener('hashchange',()=>{if($('#appView').style.display!=='none'){stateFromHash().then(next=>{state=next;return route();}).then(()=>{if(document.contains(main))main.focus({preventScroll:true});});}});
 
   function setCrumb(html) { crumb.innerHTML = html;document.title=QI.resolve(crumb.textContent)+' · Qoopia'; }
   window.addEventListener('qoopia:language',()=>{document.title=crumb.textContent+' · Qoopia';});
@@ -354,6 +395,7 @@
     if (state.page === 'agents') return renderAgentsPage();
     if (state.page === 'agentcomm') return renderAgentCommPage();
     if (state.page === 'bridges') return renderBridgesPage();
+    if (state.page === 'canon') return renderCanonPage();
     if (state.page === 'skills') return renderSkillsPage();
     if (state.page === 'files') return renderFilesPage();
     if (state.page === 'search') return renderSearchPage();
@@ -375,7 +417,7 @@
     if (n < 1048576) return (n / 1024).toFixed(1) + (" " + QI.msg("KB"));
     return (n / 1048576).toFixed(1) + (" " + QI.msg("MB"));
   }
-  // Folders are paths ('inbox', 'Aidan/reports'); one exists while it holds a file. Agents save into
+  // Folders are paths ('inbox', 'research/reports'); one exists while it holds a file. Agents save into
   // their own folder with file_put; the owner uploads anywhere and opens a new folder in place.
   // The top level shows every folder and the latest files; an upload there goes to inbox.
   let filesPath = '', filesFolders = [], filesNew = [];
@@ -517,11 +559,10 @@
         e.preventDefault();
         if(link.dataset.ownerPage!==undefined)return void renderOwner(Number(link.dataset.ownerPage));
         if(link.dataset.ownerRefresh!==undefined)return void renderOwner(ownerPage);
-        view.querySelector('#'+link.dataset.ownerSection)?.scrollIntoView({behavior:'smooth',block:'start'});
+        view.querySelector('#'+link.dataset.ownerSection)?.scrollIntoView({behavior:motion(),block:'start'});
       };
     } catch(e) {
-      if(state.page==='owner'&&view.isConnected)view.innerHTML='<p class="err">'+esc(e.message)+'</p><button class="btn" id="ownerRetry" type="button">'+esc(QI.msg('Retry'))+'</button>';
-      if($('#ownerRetry'))$('#ownerRetry').onclick=()=>renderOwner(page);
+      if(state.page==='owner'&&view.isConnected)errBox(view,QI.msg('Could not load the owner dashboard.'),()=>renderOwner(page),e);
     }
   }
 
@@ -564,7 +605,7 @@
     const conns = ov.connections, chips = conns && '<span class="ov-chips">' + (conns.length ? conns.map(c => '<span class="chip" title="' + esc(c.name) + '">' + esc(c.client || SURFACE_NAMES[c.surface] || c.name) + '</span>').join('')
       : '<span class="ov-none">' + esc(QI.msg("None connected")) + '</span>') + '</span>';
     patch($('#ccCards'), tile('agents', 'Active agents', agents.filter(a => !isInfra(a) && a.type !== 'owner').length) +
-      (conns ? tile('connections', 'Connections', conns.length, chips) : '') + tile('bridges', 'Bridges', ov.bridges?.total) + tile('files', 'Files', ov.files?.total));
+      (conns ? tile('connections', 'Connections', conns.length, chips) : '') + (localWorkspace ? tile('bridges', 'Bridges', ov.bridges?.total) : '') + tile('files', 'Files', ov.files?.total));
   }
   function paintHealth(h) {
     if (!h) { $('#ccHealth').innerHTML = ("<div class=\"hi\">" + QI.msg("Health unavailable") + "</div>"); return; }
@@ -593,7 +634,21 @@
   // a sentence in the page language, with names and topics kept verbatim; anything else (a summary an agent
   // wrote itself) is shown as written. The original summary stays in the row's tooltip.
   const NOTE_EVENTS = { created: 'Note saved', updated: 'Note updated', deleted: 'Note deleted', note_superseded: 'Note replaced by a newer version' };
+  // A4-02: the server sends an event code and its parameters (src/services/activity.ts ACTIVITY_EVENTS).
+  const ACTIVITY_EVENTS = {
+    'note.created': 'Note saved', 'note.updated': 'Note updated', 'note.deleted': 'Note deleted', 'note.superseded': 'Note replaced by a newer version', 'note.relation.created': 'Notes linked',
+    'file.uploaded': 'File {name} uploaded to {folder}', 'file.deleted': 'File {name} deleted from {folder}',
+    'agentcomm.session.created': 'Agent conversation started: {topic}', 'agentcomm.session.closed': 'Agent conversation closed', 'agentcomm.message.sent': 'Message to {name}',
+    'agentcomm.wake.woken': 'Woke {name} for a new message', 'agentcomm.wake.failed': 'Could not wake {name}; the message waits in the inbox', 'agentcomm.wake.ignored': '{name} was not woken; the message waits in the inbox',
+    'agent.onboarded': 'Agent {name} added', 'agent.onboarded_with_role': 'Agent {name} added with role {role}', 'agent.deactivated': 'Agent {name} deactivated; application sign-ins revoked: {tokens}',
+    'agent.profile_changed': 'Access profile of {name} changed: {from} → {to}', 'agent.autosave.on': '{name}: automatic saving turned on', 'agent.autosave.off': '{name}: saves only on request',
+    'agent.shared_context.on': '{name}: shared context turned on', 'agent.shared_context.off': '{name}: reads only its own context',
+    'agent.dreamer.on': '{name} is now the dreamer', 'agent.dreamer.off': '{name} is no longer the dreamer',
+    'canon.created': 'Canon added', 'canon.superseded': 'Canon replaced by a new wording', 'canon.retired': 'Canon retired', 'canon.imported': 'Rule notes imported as canons: {count}',
+    'extraction.candidate.accepted': 'Suggested note accepted', 'extraction.candidate.edited': 'Suggested note accepted with edits', 'extraction.candidate.rejected': 'Suggested note declined',
+  };
   function activityText(it) {
+    if (ACTIVITY_EVENTS[it.event]) return QI.msg(ACTIVITY_EVENTS[it.event], it.params || {});
     const s = it.summary || '', x = re => s.match(re);let m;
     if (it.entity_type === 'note' && NOTE_EVENTS[it.action]) return QI.msg(NOTE_EVENTS[it.action]);
     if (it.action === 'relation_created') return QI.msg('Notes linked');
@@ -649,7 +704,7 @@
     return '<div class="ar-switch ar-' + kind + '"><span class="ar-label" aria-hidden="true">' + esc(label) + '</span>' +
       '<button type="button" class="qswitch" role="switch" data-id="' + kind + ':' + esc(a.id) + '" data-switch="' + kind + '" data-agent="' + esc(a.id) + '"' +
       ' aria-checked="' + on + '" aria-label="' + esc(label + ': ' + a.name) + '"' +
-      (enabled ? '' : ' disabled title="' + esc(QI.msg("Only the workspace owner can change this.")) + '"') + '><span class="qswitch-thumb"></span></button></div>';
+      (enabled ? '' : ' aria-disabled="true" aria-describedby="switchLockReason"') + '><span class="qswitch-thumb"></span></button></div>';
   }
   function agentCount(n, unit) {
     return '<span class="ar-num"><b aria-hidden="true">' + fmtNum(n) + '</b><span class="ar-unit">' + QI.count(n || 0, unit) + '</span></span>';
@@ -658,6 +713,8 @@
     const lastIso = a.last_session_active || a.last_seen, owner = a.type === 'owner', mem = !owner && a.memory, saves = mem?.pending_saves || 0, role = agentRole(a);
     const shared = typeof a.shared_context === 'boolean' ? agentSwitch('shared', a, a.shared_context, a.can_switch_shared_context === true, QI.msg("Shared context"))
       : a.shared_context === null ? '<div class="ar-switch ar-shared"><span class="ar-label" aria-hidden="true">' + esc(QI.msg("Shared context")) + '</span><span class="ar-always">' + esc(QI.msg("Whole workspace")) + '</span></div>' : '<div></div>';
+    // ADR-022: the dreamer reads every conversation of the workspace; only the owner switches it.
+    const dreamer = typeof a.dreamer === 'boolean' ? agentSwitch('dreamer', a, a.dreamer, a.can_switch_dreamer === true, QI.msg("Dreamer")) : '<div></div>';
     return '<div class="agent-row' + (owner ? ' agent-row-owner' : '') + '">' +
       '<button type="button" class="agent-card" data-id="' + esc(a.id) + '">' +
         '<span class="agent-avatar ' + avatarClass(a.name) + '" aria-hidden="true">' + initial(a.name) + '</span>' +
@@ -665,12 +722,12 @@
         '<span class="agent-meta">' + (role ? esc(role) + ' · ' : '') + fmtTime(lastIso) + liveStatus(lastIso) + '</span></span></button>' +
       '<div class="ar-status">' + (mem ? coverageLine(a) : '') +
         (saves ? '<button type="button" class="ar-saves" data-id="saves:' + esc(a.id) + '" data-open="' + esc(a.id) + '">' + esc(QI.msg("{n} to confirm", { n: saves })) + '</button>' : '') + '</div>' +
-      (mem ? agentSwitch('autosave', a, mem.mode === 'auto', a.can_manage_memory === true, QI.msg("Autosave")) : '<div></div>') + shared +
+      (mem ? agentSwitch('autosave', a, mem.mode === 'auto', a.can_manage_memory === true, QI.msg("Autosave")) : '<div></div>') + shared + dreamer +
       agentCount(a.sessions_count, 'session') + agentCount(a.messages_count, 'message') + agentCount(a.notes_count, 'note') + '</div>';
   }
   function agentTable(items) {
     return '<div class="agent-table"><div class="agent-row agent-row-head" aria-hidden="true"><span>' + esc(QI.msg("Agent")) + '</span><span>' + esc(QI.msg("Memory")) +
-      '</span><span>' + esc(QI.msg("Autosave")) + '</span><span>' + esc(QI.msg("Shared context")) + '</span><span>' + esc(QI.msg("Sessions")) + '</span><span>' +
+      '</span><span>' + esc(QI.msg("Autosave")) + '</span><span>' + esc(QI.msg("Shared context")) + '</span><span>' + esc(QI.msg("Dreamer")) + '</span><span>' + esc(QI.msg("Sessions")) + '</span><span>' +
       esc(QI.msg("Messages")) + '</span><span>' + esc(QI.msg("Notes")) + '</span></div>' + items.map(agentCard).join('') + '</div>';
   }
   function paintAgentsBoard(el, items) {
@@ -679,6 +736,8 @@
     const live = items.filter(a => !isInfra(a)).sort(byRank);
     const sys = items.filter(a => isInfra(a)).sort(byRecent);
     let html = agentTable(live);
+    // A4-13: a locked switch stays focusable (aria-disabled) and its reason is on the page, not only in a tooltip.
+    if (html.includes('aria-disabled="true"')) html = '<p class="meta" id="switchLockReason">' + QI.msg("Only the workspace owner can change autosave and shared context.") + '</p>' + html;
     if (sys.length) html += '<h2 class="section-title system-title">' + QI.msg("System & integration agents") + '</h2><div class="system-grid">' + agentTable(sys) + '</div>';
     patch(el, html);
     el.querySelectorAll('.agent-card,[data-open]').forEach(c => { c.onclick = () => drillAgentById(c.getAttribute('data-open') || c.getAttribute('data-id')); });
@@ -687,14 +746,16 @@
   // Optimistic: the switch moves at once, returns on failure, and the row is re-read either way.
   async function switchAgentSetting(button) {
     const a = (agentsCache || []).find(x => x.id === button.dataset.agent), status = $('#uiFeedback');
-    if (!a || button.disabled || button.getAttribute('aria-busy') === 'true') return;
-    const on = button.getAttribute('aria-checked') === 'true', autosave = button.dataset.switch === 'autosave';
+    if (button.getAttribute('aria-disabled') === 'true') { if (status) status.textContent = QI.msg("Only the workspace owner can change this."); return; }
+    if (!a || button.getAttribute('aria-busy') === 'true') return;
+    const on = button.getAttribute('aria-checked') === 'true', autosave = button.dataset.switch === 'autosave', dreamer = button.dataset.switch === 'dreamer';
     // aria-busy, not disabled: a disabled button drops keyboard focus, and the repaint restores it by data-id.
     button.setAttribute('aria-busy', 'true'); button.setAttribute('aria-checked', String(!on));
     try {
       if (autosave) await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/memory-policy', { mode: on ? 'manual' : 'auto', expected_revision: a.memory.revision });
-      else await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/shared-context', { enabled: !on });
+      else await apiWrite('/api/dashboard/agents/' + encodeURIComponent(a.id) + (dreamer ? '/dreamer' : '/shared-context'), { enabled: !on });
       if (status) status.textContent = autosave ? (on ? QI.msg("{name} saves only on request.", { name: a.name }) : QI.msg("Automatic saving is on for {name}.", { name: a.name }))
+        : dreamer ? (on ? QI.msg("{name} is no longer the dreamer.", { name: a.name }) : QI.msg("{name} is now the dreamer and reads every conversation of the workspace.", { name: a.name }))
         : (on ? QI.msg("{name} now reads only its own context.", { name: a.name }) : QI.msg("{name} now reads the shared context.", { name: a.name }));
     } catch (e) {
       button.setAttribute('aria-checked', String(on));
@@ -716,7 +777,7 @@
 
   function drillAgentById(id) {
     const a = (agentsCache || []).find(x => x.id === id);
-    if (a) { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'sessions', noteType: null } }; route(); }
+    if (a) openDrill('agents', { kind: 'agent', agent: a, tab: 'sessions', noteType: null });
   }
 
   // ================= AGENT DETAIL (drill-down, preserved) =================
@@ -774,10 +835,61 @@
     if ([404, 409, 410].includes(e.status)) await route(true);
     const result = $('#memoryResult'); if (result) result.textContent = e.status === 403 ? ownerOnly : QI.msg("Could not complete this.") + ' ' + e.message;
   }
+  // ---------- Canon (ADR-021) ----------
+  // Rules Qoopia loads into context by itself. Everyone reads what they may; the owner writes here,
+  // agents write their own over MCP.
+  const canonScope = c => c.scope === 'workspace' ? QI.msg("Whole workspace") : c.scope === 'project' ? QI.msg("Project") : QI.msg("This agent");
+  const canonMode = c => c.mode === 'always' ? QI.msg("Always loaded") : QI.msg("Loaded when relevant");
+  async function renderCanonList(el, agentId) {
+    const d = state.drill, page = state.page;
+    try {
+      const data = await api('/api/dashboard/canons?status=active&limit=200' + (agentId ? '&agent=' + encodeURIComponent(agentId) : ''));
+      if (state.drill !== d || state.page !== page || !el.isConnected) return;
+      setConn(true);
+      const form = localWorkspace ? '<form class="canon-form" id="canonForm"><label for="canonText">' + QI.msg("New canon: one rule, worded as an instruction") + '</label>' +
+        '<textarea id="canonText" rows="3" maxlength="2000" required></textarea>' +
+        '<label for="canonMode">' + QI.msg("When") + '</label><select id="canonMode"><option value="contextual">' + QI.msg("Loaded when relevant") + '</option><option value="always">' + QI.msg("Always loaded") + '</option></select> ' +
+        '<button class="btn" type="submit">' + QI.msg("Make it canon") + '</button><p class="meta" id="canonResult" role="status"></p></form>' : '';
+      el.innerHTML = form + (data.items.length ? '<ul class="canon-list">' + data.items.map(c =>
+        '<li class="canon-item"><p class="canon-text">' + esc(c.text) + '</p><p class="meta">' + esc(canonScope(c)) + ' · ' + esc(canonMode(c)) + ' · ' +
+          QI.msg("Loaded into turns:") + ' ' + fmtNum(c.applied_count || 0) + (c.last_applied_at ? ' · ' + QI.msg("last") + ' ' + fmtTime(c.last_applied_at) : '') +
+          (localWorkspace ? ' <button type="button" class="btn" data-retire="' + esc(c.id) + '">' + QI.msg("Retire") + '</button>' : '') + '</p></li>').join('') + '</ul>'
+        : '<div class="empty">' + QI.msg("No canons yet. A canon is a short rule Qoopia gives the agent by itself: at every session start, or on the turns it matters for.") + '</div>');
+      el.querySelectorAll('[data-retire]').forEach(b => b.onclick = async () => {
+        b.disabled = true;
+        try { await apiWrite('/api/dashboard/canons/' + encodeURIComponent(b.dataset.retire) + '/retire', {}); void renderCanonList(el, agentId); }
+        catch (e) { b.disabled = false; const r = $('#canonResult'); if (r) r.textContent = e.message; }
+      });
+      const f = $('#canonForm'); if (f) f.onsubmit = e => { e.preventDefault(); void submitCanon(el, agentId); };
+    } catch (e) { if (el.isConnected) errBox(el, QI.msg("Could not load canons."), () => renderCanonList(el, agentId), e); }
+  }
+  async function submitCanon(el, agentId, onConflict) {
+    const text = $('#canonText').value.trim(), result = $('#canonResult'); if (!text) return;
+    const body = { text, mode: $('#canonMode').value, ...(agentId ? { agent: agentId, scope: 'agent' } : {}), ...(onConflict ? { on_conflict: onConflict } : {}) };
+    try { await apiWrite('/api/dashboard/canons', body); void renderCanonList(el, agentId); }
+    catch (e) {
+      if (e.status !== 409 || !e.details?.candidates) { result.textContent = e.message; return; }
+      // A related canon is active: the owner chooses, the server never guesses.
+      result.innerHTML = esc(QI.msg("A related canon is already active:")) + '<ul>' + e.details.candidates.map(c => '<li>' + esc(c.text) + '</li>').join('') + '</ul>' +
+        '<button type="button" class="btn" id="canonReplace">' + QI.msg("Replace it") + '</button> <button type="button" class="btn" id="canonBoth">' + QI.msg("Keep both") + '</button>';
+      $('#canonReplace').onclick = () => submitCanon(el, agentId, 'replace');
+      $('#canonBoth').onclick = () => submitCanon(el, agentId, 'keep_both');
+    }
+  }
+  function renderCanonPage() {
+    setCrumb('<span aria-current="page">' + QI.msg("Canon") + '</span>');
+    main.innerHTML = '<h1 class="page-title">' + QI.msg("Canon") + '</h1><p class="ent-sum">' +
+      QI.msg("Short rules Qoopia loads into your agents' context by itself: always, or on the turns they matter for. A changed rule replaces the old one; its history stays.") +
+      '</p><div id="canonBody"><div class="loading">' + QI.msg("Loading…") + '</div></div>';
+    void renderCanonList($('#canonBody'), null);
+  }
   function renderAgentDetail() {
-    const a = state.drill.agent, tab = state.drill.tab, role = agentRole(a), st = a.memory && a.type !== 'owner' && agentMemoryState(a);
-    setCrumb(("<a data-go=\"agents\">" + QI.msg("Agents") + "</a><span class=\"crumb-sep\">›</span><span style=\"color:var(--text)\">") + esc(a.name) + '</span>');
-    const tabs = [['sessions', QI.msg("Sessions"), a.sessions_count], ['memory', QI.msg("Notes"), a.notes_count], ['search', QI.msg("Search")], ['access', QI.msg("Access")]];
+    const a = state.drill.agent, role = agentRole(a), st = a.memory && a.type !== 'owner' && agentMemoryState(a);
+    setCrumb('<a href="#agents" data-go="agents">' + QI.msg("Agents") + '</a><span class="crumb-sep" aria-hidden="true">›</span><span aria-current="page">' + esc(a.name) + '</span>');
+    const tabs = [['sessions', QI.msg("Sessions"), a.sessions_count], ['memory', QI.msg("Notes"), a.notes_count], ['canon', QI.msg("Canon")], ['search', QI.msg("Search")], ['access', QI.msg("Access")]];
+    // A4-05: an unknown tab in the address opens Sessions.
+    if (!tabs.some(([id]) => id === state.drill.tab)) state.drill.tab = 'sessions';
+    const tab = state.drill.tab;
     main.innerHTML =
       '<div class="detail-head">' +
         '<div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
@@ -785,14 +897,20 @@
         '<div class="detail-sub">' + (role ? esc(role) + ' · ' : '') + QI.count(a.sessions_count,'session') + ' · ' + QI.count(a.messages_count,'message') + ' · ' + QI.count(a.notes_count,'note') +
           (st ? ' · <span aria-hidden="true">' + st[0] + '</span> ' + esc(st[1]) : '') + '</div></div>' +
       '</div>' + savesPanel(a) +
-      '<div class="tabs">' + tabs.map(([id, label, n]) => '<button class="tab' + (tab === id ? ' active' : '') + '" data-tab="' + id + '">' + label +
+      // A4-14: a real tab list, as in Bridges: one tab in the Tab order, arrows move between tabs.
+      '<div class="tabs" role="tablist" aria-label="' + esc(QI.msg("Agent sections")) + '">' + tabs.map(([id, label, n]) => '<button type="button" role="tab" id="agentTab-' + id + '" aria-controls="tabBody" aria-selected="' + (tab === id) + '" tabindex="' + (tab === id ? 0 : -1) + '" class="tab' + (tab === id ? ' active' : '') + '" data-tab="' + id + '">' + label +
         (n == null ? '' : ' <span class="tab-badge">' + fmtNum(n) + '</span>') + '</button>').join('') +
-      ("</div><div id=\"tabBody\"><div class=\"loading\">" + QI.msg("Loading…") + "</div></div>");
-    main.querySelectorAll('.tab').forEach(el => el.onclick = () => { state.drill.tab = el.getAttribute('data-tab'); renderAgentDetail(); });
+      ("</div><div id=\"tabBody\" role=\"tabpanel\" aria-labelledby=\"agentTab-" + tab + "\"><div class=\"loading\">" + QI.msg("Loading…") + "</div></div>");
+    const tabEls = [...main.querySelectorAll('[role=tab]')];
+    tabEls.forEach((el, i) => {
+      el.onclick = () => { state.drill.tab = el.dataset.tab; history.replaceState(null, '', location.pathname + location.search + '#' + drillHash(state.page, state.drill)); renderAgentDetail(); $('#agentTab-' + el.dataset.tab)?.focus(); };
+      el.onkeydown = e => { const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabEls.length - 1 }[e.key]; if (next === undefined) return; e.preventDefault(); tabEls[(next + tabEls.length) % tabEls.length].click(); };
+    });
     void bindMemorySaves(a);
 
     if (tab === 'sessions') return renderSessions();
     if (tab === 'memory') return renderMemory();
+    if (tab === 'canon') return renderCanonList($('#tabBody'), a.id);
     if (tab === 'search') return renderAgentSearch();
     if (tab === 'access') return renderAgentAccess();
   }
@@ -806,11 +924,17 @@
       return '<li><span aria-hidden="true">' + st[0] + '</span> <strong>' + esc(QI.msg(m.title)) + '</strong> — ' + esc(st[1]) +
         (m.reason ? '<br><span class="meta">' + esc(QI.msg(m.reason)) + ' ' + esc(QI.msg(m.action || '')) + '</span>' : '') + '</li>'; }).join('') + '</ul>';
   }
-  async function renderSessions() {
-    const a = state.drill.agent; const body = $('#tabBody');
+  async function renderSessions(more) {
+    const a = state.drill.agent; const body = $('#tabBody'), d = state.drill;
+    // A4-06: 200 sessions at a time; Load more follows the server cursor.
+    if (!more) d.sessionsList = { items: [], next: null };
+    const list = d.sessionsList;
     try {
-      const data = await api('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/sessions?limit=200');
+      const page = await api('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/sessions?limit=200' + (more ? '&before=' + encodeURIComponent(list.next) : ''));
+      if (state.drill !== d || d.sessionsList !== list) return;
       setConn(true);
+      list.items = list.items.concat(page.items); list.next = page.next_before || null;
+      const data = list;
       if (!data.items.length) { body.innerHTML = ("<div class=\"empty\">" + QI.msg("No sessions yet.") + "</div>"); return; }
       body.innerHTML = '<div class="sess-list">' + data.items.map(s => {
         return '<button type="button" class="sess-item" data-id="' + esc(s.id) + '"><div class="sess-info">' +
@@ -818,12 +942,14 @@
           '<div class="sess-id">' + esc(s.id) + '</div></div>' +
           '<div class="sess-badges"><span class="sess-badge">' + QI.count(s.message_count, 'message') + "</span>" +
           '<span class="sess-badge">' + fmtTime(s.last_active) + liveStatus(s.last_active) + '</span></div><div class="sess-chev">›</div></button>';
-      }).join('') + '</div>';
+      }).join('') + '</div>' + (list.next ? '<button type="button" class="btn-more" id="sessionsMore">' + QI.msg("Load more") + '</button>' : '');
       body.querySelectorAll('.sess-item').forEach(el => el.onclick = () => {
         const s = data.items.find(x => x.id === el.getAttribute('data-id'));
-        if (s) { state = { page: 'agents', drill: { kind: 'session', agent: a, session: s } }; route(); }
+        if (s) openDrill('agents', { kind: 'session', agent: a, session: s });
       });
-    } catch (e) { errBox(body, QI.msg("Failed to load sessions."), renderSessions, e); }
+      const next = $('#sessionsMore'); if (next) next.onclick = () => { next.disabled = true; void renderSessions(true); };
+      if (more) body.querySelectorAll('.sess-item')[list.items.length - page.items.length]?.focus();
+    } catch (e) { errBox(body, QI.msg("Failed to load sessions."), () => renderSessions(), e); }
   }
   const NOTE_TYPES = ['memory','rule','decision','knowledge','task','deal','project','context','contact','finance','note'];
   const noteTypeLabel = t => NOTE_TYPES.includes(t) ? QI.msg(t) : QI.code(t);
@@ -866,7 +992,7 @@
   async function renderAgentSearch() {
     const a = state.drill.agent; const body = $('#tabBody'); const q = state.drill.searchQuery || '';
     body.innerHTML = '<div style="margin-bottom:16px"><input type="text" id="searchInp" aria-label="Search this agent’s messages" data-i18n-aria-label="Search this agent’s messages" class="input-text" placeholder="' + esc(QI.msg("Search this agent's messages…")) + '" value="' + esc(q) + '"></div><div id="searchResults"></div>';
-    const inp = $('#searchInp'); inp.focus(); let dbnc;
+    const inp = $('#searchInp'); focusField(inp); let dbnc;
     inp.addEventListener('input', () => { clearTimeout(dbnc); state.drill.searchQuery = inp.value; dbnc = setTimeout(doSearch, 300); });
     if (q) await doSearch();
     async function doSearch() {
@@ -883,28 +1009,40 @@
           ("<span class=\"copyable mono\" title=\"" + QI.msg("Copy session ID") + "\">") + esc(String(m.session_id).slice(0, 16)) + '…</span></div>' +
           '<div class="msg-content">' + esc(m.content) + '</div></button>').join('') + '</div>';
         results.querySelectorAll('.copyable').forEach((el, i) => { const sid = data.items[i].session_id; el.onclick = (ev) => { ev.stopPropagation(); copyText(el, sid); }; });
-        results.querySelectorAll('.msg').forEach(el => { el.onclick = () => { state = { page: 'agents', drill: { kind: 'session', agent: a, session: { id: el.getAttribute('data-session'), title: null } } }; route(); }; });
+        results.querySelectorAll('.msg').forEach(el => { el.onclick = () => openDrill('agents', { kind: 'session', agent: a, session: { id: el.getAttribute('data-session'), title: null } }); });
       } catch (e) { errBox(results, QI.msg("Search failed."), doSearch, e); }
     }
   }
   async function renderSession() {
     const a = state.drill.agent; const s = state.drill.session;
-    setCrumb(("<a data-go=\"agents\">" + QI.msg("Agents") + "</a><span class=\"crumb-sep\">›</span><a data-route id=\"bkAgent\">") + esc(a.name) + '</a><span class="crumb-sep">›</span>' + esc(String(s.id).slice(0, 12)));
+    const agentHash = '#' + drillHash('agents', { kind: 'agent', agent: a, tab: 'sessions' });
+    setCrumb('<a href="#agents" data-go="agents">' + QI.msg("Agents") + '</a><span class="crumb-sep" aria-hidden="true">›</span><a href="' + esc(agentHash) + '">' + esc(a.name) + '</a><span class="crumb-sep" aria-hidden="true">›</span><span aria-current="page">' + esc(String(s.id).slice(0, 12)) + '</span>');
     main.innerHTML = '<div class="detail-head"><div class="agent-avatar ' + avatarClass(a.name) + '">' + initial(a.name) + '</div>' +
-      '<div style="flex:1; min-width:0"><h1 class="detail-title">' + esc(s.title || QI.msg('(untitled session)')) + '</h1>' +
+      '<div class="detail-main"><h1 class="detail-title" id="sessTitle">' + esc(s.title || QI.msg('(untitled session)')) + '</h1>' +
       ("<div class=\"detail-sub mono\"><button type=\"button\" class=\"copyable\" id=\"sidCopy\" aria-label=\"" + QI.msg("Copy session ID") + "\" title=\"" + QI.msg("Copy session ID") + "\">") + esc(s.id) + '</button></div></div></div>' +
       ("<div id=\"tabBody\"><div class=\"loading\">" + QI.msg("Loading transcript…") + "</div></div>");
-    const bk = $('#bkAgent'); if (bk) bk.onclick = () => { state = { page: 'agents', drill: { kind: 'agent', agent: a, tab: 'sessions', noteType: null } }; route(); };
     const sidEl = $('#sidCopy'); if (sidEl) sidEl.onclick = () => copyText(sidEl, s.id);
-    const body = $('#tabBody');
-    try {
-      const data = await api('/api/dashboard/sessions/' + encodeURIComponent(s.id) + '/messages?limit=1000');
-      setConn(true);
-      if (!data.messages.length) { body.innerHTML = ("<div class=\"empty\">" + QI.msg("No messages.") + "</div>"); return; }
-      body.innerHTML = '<div class="transcript">' + data.messages.map(m => '<div class="msg ' + esc(m.role) + '"><div class="msg-head">' + roleIcon(m.role) +
-        '<span class="msg-role ' + esc(m.role) + '">' + esc(QI.code(m.role)) + '</span><span>' + fmtTimeFull(m.created_at) + '</span>' +
-        (m.token_count != null ? '<span>· ' + QI.count(m.token_count, 'token') + "</span>" : '') + '</div><div class="msg-content">' + esc(m.content) + '</div></div>').join('') + '</div>';
-    } catch (e) { errBox(body, QI.msg("Failed to load transcript."), renderSession, e); }
+    const body = $('#tabBody'), d = state.drill;
+    // A4-06: a long session opens on its latest messages; "Load older messages" pages back in time.
+    const t = d.transcript = { messages: [], next: null, count: 0 };
+    async function load(older) {
+      try {
+        const data = await api('/api/dashboard/sessions/' + encodeURIComponent(s.id) + '/messages?limit=500' + (older ? '&before=' + t.next : ''));
+        if (state.drill !== d || d.transcript !== t) return;
+        setConn(true);
+        if (data.session?.title && !s.title) $('#sessTitle').textContent = s.title = data.session.title;
+        t.messages = data.messages.concat(t.messages); t.next = data.next_before ?? null; t.count = data.count ?? t.messages.length;
+        if (!t.messages.length) { body.innerHTML = ("<div class=\"empty\">" + QI.msg("No messages.") + "</div>"); return; }
+        body.innerHTML = (t.next ? '<p class="meta">' + QI.msg("Showing the latest {n} of {total} messages.", { n: fmtNum(t.messages.length), total: fmtNum(t.count) }) +
+          ' <button type="button" class="btn-more" id="sessMore">' + QI.msg("Load older messages") + '</button></p>' : '') +
+          '<div class="transcript">' + t.messages.map(m => '<div class="msg ' + esc(m.role) + '" data-mid="' + esc(m.id) + '"><div class="msg-head">' + roleIcon(m.role) +
+          '<span class="msg-role ' + esc(m.role) + '">' + esc(QI.code(m.role)) + '</span><span>' + fmtTimeFull(m.created_at) + '</span>' +
+          (m.token_count != null ? '<span>· ' + QI.count(m.token_count, 'token') + "</span>" : '') + '</div><div class="msg-content">' + esc(m.content) + '</div></div>').join('') + '</div>';
+        const more = $('#sessMore'); if (more) more.onclick = () => { more.disabled = true; void load(true); };
+        if (older) (more || body.querySelector('.msg'))?.focus?.();
+      } catch (e) { errBox(body, QI.msg("Failed to load transcript."), () => load(older), e); }
+    }
+    await load(false);
   }
 
   // ================= COMMS =================
@@ -963,8 +1101,7 @@
       box.querySelectorAll('.tg-chat').forEach(el => {
         el.onclick = () => {
           const t = items[parseInt(el.getAttribute('data-i'), 10)];
-          state = { page: 'agentcomm', drill: { kind: 'acthread', pair: t } };
-          route();
+          openDrill('agentcomm', { kind: 'acthread', pair: t });
         };
       });
     } catch (e) { errBox(box, QI.msg("Failed to load conversations."), () => fillAcThreads(), e); }
@@ -973,11 +1110,11 @@
   async function renderAcThread() {
     const p = state.drill.pair;
     const an = acName(p.agent_a), bn = acName(p.agent_b);
-    setCrumb(("<a data-go=\"agentcomm\">" + QI.msg("Agent conversations") + "</a><span class=\"crumb-sep\">›</span>") + esc(an) + ' ↔ ' + esc(bn));
+    setCrumb('<a href="#agentcomm" data-go="agentcomm">' + QI.msg("Agent conversations") + '</a><span class="crumb-sep" aria-hidden="true">›</span><span aria-current="page">' + esc(an) + ' ↔ ' + esc(bn) + '</span>');
     main.innerHTML = '<div class="detail-head">' +
       '<div class="tg-duo"><div class="agent-avatar ' + avatarClass(p.agent_a.name) + '">' + initial(an) + '</div>' +
       '<div class="agent-avatar ' + avatarClass(p.agent_b.name) + '">' + initial(bn) + '</div></div>' +
-      '<div style="flex:1;min-width:0"><h1 class="detail-title">' + esc(an) + ' ↔ ' + esc(bn) + '</h1>' +
+      '<div class="detail-main"><h1 class="detail-title">' + esc(an) + ' ↔ ' + esc(bn) + '</h1>' +
       ("<div class=\"detail-sub\" id=\"acSub\">" + QI.msg("loading…") + "</div></div></div>") +
       ("<div class=\"panel tg-panel\"><div id=\"acBody\"><div class=\"loading\">" + QI.msg("Loading conversation…") + "</div></div></div>");
     acState = { messages: [], nextBefore: null, hasMore: false, busy: false };
@@ -1069,6 +1206,19 @@
 
   // ================= SKILL LOOP: same login and typed authority =================
   let skillContext = null, skillPending = null;
+  // A4-07: skill states, evidence and scopes in words; a card shows its real state, not "Draft" for all.
+  const SKILL_WORDS = { draft: "Draft", candidate: "Awaiting your review", sealed: "Approved", in_use: "In use", imported: "Imported",
+    completed: "Completed", failed: "Failed", unknown: "Unknown", refused: "Refused", started: "Started",
+    self_reported: "Reported by the agent", self_report: "Reported by the agent", human_accepted: "Confirmed by you", independently_verified: "Verified independently", verified_outcome: "Verified result", legacy_history: "Earlier history",
+    project: "Project", personal: "Personal" };
+  const skillWord = v => SKILL_WORDS[v] ? QI.msg(SKILL_WORDS[v]) : QI.code(v);
+  function skillCardState(s, loop) {
+    const versions = loop.versions.filter(v => v.skill_id === s.id), ids = new Set(versions.map(v => v.id));
+    if (loop.assignments.some(a => ids.has(a.version_id) && a.desired_state === "active")) return "in_use";
+    if (versions.some(v => v.status === "sealed")) return "sealed";
+    if (versions.some(v => v.status === "candidate")) return "candidate";
+    return s.draft_id ? "draft" : "imported";
+  }
   const loopUrl = '/api/dashboard/authority';
   async function skillApi(path, method = 'GET', body, expected) {
     const key = method === 'GET' ? null : (body.idempotency_key || crypto.randomUUID());
@@ -1086,7 +1236,7 @@
     node.textContent = text; node.className = error ? 'err' : 'meta'; node.setAttribute('role',error ? 'alert' : 'status');
   }
   function skillFailure(e) {
-    skillStatus((e.code ? e.code + ': ' : '') + e.message + QI.resolve(QI.msg(". Your edits are kept. Inspect the current state or retry the same request.")),true);
+    skillStatus(e.message + QI.resolve(QI.msg(". Your edits are kept. Inspect the current state or retry the same request.")),true);
     const retry=$('#skillRetry'); if(retry){retry.hidden=!skillPending;retry.onclick=async()=>{if(!skillPending)return;const p=skillPending;try{await skillApi(p.path,p.method,p.body,p.expected);await skillReconcile();skillStatus((QI.msg("Request reconciled against current server state.")));retry.hidden=true;}catch(e){skillFailure(e);}};}
   }
   async function skillReconcile() { const id=skillContext?.skill?.skill_id; if(id) await skillDetail(id); else await renderSkillsPage(); }
@@ -1102,10 +1252,10 @@
       const [library,loop]=await Promise.all([skillApi('/skills'),skillApi('/skill-loop')]);
       body.innerHTML=("<p class=\"ent-sum\">" + QI.msg("Turn a repeatable procedure into reviewed native instructions. Each use stays linked to its exact version.") + "</p><button class=\"btn\" id=\"skillCreate\">" + QI.msg("Create a skill") + "</button><div class=\"skill-grid\" id=\"skillCards\"></div><h2>" + QI.msg("Needs attention") + "</h2><div id=\"skillAttention\"></div>");
       $('#skillCreate').onclick=()=>skillEditor();
-      $('#skillCards').innerHTML=library.items.length?library.items.map(s=>'<button class="ent skill-card" data-skill="'+esc(s.id)+("\"><span class=\"type-badge tb-skill\">" + QI.msg("Draft") + " ")+esc(String(s.revision))+'</span><strong>'+esc(s.title)+("</strong><span class=\"meta\">" + QI.msg("Open procedure, versions and outcomes →") + "</span></button>")).join(''):("<p class=\"empty\">" + QI.msg("Your library is empty. Create a skill from a procedure or the clearly marked CSV sample.") + "</p>");
+      $('#skillCards').innerHTML=library.items.length?library.items.map(s=>'<button class="ent skill-card" data-skill="'+esc(s.id)+("\"><span class=\"type-badge tb-skill\">")+esc(skillWord(skillCardState(s,loop)))+'</span><strong>'+esc(s.title)+("</strong><span class=\"meta\">" + QI.msg("Open procedure, versions and outcomes →") + "</span></button>")).join(''):("<p class=\"empty\">" + QI.msg("Your library is empty. Create a skill from a procedure or the clearly marked CSV sample.") + "</p>");
       $('#skillCards').querySelectorAll('[data-skill]').forEach(b=>b.onclick=()=>skillDetail(b.dataset.skill));
       const waiting=loop.assignments.filter(a=>a.desired_state==='active');
-      $('#skillAttention').innerHTML=waiting.length?waiting.map(a=>'<p><strong>'+esc(a.slot)+'</strong> — '+(a.readiness?.ready?(QI.msg("Ready for the next session.")):QI.msg('Blocked:')+' '+esc((a.readiness?.blockers||[(QI.msg("readiness unavailable"))]).join('; ')))+' <button class="btn" data-attention="'+esc(a.version_id)+("\">" + QI.msg("Inspect") + "</button></p>")).join(''):("<p class=\"meta\">" + QI.msg("No pending assignments.") + "</p>");
+      $('#skillAttention').innerHTML=waiting.length?waiting.map(a=>'<p><strong>'+esc(a.slot)+'</strong> — '+(a.readiness?.ready?(QI.msg("Ready for the next session.")):QI.msg('Blocked:')+' '+(a.readiness?.blockers||["readiness unavailable"]).map(b=>esc(QI.msg(b))).join("; "))+' <button class="btn" data-attention="'+esc(a.version_id)+("\">" + QI.msg("Inspect") + "</button></p>")).join(''):("<p class=\"meta\">" + QI.msg("No pending assignments.") + "</p>");
       $('#skillAttention').querySelectorAll('[data-attention]').forEach(b=>b.onclick=()=>skillDetail(loop.versions.find(v=>v.id===b.dataset.attention).skill_id));
       skillStatus((QI.msg("Library is current. Native loading and useful outcomes are separate facts.")));
     } catch(e){body.innerHTML=("<button class=\"btn\" id=\"skillReload\">" + QI.msg("Reload library") + "</button>");$('#skillReload').onclick=renderSkillsPage;skillFailure(e);}
@@ -1127,7 +1277,7 @@
       if(existing&&!fork){if(existing.draft_id)args.draft_id=existing.draft_id;else args.skill_id=existing.skill_id;}if(fork)args.parent_skill_id=existing.skill_id;
       if(kind==='manual'||kind==='native')args.text=$('#skRaw').value||content.procedure.map((s,i)=>(i+1)+'. '+s).join('\n');else args.source_id=$('#skSourceId').value;
       if(kind==='session'){args.first_message_id=Number($('#skFirst').value);args.last_message_id=Number($('#skLast').value);}
-      try{const saved=await skillApi('/skills/captures','POST',args,args.expected_revision);if(saved.data.outcome==='refused'){skillStatus(saved.data.reason+(" " + QI.msg("— keep it as memory or a rule.")),true);return;}await skillDetail(saved.data.skill_id||existing?.skill_id);skillStatus((QI.msg("Draft saved.") + " ")+(saved.data.findings||[]).join(', '));}catch(e){skillFailure(e);}
+      try{const saved=await skillApi('/skills/captures','POST',args,args.expected_revision);if(saved.data.outcome==='refused'){skillStatus(QI.resolve(QI.msg(saved.data.reason||""))+(" " + QI.msg("— keep it as memory or a rule.")),true);return;}await skillDetail(saved.data.skill_id||existing?.skill_id);skillStatus((QI.msg("Draft saved.") + " ")+(saved.data.findings||[]).join(', '));}catch(e){skillFailure(e);}
     };
     $('#skTitle').focus();
   }
@@ -1137,14 +1287,14 @@
       const [skill,loop]=await Promise.all([skillApi('/skills/'+encodeURIComponent(id)),skillApi('/skill-loop?skill_id='+encodeURIComponent(id))]);skillContext={skill,loop};
       const c=skill.content;$('#skillBody').innerHTML='<h2>'+esc(c?.title||skill.title||skill.slug)+'</h2><p>'+esc(c?.purpose||(QI.msg("Imported immutable skill")))+("</p><div class=\"skill-actions\"><button class=\"btn\" id=\"skRevise\">" + QI.msg("Revise") + "</button><button class=\"btn\" id=\"skFork\">" + QI.msg("Fork") + "</button></div><h2>" + QI.msg("Versions") + "</h2><div id=\"skVersions\"></div>")+(c?("<form id=\"skCompile\"><label for=\"skVersionLabel\">" + QI.msg("New version label") + "</label><input id=\"skVersionLabel\" value=\"")+esc(String((loop.versions||[]).length+1))+("\" required><label for=\"skLicense\">" + QI.msg("License") + "</label><input id=\"skLicense\" value=\"MIT\" required><button class=\"btn\">" + QI.msg("Compile preview") + "</button></form>"):'')+("<div id=\"skPreview\"></div><h2>" + QI.msg("Assignments") + "</h2><div id=\"skAssignments\"></div><h2>" + QI.msg("Runs and outcomes") + "</h2><div id=\"skOutcomes\"></div>");
       $('#skRevise').onclick=()=>skillEditor(skill);$('#skFork').onclick=()=>skillEditor(skill,true);
-      $('#skVersions').innerHTML=loop.versions.length?loop.versions.map(v=>'<button class="btn" data-version="'+esc(v.id)+'">'+esc(v.version_label)+' · '+esc(v.status)+'</button>').join(''):("<p class=\"meta\">" + QI.msg("No compiled versions. Complete the draft, then inspect its final instructions.") + "</p>");
+      $('#skVersions').innerHTML=loop.versions.length?loop.versions.map(v=>'<button class="btn" data-version="'+esc(v.id)+'">'+esc(v.version_label)+' · '+esc(skillWord(v.status))+'</button>').join(''):("<p class=\"meta\">" + QI.msg("No compiled versions. Complete the draft, then inspect its final instructions.") + "</p>");
       $('#skVersions').querySelectorAll('[data-version]').forEach(b=>b.onclick=()=>skillPreview(b.dataset.version));
       if(c)$('#skCompile').onsubmit=async event=>{event.preventDefault();try{const result=await skillApi('/skills/drafts/'+skill.draft_id+'/compile','POST',{expected_revision:skill.revision,version_label:$('#skVersionLabel').value,license:$('#skLicense').value,native_name:skill.slug},skill.revision);await skillPreview(result.data.version_id);}catch(e){skillFailure(e);}};
       $('#skAssignments').innerHTML=loop.assignments.length?loop.assignments.map(a=>'<div class="panel"><strong>'+esc(a.slot)+'</strong><p>'+QI.msg('Desired state:')+' '+esc(QI.code(a.desired_state))+(" " + QI.msg("· revision") + " ")+a.revision+(" " + QI.msg("· next-session changes") + "</p><button class=\"btn\" data-pause=\"")+esc(a.id)+("\">" + QI.msg("Pause") + "</button> <button class=\"btn\" data-rollback=\"")+esc(a.id)+("\">" + QI.msg("Choose rollback version") + "</button></div>")).join(''):("<p class=\"meta\">" + QI.msg("No assignments.") + "</p>");
       $('#skAssignments').querySelectorAll('[data-pause]').forEach(b=>b.onclick=async()=>{const a=loop.assignments.find(a=>a.id===b.dataset.pause);try{await skillApi('/skill-assignments/'+a.id,'PATCH',{assignment_id:a.id,expected_revision:a.revision,desired_state:'paused',reason:'Owner paused from the library'},a.revision);await skillDetail(id);}catch(e){skillFailure(e);}});
       $('#skAssignments').querySelectorAll('[data-rollback]').forEach(b=>b.onclick=()=>{skillStatus((QI.msg("Select an earlier version above, then assign it to the same runtime with Rollback selected.")));$('#skVersions').querySelector('button')?.focus();});
-      $('#skOutcomes').innerHTML=loop.runs.length?loop.runs.map(run=>{const outcomes=loop.outcomes.filter(o=>o.run_id===run.id);return '<article class="panel"><strong>'+esc(run.objective)+("</strong><p>" + QI.msg("Run") + " ")+esc(run.id)+(" " + QI.msg("· exact version") + " ")+esc(run.version_id)+'</p>'+(outcomes.length?outcomes.map(o=>'<p>'+esc(o.status)+' · '+esc(o.evidence_class)+(" " + QI.msg("· revision") + " ")+o.revision+(o.stale?(" " + QI.msg("· late fact after revoke")):'')+("</p><details><summary>" + QI.msg("Evaluator assertions") + "</summary><pre>")+esc(JSON.stringify(JSON.parse(o.assertions_json),null,2))+'</pre></details>').join(''):("<p>" + QI.msg("Unknown — nothing reported.") + "</p>"))+'</article>';}).join(''):("<p class=\"empty\">" + QI.msg("No runtime task has been reported. Installing files does not prove execution.") + "</p>");
-      skillStatus(loop.capabilities.limitation);
+      $('#skOutcomes').innerHTML=loop.runs.length?loop.runs.map(run=>{const outcomes=loop.outcomes.filter(o=>o.run_id===run.id);return '<article class="panel"><strong>'+esc(run.objective)+("</strong><p>" + QI.msg("Run") + " ")+esc(run.id)+(" " + QI.msg("· exact version") + " ")+esc(run.version_id)+'</p>'+(outcomes.length?outcomes.map(o=>'<p>'+esc(skillWord(o.status))+' · '+esc(skillWord(o.evidence_class))+(" " + QI.msg("· revision") + " ")+o.revision+(o.stale?(" " + QI.msg("· late fact after revoke")):'')+("</p><details><summary>" + QI.msg("Evaluator assertions") + "</summary><pre>")+esc(JSON.stringify(JSON.parse(o.assertions_json),null,2))+'</pre></details>').join(''):("<p>" + QI.msg("Unknown — nothing reported.") + "</p>"))+'</article>';}).join(''):("<p class=\"empty\">" + QI.msg("No runtime task has been reported. Installing files does not prove execution.") + "</p>");
+      skillStatus(QI.msg(loop.capabilities.limitation));
     }catch(e){skillFailure(e);}
   }
   async function skillPreview(versionId) {
@@ -1165,7 +1315,7 @@
       }else if(v.status==='sealed'){
         const loop=(await skillApi('/skill-loop?skill_id='+v.skill_id));skillContext.loop=loop;
         const approvals=loop.approvals.filter(a=>a.version_id===v.id&&a.decision==='approve'&&a.expires_at_ms>Date.now());
-        $('#skReviewActions').innerHTML=("<form id=\"skAssign\"><label for=\"skRuntime\">" + QI.msg("Enrolled runtime") + "</label><select id=\"skRuntime\">")+loop.registrations.map(r=>'<option value="'+esc(r.id)+'">'+esc(r.runtime_kind||r.runtime_id)+' '+esc(r.runtime_version||(QI.msg("configuration required")))+'</option>').join('')+("</select><label for=\"skApproval\">" + QI.msg("Approved scope") + "</label><select id=\"skApproval\">")+approvals.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.target_scope)+'</option>').join('')+("</select><label for=\"skAssignReason\">" + QI.msg("Assignment") + "</label><select id=\"skAssignReason\"><option value=\"replace\">" + QI.msg("Assign / update") + "</option><option value=\"rollback\">" + QI.msg("Rollback to this earlier version") + "</option></select><button class=\"btn\" ")+(!loop.registrations.length||!approvals.length?'disabled':'')+(">" + QI.msg("Assign exact version") + "</button></form>");
+        $('#skReviewActions').innerHTML=("<form id=\"skAssign\"><label for=\"skRuntime\">" + QI.msg("Enrolled runtime") + "</label><select id=\"skRuntime\">")+loop.registrations.map(r=>'<option value="'+esc(r.id)+'">'+esc(r.runtime_kind||r.runtime_id)+' '+esc(r.runtime_version||(QI.msg("configuration required")))+'</option>').join('')+("</select><label for=\"skApproval\">" + QI.msg("Approved scope") + "</label><select id=\"skApproval\">")+approvals.map(a=>'<option value="'+esc(a.id)+'">'+esc(skillWord(a.target_scope))+'</option>').join('')+("</select><label for=\"skAssignReason\">" + QI.msg("Assignment") + "</label><select id=\"skAssignReason\"><option value=\"replace\">" + QI.msg("Assign / update") + "</option><option value=\"rollback\">" + QI.msg("Rollback to this earlier version") + "</option></select><button class=\"btn\" ")+(!loop.registrations.length||!approvals.length?'disabled':'')+(">" + QI.msg("Assign exact version") + "</button></form>");
         $('#skAssign').onsubmit=async event=>{event.preventDefault();const runtimeId=$('#skRuntime').value,approval=approvals.find(a=>a.id===$('#skApproval').value),old=loop.assignments.find(a=>a.runtime_id===runtimeId&&a.target_scope===approval.target_scope);try{const args={runtime_id:runtimeId,version_id:v.id,package_digest:v.package_digest,approval_id:approval.id,adoption_operation_id:crypto.randomUUID(),target_scope:approval.target_scope,expires_at_ms:Math.min(approval.expires_at_ms,Date.now()+3600000),expected_revision:old?.revision||0,reason:old?$('#skAssignReason').value:'assign'};if(old)args.assignment_id=old.id;await skillApi('/skill-assignments','POST',args,args.expected_revision);await skillDetail(v.skill_id);skillStatus((QI.msg("Assigned for the next managed native session. Existing sessions retain their exact versions.")));}catch(e){skillFailure(e);}};
       }
     }catch(e){skillFailure(e);}
@@ -1181,9 +1331,9 @@
     }
     main.innerHTML = '<h1 class="sr-only">' + QI.msg("Search") + '</h1>' +
       ("<div style=\"margin-bottom:18px\"><input type=\"text\" id=\"gSearch\" aria-label=\"Search messages\" data-i18n-aria-label=\"Search messages\" class=\"input-text\" placeholder=\"" + QI.msg("Search messages and notes…") + "\"></div>") +
-      ("<div style=\"font-size:.74rem;color:var(--text3);margin-bottom:14px\">" + QI.msg("Agents you can search:") + " ") + fmtNum((agentsCache || []).length) + "</div>" +
+      ("<div class=\"search-count\">" + QI.msg("Agents you can search:") + " ") + fmtNum((agentsCache || []).length) + "</div>" +
       ("<div id=\"gResults\" aria-live=\"polite\"><div class=\"empty\">" + QI.msg("Type to search…") + "</div></div>");
-    const inp = $('#gSearch'); inp.focus(); let dt;
+    const inp = $('#gSearch'); focusField(inp); let dt;
     inp.oninput = () => { clearTimeout(dt); dt = setTimeout(() => doGlobalSearch(inp.value.trim()), 400); };
   }
   async function doGlobalSearch(q) {
@@ -1204,7 +1354,7 @@
         const first = hits.length;
         hits = hits.concat(data.items || []); next = data.next;
         if (!hits.length) { out.innerHTML = ("<div class=\"empty\">" + QI.msg("Nothing found across any agent.") + "</div>"); return; }
-        out.innerHTML = '<div style="font-size:.74rem;color:var(--text3);margin-bottom:12px">' + (next ? QI.msg("Showing the newest matches: {n}", { n: hits.length }) : QI.count(hits.length, 'result')) + "</div><div class=\"transcript\">" +
+        out.innerHTML = '<div class="search-count">' + (next ? QI.msg("Showing the newest matches: {n}", { n: hits.length }) : QI.count(hits.length, 'result')) + "</div><div class=\"transcript\">" +
           // One article per hit with real buttons for the agent and the session; the excerpt is plain text (F-326).
           hits.map((m, i) => '<article class="msg" data-i="' + i + '"><div class="msg-head">' + roleIcon(m.role) +
             '<span class="msg-role' + (m.kind === 'message' ? ' ' + esc(m.role) : '') + '">' + esc(m.kind === 'message' ? QI.msg("Message") : QI.msg("Context note")) + '</span>' +
@@ -1216,7 +1366,7 @@
         out.querySelectorAll('[data-aid]').forEach(c => c.onclick = () => drillAgentById(c.getAttribute('data-aid')));
         out.querySelectorAll('[data-open]').forEach(el => { el.onclick = () => {
           const m = hits[+el.dataset.open], agent = (agentsCache || []).find(a => a.id === m.agent_id) || { id: m.agent_id, name: m.agent_name };
-          state = { page: 'agents', drill: { kind: 'session', agent, session: { id: m.session_id, title: null } } }; route();
+          openDrill('agents', { kind: 'session', agent, session: { id: m.session_id, title: null } });
         }; });
         const more = $('#gMore'); if (more) more.onclick = () => { more.disabled = true; void page(); };
         if (first) out.querySelector('[data-i="' + first + '"] button')?.focus();
@@ -1244,7 +1394,7 @@
     const name=(g,peer)=>g?.members?.find(m=>m.peer===peer)?.name||(QI.msg("Member"));
     async function act(action,body={}) {
       if(busy)throw new Error((QI.msg("Please wait for the current action")));busy=true;
-      try {const r=await send('/api/dashboard/bridges',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action,...body})});const result=await r.json().catch(()=>({}));if(!r.ok)throw new Error(result.error_description||QI.resolve(QI.msg("Bridge action failed")));return result;}
+      try {const r=await send('/api/dashboard/bridges',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-qoopia-csrf':'1'},body:JSON.stringify({action,...body})});const result=await r.json().catch(()=>({}));if(!r.ok)throw failure(r,result);return result;}
       finally{busy=false;}
     }
     function show(content){$('#bridgeDialogContent').innerHTML=content;if(!dialog.open)dialog.showModal();}
@@ -1300,7 +1450,7 @@
       if($('#bridgeAuto'))$('#bridgeAuto').checked=!!pub?.auto_send;
       if($('#bridgePublish'))$('#bridgePublish').onclick=async()=>{try{await act('publish',{group:g.id,material_id:materialId,version:m.version,visible:true,auto_send:$('#bridgeAuto').checked});dialog.close();status((QI.msg("Catalogue entry published to") + " ")+g.name+'.');await load();}catch(e){status(e.message);}};
       if($('#bridgeWithdraw'))$('#bridgeWithdraw').onclick=async()=>{try{await act('publish',{group:g.id,material_id:materialId,version:m.version,visible:false,auto_send:false});dialog.close();status((QI.msg("Entry withdrawn. Already delivered copies cannot be recalled.")));await load();}catch(e){status(e.message);}};
-      if($('#bridgePrepareAgain'))$('#bridgePrepareAgain').onclick=async()=>{try{await act('copy',{id:crypto.randomUUID(),source:'received',source_id:materialId,title:m.title,description:m.description});dialog.close();status('A private draft was added to For sending. Publish it only after review.');await load();}catch(e){status(e.message);}};
+      if($('#bridgePrepareAgain'))$('#bridgePrepareAgain').onclick=async()=>{try{await act('copy',{id:crypto.randomUUID(),source:'received',source_id:materialId,title:m.title,description:m.description});dialog.close();status(QI.msg('A private draft was added to For sending. Publish it only after review.'));await load();}catch(e){status(e.message);}};
     }
     $('#bridgeGroup').onchange=draw;$('#bridgeSearch').oninput=draw;
     const tabs=[...root.querySelectorAll('[data-section]')].filter(b=>!b.hidden);
@@ -1334,11 +1484,11 @@
   // ---------- Memory ----------
   async function renderWorkspace(snapshot) {
     pollFn=null;setCrumb((QI.msg("Memory")));
-    let data;try{data=snapshot||await api('/api/dashboard/memory');}catch(e){if(state.page==='work')main.innerHTML='<p role="alert">'+esc(e.message)+'</p>';return;}
+    let data;try{data=snapshot||await api('/api/dashboard/memory');}catch(e){if(state.page==='work')errBox(main,QI.msg('Could not load memory settings.'),()=>renderWorkspace(),e);return;}
     if(state.page!=='work')return;
     const names={claude_code:'Claude',codex:'ChatGPT'},model=data.model;
     const messages={not_connected:(QI.msg("Choose the subscription you want Qoopia to use.")),selected:(QI.msg("Sign in if needed, then check the connection.")),ready:(QI.msg("Connected. Ready to organise your memory.")),auth_required:(QI.msg("Sign in again to resume.")),quota:(QI.msg("Your subscription limit was reached. Saved events are waiting safely.")),timeout:(QI.msg("The model took too long. Search and saved events are still available.")),unavailable:(QI.msg("The model is unavailable. Check your subscription connection.")),invalid_response:(QI.msg("The model returned an unusable result. Your last saved context is preserved."))};
-    main.innerHTML=("<section class=\"work\"><header><h1>" + QI.msg("Memory settings") + "</h1><p>" + QI.msg("Configure how this workspace keeps and finds context.") + "</p></header><div class=\"work-grid\"><div><section class=\"memory-first\"><h2>" + QI.msg("Your agents, connected.") + "</h2><p>" + QI.msg("Connect ChatGPT, Claude and your native agents in one place. Your steward and existing connections stay with this workspace.") + "</p><div class=\"work-actions\"><button id=\"memoryConnections\">" + QI.msg("Open connections →") + "</button></div></section><h2>" + QI.msg("Optional: a model for your memory") + "</h2><p>" + QI.msg("Use your own subscription to organise session notes and assess search results. Text search and built-in semantic search remain available without it.") + "</p><div class=\"work-controls memory-model-controls\"><div><label for=\"memoryProvider\">" + QI.msg("Your subscription") + "</label><select id=\"memoryProvider\"><option value=\"claude_code\">Claude · Haiku</option><option value=\"codex\">ChatGPT · Codex</option></select></div><div class=\"work-actions\"><button id=\"memorySelect\">" + QI.msg("Use this subscription") + "</button></div></div><p class=\"work-status\" role=\"status\" id=\"memoryModelStatus\">")+esc(messages[model.state]||model.state)+(model.model?' · '+esc(model.model):'')+("</p><div class=\"work-actions\"><button id=\"memoryLogin\">" + QI.msg("Sign in to") + " ")+esc(names[model.runtime]||(QI.msg("subscription")))+("</button><button class=\"primary\" id=\"memoryCheck\">" + QI.msg("Check connection") + "</button></div><div id=\"memoryLoginInfo\"></div><p id=\"memoryActionStatus\" role=\"status\" aria-live=\"polite\" class=\"work-status\"></p></div><aside><h2>" + QI.msg("Already in your memory") + "</h2><p><strong>")+esc(data.embedding.embedded)+' / '+esc(data.embedding.total_notes)+("</strong><br>" + QI.msg("notes indexed for semantic search") + "</p><p><strong>")+esc(data.sessions.summarized)+' / '+esc(data.sessions.tracked)+("</strong><br>" + QI.msg("tracked sessions with a context note") + "</p><div class=\"work-result\"><h2>" + QI.msg("How continuity works") + "</h2><p>" + QI.msg("Events are saved as you work. A compact note evolves with the session. When you return, your agent receives the note and recent events that have not yet been summarised.") + "</p><p>" + QI.msg("Everything stays in this workspace. Existing notes, namespaces and connections remain in place.") + "</p><button id=\"memorySessions\">" + QI.msg("Browse agent sessions →") + "</button></div></aside></div></section>");
+    main.innerHTML=("<section class=\"work\"><header><h1>" + QI.msg("Memory settings") + "</h1><p>" + QI.msg("Configure how this workspace keeps and finds context.") + "</p></header><div class=\"work-grid\"><div><section class=\"memory-first\"><h2>" + QI.msg("Your agents, connected.") + "</h2><p>" + QI.msg("Connect ChatGPT, Claude and your native agents in one place. Your steward and existing connections stay with this workspace.") + "</p><div class=\"work-actions\"><button id=\"memoryConnections\">" + QI.msg("Open connections →") + "</button></div></section><h2>" + QI.msg("Optional: a model for your memory") + "</h2><p>" + QI.msg("Use your own subscription to organise session notes and assess search results. Text search and built-in semantic search remain available without it.") + "</p><div class=\"work-controls memory-model-controls\"><div><label for=\"memoryProvider\">" + QI.msg("Your subscription") + "</label><select id=\"memoryProvider\"><option value=\"claude_code\">Claude · Haiku</option><option value=\"codex\">ChatGPT · Codex</option></select></div><div class=\"work-actions\"><button id=\"memorySelect\">" + QI.msg("Use this subscription") + "</button></div></div><p class=\"work-status\" role=\"status\" id=\"memoryModelStatus\">")+esc(messages[model.state]||model.state)+(model.model?' · '+esc(model.model_label||model.model):'')+("</p><div class=\"work-actions\"><button id=\"memoryLogin\">" + QI.msg("Sign in to") + " ")+esc(names[model.runtime]||(QI.msg("subscription")))+("</button><button class=\"primary\" id=\"memoryCheck\">" + QI.msg("Check connection") + "</button></div><div id=\"memoryLoginInfo\"></div><p id=\"memoryActionStatus\" role=\"status\" aria-live=\"polite\" class=\"work-status\"></p></div><aside><h2>" + QI.msg("Already in your memory") + "</h2><p><strong>")+esc(data.embedding.embedded)+' / '+esc(data.embedding.total_notes)+("</strong><br>" + QI.msg("notes indexed for semantic search") + "</p><p><strong>")+esc(data.sessions.summarized)+' / '+esc(data.sessions.tracked)+("</strong><br>" + QI.msg("tracked sessions with a context note") + "</p><div class=\"work-result\"><h2>" + QI.msg("How continuity works") + "</h2><p>" + QI.msg("Events are saved as you work. A compact note evolves with the session. When you return, your agent receives the note and recent events that have not yet been summarised.") + "</p><p>" + QI.msg("Everything stays in this workspace. Existing notes, namespaces and connections remain in place.") + "</p><button id=\"memorySessions\">" + QI.msg("Browse agent sessions →") + "</button></div></aside></div></section>");
     const root=main.firstElementChild;let actionBusy=false,polling=false;
     let savedProvider;try{savedProvider=sessionStorage.getItem('qoopia.memory.provider');}catch{/* Storage unavailable; use the configured runtime. */}$('#memoryProvider').value=['claude_code','codex'].includes(savedProvider)?savedProvider:model.runtime||'claude_code';
     $('#memoryProvider').onchange=e=>{try{sessionStorage.setItem('qoopia.memory.provider',e.target.value);}catch{/* Storage unavailable; the choice is not remembered. */}};
@@ -1368,7 +1518,7 @@
         if(!root.isConnected||state.page!=='work')return;
         await renderWorkspace();
         if(result.accepted)$('#memoryActionStatus').textContent=QI.msg('Preparing your subscription. You can use other pages.');
-        else if(result.next)$('#memoryActionStatus').textContent=result.next;
+        else if(result.next)$('#memoryActionStatus').textContent=QI.msg(result.next);
         else if(payload.action==='check')$('#memoryActionStatus').textContent=(QI.msg("Connection checked with a real model response."));
       }catch(e){if(root.isConnected){status.textContent=e.message;buttons.forEach(b=>b.disabled=false);}}finally{actionBusy=false;}
     }
@@ -1426,7 +1576,7 @@
     const networkLine=n=>{const r=n.operation?.result;return r&&(!(r.code||'').startsWith('NETWORK_')||r.code===n.code)?r:n;};
     const showResult=(r,target=feedback)=>{
       const messages={ACTION_IN_PROGRESS:t('Working. You can use other pages.','Выполняем. Можно пользоваться другими страницами.'),TOO_MANY_SIGN_INS:t('Too many sign-in emails were sent in the last hour. Use “Confirm with Google”, or try again later.','За последний час отправлено слишком много писем для входа. Нажмите «Подтвердить через Google» или повторите позже.'),CLIENT_AUTH_STARTING:t('Preparing the secure sign-in page…','Подготавливаем защищённую страницу входа…'),CLIENT_AUTHORIZATION_REQUIRED:t('Open the consent page, review this connection’s permissions, and approve. Then restart Claude Desktop.','Откройте страницу подтверждения, проверьте права этого подключения и подтвердите доступ. Затем перезапустите Claude Desktop.'),CLIENT_CALL_REQUIRED:t('Access is saved. Restart the client and send the connection request.','Доступ сохранён. Перезапустите клиент и отправьте запрос подключения.'),CLIENT_AUTH_EXPIRED:t('The sign-in expired. Choose Approve access again.','Время входа истекло. Снова нажмите Подтвердить доступ.'),CLIENT_CONFIG_REQUIRED:t('Add the client on this computer first.','Сначала добавьте клиент на этом компьютере.'),SIGN_IN_REQUIRED:t('Account confirmation expired. Start sign-in again; the installation and memory are preserved.','Подтверждение аккаунта истекло. Начните вход заново; установка и память сохранены.'),ACCOUNT_CONFIRMATION_REQUIRED:t('Confirm the email sent to your Qoopia account, then choose Continue setup.','Подтвердите письмо на почте аккаунта Qoopia и нажмите Продолжить настройку.'),OWNER_ACCOUNT_REQUIRED:t('Finish signing in to your Qoopia account first.','Сначала завершите вход в аккаунт Qoopia.'),NETWORK_ONLINE:t('External connection is running.','Внешняя связь работает.'),NETWORK_CONNECTING:t('Reconnecting. Local memory is preserved.','Восстанавливаем связь. Локальная память сохранена.'),NETWORK_SERVICE_UNAVAILABLE:t('The connection service is unavailable. Keep this setup and try Continue setup later.','Сервис подключения недоступен. Сохраните настройку и позднее нажмите Продолжить настройку.'),NETWORK_DISABLED:t('External access is paused.','Внешний доступ приостановлен.'),DEVICE_REVOKED:t('This installation was revoked as an external device. Choose one of the enable buttons below to register it again.','Эта установка отозвана как внешнее устройство. Чтобы зарегистрировать её снова, нажмите одну из кнопок включения ниже.'),DEVICE_CODE_UNSUPPORTED:t('The Qoopia sign-in service does not offer code confirmation yet. Use email or Google from a browser on this network.','Сервис входа Qoopia пока не поддерживает подтверждение кодом. Используйте почту или Google из браузера в этой сети.')};
-      target.textContent=messages[r.code]||r.next_action||r.code||'';
+      target.textContent=messages[r.code]||(r.next_action?QI.msg(r.next_action):'');
       // Device-code confirmation: the code and the sign-in service's page, to use on any device.
       if(r.user_code){target.textContent=t('On your phone or another computer, open the page, sign in to the Qoopia account linked to this installation and enter the code ','На телефоне или другом компьютере откройте страницу, войдите в аккаунт Qoopia, связанный с этой установкой, и введите код ');
         const code=document.createElement('strong');code.textContent=r.user_code;const a=document.createElement('a');a.href=r.open_url||r.verification_uri;a.target='_blank';a.rel='noopener noreferrer';a.className='connect-link';a.textContent=r.verification_uri;
@@ -1505,11 +1655,11 @@
           if(plan.can_apply===false){feedback.textContent=t('This client entry changed outside Qoopia. Review it in your client settings before continuing.','Запись клиента изменена вне Qoopia. Проверьте её в настройках клиента перед продолжением.');return;}
           const applied=await call({action:'client-apply',id:c.id,language:QI.language});
           if(c.surface==='claude_desktop'){showResult(await call({action:'client-auth-start',id:c.id}));await refresh();return;}
-          feedback.textContent=(applied.code==='CLIENT_AUTH_REQUIRED'?t('Address added. Open the client, authenticate its Qoopia connection, then send the connection request below.','Адрес добавлен. Откройте клиент, подтвердите его подключение к Qoopia и отправьте запрос подключения ниже.'):applied.next_action)+
+          feedback.textContent=(applied.code==='CLIENT_AUTH_REQUIRED'?t('Address added. Open the client, authenticate its Qoopia connection, then send the connection request below.','Адрес добавлен. Откройте клиент, подтвердите его подключение к Qoopia и отправьте запрос подключения ниже.'):QI.msg(applied.next_action||''))+
             (applied.protocol?.state==='refused'?' '+t('Local Qoopia instructions were not installed: ','Локальные инструкции Qoopia не установлены: ')+applied.protocol.code+(applied.protocol.file?' — '+applied.protocol.file:'')+'. '+t('The agent reads qoopia_protocol over this connection.','Агент прочитает qoopia_protocol через это подключение.'):'');
         }else{
           const r=await call({action:'client-export',id:c.id});
-          if(!r.binding){feedback.textContent=r.next_action;return;}
+          if(!r.binding){feedback.textContent=QI.msg(r.next_action||'');return;}
           const url=URL.createObjectURL(new Blob([JSON.stringify(r.binding)],{type:'application/json'})),a=document.createElement('a');
           a.href=url;a.download='Qoopia-'+c.surface+'.qoopia-connection';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
           feedback.textContent=t('Open the downloaded file with Qoopia on your client’s computer. Review the address, add it, then authenticate in the client.','Откройте скачанный файл в Qoopia на компьютере с клиентом. Проверьте адрес, добавьте его и подтвердите доступ в клиенте.');
@@ -1554,7 +1704,7 @@
 
   async function renderConnections() {
     pollFn=null;setCrumb(QI.msg('Connections'));main.innerHTML='<p class="loading">'+QI.msg('Loading your connections…')+'</p>';
-    let data;try{data=await api('/api/dashboard/connections');}catch(e){if(state.page==='connections')main.innerHTML='<p role="alert">'+esc(e.message)+'</p>';return;}
+    let data;try{data=await api('/api/dashboard/connections');}catch(e){if(state.page==='connections')errBox(main,QI.msg('Could not load connections.'),()=>renderConnections(),e);return;}
     if(state.page!=='connections')return;
     const t=(en,ru)=>QI.pair(en,ru),stewards=data.stewards.map(a=>a.name).join(', ');
     $('#workspaceName').textContent=data.workspace;
@@ -1570,7 +1720,7 @@
     main.innerHTML='<section class="work connections"><header><h1>'+t('Connections','Подключения')+'</h1><p>'+esc(data.workspace)+'. '+t('MCP clients connected to this memory, and how it is processed.','MCP-клиенты, подключённые к этой памяти, и как она обрабатывается.')+'</p></header><p id="connectionsStatus" class="work-status" role="status" aria-live="polite"></p>'+
       '<section aria-labelledby="connectedTitle"><h2 id="connectedTitle"></h2><div id="connectedApplications"></div><div id="connectionWizard"></div></section>'+
       '<section class="connection-summary"><div class="connection-line"><div><h2>'+t('Memory model','Модель памяти')+'</h2><p id="connectionsModelSummary"></p><p id="connectionsModelChecked" class="meta"></p></div><button id="connectionsModel">'+t('Settings','Настройки')+'</button></div>'+
-      '<div class="connection-line"><div><h2>'+t('My Qoopia agent','Мой Qoopia агент')+'</h2><p id="connectionsStewardName">'+esc(stewards||t('Not assigned','Не назначен'))+'</p></div><button id="connectionsSteward">'+t('Open agent','Открыть агента')+'</button></div></section>'+
+      '<div class="connection-line"><div><h2>'+t('My Qoopia agent','Мой агент Qoopia')+'</h2><p id="connectionsStewardName">'+esc(stewards||t('Not assigned','Не назначен'))+'</p></div><button id="connectionsSteward">'+t('Open agent','Открыть агента')+'</button></div></section>'+
       '<details class="connection-options"><summary>'+t('Session memory settings','Настройки памяти сессий')+'</summary><p>'+t('Configure automatic context for a Claude Code or Codex agent. This is separate from its access to notes.','Настройте автоматическое сохранение контекста агента Claude Code или Codex. Это отдельно от его доступа к заметкам.')+'</p>'+
         (data.installed?'<h3>'+t('On this computer','На этом компьютере')+'</h3>':'')+'<div class="work-actions"><button data-memory-client="claude_code">Claude Code</button><button data-memory-client="codex">Codex</button></div>'+
         (data.installed?'<h3>'+t('On another computer','На другом компьютере')+'</h3><p>'+t('Downloads a .qoopia-memory file that reaches this installation through its external address. Enable external access first.','Скачивает файл .qoopia-memory, который обращается к этой установке через её внешний адрес. Сначала включите внешний доступ.')+'</p><p>'+QI.msg('This file contains a key to your Qoopia memory: whoever has it can save sessions and search memory, including all workspace notes while shared context is on. Keep it private; if it leaks, ask your Qoopia agent to deactivate its memory agent.')+'</p><div class="work-actions"><button data-memory-client="claude_code" data-memory-target="another_computer">Claude Code</button><button data-memory-client="codex" data-memory-target="another_computer">Codex</button></div>':'')+
@@ -1578,7 +1728,7 @@
     function overview(next){
       $('#connectionsStewardName').textContent=next.stewards.map(a=>a.name).join(', ')||t('Not assigned','Не назначен');
       const model=next.memory_model||{state:'not_connected'};
-      $('#connectionsModelSummary').textContent=(model.model==='claude-haiku-4-5'?'Claude · Haiku':model.model==='gpt-5.6-luna'?'ChatGPT · Luna':model.model||t('Optional','По желанию'))+' · '+(modelStates[model.state]||t('Check needed','Нужна проверка'));
+      $('#connectionsModelSummary').textContent=(model.model_label||model.model||t('Optional','По желанию'))+' · '+(modelStates[model.state]||t('Check needed','Нужна проверка'));
       $('#connectionsModelChecked').textContent=model.checked_at?t('Last response: ','Последний ответ: ')+date(model.checked_at):'';
       const apps=(next.apps||[]).filter(a=>a.last_seen);
       $('#connectedTitle').textContent=t('Connected applications','Подключённые приложения')+' · '+apps.length;
@@ -1607,7 +1757,7 @@
           const url=URL.createObjectURL(new Blob([JSON.stringify(result.connection)],{type:'application/json'})),a=document.createElement('a');
           a.href=url;a.download='Qoopia-'+button.dataset.memoryClient+'.qoopia-memory';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
           status.textContent=QI.msg('Open the downloaded file with Qoopia where your agent runs and confirm that the address shown is your Qoopia. On Linux, run qoopia memory-link --file FILE and follow the plan it prints. The file contains a private connection key; keep it on your own device.');
-        }else status.textContent=result.next||QI.msg('Connection configured.');
+        }else status.textContent=QI.msg(result.next||'Connection configured.');
       }catch(e){status.textContent=e.message;}finally{button.disabled=false;}
     });
   }
@@ -1623,7 +1773,7 @@
       $('#workspaceName').textContent=localWorkspace?(QI.msg("Owner workspace")):(QI.msg("Agent view"));
     }catch{localWorkspace=null;}
     chat?.dispose();chat=localWorkspace?window.QoopiaChat({api,send,esc,humanSize,onUnauthorized:showLogin}):null;
-    state.page=pageFromHash();
+    state=await stateFromHash();
     route();
   }
 
@@ -1643,7 +1793,7 @@
     if (!btn) return;
     var sync = function () { btn.classList.toggle('show', window.scrollY > 200); };
     window.addEventListener('scroll', sync, { passive: true });
-    btn.onclick = function () { window.scrollTo({ top: 0, behavior: 'smooth' }); };
+    btn.onclick = function () { window.scrollTo({ top: 0, behavior: motion() }); };
     sync();
   })();
 

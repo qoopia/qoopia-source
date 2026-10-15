@@ -104,7 +104,7 @@ describe("V1 data-safety boundary", () => {
     const backup = path.join(f.outer, "complete-backup");
     const manifest = f.delivery.backup(backup);
     expect(manifest).toMatchObject({ schema: 37, data_scope: "complete-schema-37-installation" });
-    expect(verifyBackup(backup, current.instance).logical_hash).toBe(snapshotInfo(dataFile(f.install, current)).logical_hash);
+    expect(verifyBackup(backup, current.instance).logical_hash).toBe(snapshotInfo(dataFile(f.install, current), 2).logical_hash);
 
     const restoredDelivery = new Delivery(path.join(f.outer, "restored"), f.trust, true, () => {});
     const restored = restoredDelivery.restoreNew(backup, f.first, 4747);

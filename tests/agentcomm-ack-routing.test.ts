@@ -6,7 +6,7 @@
  * the ack cases are gone and what remains is what still has to hold —
  *  - no message is ever created owing a manual acknowledgement
  *  - a reply is REROUTED to the original requester even when the sender
- *    mis-addresses a third agent (the corsair-main bug)
+ *    mis-addresses a third agent (the main-agent bug)
  *  - send/session idempotency and reply+close atomicity
  *
  * Guard: unset wake-push webhook envs BEFORE importing agent-comm, else the

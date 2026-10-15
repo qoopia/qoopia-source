@@ -92,12 +92,30 @@ export function recordMaintenance(data: string, installation: string, cause: str
   // Owner-approved lossless compaction is attempted at the finite member ceiling.
   const state = readRecoveryOps(data, installation);
   state.last_run = { at: new Date(now).toISOString(), ok: cause === null, cause };
-  for (const alert of state.alerts) if (alert.installation === installation && alert.cause !== cause) alert.active = false;
+  for (const alert of state.alerts) if (alert.installation === installation && alert.cause !== cause && !memoryCause(alert.cause)) alert.active = false;
   if (cause && !state.alerts.some(a => a.installation === installation && a.cause === cause && a.active)) {
     state.alerts.push({ id: randomUUID(), installation, component: 'maintenance', subject: 'daily', cause,
       active: true, state: 'pending', attempts: 0, next_attempt_at: now, last_error: 'NO_CHANNEL', receipt: null });
   }
   writeOps(data, state); return readRecoveryOps(data, installation);
+}
+/** The memory model's subscription failing (sign-in, quota, retired model) is raised by the memory worker,
+ * not by the daily run, which neither raises nor resolves it. It keeps the qoopia-ops/3 alert vocabulary
+ * (component maintenance, subject daily) that every rollback target reads; the cause names the problem.
+ * One active alert per cause: a failure that persists is not raised again, a recovery resolves it. */
+const memoryCause = (cause: string) => cause.startsWith('MEMORY_');
+export function recordMemoryAlert(data: string, installation: string, cause: string | null, now = Date.now()) {
+  if (cause !== null && !memoryCause(cause)) throw new Error('Memory alert causes start with MEMORY_');
+  const state = readRecoveryOps(data, installation);
+  let changed = false, raised = false;
+  for (const alert of state.alerts) if (alert.active && memoryCause(alert.cause) && alert.cause !== cause) { alert.active = false; changed = true; }
+  if (cause && !state.alerts.some(a => a.active && a.cause === cause)) {
+    state.alerts.push({ id: randomUUID(), installation, component: 'maintenance', subject: 'daily', cause,
+      active: true, state: 'pending', attempts: 0, next_attempt_at: now, last_error: 'NO_CHANNEL', receipt: null });
+    changed = raised = true;
+  }
+  if (changed) writeOps(data, state);
+  return raised;
 }
 export function opsSummary(data: string, instance?: string) {
   try {

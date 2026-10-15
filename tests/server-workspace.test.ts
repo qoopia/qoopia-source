@@ -57,3 +57,11 @@ test('the server probe recognises only a Qoopia /health answer and sends no cred
   expect(await probeServerWorkspace('https://server.example', fake(200, '{"status":"ok"}'))).toBe('not_qoopia');
   expect(await probeServerWorkspace('https://server.example', (async () => { throw new TypeError('offline'); }) as unknown as typeof fetch)).toBe('unreachable');
 });
+
+test('a healthy server reached after a cold tunnel handshake is not reported unreachable',async()=>{
+ const request=(async(_url:any,options:any)=>new Promise<Response>((resolve,reject)=>{
+   const timer=setTimeout(()=>resolve(Response.json({version:'5.0.21',status:'ok',server_role:'canonical'})),3100);
+   options.signal.addEventListener('abort',()=>{clearTimeout(timer);reject(new Error('deadline'));},{once:true});
+ })) as typeof fetch;
+ expect(await probeServerWorkspace('https://memory.example/dashboard',request)).toBe('reachable');
+});

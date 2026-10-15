@@ -22,14 +22,26 @@ function glibcRequirement(target:string,glibc:string|null|undefined){
  return {glibc:glibc??null,minimum_glibc_desktop_launcher:'2.34',warnings:glibc&&(major<2||(major===2&&minor<34))?['GLIBC_BELOW_DESKTOP_LAUNCHER_2_34']:[]};
 }
 /** Call only after verifyBundle: the observation must belong to its signed inventory. */
-export function inspectInstallationRequirements(verified:{root:string;manifest:{members:Record<string,{size:number}>}},destination:string,glibc=glibcVersion(),target=`${process.platform}-${process.arch}`){
+export function inspectInstallationRequirements(verified:{root:string;manifest:{members:Record<string,{size:number}>}},destination:string,glibc=glibcVersion(),target=`${process.platform}-${process.arch}`,uid=process.getuid?.()){
+ // Owner sign-in is bound to an unprivileged OS user; as root the install succeeded and open failed later [A6-07].
+ const root=uid===0?['ROOT_USER']:[];
  const member='BOOTSTRAP-MEASUREMENT.json';
- if(!verified.manifest.members[member])return {ok:true,blockers:[] as string[],...glibcRequirement(target,glibc),qualification:'not_recorded',full_workload_qualification:'unknown',minimum_ram_bytes:null,minimum_os_release:null};
+ if(!verified.manifest.members[member])return {ok:!root.length,blockers:root,...glibcRequirement(target,glibc),qualification:'not_recorded',full_workload_qualification:'unknown',minimum_ram_bytes:null,minimum_os_release:null};
  const observation=readJson(path.join(verified.root,member));
  const extent=Object.values(verified.manifest.members).reduce((sum,member)=>sum+member.size,0);
  const space=preflightSpace(destination,[]);
- return installationRequirements(extent,observation,{target,os_release:os.release(),
+ const report=installationRequirements(extent,observation,{target,os_release:os.release(),
   total_memory_bytes:os.totalmem(),available_disk_bytes:space.available_bytes,glibc});
+ return {...report,ok:report.ok&&!root.length,blockers:[...root,...report.blockers]};
+}
+const BLOCKER_STEPS:Record<string,string>={
+ ROOT_USER:'Qoopia does not run as root. Create an ordinary user (for example: adduser qoopia), sign in as that user and run Qoopia there.',
+ INSUFFICIENT_DISK:'Free disk space on this computer, then try again.',
+ UNSUPPORTED_BUNDLE_TARGET:'This package is for another system; download the package for this computer.',
+};
+/** The refusal a person reads: each blocker code with its step. */
+export function requirementsRefusal(blockers:string[]){
+ return 'Installation requirements not met: '+blockers.join(',')+'. '+blockers.flatMap(code=>BLOCKER_STEPS[code]?[BLOCKER_STEPS[code]]:[]).join(' ');
 }
 /** Read-only planning. A bootstrap observation is NOT a qualified full-workload minimum. */
 export function installationRequirements(bundleBytes:number,observation:unknown,host: z.infer<typeof hostSchema>){

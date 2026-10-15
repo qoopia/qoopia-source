@@ -1,0 +1,5 @@
+Contact: https://github.com/qoopia/qoopia-source/security/advisories/new
+Policy: https://github.com/qoopia/qoopia-source/security/policy
+Preferred-Languages: en, ru
+Canonical: https://qoopia.ai/.well-known/security.txt
+Expires: 2027-10-14T00:00:00Z

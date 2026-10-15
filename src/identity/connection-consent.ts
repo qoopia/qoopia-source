@@ -8,6 +8,7 @@ import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,deny
 import { hash, randomToken } from '../utils/fs.ts';
 import { escapeHtml as escape } from '../utils/html.ts';
 import {readBoundedText} from '../utils/http-json.ts';
+import {cspOrigin} from '../http/respond.ts';
 
 const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
 const loginCookie=CONSENT_COOKIE_PREFIX+'login';
@@ -63,7 +64,8 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
         throw new ConsentError('CONNECTION_UNAVAILABLE',403);
       // Browsers apply form-action to the final OAuth redirect as well. Allow
       // only this ticket's registered client origin, never arbitrary sites.
-      headers['content-security-policy']=headers['content-security-policy'].replace("form-action 'self';",`form-action 'self' ${callback.origin};`);
+      const formOrigin=cspOrigin(ticket.redirect_uri);
+      if(formOrigin)headers['content-security-policy']=headers['content-security-policy'].replace("form-action 'self';",`form-action 'self' ${formOrigin};`);
       const binding=ownerIdentity(root),owner=binding?localOwner(database,binding.ownerId):null;
       if(!binding||owner?.agent_id!==connection.owner_id||owner.workspace_id!==connection.workspace_id)
         throw new ConsentError('OWNER_SETUP_REQUIRED',403);

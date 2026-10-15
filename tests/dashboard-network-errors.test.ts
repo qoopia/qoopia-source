@@ -11,7 +11,7 @@ const section=dashboardScript.slice(start,end);
 const ru:Record<string,string>=JSON.parse(readFileSync(new URL('../src/public/brand/i18n.ru.json',import.meta.url),'utf8'));
 
 function load(fetch:(url:string,init?:any)=>Promise<any>){
- const QI={msg:(s:string,p?:any)=>JSON.stringify([s,p]),resolve:(t:string)=>{const [s,p]=JSON.parse(t);return ru[s]!.replace(/\{(\w+)\}/g,(_:string,k:string)=>String(p[k]));}};
+ const QI={msg:(s:string,p?:any)=>JSON.stringify([s,p]),resolve:(t:string)=>{const [s,p]=JSON.parse(t);return (ru[s]??s).replace(/\{(\w+)\}/g,(_:string,k:string)=>String(p[k]));}};
  const errReason=(e:any)=>e.status===429?QI.msg('Too many requests. Try again in {s} s.',{s:e.retryAfter||60}):QI.msg('The server could not complete the request.');
  return runInNewContext(section+';({send,api,apiWrite})',{fetch,QI,errReason,BASE:'',AbortSignal,showLogin(){},Number,Object,Error,JSON});
 }

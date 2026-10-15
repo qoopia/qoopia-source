@@ -83,6 +83,11 @@ export function readAgentArtifact(ownerId:string,relative:string) {
   try {
     safePath(artifact.file);const stat=fs.fstatSync(fd);
     if(!stat.isFile()||stat.nlink!==1||stat.dev!==artifact.device||stat.ino!==artifact.inode||stat.size!==artifact.size)throw new QoopiaError('CONFLICT','The file changed. Refresh and try again.');
+    // O_NOFOLLOW guards only the last name: a folder swapped for a link between the checks and the
+    // open would still resolve. The opened file must be the one its real path inside the folder names.
+    const root=fs.realpathSync(path.join(agentDirectory(ownerId),'workspace')),real=fs.realpathSync(artifact.file),named=fs.statSync(real);
+    if(!real.startsWith(root+path.sep))throw new QoopiaError('FORBIDDEN','File is outside the agent folder');
+    if(named.dev!==stat.dev||named.ino!==stat.ino)throw new QoopiaError('CONFLICT','The file changed. Refresh and try again.');
     const bytes=Buffer.alloc(artifact.size);let offset=0;
     while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw new QoopiaError('CONFLICT','The file changed. Refresh and try again.');offset+=n;}
     const after=fs.fstatSync(fd);if(after.size!==stat.size||after.mtimeMs!==stat.mtimeMs)throw new QoopiaError('CONFLICT','The file changed. Refresh and try again.');

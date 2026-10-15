@@ -1,3 +1,4 @@
+import { BlockList, isIP } from "node:net";
 import { validateRuntimeConfiguration } from "./runtime-config.ts";
 
 /** Shared boolean parsing: deployed installations historically use both 1 and true. */
@@ -92,14 +93,23 @@ export const env = {
     "QOOPIA_RETENTION_AGENT_WAKE_DAYS",
     30,
   ),
+  // ADR-022: raw session messages older than this many days, in a session whose summaries cover its
+  // last message, are what the daily job may delete. Deletion itself stays off until
+  // QOOPIA_RAW_RETENTION_DELETE=true; `qoopia maintenance raw-retention` reports without deleting.
+  RAW_RETENTION_DAYS: requirePositiveInt(process.env.QOOPIA_RAW_RETENTION_DAYS, "QOOPIA_RAW_RETENTION_DAYS", 30),
+  RAW_RETENTION_DELETE: envFlag(process.env.QOOPIA_RAW_RETENTION_DELETE, false),
+  // ADR-022: another agent's raw transcript is read only by the dreamer, the steward and the owner.
+  // false restores the ADR-020 rule (the shared-context toggle opens siblings' transcripts).
+  TRANSCRIPTS_OWN_ONLY: envFlag(process.env.QOOPIA_TRANSCRIPTS_OWN_ONLY, true),
   // Когда true, запросы от доверенных прокси могут нести клиентский IP в
   // cf-connecting-ip / x-forwarded-for. Default=false: небезопасные дефолты
   // не должны включаться сами. Поднимая Qoopia за cloudflared / nginx на
   // loopback — выставляй TRUST_PROXY=true в окружении (см. launchd plist).
   TRUST_PROXY: (process.env.TRUST_PROXY ?? "false") === "true",
-  // Comma-separated список IP, которым доверяем хедеры. Запрос считается
-  // пришедшим через доверенный прокси, только если socket.remoteAddress ∈ этому
-  // списку. Default = loopback (нормальный случай за cloudflared/nginx).
+  // Comma-separated список IP или CIDR-сетей (например 172.18.0.0/16 для туннеля
+  // в docker-bridge), которым доверяем хедеры. Запрос считается пришедшим через
+  // доверенный прокси, только если socket.remoteAddress попадает в этот список.
+  // Default = loopback (нормальный случай за cloudflared/nginx).
   TRUSTED_PROXIES: (process.env.TRUSTED_PROXIES ?? "127.0.0.1,::1,::ffff:127.0.0.1")
     .split(",")
     .map((s) => s.trim())
@@ -107,3 +117,21 @@ export const env = {
 };
 
 if (!env.OAUTH_ISSUER) env.OAUTH_ISSUER = env.PUBLIC_URL;
+
+/** Is this socket peer one of TRUSTED_PROXIES (an address or a CIDR network)? Only then may its
+ * X-Forwarded-* / CF headers speak for the client. Read per call: the list is a few entries. */
+export function isTrustedProxy(remoteAddress: string | undefined): boolean {
+  const address = (remoteAddress || "").toLowerCase().replace(/%.*$/, "");
+  const family = isIP(address);
+  if (!env.TRUST_PROXY || !family) return false;
+  const list = new BlockList();
+  for (const entry of env.TRUSTED_PROXIES) {
+    const [network = "", prefix] = entry.toLowerCase().split("/");
+    const version = isIP(network);
+    if (!version) continue;
+    const kind = version === 6 ? "ipv6" : "ipv4";
+    if (prefix === undefined) list.addAddress(network, kind);
+    else if (/^\d{1,3}$/.test(prefix)) list.addSubnet(network, Number(prefix), kind);
+  }
+  return list.check(address, family === 6 ? "ipv6" : "ipv4");
+}

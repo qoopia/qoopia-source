@@ -306,6 +306,16 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   // 5.0.16: agents save files into the owner's Files. A new write-low tool beside the frozen ones.
   if (projected.canonical_tools.find((t) => t.name === "file_put")?.risk !== "write-low") throw new Error("file_put missing or wrong risk");
   memoryPolicyTools.push("file_put");
+  // 5.0.21 Canon: three write-low tools that write rules, three reads; none changes a frozen tool.
+  for (const [name, risk] of [["canon_create", "write-low"], ["canon_update", "write-low"], ["canon_retire", "write-low"], ["canon_list", "read"], ["canon_get", "read"], ["canon_match", "read"]] as const) {
+    if (projected.canonical_tools.find((t) => t.name === name)?.risk !== risk) throw new Error(`Canon tool missing or wrong risk: ${name}`);
+    memoryPolicyTools.push(name);
+  }
+  // 5.0.21 ADR-022: the owner's dreamer switch and the dreamer's workspace transcript read.
+  for (const [name, risk] of [["agent_set_dreamer", "admin"], ["session_review", "read"]] as const) {
+    if (projected.canonical_tools.find((t) => t.name === name)?.risk !== risk) throw new Error(`Dreamer tool missing or wrong risk: ${name}`);
+    memoryPolicyTools.push(name);
+  }
   const prepare = projected.canonical_tools.find((t) => t.name === "connection_prepare");
 
   if (!prepare || prepare.risk !== "read" || !prepare.description.includes("creates no agent, credential or grant")) throw new Error("Connection preparation must remain read-only");

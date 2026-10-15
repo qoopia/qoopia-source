@@ -38,6 +38,7 @@ interface BackupReport {
   integrity_check: "ok";
   foreign_key_violations: number;
   logical_hash: string;
+  logical_hash_format: 2;
   duration_ms: number;
 }
 
@@ -91,7 +92,8 @@ function verifySnapshot(source: string, output: string, now: Date | undefined, s
       schema_version: schema.version,
       integrity_check: "ok",
       foreign_key_violations: 0,
-      logical_hash: computeLogicalDatabaseHash(snapshot),
+      logical_hash: computeLogicalDatabaseHash(snapshot, 2),
+      logical_hash_format: 2,
       duration_ms: Number((performance.now() - started).toFixed(2)),
     };
   } finally {

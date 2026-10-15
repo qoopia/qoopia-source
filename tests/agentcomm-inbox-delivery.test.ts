@@ -88,13 +88,14 @@ function wakeFor(messageId: string) {
   };
 }
 
-function send(to: string, body: string) {
+function send(to: string, body: string, kind?: "request" | "status") {
   return agentSend({
     workspace_id: WORKSPACE,
     agent_id: SENDER,
     to_agent: to,
     body,
     topic: "inbox delivery",
+    ...(kind ? { kind } : {}),
   });
 }
 
@@ -208,18 +209,32 @@ describe("agent_inbox records delivery", () => {
     expect(again.wake?.delivery).toBe("read_without_wake");
   });
 
-  test("a recipient with a runtime that reads its inbox first is not reported woken, and is not pushed later", async () => {
+  test("a recipient with a runtime that reads a status first is not reported woken, and is not pushed later", async () => {
     let hits = 0;
     server = Bun.serve({ port: 0, fetch: () => { hits += 1; return Response.json({ accepted: true }); } });
     process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_URL = `http://127.0.0.1:${server.port}/wake`;
     process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_TOKEN = "test-secret";
-    const sent = send(PUSHED, "read before the push");
+    const sent = send(PUSHED, "read before the push", "status");
     expect(sent.wake).toMatchObject({ status: "queued", delivery: "waking" });
     agentInbox({ workspace_id: WORKSPACE, agent_id: PUSHED });
     await drainAgentWakeQueue();
     expect(hits).toBe(0);
     expect(wakeFor(sent.id)).toMatchObject({ status: "ignored", last_error: "read_from_inbox", delivered_at: null });
     expect(messageDeliveredAt(sent.id)).toBeTruthy();
+  });
+
+  test("a request read from the inbox while its wake is pending still reaches the runtime, which answers it [A2-12]", async () => {
+    const pushed: any[] = [];
+    server = Bun.serve({ port: 0, fetch: async (request) => { pushed.push(await request.json()); return Response.json({ accepted: true }); } });
+    process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_URL = `http://127.0.0.1:${server.port}/wake`;
+    process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_TOKEN = "test-secret";
+    const sent = send(PUSHED, "answer me even if you peeked");
+    agentInbox({ workspace_id: WORKSPACE, agent_id: PUSHED });
+    expect(messageDeliveredAt(sent.id)).toBeTruthy();
+    expect(wakeFor(sent.id)).toMatchObject({ status: "queued" });
+    await drainAgentWakeQueue();
+    expect(pushed.map((p) => p.messages.map((m: any) => m.message_id))).toEqual([[sent.id]]);
+    expect(wakeFor(sent.id)).toMatchObject({ status: "delivered" });
   });
 });
 
@@ -256,7 +271,7 @@ describe("the push path is unchanged", () => {
     } });
     process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_URL = `http://127.0.0.1:${server.port}/wake`;
     process.env.AGENTCOMM_INBOXDEL_PUSHED_WEBHOOK_TOKEN = "test-secret";
-    send(PUSHED, "already read");
+    send(PUSHED, "already read", "status");
     agentInbox({ workspace_id: WORKSPACE, agent_id: PUSHED });
     send(PUSHED, "fresh");
     await drainAgentWakeQueue();

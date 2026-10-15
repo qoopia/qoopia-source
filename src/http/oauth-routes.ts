@@ -48,7 +48,7 @@ import { isReadOnlyInstance } from "../utils/instance-role.ts";
 import { ownerIdentityRoot } from "../utils/standalone.ts";
 import { edgeClientKey } from "../delivery/mcp-edge.ts";
 import { parseJsonObject } from "../utils/http-json.ts";
-import { escapeHtml, json, securityHeaders, sendHtml } from "./respond.ts";
+import { cspOrigin, escapeHtml, json, securityHeaders, sendHtml } from "./respond.ts";
 
 /** Account-bound consent reuses only the exact human owner's browser session. */
 function accountConsentOrigin(ticket: NonNullable<ReturnType<typeof getConsentTicket>>): string | undefined {
@@ -730,12 +730,7 @@ export function handleDashboardOAuthConsentGet(
 </html>`;
   // Allow the OAuth client's callback origin in form-action/navigate-to so the
   // approve form's cross-origin redirect to the client is not CSP-blocked.
-  let clientOrigin: string | undefined;
-  try {
-    clientOrigin = new URL(t.redirect_uri).origin;
-  } catch {
-    clientOrigin = undefined;
-  }
+  const clientOrigin = cspOrigin(t.redirect_uri);
   res.writeHead(200, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",

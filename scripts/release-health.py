@@ -201,8 +201,18 @@ def mirror_issues(path, version):
         return ['git_mirror:unavailable']
 
 
+LOOPBACK = ('127.0.0.1', '::1', 'localhost')
+
+
+def loopback_http(url):
+    """A receiver on this host (scripts/ops-alert-relay.py) needs no TLS; anything else must be HTTPS."""
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == 'http' and parts.hostname in LOOPBACK
+
+
 def alert_channels(path):
-    """The owner's qoopia-alert-channels/1 policy, the same file server ops alerts use (QOOPIA_OPS_CHANNELS_FILE)."""
+    """The owner's qoopia-alert-channels/1 policy, the same file server ops alerts use (QOOPIA_OPS_CHANNELS_FILE).
+    The monitor also accepts a loopback http receiver; the server's outbox keeps refusing it."""
     if not path or not os.path.exists(path):
         return []
     info = os.lstat(path)
@@ -214,7 +224,7 @@ def alert_channels(path):
     channels = []
     for channel in policy['channels']:
         encoded = channel['signing_key_base64url']
-        if not re.fullmatch(r'[A-Za-z0-9_-]{43,86}', encoded) or not channel['url'].startswith('https://') or urllib.parse.urlsplit(channel['url']).hostname not in channel['allowed_hosts']:
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43,86}', encoded) or not (channel['url'].startswith('https://') or loopback_http(channel['url'])) or urllib.parse.urlsplit(channel['url']).hostname not in channel['allowed_hosts']:
             raise ValueError('ALERT_POLICY_INVALID')
         channels.append((channel['url'], base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))))
     return channels
@@ -226,7 +236,7 @@ def deliver_alert(channels, alert):
     for url, key in channels:
         signature = base64.urlsafe_b64encode(hmac.new(key, body, hashlib.sha256).digest()).rstrip(b'=').decode()
         try:
-            r = subprocess.run(['curl', '--fail', '--silent', '--max-time', '12', '--connect-timeout', '5', '--proto', '=https',
+            r = subprocess.run(['curl', '--fail', '--silent', '--max-time', '12', '--connect-timeout', '5', '--proto', '=http' if loopback_http(url) else '=https',
                                 '-H', 'content-type: application/json', '-H', 'x-qoopia-event-id: ' + alert['id'], '-H', 'x-qoopia-signature: sha256=' + signature,
                                 '--data-binary', '@-', url], input=body, capture_output=True, timeout=15)
             receipt = json.loads(r.stdout) if r.returncode == 0 and len(r.stdout) <= 4096 else None
@@ -235,6 +245,87 @@ def deliver_alert(channels, alert):
         if isinstance(receipt, dict) and receipt.get('accepted') is True and receipt.get('event_id') == alert['id'] and receipt.get('payload_sha256') == hashlib.sha256(body).hexdigest():
             return True
     return False
+
+
+def invariant_issues(path):
+    """Critical alerts of the host invariant monitor (invariant_check.py) that fired and have not resolved.
+    Its JSONL stream is append-only and small; warnings stay in that stream only."""
+    if not path:
+        return []
+    try:
+        lines = Path(path).read_text().splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return ['invariant:unreadable']
+    active = {}
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get('severity') != 'critical':
+            continue
+        if record.get('event') == 'resolved':
+            active.pop(record.get('fingerprint'), None)
+        else:
+            active[record.get('fingerprint')] = record.get('check')
+    # Only short plain check names reach status.json and the alert text.
+    return sorted({'invariant:' + (check if isinstance(check, str) and re.fullmatch(r'[a-z0-9_]{1,40}', check) else 'unknown') for check in active.values()})
+
+
+def unit_issues(units):
+    """Failed timer jobs (release source check, system backup, ...) become monitor issues instead of journal-only failures."""
+    issues = []
+    for unit in units:
+        try:
+            failed = subprocess.run(['systemctl', 'is-failed', '--quiet', unit], capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return ['units:unavailable']
+        if failed:
+            issues.append('unit_failed:' + unit.removesuffix('.service'))
+    return issues
+
+
+def offsite_issues(path, now, max_age_hours=26):
+    """The daily off-host copy (deploy/qoopia-offsite-backup.sh) records each run; the newest ok record must be fresh
+    and must include the sign-in database. A silent cron failure otherwise looks exactly like a working backup."""
+    if not path:
+        return []
+    def parsed(line):
+        # A record an older script broke over several lines must not hide every later one.
+        try:
+            return json.loads(line)
+        except ValueError:
+            return None
+    try:
+        records = [parsed(line) for line in Path(path).read_text().splitlines() if line.strip()]
+        ok = [r for r in records if isinstance(r, dict) and r.get('status') == 'ok']
+        last = max(ok, key=lambda r: datetime.datetime.fromisoformat(r['at'].replace('Z', '+00:00')), default=None)
+        age = (now - datetime.datetime.fromisoformat(last['at'].replace('Z', '+00:00'))).total_seconds() if last else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ['backup:offsite_unreadable']
+    if age is None or not 0 <= age <= max_age_hours * 3600:
+        return ['backup:offsite_stale']
+    return [] if last.get('auth') == 'ok' else ['backup:auth_offsite_missing']
+
+
+MAINTENANCE_CAP = datetime.timedelta(hours=2)
+
+
+def maintenance_until(root, now):
+    """Deploy window: `maintenance-until` in the monitor root holds an ISO UTC end time, honoured for at most
+    two hours after the file was written so a forgotten file cannot silence the monitor."""
+    file = Path(root) / 'maintenance-until'
+    try:
+        until = datetime.datetime.fromisoformat(file.read_text().strip().replace('Z', '+00:00'))
+        written = datetime.datetime.fromtimestamp(file.stat().st_mtime, UTC)
+    except (OSError, ValueError):
+        return None
+    if until.tzinfo is None:
+        return None
+    until = min(until, written + MAINTENANCE_CAP)
+    return until if until > now else None
 
 
 def main():
@@ -253,6 +344,9 @@ def main():
     p.add_argument('--analytics', default='/srv/qoopia-analytics/latest.json')
     p.add_argument('--git-mirror', default='/srv/qoopia/git-mirror')
     p.add_argument('--alert-channels', default=os.environ.get('QOOPIA_OPS_CHANNELS_FILE'), help='Owner qoopia-alert-channels/1 policy that receives OK/ALERT transitions; nothing is sent when unset')
+    p.add_argument('--invariant-alerts', default=os.environ.get('QOOPIA_INVARIANT_ALERTS'), help='invariant_check.py JSONL stream; active critical alerts become issues')
+    p.add_argument('--offsite-log', default=os.environ.get('QOOPIA_OFFSITE_LOG'), help='offsite-backup.jsonl; a stale or incomplete last copy is an issue')
+    p.add_argument('--units', default=os.environ.get('QOOPIA_MONITOR_UNITS', ''), help='Comma-separated systemd units whose failed state is an issue')
     a = p.parse_args()
     try:
         a.schema_version = expected_schema(a.schema_version)
@@ -311,6 +405,7 @@ def main():
     except (OSError, ValueError, KeyError, TypeError):
         issues.append('analytics:unreadable')
         optional = []
+    issues += invariant_issues(a.invariant_alerts) + offsite_issues(a.offsite_log, now) + unit_issues([u.strip() for u in a.units.split(',') if u.strip()])
     disk = shutil.disk_usage(root)
     if disk.free < max(10 * 1024**3, disk.total * 0.05):
         issues.append('disk:low_space')
@@ -322,7 +417,13 @@ def main():
     except (OSError, ValueError):
         previous = {}
     pending = previous.get('alert_pending')
-    if previous.get('issues') != status['issues']:
+    window = maintenance_until(root, now)
+    if window:
+        # The deploy window keeps the pre-deploy baseline: a problem that outlives the window still
+        # differs from it and alerts then; one the deploy fixed never pages anyone.
+        status.update(status='MAINTENANCE', summary='MAINTENANCE until ' + window.isoformat() + ' — ' + summary,
+                      maintenance_until=window.isoformat(), maintenance_issues=status['issues'], issues=previous.get('issues', []))
+    elif previous.get('issues') != status['issues']:
         transition = {'at': status['at'], 'status': status['status'], 'issues': status['issues']}
         with (root / 'transitions.jsonl').open('a') as f:
             f.write(json.dumps(transition) + '\n')
@@ -341,7 +442,7 @@ def main():
     temp.write_text(json.dumps(status, indent=2) + '\n')
     temp.replace(current)
     print(json.dumps(status))
-    return 1 if issues or state in ('failed', 'policy_invalid') else 0
+    return 1 if (issues and not window) or state in ('failed', 'policy_invalid') else 0
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ const axe=process.env.QOOPIA_AXE_CORE&&fs.readFileSync(process.env.QOOPIA_AXE_CO
    const shot=async options=>{const own=errors.length;await page.screenshot(options);await page.waitForTimeout(50);errors.length=own;};
    // The fixture supplies release metadata locally and never sends analytics.
    await page.route('https://auth.qoopia.ai/**',r=>r.fulfill({status:204,body:''}));
-   for(const [route,lang] of [['/','en'],['/docs','en'],['/releases','en'],['/understand','en'],['/understand-ru','ru'],['/mobile','en'],['/404.html','en'],['/missing','en'],
+   for(const [route,lang] of [['/','en'],['/docs','en'],['/releases','en'],['/understand','en'],['/ru/understand','ru'],['/mobile','en'],['/404.html','en'],['/missing','en'],
     ['/ru/','ru'],['/ru/docs','ru'],['/ru/releases','ru'],['/ru/mobile','ru'],['/ru/missing','en'],['/profile','']]){
     await page.goto(cfg.url+route);await page.waitForLoadState('networkidle');await page.evaluate(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(img=>{img.loading='eager';return img.decode().catch(()=>{/* A broken image fails the broken-image assertion below. */});}));});
     assert.equal(new URL(page.url()).pathname,route,name+' stays on '+route);

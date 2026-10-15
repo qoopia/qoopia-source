@@ -14,6 +14,7 @@ import { db } from "../db/connection.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { logActivity } from "./activity.ts";
+import { assertAutomaticMemoryAllowed } from "./memory-policy.ts";
 import { assertCanModifyNote, readLevel, visibleRowSql } from "../auth/principal.ts";
 import { logger } from "../utils/logger.ts";
 import {
@@ -278,6 +279,8 @@ interface ClosePredecessorInput {
    */
   close_ms: number;
   visibility: string;
+  /** Author of the successor: a private chain stays inside one agent's notes. */
+  successor_agent_id: string | null;
   /**
    * Метаданные legacy-ребра `note_relations` (идемпотентность MCP-вызова).
    * Это НЕ `notes.metadata` — та не трогается ни при каких условиях (R2).
@@ -290,6 +293,19 @@ interface ClosePredecessorInput {
  * внутри транзакции вызывающего — атомарность обеспечивает он.
  */
 export function closePredecessor(input: ClosePredecessorInput): { relation_id: string } {
+  // A private predecessor stays inside its author's private notes, as in createNoteRelation: a
+  // shared successor would carry the private id to every sibling (supersedes_id, activity).
+  // A shared predecessor may get a private successor (§7.2): only its closing becomes visible.
+  if (
+    input.predecessor.visibility === "private" &&
+    !(input.visibility === "private" && input.successor_agent_id !== null &&
+      input.successor_agent_id === input.predecessor.agent_id)
+  ) {
+    throw new QoopiaError(
+      "INVALID_INPUT",
+      "a private note is superseded only by a private note of the same agent",
+    );
+  }
   const closeIso = isoFromEpochMs(input.close_ms);
   const successorValidFromIso = isoFromEpochMs(input.successor_valid_from_ms);
   const changed = db
@@ -420,6 +436,8 @@ export function supersedeExistingNote(input: {
     throw new QoopiaError("INVALID_INPUT", "a note cannot supersede itself");
   }
   return db.transaction(() => {
+    // Superseding archives a note: a manual agent leaves that to the owner, as with note_update.
+    assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id);
     const successor = readPredecessor(
       input.workspace_id,
       input.successor_id,
@@ -496,12 +514,14 @@ export function supersedeExistingNote(input: {
       successor_valid_from_ms: successorValidFromMs,
       close_ms: closeMs,
       visibility: successor.visibility ?? "workspace",
+      successor_agent_id: successor.agent_id,
       relation_metadata: input.relation_metadata,
     });
     logActivity({
       workspace_id: input.workspace_id,
       agent_id: input.agent_id,
       action: "note_superseded",
+      event: "note.superseded",
       entity_type: "note",
       entity_id: successor.id,
       project_id: null,

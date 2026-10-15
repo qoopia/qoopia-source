@@ -1,5 +1,5 @@
 import {PRODUCT_VERSION} from '../utils/product-version.ts';
-import {persistentAnalytics,browserEvent,noAnalytics,type RecordEvent} from '../analytics/events.ts';
+import {persistentAnalytics,browserEvent,downloadRedirect,noAnalytics,type RecordEvent} from '../analytics/events.ts';
 import {readFileSync,openSync,closeSync,fstatSync,constants} from 'node:fs';
 import {assetPath} from '../utils/assets.ts';
 import {brandAsset,brandHead,brandLockup} from '../brand.ts';
@@ -49,7 +49,7 @@ export function signInNetwork(ip:string):string|null {
   }
   return v||null;
 }
-type Config = {releaseSha?:string|null;owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
+type Config = {releaseManifestUrl?:string;releaseSha?:string|null;owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
 
 /** Same stamp as the server image (scripts/release-stamp.ts); /health reports it for release monitoring. */
 export function releaseStampSha(file?:string):string|null {
@@ -59,6 +59,10 @@ export function releaseStampSha(file?:string):string|null {
   return stamp.commit_sha;
 }
 /** Separate sign-in service: it never receives workspace content or model credentials. */
+/** First path segment from a fixed list: logs never carry identifiers that sit deeper in a path. */
+const ROUTE_CLASSES=new Set(['profile','owner','confirm','google','requests','redeem','devices','device','news','bridge','health','ready']);
+export function routeClass(path:string):string{const first=path.split('/')[1]??'';return ROUTE_CLASSES.has(first)?first:'other';}
+
 export function loginBroker(db: Database, config: Config, request: typeof fetch = fetch) {
   const origin = new URL(config.origin).origin;
   const record:RecordEvent=event=>{try{(config.recordEvent??noAnalytics)(event);}catch{/* Analytics cannot interrupt account operations. */}};
@@ -119,12 +123,27 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         attachments:[{filename:'qoopia.png',content_id:'qoopia-brand',content:readFileSync(assetPath('src/public/brand/email-lockup.png')).toString('base64')}]})})
       .then(()=>record({kind:'mail_accepted',language,method:'other'}),()=>record({kind:'mail_failed',language,outcome:'error'}));
   }
+  // The public release manifest names the current installers; the site deploys it with each release.
+  const download=downloadRedirect(async()=>{
+    const response=await request(config.releaseManifestUrl??'https://qoopia.ai/release.json',{signal:AbortSignal.timeout(5_000),redirect:'error'});
+    if(!response.ok)throw new Error('Release manifest unavailable');
+    return JSON.parse(await readBoundedText(response,MAX_BODY_BYTES));
+    // ponytail: at most 20 counted downloads per address an hour; the redirect itself is never refused.
+  },(event,ip)=>{if(allowance('download:'+ip,20,3_600_000))record({kind:'download_redirect',...event});});
   // A network-bound sign-in finishes only from the network where it started: a link or a Google
   // account someone else completes from elsewhere signs in nobody. This replaces the F-125 code.
   const sameNetwork=(flow:{starter_net:string|null},clientIp:string)=>!!flow.starter_net&&flow.starter_net===signInNetwork(clientIp);
   const handler=async (req: Request, clientIp: string): Promise<Response> => {
     const url = new URL(req.url), now = Date.now();
     if(url.pathname==='/internal/owner')return ownerBridge(req);
+    // Container healthcheck (loopback, any Host) and monitors: the account store answers and the providers are configured.
+    // Check names only; it costs one trivial query, so it sits before the Host check and the rate limit.
+    if (req.method === 'GET' && url.pathname === '/ready') {
+      let store='ok';try{db.query('SELECT 1').get();}catch{store='failed';}
+      const checks={store,providers:config.resendKey&&config.googleClientId&&config.googleClientSecret?'ok':'missing'};
+      const ready=Object.values(checks).every(v=>v==='ok');
+      return json(ready?200:503,{status:ready?'ready':'not_ready',version:PRODUCT_VERSION,release_sha:config.releaseSha??null,checks});
+    }
     // HTTPS terminates at Cloudflare; the service itself listens on loopback only.
     if ((req.headers.get('host')??url.host) !== new URL(origin).host) return json(403,{error:'Host refused'});
     db.query('DELETE FROM login_requests WHERE expires<=?').run(now);
@@ -132,7 +151,11 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     db.query('DELETE FROM login_limits WHERE expires<=?').run(now);
     if (!allowance('requests:'+clientIp,300,60_000)) return json(429,{error:'Please try again shortly'});
     try {
-      if(url.pathname==='/analytics/events'){
+      const installer=/^\/download\/([^/]+)$/.exec(url.pathname);
+      if(installer)return download(req,installer[1]!,clientIp);
+      // /e/v1: a neutral path that list-based blockers do not match (/analytics/event is an EasyPrivacy rule).
+      // /analytics/events stays for pages cached before 5.0.21; remove it in 5.0.22.
+      if(url.pathname==='/e/v1'||url.pathname==='/analytics/events'){
         if(!config.browserWrite)return new Response(null,{status:503});
         if(!allowance('analytics-global',100_000,86_400_000)||!allowance('analytics:'+clientIp,60,60_000))return new Response(null,{status:429});
         return browserEvent(req,config.browserWrite);
@@ -150,7 +173,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
       if (req.method === 'GET' && url.pathname === '/device') return new Response(null,{status:302,headers:{...headers,location:'/profile/device'+url.search}});
       if(url.pathname==='/news/unsubscribe')return unsubscribePage(req,news,page);
       if(url.pathname==='/owner'||url.pathname.startsWith('/owner/')||url.pathname==='/profile'||url.pathname.startsWith('/profile/'))return profile.handler(req,clientIp);
-      if (req.method === 'GET' && url.pathname === '/privacy') return page('Sign-in & bridge privacy','<p>Qoopia uses your email address and, when you choose Google, your Google account identifier to confirm sign-in. It does not request access to your inbox, files, contacts, or calendar.</p><p>Pending sign-in requests are removed after ten minutes. Temporary abuse-prevention counters expire within one day. Resend delivers confirmation emails; Google handles Google account selection. Those providers process information under their own policies.</p><p>Your notes, tasks, conversations, and model credentials remain in your Qoopia installation. Signing in does not upload or synchronise that workspace.</p><h2>Service statistics</h2><p>Qoopia keeps aggregate operational counts and timestamped sign-in events (step, language, success or error, and duration) in a separate analytics store. Analytics events do not include email addresses, passwords, tokens, confirmation links or memory content. On qoopia.ai, download button clicks are counted anonymously for everyone: platform, version, page and referral type only, with no cookies, stored identifier or IP. Other website analytics is optional, uses no persistent visitor identifier, and respects the choice in website privacy settings. Do Not Track and Global Privacy Control turn both off.</p><h2>Website profile</h2><p>After you sign in, your profile stores your account identity and an optional dashboard address you choose to save. Profile sessions last one year and renew when you visit; pending website sign-ins expire after ten minutes. You can remove the saved address or sign out in your profile. A saved address is a navigation shortcut, not permission to access a workspace. Your notes and model credentials remain in your installation.</p><h2>Optional Qoopia news</h2><p>News, release announcements and guides are sent only if you opt in. The checkbox is off by default. You can change your choice in your profile or unsubscribe using the link in any newsletter, without signing in. Sign-in messages are separate and continue when you unsubscribe from news.</p><p>The private account store records your subscription email, language, choice, time, source and consent-text version. It also records new account creation dates and successful sign-in times and counts. Historical registration dates are not reconstructed. Only the designated service owner can view account-level records. Consent history is kept while needed to honour your choice and demonstrate consent; deletion requests can be directed to the sender contact in our messages. News delivery records contain the campaign, outcome and provider message identifier; no email-open tracking is added.</p><h2>Optional external connections</h2><p>When you enable external access, this service links your confirmed account to independent installation identifiers, workspace identifiers, device public keys, labels and routing addresses. It stores provisioning and revocation state, and hashes of short-lived enrollment grants. Revoked device identifiers remain as tombstones so a revoked key cannot silently regain access. It does not receive your memory database or private device keys.</p><p>Cloudflare Tunnel carries authorized MCP requests and results. Cloudflare terminates HTTPS and can process transit content, IP addresses, timing and traffic volume. This path is not end-to-end encrypted. The local installation enforces each client permission; the account service does not execute memory tools. Disabling external access stops the connection without deleting local memory.</p><h2>Optional bridges</h2><p>When you create or join a bridge, the Qoopia pilot relay stores the group name, display names, installation public keys, membership decisions and invitation hashes. These are independent of your sign-in email. Membership records remain while the group exists and are removed within thirty days after its creator closes it. Expired invitation records are removed after one additional day.</p><p>Catalogues and selected files are signed by their sender and encrypted for their intended recipient. The relay has no private decryption keys. It temporarily buffers encrypted packets in memory for up to two minutes; the sender retains its own delivery queue. The relay observes network addresses, participant routing, timing and traffic volume. Membership freshness and delivery availability rely on the relay. Leaving or removal ends new access but cannot erase copies already received.</p><p>The pilot uses existing Qoopia hosting, with limits of 32 installations per bridge, 100 published entries per catalogue and 1 MiB per material. No payment is requested by this flow. Local memory remains available when the relay is offline.</p>');
+      if (req.method === 'GET' && url.pathname === '/privacy') return page('Sign-in & bridge privacy','<p>Qoopia uses your email address and, when you choose Google, your Google account identifier to confirm sign-in. It does not request access to your inbox, files, contacts, or calendar.</p><p>Pending sign-in requests are removed after ten minutes. Temporary abuse-prevention counters expire within one day. Resend delivers confirmation emails; Google handles Google account selection. Those providers process information under their own policies.</p><p>Your notes, tasks, conversations, and model credentials remain in your Qoopia installation. Signing in does not upload or synchronise that workspace.</p><h2>Service statistics</h2><p>Qoopia keeps aggregate operational counts and timestamped sign-in events (step, language, success or error, and duration) in a separate analytics store. Analytics events do not include email addresses, passwords, tokens, confirmation links or memory content. Installer downloads through qoopia.ai/download are counted by this service as they are redirected to GitHub: platform, version and referral type only (direct, qoopia.ai or other), with no cookies, stored identifier or IP; known crawlers are not counted. Other website analytics is optional, uses no persistent visitor identifier, and respects the choice in website privacy settings. Do Not Track and Global Privacy Control turn both off.</p><h2>Website profile</h2><p>After you sign in, your profile stores your account identity and an optional dashboard address you choose to save. Profile sessions last one year and renew when you visit; pending website sign-ins expire after ten minutes. You can remove the saved address or sign out in your profile. A saved address is a navigation shortcut, not permission to access a workspace. Your notes and model credentials remain in your installation.</p><h2>Optional Qoopia news</h2><p>News, release announcements and guides are sent only if you opt in. The checkbox is off by default. You can change your choice in your profile or unsubscribe using the link in any newsletter, without signing in. Sign-in messages are separate and continue when you unsubscribe from news.</p><p>The private account store records your subscription email, language, choice, time, source and consent-text version. It also records new account creation dates and successful sign-in times and counts. Historical registration dates are not reconstructed. Only the designated service owner can view account-level records. Consent history is kept while needed to honour your choice and demonstrate consent; deletion requests can be directed to the sender contact in our messages. News delivery records contain the campaign, outcome and provider message identifier; no email-open tracking is added.</p><h2>Optional external connections</h2><p>When you enable external access, this service links your confirmed account to independent installation identifiers, workspace identifiers, device public keys, labels and routing addresses. It stores provisioning and revocation state, and hashes of short-lived enrollment grants. Revoked device identifiers remain as tombstones so a revoked key cannot silently regain access. It does not receive your memory database or private device keys.</p><p>Cloudflare Tunnel carries authorized MCP requests and results. Cloudflare terminates HTTPS and can process transit content, IP addresses, timing and traffic volume. This path is not end-to-end encrypted. The local installation enforces each client permission; the account service does not execute memory tools. Disabling external access stops the connection without deleting local memory.</p><h2>Optional bridges</h2><p>When you create or join a bridge, the Qoopia pilot relay stores the group name, display names, installation public keys, membership decisions and invitation hashes. These are independent of your sign-in email. Membership records remain while the group exists and are removed within thirty days after its creator closes it. Expired invitation records are removed after one additional day.</p><p>Catalogues and selected files are signed by their sender and encrypted for their intended recipient. The relay has no private decryption keys. It temporarily buffers encrypted packets in memory for up to two minutes; the sender retains its own delivery queue. The relay observes network addresses, participant routing, timing and traffic volume. Membership freshness and delivery availability rely on the relay. Leaving or removal ends new access but cannot erase copies already received.</p><p>The pilot uses existing Qoopia hosting, with limits of 32 installations per bridge, 100 published entries per catalogue and 1 MiB per material. No payment is requested by this flow. Local memory remains available when the relay is offline.</p>');
       if (req.method === 'GET' && url.pathname === '/confirm') {
         const language=loginLanguage(url.searchParams.get('lang')),view=confirmationView(language,url.searchParams.get('code')==='1',url.searchParams.get('auto')==='1');
         return page(view.title,view.content,view.script,200,language);
@@ -269,11 +292,17 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   };
   const profile=profilePortal(db,origin,page,(route,body,ip)=>handler(new Request(origin+route,{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify(body)}),ip),record,config.owner);
   const observedHandler=async(req:Request,ip:string)=>{
-    const start=performance.now(),response=await handler(req,ip),path=new URL(req.url).pathname;
+    const start=performance.now(),path=new URL(req.url).pathname;
+    const response=await handler(req,ip).catch(error=>{
+      // Route class and error name only: request bodies, emails and tokens never reach the log.
+      console.error(JSON.stringify({at:new Date().toISOString(),event:'request_failed',route:routeClass(path),error:error instanceof Error?error.name:'unknown'}));
+      return json(500,{error:'The sign-in service hit an internal error. Try again.'});
+    });
     // The origin is HTTPS-only (checked above); every page, sign-in included, refuses a downgrade.
     response.headers.set('strict-transport-security',HSTS);
     const routes:Record<string,'profile'|'confirm'|'google'|'requests'|'redeem'|'devices'>={'/profile':'profile','/profile/start':'profile','/profile/logout':'profile','/profile/dashboard':'profile','/confirm':'confirm','/google':'google','/google/callback':'google','/requests':'requests','/redeem':'redeem','/devices':'devices'};
     if(routes[path])record({kind:'auth_http',page:routes[path],outcome:response.status>=500?'error':response.status>=400?'rejected':response.status===202?'pending':'ok',duration_ms:Math.min(300000,Math.round(performance.now()-start))});
+    if(response.status>=500)console.error(JSON.stringify({at:new Date().toISOString(),event:'server_error',route:routeClass(path),status:response.status,duration_ms:Math.round(performance.now()-start)}));
     return response;
   };
   return Object.assign(observedHandler,{maintenance:async()=>{profile.cleanup();devices?.cleanup();await devices?.reconcileRevocations();}});
@@ -305,7 +334,15 @@ if (import.meta.main) {
     relay.cleanup();
     void handler.maintenance();
   },30_000).unref();
-  Bun.serve({hostname:'127.0.0.1',port:Number(process.env.QOOPIA_LOGIN_PORT??3740),maxRequestBodySize:MAX_RPC,
+  const server=Bun.serve({hostname:'127.0.0.1',port:Number(process.env.QOOPIA_LOGIN_PORT??3740),maxRequestBodySize:MAX_RPC,
     fetch:req=>(new URL(req.url).pathname.startsWith('/bridge/')?relay:handler)(req,req.headers.get('cf-connecting-ip')??'local')});
   console.log('Qoopia sign-in service ready');
+  // docker stop sends SIGTERM: finish in-flight requests, checkpoint the WAL and leave before the 10 s SIGKILL.
+  let stopping=false;
+  for(const signal of ['SIGTERM','SIGINT'] as const)process.on(signal,()=>{
+    if(stopping)return;stopping=true;
+    console.log(`Qoopia sign-in service stopping (${signal})`);
+    setTimeout(()=>process.exit(0),8000).unref();
+    void server.stop().finally(()=>{try{db.close();}catch{/* exiting anyway */}process.exit(0);});
+  });
 }
