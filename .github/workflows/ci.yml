@@ -69,10 +69,13 @@ jobs:
           python3 scripts/check-release-metadata.py
           python3 tests/test_release_metadata.py
 
-      - name: Release health monitor tests
+      - name: Release health monitor and operations tests
         run: |
           python3 tests/test_release_health.py
           python3 tests/test_sync_source_mirror.py
+          python3 tests/test_ops_housekeeping.py
+          python3 tests/test_offsite_backup.py
+          python3 tests/test_release_source_check.py
 
       - name: Public explanation parity and discovery guardrails
         run: |
