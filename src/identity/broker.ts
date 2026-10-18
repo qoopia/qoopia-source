@@ -154,8 +154,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
       const installer=/^\/download\/([^/]+)$/.exec(url.pathname);
       if(installer)return download(req,installer[1]!,clientIp);
       // /e/v1: a neutral path that list-based blockers do not match (/analytics/event is an EasyPrivacy rule).
-      // /analytics/events stays for pages cached before 5.0.21; remove it in 5.0.22.
-      if(url.pathname==='/e/v1'||url.pathname==='/analytics/events'){
+      if(url.pathname==='/e/v1'){
         if(!config.browserWrite)return new Response(null,{status:503});
         if(!allowance('analytics-global',100_000,86_400_000)||!allowance('analytics:'+clientIp,60,60_000))return new Response(null,{status:429});
         return browserEvent(req,config.browserWrite);

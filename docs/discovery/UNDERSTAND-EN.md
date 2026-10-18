@@ -1,6 +1,6 @@
 # Is Qoopia right for you?
 
-Reviewed: 2026-10-14 for Qoopia 5.0.21.
+Reviewed: 2026-10-14 for Qoopia 5.0.22.
 
 
 ## When does Qoopia help?

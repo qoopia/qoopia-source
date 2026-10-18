@@ -91,6 +91,14 @@ export interface DashboardAuth {
 
 /** Cookie name for the dashboard session token. */
 export const DASHBOARD_COOKIE = "qoopia_dash";
+export const SECURE_DASHBOARD_COOKIE = "__Host-qoopia_dash";
+
+/** Prefer the host-only cookie even when malformed: a stale legacy cookie must not override it. */
+export function dashboardCookieValue(req: IncomingMessage): string | undefined {
+  const cookies = parseCookies(req.headers.cookie);
+  const hasSecure=(req.headers.cookie??'').split(';').some(part=>part.trim().startsWith(SECURE_DASHBOARD_COOKIE+'='));
+  return hasSecure ? cookies[SECURE_DASHBOARD_COOKIE] : cookies[DASHBOARD_COOKIE];
+}
 
 /** One-year (365-day) cookie lifetime, per owner decision 2026-07-16. */
 export const SESSION_TTL_SEC = 31_536_000;
@@ -229,7 +237,11 @@ export function verifySession(value: string): SessionPayload | null {
   const expectedTag = createHmac("sha256", sessionKey())
     .update(payloadB64)
     .digest();
-  if (!buffersEqualConstantTime(expectedTag, actualTag)) return null;
+  const previous = process.env.QOOPIA_SESSION_SECRET_PREVIOUS;
+  const previousTag = previous ? createHmac("sha256", previous).update(payloadB64).digest() : expectedTag;
+  const currentValid = buffersEqualConstantTime(expectedTag, actualTag);
+  const previousValid = buffersEqualConstantTime(previousTag, actualTag);
+  if (!currentValid && !(previous && previousValid)) return null;
 
   // Signature is valid — now decode and shape-check the payload.
   let payload: SessionPayload;
@@ -282,9 +294,10 @@ function fromTrustedProxy(req: IncomingMessage): boolean {
 
 /** Build the Set-Cookie value for a freshly-signed dashboard session. */
 export function buildSessionCookie(req: IncomingMessage, signedValue: string): string {
+  const secure = isHttps(req);
   const parts = [
-    `${DASHBOARD_COOKIE}=${signedValue}`,
-    "Path=/api/dashboard",
+    `${secure ? SECURE_DASHBOARD_COOKIE : DASHBOARD_COOKIE}=${signedValue}`,
+    secure ? "Path=/" : "Path=/api/dashboard",
     "HttpOnly",
     "SameSite=Strict",
     `Max-Age=${SESSION_TTL_SEC}`,
@@ -294,16 +307,11 @@ export function buildSessionCookie(req: IncomingMessage, signedValue: string): s
 }
 
 /** Build the Set-Cookie value to clear the dashboard session. */
-export function buildClearCookie(req: IncomingMessage): string {
-  const parts = [
-    `${DASHBOARD_COOKIE}=`,
-    "Path=/api/dashboard",
-    "HttpOnly",
-    "SameSite=Strict",
-    "Max-Age=0",
-  ];
-  if (isHttps(req)) parts.push("Secure");
-  return parts.join("; ");
+export function buildClearCookie(req: IncomingMessage): string[] {
+  const legacy = `${DASHBOARD_COOKIE}=; Path=/api/dashboard; HttpOnly; SameSite=Strict; Max-Age=0`;
+  return isHttps(req)
+    ? [`${SECURE_DASHBOARD_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`, legacy + "; Secure"]
+    : [legacy];
 }
 
 /**
@@ -312,8 +320,7 @@ export function buildClearCookie(req: IncomingMessage): string {
  * deactivated, or the agent's type is not dashboard-eligible.
  */
 export function authFromSessionCookie(req: IncomingMessage): DashboardAuth | null {
-  const cookies = parseCookies(req.headers["cookie"] as string | undefined);
-  const value = cookies[DASHBOARD_COOKIE];
+  const value = dashboardCookieValue(req);
   if (!value) return null;
   const verified = verifySession(value);
   if (!verified) return null;
@@ -551,9 +558,11 @@ export function localOwnerLoginHandler(req: IncomingMessage, res: ServerResponse
 
 /** Browser storage has its own lifetime; renew it during use without extending revoked sessions. */
 export function renewLocalOwnerSession(req: IncomingMessage, res: ServerResponse) {
-  if (!ownerIdentityRequestAllowed(req, false)) return;
-  const value = parseCookies(req.headers.cookie)[DASHBOARD_COOKIE];
+  const value = dashboardCookieValue(req);
   const session = value ? verifySession(value) : null;
-  if (session?.exp !== null || !session.issued || session.issued > Math.floor(Date.now()/1000)-86400 || !authFromSessionCookie(req)) return;
-  res.setHeader('set-cookie',buildSessionCookie(req,signSession(session.agent_id,session.sv,null)));
+  if (!session || !authFromSessionCookie(req)) return;
+  // Owners have no absolute deadline. Other dashboard principals keep their original expiry.
+  const boundOwner=!!db.query(`SELECT 1 FROM ${HUMAN_OWNERS} WHERE a.id=?`).get(session.agent_id);
+  const ttl = session.exp === null || boundOwner ? null : session.exp - Math.floor(Date.now()/1000);
+  res.setHeader('set-cookie',buildSessionCookie(req,signSession(session.agent_id,session.sv,ttl)));
 }

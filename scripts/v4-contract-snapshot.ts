@@ -307,7 +307,7 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   if (projected.canonical_tools.find((t) => t.name === "file_put")?.risk !== "write-low") throw new Error("file_put missing or wrong risk");
   memoryPolicyTools.push("file_put");
   // 5.0.21 Canon: three write-low tools that write rules, three reads; none changes a frozen tool.
-  for (const [name, risk] of [["canon_create", "write-low"], ["canon_update", "write-low"], ["canon_retire", "write-low"], ["canon_list", "read"], ["canon_get", "read"], ["canon_match", "read"]] as const) {
+  for (const [name, risk] of [["canon_create", "write-low"], ["canon_propose", "write-low"], ["canon_update", "write-low"], ["canon_retire", "write-low"], ["canon_list", "read"], ["canon_get", "read"], ["canon_match", "read"]] as const) {
     if (projected.canonical_tools.find((t) => t.name === name)?.risk !== risk) throw new Error(`Canon tool missing or wrong risk: ${name}`);
     memoryPolicyTools.push(name);
   }

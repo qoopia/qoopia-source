@@ -61,6 +61,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         #endif
         if !connecting { openWorkspace() }
         if runsFromTemporaryLocation { warnTemporaryLocation() }
+        else { offerOpenAtLogin() }
     }
     // A read-only disk image or a Gatekeeper-translocated copy (opened straight from Downloads)
     // works, but Sparkle cannot replace it and a login item would point at a vanishing path.
@@ -71,6 +72,20 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavig
         let alert = NSAlert(); alert.messageText = text("Move Qoopia to Applications", "Перенесите Qoopia в «Программы»")
         alert.informativeText = text("Qoopia is running from the disk image or the Downloads folder. Quit it, drag Qoopia to Applications and open it from there: updates and Open at Login only work from there. Your data is kept.", "Qoopia запущена с образа диска или из «Загрузок». Выйдите, перетащите Qoopia в «Программы» и откройте оттуда: обновления и автозапуск работают только так. Ваши данные сохранятся.")
         alert.addButton(withTitle: "OK"); alert.beginSheetModal(for: window) { _ in }
+    }
+    func offerOpenAtLogin() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "offeredOpenAtLogin") else { return }
+        defaults.set(true, forKey: "offeredOpenAtLogin")
+        guard SMAppService.mainApp.status != .enabled else { return }
+        let alert = NSAlert()
+        alert.messageText = text("Open Qoopia when you log in?", "Запускать Qoopia при входе?")
+        alert.informativeText = text("Your local memory is available while Qoopia is running. You can change this later in the menu bar under Open at Login.", "Локальная память доступна, пока Qoopia запущена. Позже это можно изменить в меню Qoopia: «Запускать при входе».")
+        alert.addButton(withTitle: text("Open at Login", "Запускать при входе"))
+        alert.addButton(withTitle: text("Not Now", "Не сейчас"))
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { self.toggleLogin() }
+        }
     }
     func createWindow() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)

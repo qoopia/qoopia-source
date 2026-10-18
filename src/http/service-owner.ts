@@ -1,6 +1,6 @@
 import type {IncomingMessage,ServerResponse} from 'node:http';
 import {db} from '../db/connection.ts';
-import {authFromSessionCookie,DASHBOARD_COOKIE,parseCookies,verifySession} from '../dashboard-session.ts';
+import {authFromSessionCookie,dashboardCookieValue,verifySession} from '../dashboard-session.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {ownerIdentity} from '../identity/local.ts';
 import {isReadOnlyInstance} from '../utils/instance-role.ts';
@@ -12,7 +12,7 @@ export function serviceOwnerEmail(req:IncomingMessage):string|null{
   const expected=process.env.QOOPIA_SERVICE_OWNER_AGENT_ID;
   const secret=process.env.QOOPIA_OWNER_BRIDGE_SECRET;
   if(!expected||!secret||Buffer.byteLength(secret)<32||isReadOnlyInstance()||req.headers.authorization)return null;
-  const session=verifySession(parseCookies(req.headers.cookie)[DASHBOARD_COOKIE]??'');
+  const session=verifySession(dashboardCookieValue(req)??'');
   if(session?.exp!==null||!session.owner)return null;
   const auth=authFromSessionCookie(req);
   if(!auth||auth.type!=='owner'||auth.agent_id!==expected)return null;

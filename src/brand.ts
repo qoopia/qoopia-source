@@ -7,7 +7,7 @@ const files:Record<string,string>={
   'agent-chat.js':'text/javascript; charset=utf-8','agent-chat.css':'text/css; charset=utf-8',
   'consent-session.js':'text/javascript; charset=utf-8',
   'graphite/favicon.svg':'image/svg+xml',
-  'Manrope.ttf':'font/ttf','graphite/qoopia-mark-ivory.svg':'image/svg+xml','graphite/qoopia-wordmark-ivory.svg':'image/svg+xml',
+  'Manrope.ttf':'font/ttf','Manrope.woff2':'font/woff2','graphite/qoopia-mark-ivory.svg':'image/svg+xml','graphite/qoopia-wordmark-ivory.svg':'image/svg+xml',
   'dashboard.js':'text/javascript; charset=utf-8','dashboard.css':'text/css; charset=utf-8',
   'logo/qoopia-mark.svg':'image/svg+xml','logo/qoopia-mark-small.svg':'image/svg+xml',
   'logo/qoopia-favicon.svg':'image/svg+xml',

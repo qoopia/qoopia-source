@@ -106,7 +106,7 @@ export function render(){
  for(const file of [...routes.map(([file])=>file),'404']){
   const en=softwareData(iosInstall(refreshHashes(source(file))));
   out.set(file+'.html',releaseBlocks(ownLanguage(en,'en'),'en'));
-  if(file!=='404')out.set('ru/'+file+'.html',releaseBlocks(ownLanguage(russian(en,file+'.html'),'ru'),'ru'));
+  if(file!=='404')out.set('ru/'+file+'.html',releaseBlocks(ownLanguage(russian(en,file+'.html').replaceAll('/assets/graphite-overview-en.png','/assets/graphite-overview-ru.png').replaceAll('/assets/graphite-mobile-en.png','/assets/graphite-mobile-ru.png'),'ru'),'ru'));
  }
  out.set('sitemap.xml','<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'+pairs.flatMap(([en,r])=>{
   const alternates=([['en',en],['ru',r],['x-default',en]] as const).map(([lang,href])=>`<xhtml:link rel="alternate" hreflang="${lang}" href="${origin}${href}"/>`).join('');

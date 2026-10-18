@@ -106,6 +106,7 @@ test('completed writes with pending receipt finalize; reconnect preserves the st
 // digest recorded, which is also the moment a reader decides the change is worth
 // re-publishing to every profile.
 const PUBLISHED_REVISIONS: Record<number, string> = {
+  15: "877fb08c9b01b56b38acddc18886c3aad2063b8695c91822ab72c5b5b1510404",
   14: '535220e878306c4a049e0961f8303f853d905407641f15784235d5710206a32e',
   13: 'e34f15f352ef42ea7f73923831728bf744b77efdef6f65dadb4c6a08d435047c',
   12: '9536e8b7e48f1e644349dfc5a462a0abea4114e54a1cb8ebac0fd995d49b82b7',

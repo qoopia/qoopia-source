@@ -520,8 +520,9 @@ describe("QDASHCOOKIE-004: Secure flag respects TRUST_PROXY/TRUSTED_PROXIES", ()
         },
       });
       expect(r.status).toBe(200);
-      const sc = getSetCookie(r, "qoopia_dash")!;
+      const sc = getSetCookie(r, "__Host-qoopia_dash")!;
       expect(sc).toContain("Secure");
+      expect(sc).toContain("Path=/;");
     } finally {
       env.TRUST_PROXY = prevTrust;
       env.TRUSTED_PROXIES = prevList;

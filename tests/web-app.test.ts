@@ -77,7 +77,7 @@ test('every declared app icon is served at its declared type and size, with a ma
 test('a dashboard change does not install a new worker or show a second update prompt',()=>{
  // The revision covers only the worker and what it caches; the page announces a new interface itself (#uiUpdate).
  const source=readFileSync(new URL('../src/http/web-app.ts',import.meta.url),'utf8');
- expect(source.match(/for\(const name of (\[[^\]]*\])/)?.[1]).toBe("['app-sw.js','offline.html','brand/Manrope.ttf']");
+ expect(source.match(/for\(const name of (\[[^\]]*\])/)?.[1]).toBe("['app-sw.js','offline.html','brand/Manrope.woff2']");
  const page=readFileSync(new URL('../src/public/dashboard.html',import.meta.url),'utf8'),app=readFileSync(new URL('../src/public/brand/app.js',import.meta.url),'utf8');
  expect(page).not.toContain('appUpdate');expect(app).not.toMatch(/waiting|ACTIVATE_UPDATE|controllerchange/);expect(page).toContain('id="uiUpdate"');
 });
@@ -86,11 +86,11 @@ test('worker caches only public recovery assets and never handles private APIs o
  const handlers:Record<string,Function>={},cached:string[]=[],removed:string[]=[];let response:Promise<Response>|undefined,skipped=0;
  const context={URL,Response,fetch:async()=>{throw Error('offline');},caches:{open:async()=>({addAll:async(paths:string[])=>cached.push(...paths)}),keys:async()=>['qoopia-offline-old','unrelated-app-cache'],delete:async(key:string)=>removed.push(key),match:async()=>new Response('offline')},self:{location:{origin:'https://workspace.example'},skipWaiting:async()=>{skipped++;},clients:{claim:async()=>{}},addEventListener:(name:string,fn:Function)=>{handlers[name]=fn;}}};
  vm.runInNewContext(webAppAsset('/sw.js')!.body,context);
- let task:Promise<unknown>;handlers.install({waitUntil:(p:Promise<unknown>)=>task=p});await task!;expect(cached).toEqual(['/offline','/brand/Manrope.ttf']);
+ let task:Promise<unknown>;handlers.install({waitUntil:(p:Promise<unknown>)=>task=p});await task!;expect(cached).toEqual(['/offline','/brand/Manrope.woff2']);
  // F-520-sw-update: the worker serves no dashboard file, so it takes over at once instead of a second "Update ready" prompt.
  expect(skipped).toBe(1);expect(handlers.message).toBeUndefined();
  handlers.activate({waitUntil:(p:Promise<unknown>)=>task=p});await task!;expect(removed).toEqual(['qoopia-offline-old']);
  const event=(path:string,mode='navigate',method='GET')=>({request:{url:'https://workspace.example'+path,mode,method},respondWith:(r:Promise<Response>)=>{response=r;}});
  for(const [path,mode,method] of [['/api/dashboard','cors','GET'],['/dashboard','navigate','POST'],['/oauth/authorize','navigate','GET'],['/api/dashboard/files/a','navigate','GET']]){response=undefined;handlers.fetch(event(path,mode,method));expect(response).toBeUndefined();}
- handlers.fetch(event('/dashboard'));expect(await(await response!).text()).toBe('offline');expect(cached).toEqual(['/offline','/brand/Manrope.ttf']);
+ handlers.fetch(event('/dashboard'));expect(await(await response!).text()).toBe('offline');expect(cached).toEqual(['/offline','/brand/Manrope.woff2']);
 });

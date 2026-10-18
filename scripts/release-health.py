@@ -301,13 +301,25 @@ def offsite_issues(path, now, max_age_hours=26):
     try:
         records = [parsed(line) for line in Path(path).read_text().splitlines() if line.strip()]
         ok = [r for r in records if isinstance(r, dict) and r.get('status') == 'ok']
-        last = max(ok, key=lambda r: datetime.datetime.fromisoformat(r['at'].replace('Z', '+00:00')), default=None)
+        last = max(reversed(ok), key=lambda r: datetime.datetime.fromisoformat(r['at'].replace('Z', '+00:00')), default=None)
         age = (now - datetime.datetime.fromisoformat(last['at'].replace('Z', '+00:00'))).total_seconds() if last else None
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return ['backup:offsite_unreadable']
     if age is None or not 0 <= age <= max_age_hours * 3600:
         return ['backup:offsite_stale']
-    return [] if last.get('auth') == 'ok' else ['backup:auth_offsite_missing']
+    issues = [] if last.get('auth') == 'ok' else ['backup:auth_offsite_missing']
+    for host in last.get('optional_hosts', []):
+        attempts = [r for r in records if isinstance(r, dict) and r.get('host') == host and r.get('optional') is True]
+        successes = [r for r in attempts if r.get('status') == 'target_ok']
+        # Give a newly configured laptop seven days to receive its first copy.
+        baseline = max(successes, key=lambda r: r['at']) if successes else min(attempts, key=lambda r: r['at'], default=None)
+        try:
+            optional_age = (now - datetime.datetime.fromisoformat(baseline['at'].replace('Z', '+00:00'))).total_seconds()
+        except (TypeError, KeyError, ValueError):
+            optional_age = float('inf')
+        if not 0 <= optional_age <= 7 * 86400:
+            issues.append('backup:optional_offsite_stale:' + host)
+    return issues
 
 
 MAINTENANCE_CAP = datetime.timedelta(hours=2)

@@ -204,3 +204,18 @@ test('a purged predecessor does not stop capture or summaries of its successor (
   expect(ev('claude_code:purged-b','progress',[{id:'pb-2',role:'user',content:'После очистки.'}]).tail.map(m=>m.content)).toEqual(['Преемник.','После очистки.']);
   expect((await checkpointSession(workspace,agent,'claude_code:purged-b',summarize)).state).toBe('saved');
 });
+
+test('issue #36: nested escaped Codex tool JSON cannot reject a whole checkpoint',async()=>{
+  const session='codex:nested-json-regression';
+  const inner=JSON.stringify({saved:true,session_id:'autosave-synthetic'});
+  const nested=JSON.stringify({content:[{type:'text',text:JSON.stringify({content:[{type:'text',text:inner}]})}]});
+  continuityEvent(workspace,agent,{session_id:session,project:'/synthetic',runtime:'codex',event:'end',messages:[
+    {id:'nested-user',role:'user',content:'Сохрани разговор.'},{id:'nested-tool',role:'tool',content:nested}]});
+  const result=await checkpointSession(workspace,agent,session,async(_w,_instruction,input)=>{
+    expect((input as any).new_events[1].content).toBe(nested);
+    return {text:'Разговор сохранён: '+inner,model:'test-fixture',observed_models:[]};
+  });
+  expect(result.state).toBe('saved');
+  expect(restoreContext(workspace,agent,session).context).toContain(inner);
+  expect(restoreContext(workspace,agent,session).tail).toHaveLength(0);
+});

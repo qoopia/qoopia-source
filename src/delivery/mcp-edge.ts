@@ -20,6 +20,7 @@ const routes: Record<string, readonly string[]> = {
   '/brand/base.css':['GET','HEAD'],
   '/brand/tokens.css':['GET','HEAD'],
   '/brand/Manrope.ttf':['GET','HEAD'],
+  '/brand/Manrope.woff2':['GET','HEAD'],
   '/brand/graphite/qoopia-mark-ivory.svg':['GET','HEAD'],
   '/brand/graphite/qoopia-wordmark-ivory.svg':['GET','HEAD'],
   '/brand/graphite/favicon.svg':['GET','HEAD'],

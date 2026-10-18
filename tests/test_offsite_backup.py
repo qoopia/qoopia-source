@@ -30,7 +30,7 @@ esac
 # ssh/scp against a local directory per host; the remote command runs in that "home".
 SSH = r'''#!/bin/bash
 while [[ "$1" == -* ]]; do [[ "$1" == -i || "$1" == -o ]] && shift; shift; done
-host=$1; shift; mkdir -p "$FAKE_HOMES/$host"; cd "$FAKE_HOMES/$host" && bash -c "$*"
+host=$1; shift; [ "$host" = "${OFFLINE_HOST:-}" ] && exit 255; mkdir -p "$FAKE_HOMES/$host"; cd "$FAKE_HOMES/$host" && bash -c "$*"
 '''
 SCP = r'''#!/bin/bash
 while [[ "$1" == -* ]]; do [[ "$1" == -i || "$1" == -o ]] && shift; shift; done
@@ -70,6 +70,27 @@ class OffsiteBackupTests(unittest.TestCase):
                 login = sqlite3.connect(next(remote.glob('auth-login-*.sqlite')))
                 self.assertEqual(login.execute('SELECT count(*) FROM t').fetchone()[0], 100)
                 login.close()
+            self.assertEqual(health.offsite_issues(str(log), datetime.datetime.now(datetime.timezone.utc)), [])
+
+            # Sleeping optional laptop cannot fail the mandatory daily copy.
+            optional_env = {**env, 'OFFSITE_HOSTS': 'owner@mini', 'OFFSITE_OPTIONAL_HOSTS': 'owner@book', 'OFFLINE_HOST': 'owner@book'}
+            run = subprocess.run(['bash', str(SCRIPT)], env=optional_env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            record = json.loads(log.read_text().splitlines()[-1])
+            self.assertEqual(record['failed_optional_hosts'], ['owner@book'])
+            self.assertEqual(record['successful_hosts'], ['owner@mini'])
+            now = datetime.datetime.now(datetime.timezone.utc)
+            self.assertEqual(health.offsite_issues(str(log), now), [])
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            for r in records:
+                if r.get('host') == 'owner@book' and r.get('optional'):
+                    r['at'] = (now - datetime.timedelta(days=8)).isoformat()
+            log.write_text(''.join(json.dumps(r) + '\n' for r in records))
+            self.assertEqual(health.offsite_issues(str(log), now), ['backup:optional_offsite_stale:owner@book'])
+            # A verified copy clears the overdue optional-target warning.
+            optional_env.pop('OFFLINE_HOST')
+            run = subprocess.run(['bash', str(SCRIPT)], env=optional_env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(health.offsite_issues(str(log), datetime.datetime.now(datetime.timezone.utc)), [])
 
             # A target that silently loses the bytes fails the run, and the failure is recorded. The copies

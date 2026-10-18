@@ -1,10 +1,10 @@
 # Qoopia — full text
 
-Generated from https://qoopia.ai/understand and https://qoopia.ai/docs for Qoopia 5.0.21. The short index is https://qoopia.ai/llms.txt.
+Generated from https://qoopia.ai/understand and https://qoopia.ai/docs for Qoopia 5.0.22. The short index is https://qoopia.ai/llms.txt.
 
 ## Is Qoopia right for you?
 
-Reviewed: 2026-10-14 for Qoopia 5.0.21.
+Reviewed: 2026-10-14 for Qoopia 5.0.22.
 
 
 ### When does Qoopia help?
