@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.0.22 — owner preview
+
+- Canon is view-and-retire only in the dashboard; agents retain the canon tools.
+- Dashboard sessions move to host-only HTTPS cookies and accept a previous signing key during rotation.
+- API key issue dates, memory access expiry warnings and clear sign-in recovery alerts.
+- Optional laptop backups, consistent SQLite snapshots and seven-day optional-target monitoring.
+- Shared EN/RU catalog, stable transcript scrolling, smaller WOFF2 fonts and correct not-found status.
+- Open at Login prompt and updated client/Hermes instructions.
+- Nested escaped Codex tool outputs are covered by a continuity regression (community issue #36).
+
+
 ## 5.0.21 — 2026-10-15
 
 - Canon: short rules Qoopia loads into context by itself (migration 050). A canon belongs to the whole workspace, one agent or one project and is loaded always or on the turns its trigger words, files, tools, project and meaning point at. The memory hook puts the always canons ahead of the saved context at session start and gives a user prompt the canons that apply to it (fetched beside capture, so the hook waits no longer); `brief` and AgentComm wakes carry them too, and clients without hooks call `canon_match`. Agents write their own canons (`canon_create`, `canon_update`, `canon_retire`, `canon_list`, `canon_get`); a reworded rule replaces the old one with its history kept, a related one answers CONFLICT with the candidates instead of a guess. `qoopia canon import-rules` turns current rule notes into canons by a fixed plan: a dry run by default, `--commit` in one transaction, never twice. The dashboard has a Canon page and a Canon tab on every agent; the owner writes there.
