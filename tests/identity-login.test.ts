@@ -37,7 +37,7 @@ test('email needs a one-use link, Google needs nothing more; logout, restart and
  const response=()=>{
   let status=0,body='';const out:Record<string,string>={};
   const res={setHeader:(k:string,v:string)=>{out[k]=v;},writeHead:(s:number,h:Record<string,string>)=>{status=s;Object.assign(out,h);},end:(v:string)=>{body=v;}} as unknown as ServerResponse;
-  return {res,result:()=>{if(out['set-cookie']){const value=out['set-cookie'].split(';')[0]!,i=value.indexOf('=');jar.set(value.slice(0,i),value.slice(i+1));}return {status,data:JSON.parse(body),headers:out};}};
+  return {res,result:()=>{if(out['set-cookie']){const value=(Array.isArray(out['set-cookie'])?out['set-cookie'].at(-1):out['set-cookie'])!.split(';')[0]!,i=value.indexOf('=');jar.set(value.slice(0,i),value.slice(i+1));}return {status,data:JSON.parse(body),headers:out};}};
  };
  const call=async(route:string,body:Record<string,unknown>={})=>{const r=response();await local({method:route?'POST':'GET',headers:headers(),socket:{remoteAddress:'127.0.0.1'}} as IncomingMessage,r.res,route,body);
   return r.result();};

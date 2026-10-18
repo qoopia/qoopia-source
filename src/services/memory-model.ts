@@ -11,6 +11,7 @@ import {nativeLaunch,prepareNativeSession,preflightNativeSubscription,nativeMode
 import type {NativeOptions} from '../skills/runtime.ts';
 import {assetPath} from '../utils/assets.ts';
 import {logger} from '../utils/logger.ts';
+import {memorySignInExpiry} from './memory-sign-in.ts';
 import {redactSensitive} from '../utils/secret-guard.ts';
 
 const MEMORY_MODELS={claude_code:'claude-haiku-4-5',codex:'gpt-5.6-luna'} as const;
@@ -74,7 +75,7 @@ export function memoryModelLabel(model:string|null){
 }
 export function memoryModelStatus(workspace:string) {
   const profile=memoryProfile(workspace);
-  return {runtime:profile?.runtime??null,model:profile?.model??null,model_label:memoryModelLabel(profile?.model??null),...(states.get(workspace)??(profile&&lastSummary(workspace))??{state:profile?'selected':'not_connected'})};
+  return {runtime:profile?.runtime??null,model:profile?.model??null,model_label:memoryModelLabel(profile?.model??null),sign_in:profile?memorySignInExpiry(profile):null,...(states.get(workspace)??(profile&&lastSummary(workspace))??{state:profile?'selected':'not_connected'})};
 }
 /** Nothing is checked yet after a restart: a session summary written since this subscription was
  * chosen is the model's last answer, so the status does not ask for a sign-in that is not needed. */

@@ -42,7 +42,12 @@ def render(payload):
     fields = {k: str(payload.get(k) or '')[:1500] for k in ('subject', 'component', 'cause', 'installation', 'at')}
     lines = ['Qoopia ' + fields['subject'] + ': ' + fields['component']]
     if fields['cause']:
-        lines.append(fields['cause'].replace(',', ', '))
+        messages = {
+            'MEMORY_SIGN_IN_REQUIRED': 'Модель памяти вышла из аккаунта. Откройте Qoopia → Память и войдите в подписку снова. Разговоры сохраняются; сводки продолжатся после входа.',
+            'MEMORY_QUOTA': 'Достигнут лимит подписки модели памяти. События сохранены и ждут обработки.',
+            'MEMORY_MODEL_UNAVAILABLE': 'Модель памяти недоступна. Проверьте подключение подписки в Qoopia → Память.',
+        }
+        lines.append(messages.get(fields['cause'], fields['cause'].replace(',', ', ')))
     lines.append(' · '.join(v for v in (fields['installation'], fields['at']) if v))
     return '\n'.join(lines)[:3500]
 

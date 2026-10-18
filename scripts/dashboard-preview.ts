@@ -18,16 +18,23 @@ Object.assign(process.env,{QOOPIA_ADMIN_SECRET:randomBytes(32).toString('hex'),N
   QOOPIA_STANDALONE:'true',QOOPIA_STANDALONE_LAYOUT:JSON.stringify({root,logs:path.join(root,'logs')})});
 const {runMigrations}=await import('../src/db/migrate.ts');runMigrations();
 const {db}=await import('../src/db/connection.ts'),{createWorkspace}=await import('../src/admin/workspaces.ts');
-const {createAgent}=await import('../src/admin/agents.ts'),{bootstrapOwner}=await import('../src/auth/pairings.ts');
+const {createAgent,setDreamer}=await import('../src/admin/agents.ts'),{bootstrapOwner}=await import('../src/auth/pairings.ts');
 const {continuityEvent}=await import('../src/services/continuity.ts'),{createNote}=await import('../src/services/notes.ts');
 const {setMemoryPolicy}=await import('../src/services/memory-policy.ts');
+const {createCanon}=await import('../src/services/canon.ts');
+const {proposeCanon}=await import('../src/services/canon-proposals.ts');
 const ws=createWorkspace({name:'Dashboard preview — synthetic only',slug:'preview-'+randomUUID().slice(0,8)});
 const owner=bootstrapOwner(db,'Synthetic preview owner',undefined,ws.id);
 const working=createAgent({name:'preview-working',workspaceSlug:ws.slug}).id;
 const asking=createAgent({name:'preview-only-on-request',workspaceSlug:ws.slug}).id;
 continuityEvent(ws.id,working,{session_id:'claude_code:preview',project:'/preview',runtime:'claude_code',event:'start',
   messages:[{id:'p1',role:'user',content:'Синтетическое сообщение для предпросмотра.'},{id:'p2',role:'assistant',content:'Синтетический ответ.'}]});
+createCanon({workspace_id:ws.id,actor:{agent_id:owner.agent_id,type:'owner'},text:'Синтетика: объясняй результаты проверки простыми словами.',mode:'always'});
 createNote({workspace_id:ws.id,agent_id:working,text:'Синтетическая нота для предпросмотра дашборда.',type:'note'});
+setDreamer({workspace_id:ws.id,agent_id:working,enabled:true,actor_id:owner.agent_id});
+proposeCanon(ws.id,{agent_id:working,type:'standard'},{text:'Синтетика: проверяй резервную копию перед обновлением.',reason:'Предложение для проверки интерфейса, данные вымышлены.',source_refs:['session:synthetic-preview'],idempotency_key:'preview-draft'});
+for(let offset=0;offset<1100;offset+=100)continuityEvent(ws.id,working,{session_id:'codex:scroll-preview',project:'/synthetic',runtime:'codex',event:'progress',
+  messages:Array.from({length:100},(_,i)=>({id:'scroll-'+(offset+i),role:(offset+i)%2?'assistant':'user',content:'Synthetic event '+(offset+i)+'. '+('Fixture text. '.repeat(12))}))});
 setMemoryPolicy({workspace_id:ws.id,agent_id:asking,mode:'manual',actor_id:owner.agent_id});
 // One prepared save waiting for the owner, so the confirmation UI has something to show.
 try{createNote({workspace_id:ws.id,agent_id:asking,text:'Синтетика: пользователь попросил запомнить адрес склада.',type:'note'});}catch(error){/* Manual mode: createNote prepares the save request and throws APPROVAL_REQUIRED by design. */if((error as {code?:string}).code!=='APPROVAL_REQUIRED')throw error;}

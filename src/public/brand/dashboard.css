@@ -1,5 +1,5 @@
 /* Qoopia Graphite Focus 2.0.1 — compact workspace. Desktop density is intentional. */
-@font-face { font-family:Manrope; src:url('/brand/Manrope.ttf') format('truetype'); font-weight:200 800; font-style:normal; font-display:swap; }
+@font-face { font-family:Manrope; src:url('/brand/Manrope.woff2') format('woff2'); font-weight:200 800; font-style:normal; font-display:swap; }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 /* Neutral dashboard aliases of the tokens.css palette (loaded through base.css). */
@@ -791,3 +791,26 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
 }
 /* Room below the last control for the floating to-top (bottom 80px, 46px) and Chat buttons. */
 .content { padding-bottom:calc(136px + env(safe-area-inset-bottom)); }
+
+/* Shared layout details, kept out of generated markup. */
+.layout-full-row{grid-column:1/-1}
+.text-primary{color:var(--text)}
+.text-muted-normal{color:var(--text3);font-weight:400}
+.session-sort-controls{display:flex; justify-content:flex-end; gap:6px; margin-bottom:12px;}
+.flex-spacer{flex:1}
+.space-after-panel{margin-bottom:16px}
+.space-after-summary{margin-bottom:18px}
+.align-end{margin-left:auto}
+.space-before-section{margin-top:24px}
+.space-before-note{margin-top:28px}
+.space-before-grid{margin-top:36px}
+.older-messages-button{margin:10px auto 0}
+.chip-reset{border:0;font-family:inherit}
+.file-picker-hidden{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+
+.canon-list{list-style:none;padding:0;margin:16px 0;max-width:72ch}
+.canon-item{padding:12px 0;border-bottom:1px solid var(--border)}
+.canon-text{margin:0 0 6px;overflow-wrap:anywhere}
+.canon-item .meta{margin:4px 0}
+.canon-item [data-retire]{margin-top:6px}
+#canonProposals{margin:24px 0;max-width:72ch}

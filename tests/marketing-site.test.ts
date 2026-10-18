@@ -210,7 +210,7 @@ test('internal links use the canonical extensionless URLs, not .html redirects',
 test('every published site file is referenced by the site or is an intentional public file',()=>{
  const files=(readdirSync(site,{recursive:true}) as string[]).filter(f=>!f.split('/').some(part=>part.startsWith('.'))&&statSync(new URL(f,site)).isFile());
  const texts=files.filter(f=>/\.(html|js|css|json|xml)$/.test(f)).map(f=>[f,read(f)]);
- const intentional=['_headers','_redirects','robots.txt','sitemap.xml','release.json','ios-release.json','updates/macos/appcast.xml','brand/Manrope-OFL.txt','llms.txt','llms-full.txt'];
+ const intentional=['_worker.js','_routes.json','brand/Manrope.ttf','_headers','_redirects','robots.txt','sitemap.xml','release.json','ios-release.json','updates/macos/appcast.xml','brand/Manrope-OFL.txt','llms.txt','llms-full.txt'];
  const orphans=files.filter(f=>!f.endsWith('.html')&&!intentional.includes(f)&&!texts.some(([other,text])=>other!==f&&text.includes(f.split('/').pop()!)));
  expect(orphans).toEqual([]);
 });

@@ -43,4 +43,4 @@ test('the Mac app shows the runtime refusal reason and warns when run from the d
   if(process.platform!=='darwin'||spawnSync('xcrun',['--find','swiftc']).status!==0)return;
   const check=spawnSync('xcrun',['swiftc','-typecheck','-target','arm64-apple-macos15.0','scripts/darwin-launcher.swift'],{encoding:'utf8',timeout:120_000});
   expect(check.stderr).toBe('');expect(check.status).toBe(0);
-});
+},120_000);

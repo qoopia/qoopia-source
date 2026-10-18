@@ -15,7 +15,7 @@ export function webAppAsset(path:string):{body:string;type:string}|undefined {
  if(path==='/sw.js'){
   const revision=createHash('sha256');
   // Only what the worker itself is and caches: a dashboard change is announced by the page, not by a new worker.
-  for(const name of ['app-sw.js','offline.html','brand/Manrope.ttf'])revision.update(readFileSync(assetPath('src/public/'+name)));
+  for(const name of ['app-sw.js','offline.html','brand/Manrope.woff2'])revision.update(readFileSync(assetPath('src/public/'+name)));
   body=body.replaceAll('__QOOPIA_APP_REVISION__',revision.digest('hex').slice(0,16));
  }
  return {body,type};

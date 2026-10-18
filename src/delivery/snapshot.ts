@@ -10,7 +10,7 @@ import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJs
 import { tableExists } from '../db/introspect.ts';
 
 /** Schemas a unified snapshot can carry. One list: backup, retention and restore read it from here. */
-const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48,49,50,51] as const;
+const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53] as const;
 export const unifiedSnapshotSchema=(schema:number)=>(UNIFIED_SNAPSHOT_SCHEMAS as readonly number[]).includes(schema);
 
 export function inspectSnapshot(database: Database, format: LogicalHashFormat = 1) {
@@ -184,7 +184,7 @@ export function invalidateRestoredAccess(file: string) {
 }
 
 type AccessAgent = { id: string; name: string; api_key_hash: string; active: number; session_version: number; policy_epoch: number; tool_profile: string; principal_kind: string; authority_profile: string | null;
-  type: string; legacy_skill_access: number; shared: number | null; dreamer: number | null; memory_mode?: string; memory_mode_revision?: number; memory_mode_updated_at_ms?: number | null; memory_mode_actor_id?: string | null };
+  type: string; legacy_skill_access: number; shared: number | null; dreamer: number | null; memory_mode?: string; memory_mode_revision?: number; memory_mode_updated_at_ms?: number | null; memory_mode_actor_id?: string | null; api_key_issued_at?: string | null };
 export type Reconnect = { agent_id: string; name: string; surface?: string; reason: string };
 const TOOL_RANK: Record<string, number> = { 'read-only': 0, 'no-destructive': 1, full: 2 };
 /** Same installation, same machine. The restored copy keeps its keys, grants and pairings, and every
@@ -202,8 +202,9 @@ export function carryAccessForward(file: string, liveFile: string): Reconnect[] 
       d.query(`INSERT OR IGNORE INTO "${table}"(${names.map(n => `"${n}"`).join(',')}) VALUES (${names.map(() => '?').join(',')})`).run(...names.map(n => row[n] as never)); };
     // Memory policy (schema 45+) is the owner's privacy decision: manual set after the backup stays manual.
     const memory = columns('agents').includes('memory_mode') ? ',memory_mode,memory_mode_revision,memory_mode_updated_at_ms,memory_mode_actor_id' : '';
+    const keyAge=columns('agents').includes('api_key_issued_at')?',api_key_issued_at':'';
     const agentSql = `SELECT id,name,api_key_hash,active,session_version,policy_epoch,tool_profile,principal_kind,authority_profile,type,legacy_skill_access,
-      json_extract(metadata,'$.shared_context') shared,json_extract(metadata,'$.dreamer') dreamer${memory} FROM agents`;
+      json_extract(metadata,'$.shared_context') shared,json_extract(metadata,'$.dreamer') dreamer${memory}${keyAge} FROM agents`;
     const current = new Map(all<AccessAgent>(live, agentSql).map(a => [a.id, a])), restored = new Map(all<AccessAgent>(d, agentSql).map(a => [a.id, a]));
     const surfaces = new Map(has('client_connections') ? all<{agent_id:string;surface:string}>(live, "SELECT agent_id,surface FROM client_connections WHERE state<>'revoked'").map(c => [c.agent_id, c.surface]) : []);
     const ask = (a: AccessAgent, reason: string) => { if (a.principal_kind !== 'human') reconnect.push({ agent_id: a.id, name: a.name, ...(surfaces.has(a.id) ? { surface: surfaces.get(a.id) } : {}), reason }); };
@@ -223,6 +224,7 @@ export function carryAccessForward(file: string, liveFile: string): Reconnect[] 
             c.type, Math.min(a.legacy_skill_access, c.legacy_skill_access), c.shared === 0 ? 0 : null, a.id);
         d.query(`UPDATE agents SET metadata=CASE WHEN ? THEN json_set(metadata,'$.dreamer',json('true')) ELSE json_remove(metadata,'$.dreamer') END WHERE id=?`)
           .run(c.dreamer === 1 ? 1 : 0, a.id);
+        if(keyAge)d.query('UPDATE agents SET api_key_issued_at=? WHERE id=?').run(c.api_key_issued_at??null,a.id);
         if (memory) d.query('UPDATE agents SET memory_mode=?,memory_mode_revision=?,memory_mode_updated_at_ms=?,memory_mode_actor_id=? WHERE id=?')
           .run(c.memory_mode!, Math.max(a.memory_mode_revision ?? 0, c.memory_mode_revision ?? 0), c.memory_mode_updated_at_ms ?? null, c.memory_mode_actor_id ?? null, a.id);
         if (c.active && !a.active) ask(c, 'disabled in the backup: enable it again in Qoopia');

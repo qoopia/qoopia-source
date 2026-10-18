@@ -55,7 +55,7 @@ import { apiError, handleAuthorityRequest } from "./api/authority.ts";
 import { attachmentDisposition, CANON_MAX_BODY_BYTES, CONTINUITY_MAX_BODY_BYTES, parseJsonObject, REQUEST_TIMEOUTS, RequestBodyError, repeatsSingletonHeader, unreadBody } from "./utils/http-json.ts";
 import { MAX_UPLOAD_BYTES, applyTransportSecurity, publicHealth, dropHeadBody, encodeAsset, getAllowedOrigin, getClientIp, json, methodNotAllowed, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
 import { dashboardVersion, serveDashboard } from "./http/dashboard-static.ts";
-import { DASHBOARD_COOKIE, parseCookies } from "./dashboard-session.ts";
+import { dashboardCookieValue } from "./dashboard-session.ts";
 import { handleServiceOwner, serviceOwnerEmail } from './http/service-owner.ts';
 import { handleMcp } from "./http/mcp-route.ts";
 import {
@@ -241,7 +241,7 @@ function requestPath(req: IncomingMessage): string {
  */
 function auditRejectedCredential(req: IncomingMessage, res: ServerResponse): void {
   if (res.statusCode !== 401) return;
-  if (!req.headers.authorization && !parseCookies(req.headers.cookie)[DASHBOARD_COOKIE]) return;
+  if (!req.headers.authorization && !dashboardCookieValue(req)) return;
   const pathname = requestPath(req);
   if (pathname.startsWith("/oauth/")) return;
   audit({ event: "auth_failure", result: "deny", ip: getClientIp(req), scope: pathname.slice(0, 256) });

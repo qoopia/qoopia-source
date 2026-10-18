@@ -59,7 +59,7 @@ for (const view of Object.keys(views) as Array<keyof typeof views>) {
       [new TypeError("Failed to fetch"), "Could not reach the server. Check your connection.", true],
     ] as const) {
       const { html, retry, conn } = await fail(view, error);
-      expect(html).toContain('class="err"');
+      expect(html).toMatch(/class="[^"]*\berr\b/);
       expect(html).toContain(words);
       expect(html).toContain(">Retry</button>");
       expect(html).not.toMatch(/HTTP_|too_many|Failed to fetch/);

@@ -42,7 +42,7 @@ test('a revoked external device is named for any platform and points at every en
   // and it must not list only email and Google while the device-code button is offered beside them.
   expect(dashboardScript).toContain("data-network=\"network-start-device\"");
   expect(dashboardScript).not.toContain('This Mac was revoked');expect(dashboardScript).not.toContain('Этот Mac отозван');
-  expect(dashboardScript).toContain("DEVICE_REVOKED:t('This installation was revoked as an external device. Choose one of the enable buttons below");
+  expect(dashboardScript).toContain("DEVICE_REVOKED:QI.msg(\"This installation was revoked as an external device. Choose one of the enable buttons below");
 });
 
 test('a finished external access action does not keep saying "Reconnecting" once the tunnel is online',()=>{
@@ -201,5 +201,5 @@ test('a touch tablet keeps 44px targets: the compact desktop density applies onl
 test('on a phone no tab hides off screen, the chat title draws no ring and the floating buttons leave room',()=>{
   expect(dashboardStyles).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.tabs \{ flex-wrap: wrap; \}/);
   expect(dashboardStyles).toContain('#main:focus,#chatTitle:focus { outline:none; }');
-  expect(dashboardStyles.trimEnd().endsWith('.content { padding-bottom:calc(136px + env(safe-area-inset-bottom)); }')).toBe(true);
+  expect(dashboardStyles).toContain('.content { padding-bottom:calc(136px + env(safe-area-inset-bottom)); }');
 });

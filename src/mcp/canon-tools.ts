@@ -7,6 +7,8 @@ import { z } from "zod";
 import type { ToolDef } from "./tools.ts";
 import { CANON_MAX_CHARS, CANON_MODES, CANON_SCOPES, createCanon, getCanon, listCanons, matchCanons, renderCanon, retireCanon, updateCanon } from "../services/canon.ts";
 
+import {proposeCanon,canonProposalSchema} from '../services/canon-proposals.ts';
+
 const triggers = z.object({
   words: z.array(z.string().min(1).max(120)).max(20).optional(),
   projects: z.array(z.string().min(1).max(120)).max(10).optional(),
@@ -17,6 +19,13 @@ const triggers = z.object({
 const actor = (auth: { agent_id: string; type: string }) => ({ agent_id: auth.agent_id, type: auth.type });
 
 export const canonTools: ToolDef[] = [
+  {
+    name: "canon_propose",
+    risk: "write-low",
+    description: "The appointed dreamer submits a draft rule or a revision with source references. It is not loaded into context until the owner accepts it in Overview. Repeat the same idempotency_key only for the same draft.",
+    rawSchema: canonProposalSchema.shape,
+    handler: (args, auth) => proposeCanon(auth.workspace_id, actor(auth), args),
+  },
   {
     name: "canon_create",
     risk: "write-low",

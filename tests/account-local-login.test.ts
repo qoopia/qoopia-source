@@ -45,12 +45,12 @@ test('account continuation uses the existing workspace owner and browser, reject
     const code=await begin();expect((await call('/poll')).body).toEqual({pending:true});
     expect((await call('/poll',{accountCode:code},new Map())).status).toBe(400);
     expect((await call('/poll',{accountCode:code})).status).toBe(200);
-    expect(checkDashboardAuth({headers:{cookie:'qoopia_dash='+jar.get('qoopia_dash')}} as IncomingMessage)?.agent_id).toBe(owner.agent_id);
+    expect(checkDashboardAuth({headers:{cookie:'__Host-qoopia_dash='+jar.get('__Host-qoopia_dash')}} as IncomingMessage)?.agent_id).toBe(owner.agent_id);
     expect((await call('/poll',{accountCode:code})).status).toBe(400);
-    jar.clear();expect((await call('/poll',{accountCode:await begin('stranger@example.test')})).status).toBe(400);expect(jar.has('qoopia_dash')).toBe(false);
+    jar.clear();expect((await call('/poll',{accountCode:await begin('stranger@example.test')})).status).toBe(400);expect(jar.has('__Host-qoopia_dash')).toBe(false);
     expect(ownerIdentity(root)).toEqual({ownerId:owner.agent_id,email:'owner@example.test'});
     const rotated=await begin();db.query('UPDATE agents SET session_version=session_version+1 WHERE id=?').run(owner.agent_id);
-    expect((await call('/poll',{accountCode:rotated})).status).toBe(400);expect(jar.has('qoopia_dash')).toBe(false);
+    expect((await call('/poll',{accountCode:rotated})).status).toBe(400);expect(jar.has('__Host-qoopia_dash')).toBe(false);
     expect((db.query("SELECT COUNT(*) n FROM workspace_owners WHERE workspace_id='account-login'").get() as {n:number}).n).toBe(1);
   }finally{env.PUBLIC_URL=previous.url;env.TRUST_PROXY=previous.proxy;if(previous.enabled===undefined)delete process.env.QOOPIA_OWNER_LOGIN;else process.env.QOOPIA_OWNER_LOGIN=previous.enabled;remote.close();fs.rmSync(root,{recursive:true,force:true});}
 });

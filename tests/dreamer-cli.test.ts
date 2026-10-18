@@ -10,7 +10,7 @@ import { bootstrapOwner } from '../src/auth/pairings.ts';
 test('the operator grants and withdraws the dreamer role for the owner from the admin CLI', () => {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dreamer-cli-'))), data = path.join(directory, 'data');
   fs.mkdirSync(data, { mode: 0o700 });
-  const fixture = p1Database(51), owner = bootstrapOwner(fixture, 'Dream owner', 'Dream workspace');
+  const fixture = p1Database(53), owner = bootstrapOwner(fixture, 'Dream owner', 'Dream workspace');
   const slug = (fixture.query('SELECT slug FROM workspaces WHERE id=?').get(owner.workspace_id) as { slug: string }).slug;
   fixture.query("INSERT INTO agents (id, workspace_id, name, type, api_key_hash, active, created_at) VALUES ('kiri-test', ?, 'Kiri', 'standard', 'x', 1, '2026-10-14T00:00:00Z')").run(owner.workspace_id);
   fs.writeFileSync(path.join(data, 'qoopia.db'), fixture.serialize());

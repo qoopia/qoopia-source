@@ -38,7 +38,8 @@ import { agentContractFor } from "./api/agent-contract.ts";
 import { wakeDelivery } from "./services/agent-wake.ts";
 import { authorityOperations } from "./api/authority.ts";
 import { QoopiaError, safeJsonParse } from "./utils/errors.ts";
-import { createCanon, getCanon, listCanons, retireCanon, updateCanon } from "./services/canon.ts";
+import {listCanonProposals,decideCanonProposal} from './services/canon-proposals.ts';
+import { getCanon, listCanons, retireCanon } from "./services/canon.ts";
 import {
   dashboardPrincipal,
   DashboardAuth,
@@ -281,11 +282,11 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
   // ADR-020: without shared context an agent sees only itself.
   const all = levelOf(auth) > 0;
   const sql = all
-    ? `SELECT id, workspace_id, name, type, active, last_seen, created_at, metadata
+    ? `SELECT id, workspace_id, name, type, active, last_seen, created_at, api_key_issued_at, metadata
        FROM agents
        WHERE active = 1 AND workspace_id = ?
        ORDER BY name ASC`
-    : `SELECT id, workspace_id, name, type, active, last_seen, created_at, metadata
+    : `SELECT id, workspace_id, name, type, active, last_seen, created_at, api_key_issued_at, metadata
        FROM agents
        WHERE active = 1 AND workspace_id = ? AND id = ?
        ORDER BY name ASC`;
@@ -300,6 +301,7 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
     active: number;
     last_seen: string | null;
     created_at: string;
+    api_key_issued_at: string | null;
     metadata: string | null;
   }>;
 
@@ -341,6 +343,7 @@ function listAgents(res: ServerResponse, auth: DashboardAuth) {
       type: a.type,
       workspace_id: a.workspace_id,
       created_at: a.created_at,
+      api_key_issued_at: a.api_key_issued_at,
       last_seen: a.last_seen,
       sessions_count: s.c,
       notes_count: n.c,
@@ -1482,17 +1485,15 @@ const memorySavePost = (req: IncomingMessage, res: ServerResponse, auth: Dashboa
     return decideSaveRequest({ workspace_id: auth.workspace_id, actor_id: auth.agent_id, id: requestId, accept: body.accept });
   });
 
-/** Canon from the dashboard: the owner writes, retires and rewords; the same rules as canon_* tools. */
+/** The dashboard only retires canons. Creation and revision belong to agents and dreaming. */
 const canonPost = (req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, id: string | undefined, action: string | undefined) =>
   memoryOwnerPost(req, res, auth, (body) => {
     // Agents write their own canons over MCP; the dashboard is the owner's.
     if (!canManagePolicy(auth.workspace_id, auth.agent_id))
       throw new QoopiaError("FORBIDDEN", "Only the workspace owner changes canons in the dashboard");
     const actor = { agent_id: auth.agent_id, type: auth.type }, str = (v: unknown) => (typeof v === "string" ? v : undefined);
-    if (!id) return createCanon({ workspace_id: auth.workspace_id, actor, source: "dashboard", text: String(body.text ?? ""), scope: str(body.scope) as never,
-      agent: str(body.agent), project: str(body.project), mode: str(body.mode) as never, triggers: body.triggers, supersedes_id: str(body.supersedes_id), on_conflict: str(body.on_conflict) as never });
-    if (action === "retire") return retireCanon({ workspace_id: auth.workspace_id, actor, id, reason: str(body.reason) });
-    return updateCanon({ workspace_id: auth.workspace_id, actor, id, text: str(body.text), mode: str(body.mode) as never, triggers: body.triggers });
+    if (!id || action !== "retire") throw new QoopiaError("FORBIDDEN", "Ask your agent to create or revise a canon");
+    return retireCanon({ workspace_id: auth.workspace_id, actor, id, reason: str(body.reason) });
   });
 
 async function dashboardV4Post(req: IncomingMessage, res: ServerResponse, auth: DashboardAuth, path: string) {
@@ -1684,6 +1685,18 @@ export function handleDashboardApi(
     return true;
   }
 
+  const proposalRoute = path.match(/^\/api\/dashboard\/canon-proposals(?:\/([^/]+)\/decision)?$/);
+  if (proposalRoute && (method === "GET" && !proposalRoute[1] || method === "POST" && proposalRoute[1])) {
+    const auth = checkDashboardAuth(req);
+    if (!auth) { json(res, 401, {error:"unauthorized"}); return true; }
+    if (method === "POST") void memoryOwnerPost(req,res,auth,body=>decideCanonProposal(auth.workspace_id,{agent_id:auth.agent_id,type:auth.type},decodeURIComponent(proposalRoute[1]!),body.accept as boolean));
+    else {
+      try { json(res,200,listCanonProposals(auth.workspace_id,auth.agent_id)); }
+      catch { json(res,403,{error:"forbidden"}); }
+    }
+    return true;
+  }
+
   const canonRoute = path.match(/^\/api\/dashboard\/canons(?:\/([^/]+)(?:\/(retire))?)?$/);
   if (canonRoute && method === "POST") {
     const auth = checkDashboardAuth(req);
@@ -1691,7 +1704,12 @@ export function handleDashboardApi(
       json(res, 401, { error: "unauthorized" });
       return true;
     }
-    void canonPost(req, res, auth, canonRoute[1] ? decodeURIComponent(canonRoute[1]) : undefined, canonRoute[2]);
+    if (!canonRoute[1] || canonRoute[2] !== "retire") {
+      res.setHeader("allow", "GET");
+      json(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    void canonPost(req, res, auth, decodeURIComponent(canonRoute[1]), canonRoute[2]);
     return true;
   }
 
@@ -1871,4 +1889,3 @@ export function handleDashboardApi(
   json(res, 404, { error: "not_found", path });
   return true;
 }
-

@@ -107,7 +107,7 @@ export function bootstrapToolAllowed(name: string, profile?: string): boolean {
   if (profile === "memory-worker" && ["note_create", "note_update", "session_save"].includes(name)) return true;
   // A client without hooks asks for its canon itself (kit revision 14); a dreamer client (Kiri) reads the
   // workspace's sessions. session_review still needs the dreamer, steward or owner role (dreamerAllowed).
-  if (profile === "memory-worker" && ["canon_match", "session_review"].includes(name)) return true;
+  if (profile === "memory-worker" && ["canon_match", "canon_propose", "session_review"].includes(name)) return true;
   // A client connection or paired memory worker is a working agent of the workspace: it talks to
   // the other agents. A memory reader stays without an inbox, so nobody can address it.
   if (profile === "memory-worker" && AGENTCOMM_TOOLS.includes(name)) return true;

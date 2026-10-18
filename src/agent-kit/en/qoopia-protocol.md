@@ -39,3 +39,9 @@ Before a change: identify the installation, choose the client and read/read_writ
 - Before an update, verify the signed package and compatibility, and create a verified backup. Roll back a schema with the standard restore, not by editing SQL and not by running an old binary over the new database.
 - If an instruction cannot be loaded, say so. A written file means installed, not proven loaded; check loading in a real new client session.
 - Work in the user's language, explain technical actions in plain words, and do not declare overall success from a partial check.
+
+## Hermes autosave
+
+When the official `qoopia hermes-sync` collector is installed and running for this Hermes home, it delivers active and compacted user/assistant turns; rewound turns are excluded. Do not duplicate that delivery with `session_save`. MCP access alone does not prove the collector is installed: check its status/doctor. Without the collector, follow the memory policy and the normal save flow for a client without lifecycle hooks.
+
+The appointed dreamer uses `canon_propose` with a reason and source references (`source: dreaming`). These are drafts: only the owner accepts or rejects them in Overview. Drafts never reach agent context. The Canon tab is for viewing and retiring rules; ask an agent to revise a rule.

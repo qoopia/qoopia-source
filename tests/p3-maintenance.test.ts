@@ -28,9 +28,9 @@ test('P3 maintenance really expires traces, keeps durable feedback and reports v
  const result=runMaintenance();expect(result.ok).toBe(true);expect((result.report.recall_trace_expiry as {deleted_traces:number}).deleted_traces).toBeGreaterThanOrEqual(1501);
  expect(db.query("SELECT COUNT(*) AS n FROM recall_traces WHERE expires_at<'2001'").get()).toEqual({n:0});
  expect(db.query("SELECT trace_id FROM recall_feedback WHERE id='p3-feedback'").get()).toEqual({trace_id:null});
- expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:51});
+ expect(db.query("SELECT 1 FROM recall_traces WHERE id='p3-trace'").get()).toBeNull();expect(result.report.backup).toMatchObject({verified:true,schema:53});
  const backups=fs.readdirSync(env.BACKUP_DIR).filter(n=>n.startsWith('qoopia-'));expect(backups.length).toBeGreaterThan(0);
- for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(51);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
+ for(const name of backups){const folder=path.join(env.BACKUP_DIR,name);expect(fs.statSync(folder).mode&0o777).toBe(0o700);expect(verifyBackup(folder).schema).toBe(53);expect(fs.statSync(path.join(folder,'snapshot.db')).mode&0o777).toBe(0o600);}
 });
 
 test('P3 task purge keeps only observable tombstones for immutable skill sources',()=>{

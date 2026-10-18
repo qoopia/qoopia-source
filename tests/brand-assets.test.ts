@@ -10,6 +10,7 @@ test('brand assets are public but the allowlist never exposes other source or op
  expect(brandAsset('/brand/agent-chat.js')?.type).toContain('javascript');
  expect(brandAsset('/brand/agent-chat.css')?.type).toContain('text/css');
  expect(brandAsset('/brand/Manrope.ttf')?.type).toBe('font/ttf');
+ expect(brandAsset('/brand/Manrope.woff2')?.type).toBe('font/woff2');
  expect(brandAsset('/brand/IBMPlexSans.ttf')).toBeUndefined();
  const db=new Database(':memory:');
  const broker=loginBroker(db,{origin:'https://auth.example.test',resendKey:'fixture',from:'fixture',googleClientId:'fixture',googleClientSecret:'fixture'},fakeFetch(async()=>{throw Error('Network forbidden');}));
