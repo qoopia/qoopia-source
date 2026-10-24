@@ -67,7 +67,7 @@ describe("sanitizeFtsQuery — shape of the FTS5 expression", () => {
       '"decide"* OR "deploy"* OR "server"*',
     );
     // Russian words also carry their stem, so «деплоя» or «решила» match too.
-    expect(sanitizeFtsQuery("что мы решили про деплой")).toBe('("решили"* OR "решил"*) OR ("деплой"* OR "депл"*)');
+    expect(sanitizeFtsQuery("что мы решили про деплой")).toBe('("решили"* OR "решил"* OR "рёшили"* OR "рёшил"*) OR ("деплой"* OR "депл"* OR "дёплой"* OR "дёпл"*)');
     // Nothing but stop words: keep them rather than search for nothing.
     expect(sanitizeFtsQuery("what is it")).toBe('"what"* OR "is"* OR "it"*');
   });

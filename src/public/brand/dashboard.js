@@ -1712,6 +1712,105 @@
     if(host.isConnected)pollFn=()=>refresh().catch(e=>{if(host.isConnected)feedback.textContent=e.message;});
   }
 
+  // Separate read-only service enrollment; no client OAuth or credential redemption.
+  function renderHeadlessServicePairing(host,workspaceId) {
+    const messages={
+      'Connect a headless service':'Подключить отдельный сервис',
+      'Creates a separate read-only service identity. It does not connect a ChatGPT or Claude application.':'Создаёт отдельное подключение сервиса с правом чтения. Это не подключение приложения ChatGPT или Claude.',
+      'Agent name':'Имя агента','Runtime':'Идентификатор рантайма','Access':'Доступ','Read only':'Только чтение',
+      'Review connection':'Проверить подключение','Choose a different service':'Другое подключение','Create one-time enrollment code':'Создать одноразовый код подключения',
+      'Read saved operation':'Прочитать сохранённую операцию','Show one-time code':'Показать одноразовый код','Hide code':'Скрыть код',
+      'Private enrollment code':'Секретный код подключения','Pairing':'Подключение','Expires':'Действует до','Operation':'Операция',
+      'Owner policy revision':'Ревизия политики владельца','Request key':'Ключ запроса',
+      'Enter a name and runtime, then review the exact read-only connection before creating its code.':'Введите имя и рантайм, затем проверьте точное подключение только для чтения перед созданием кода.',
+      'Enter a name of up to 120 characters and a runtime of up to 200 characters, without control characters.':'Укажите имя до 120 символов и рантайм до 200 символов без управляющих символов.',
+      'The target, policy revision and request key are saved. Review them before creating the code; they will not be changed automatically.':'Цель, ревизия политики и ключ запроса сохранены. Проверьте их перед созданием кода: автоматически они не изменятся.',
+      'An enrollment request was already recorded. Do not create another request; inspect the saved operation. The one-time code is not restored after reload.':'Запрос подключения уже записан. Не создавайте новый запрос: проверьте сохранённую операцию. После перезагрузки одноразовый код не восстанавливается.',
+      'Private request tracking is unavailable in this tab. No enrollment request will be sent.':'Учёт запроса в этом браузере недоступен. Запрос подключения отправлен не будет.',
+      'A prior enrollment request remains fenced. No new request will be sent.':'Предыдущий запрос подключения сохранён. Новый запрос отправлен не будет.',
+      'Current human-owner permission could not be confirmed. No enrollment request was sent.':'Не удалось подтвердить актуальные права владельца. Запрос подключения не отправлен.',
+      'An enrollment request is already in progress in another tab. No request was sent.':'Запрос подключения уже выполняется в другой вкладке. Новый запрос не отправлен.',
+      'Owner policy changed. This saved request will not be rebased or sent.':'Ревизия политики владельца изменилась. Сохранённый запрос не будет изменён или отправлен.',
+      'Pairing created. The service is not connected yet. Save the one-time code privately before it expires.':'Код подключения создан. Сервис ещё не подключён. Сохраните код в закрытом файле до истечения срока.',
+      'The saved pairing was returned without a usable one-time code. No replacement or retry was created.':'Сохранённая операция получена без действующего одноразового кода. Новый код и повторный запрос не создавались.',
+      'The enrollment outcome is unknown. Do not create another request. Preserve this request reference for owner reconciliation.':'Результат подключения неизвестен. Не создавайте новый запрос. Сохраните ссылку на этот запрос для сверки владельцем.',
+      'No enrollment request was sent; private request tracking or owner verification failed.':'Запрос подключения не отправлен: учёт запроса или проверка владельца не завершились.',
+      'Saved pairing metadata confirmed. This does not confirm redemption or a service connection.':'Метаданные операции подтверждены. Это не подтверждает погашение кода или подключение сервиса.',
+      'Saved operation could not be confirmed. No create or redemption request was sent.':'Не удалось подтвердить сохранённую операцию. Запрос создания или погашения кода не отправлен.',
+      'The current workspace could not be confirmed. No operation is available here.':'Не удалось подтвердить текущую рабочую область. Операции здесь недоступны.',
+      'Expires in ten minutes. Keep it in the service’s private enrollment file. Never paste it into chat. This page never redeems it or displays an API key.':'Код действует десять минут. Сохраните его только в закрытом файле подключения сервиса. Не отправляйте код в чат. Эта страница не погашает код и не показывает ключ API.'
+    };
+    const tr=source=>QI.pair(source,messages[source]||source);
+    const hasControl=text=>text.split('').some(char=>char.charCodeAt(0)<32||char.charCodeAt(0)===127);
+    if(typeof workspaceId!=='string'||!workspaceId||workspaceId.length>200||hasControl(workspaceId)){host.innerHTML='<p class="meta">'+tr('The current workspace could not be confirmed. No operation is available here.')+'</p>';return;}
+    const prefix='qoopia-headless-service:'+encodeURIComponent(workspaceId)+':',selectionKey=prefix+'selected';
+    const uuid=x=>typeof x==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(x);
+    function target(name,runtime){
+      if(typeof name!=='string'||typeof runtime!=='string')throw Error('target');
+      const value={name:name.trim().normalize('NFC'),runtime_id:runtime.trim().normalize('NFC'),profile:'memory-reader'};
+      if(!value.name||value.name.length>120||!value.runtime_id||value.runtime_id.length>200||hasControl(value.name+value.runtime_id))throw Error('target');
+      return value;
+    }
+    const sameTarget=(a,b)=>a?.name===b?.name&&a?.runtime_id===b?.runtime_id&&a?.profile==='memory-reader'&&b?.profile==='memory-reader';
+    const recordKey=t=>prefix+'target:'+encodeURIComponent(JSON.stringify([t.name,t.runtime_id,t.profile]));
+    function checked(value,t){
+      if(!value||value.schema!=='qoopia.headless-service-request/2'||value.workspace_id!==workspaceId||!sameTarget(value.target,t)||Object.keys(value.target).length!==3||!sameTarget(target(value.target.name,value.target.runtime_id),t)||!Number.isSafeInteger(value.epoch)||value.epoch<=0||typeof value.key!=='string'||!/^headless:[a-f0-9-]{36}$/.test(value.key)||!uuid(value.key.slice(9))||!['reviewed','attempted','received'].includes(value.state))throw Error('record');
+      let metadata=null;if(value.state==='received'){const m=value.metadata;if(!uuid(m?.pairing_id)||!uuid(m?.request_id)||!uuid(m?.operation_id)||m.profile!=='memory-reader'||m.revision!==1||!Number.isSafeInteger(m.expires_at_ms)||m.expires_at_ms<=0)throw Error('record');metadata={pairing_id:m.pairing_id,expires_at_ms:m.expires_at_ms,profile:m.profile,request_id:m.request_id,operation_id:m.operation_id,revision:1};}else if(value.metadata!==null)throw Error('record');
+      return{schema:value.schema,workspace_id:workspaceId,target:t,key:value.key,epoch:value.epoch,state:value.state,metadata};
+    }
+    let busy=false,record=null,secret=null,storageReady=true,policyChanged=false;
+    try{const selected=JSON.parse(localStorage.getItem(selectionKey)||'null');if(selected!==null){const t=target(selected.name,selected.runtime_id);if(!sameTarget(selected,t))throw Error('target');record=checked(JSON.parse(localStorage.getItem(recordKey(t))||'null'),t);}}catch{storageReady=false;}
+    if(typeof navigator.locks?.request!=='function'||typeof globalThis.crypto?.randomUUID!=='function')storageReady=false;
+    host.innerHTML='<details class="connection-add"><summary>'+tr('Connect a headless service')+'</summary><p>'+tr('Creates a separate read-only service identity. It does not connect a ChatGPT or Claude application.')+'</p><div class="work-controls">'+
+      '<div><label for="headlessName">'+tr('Agent name')+'</label><input id="headlessName" maxlength="120" autocomplete="off"></div><div><label for="headlessRuntime">'+tr('Runtime')+'</label><input id="headlessRuntime" maxlength="200" autocomplete="off" spellcheck="false"></div><div><label for="headlessProfile">'+tr('Access')+'</label><input id="headlessProfile" readonly value="memory-reader"></div></div><p class="meta">'+tr('Read only')+'</p><p id="headlessPolicy" class="meta"></p><div class="work-actions"><button id="headlessReview">'+tr('Review connection')+'</button><button id="headlessCreate" class="primary" disabled>'+tr('Create one-time enrollment code')+'</button><button id="headlessRead" disabled>'+tr('Read saved operation')+'</button><button id="headlessOther" disabled>'+tr('Choose a different service')+'</button></div><p id="headlessStatus" role="status" aria-live="polite"></p><p id="headlessMetadata" class="meta"></p><div class="work-actions"><button id="headlessReveal" disabled>'+tr('Show one-time code')+'</button><button id="headlessHide" disabled>'+tr('Hide code')+'</button></div><label for="headlessCode">'+tr('Private enrollment code')+'</label><input id="headlessCode" type="password" readonly autocomplete="off" spellcheck="false"><p class="meta">'+tr('Expires in ten minutes. Keep it in the service’s private enrollment file. Never paste it into chat. This page never redeems it or displays an API key.')+'</p></details>';
+    const q=id=>host.querySelector('#'+id),status=text=>{q('headlessStatus').textContent=tr(text);};
+    function controls(){q('headlessName').readOnly=busy||record!==null;q('headlessRuntime').readOnly=busy||record!==null;q('headlessReview').disabled=busy||record!==null||!storageReady;q('headlessCreate').disabled=busy||record?.state!=='reviewed'||policyChanged||!storageReady;q('headlessRead').disabled=busy||!uuid(record?.metadata?.operation_id);q('headlessOther').disabled=busy||record===null;}
+    function persist(value){try{const key=recordKey(value.target),text=JSON.stringify(value);localStorage.setItem(key,text);if(localStorage.getItem(key)!==text)throw Error('storage');localStorage.setItem(selectionKey,JSON.stringify(value.target));if(localStorage.getItem(selectionKey)!==JSON.stringify(value.target))throw Error('storage');record=value;}catch{storageReady=false;throw Error('storage');}}
+    function summary(){if(!record)return;q('headlessName').value=record.target.name;q('headlessRuntime').value=record.target.runtime_id;q('headlessPolicy').textContent=QI.resolve(tr('Owner policy revision'))+': '+record.epoch+' · '+QI.resolve(tr('Request key'))+': '+record.key;}
+    function metadata(value){q('headlessMetadata').textContent=QI.resolve(tr('Pairing'))+': '+value.pairing_id+' · '+QI.resolve(tr('Expires'))+': '+QI.date(value.expires_at_ms,{dateStyle:'short',timeStyle:'short'})+' · '+QI.resolve(tr('Operation'))+': '+value.operation_id;}
+    async function permission(){const caps=await api('/api/dashboard/authority/capabilities');if(caps.profile!=='owner'||!Number.isSafeInteger(caps.policy_epoch)||caps.policy_epoch<=0||!caps.operations?.some(op=>op.name==='agent_pairing_create'&&op.method==='POST'&&op.path==='/api/v1/agent-pairings'))throw Error('owner');return caps.policy_epoch;}
+    function safeResult(r){const d=r?.data;if(r?.revision!==1||!uuid(r.request_id)||!uuid(r.operation_id)||!uuid(d?.pairing_id)||d.profile!=='memory-reader'||!Number.isSafeInteger(d.expires_at_ms)||d.expires_at_ms<=0||Object.hasOwn(r,'api_key'))throw Error('response');return{pairing_id:d.pairing_id,expires_at_ms:d.expires_at_ms,profile:d.profile,request_id:r.request_id,operation_id:r.operation_id,revision:1};}
+    if(record){summary();if(uuid(record.metadata?.operation_id)&&uuid(record.metadata?.pairing_id)&&Number.isSafeInteger(record.metadata?.expires_at_ms))metadata(record.metadata);status(record.state==='reviewed'?'The target, policy revision and request key are saved. Review them before creating the code; they will not be changed automatically.':'An enrollment request was already recorded. Do not create another request; inspect the saved operation. The one-time code is not restored after reload.');}
+    else status('Enter a name and runtime, then review the exact read-only connection before creating its code.');
+    if(!storageReady)status('Private request tracking is unavailable in this tab. No enrollment request will be sent.');
+    q('headlessReview').onclick=async()=>{
+      if(busy||record||!storageReady)return;let t;try{t=target(q('headlessName').value,q('headlessRuntime').value);}catch{status('Enter a name of up to 120 characters and a runtime of up to 200 characters, without control characters.');return;}
+      busy=true;controls();try{const epoch=await permission();await navigator.locks.request(recordKey(t),{ifAvailable:true},async lock=>{
+        if(!lock){status('An enrollment request is already in progress in another tab. No request was sent.');return;}
+        const existing=localStorage.getItem(recordKey(t));
+        if(existing!==null)persist(checked(JSON.parse(existing),t));
+        else{const key='headless:'+crypto.randomUUID();if(!uuid(key.slice(9)))throw Error('key');persist({schema:'qoopia.headless-service-request/2',workspace_id:workspaceId,target:t,key,epoch,state:'reviewed',metadata:null});}
+        summary();status(record.state==='reviewed'?'The target, policy revision and request key are saved. Review them before creating the code; they will not be changed automatically.':'A prior enrollment request remains fenced. No new request will be sent.');
+      });}catch{status('Current human-owner permission could not be confirmed. No enrollment request was sent.');}finally{busy=false;controls();}
+    };
+    q('headlessCreate').onclick=async()=>{
+      if(busy||record?.state!=='reviewed'||policyChanged||!storageReady)return;busy=true;controls();
+      try{await navigator.locks.request(recordKey(record.target),{ifAvailable:true},async lock=>{
+        if(!lock){status('An enrollment request is already in progress in another tab. No request was sent.');return;}
+        const saved=checked(JSON.parse(localStorage.getItem(recordKey(record.target))||'null'),record.target);
+        if(saved.key!==record.key||saved.epoch!==record.epoch)throw Error('record');
+        record=saved;if(record.state!=='reviewed'){summary();status('A prior enrollment request remains fenced. No new request will be sent.');return;}
+        if(await permission()!==record.epoch){policyChanged=true;status('Owner policy changed. This saved request will not be rebased or sent.');return;}
+        const body={...record.target,expected_revision:record.epoch,idempotency_key:record.key};
+        persist({...record,state:'attempted'});
+        const response=await send(BASE+'/api/dashboard/authority/agent-pairings',{method:'POST',credentials:'same-origin',redirect:'error',signal:AbortSignal.timeout(15000),headers:{'content-type':'application/json','X-Qoopia-CSRF':'1','Idempotency-Key':record.key,'If-Match':String(record.epoch)},body:JSON.stringify(body)});
+        if(!response.ok)throw Error('unknown');const result=await response.json(),m=safeResult(result);
+        if(result.one_time_code!==null&&(typeof result.one_time_code!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(result.one_time_code)))throw Error('unknown');
+        const received={...record,state:'received',metadata:m};try{persist(received);}catch{record=received;}metadata(m);
+        if(result.one_time_code&&m.expires_at_ms>Date.now()&&m.expires_at_ms<=Date.now()+605000){secret=result.one_time_code;q('headlessReveal').disabled=false;q('headlessHide').disabled=false;
+          const issuedFor=record.key;setTimeout(()=>{if(record?.key!==issuedFor)return;secret=null;q('headlessCode').value='';q('headlessCode').type='password';q('headlessReveal').disabled=true;q('headlessHide').disabled=true;},m.expires_at_ms-Date.now());
+          status('Pairing created. The service is not connected yet. Save the one-time code privately before it expires.');
+        }else status('The saved pairing was returned without a usable one-time code. No replacement or retry was created.');
+      });}catch{status(record?.state!=='reviewed'?'The enrollment outcome is unknown. Do not create another request. Preserve this request reference for owner reconciliation.':'No enrollment request was sent; private request tracking or owner verification failed.');}
+      finally{busy=false;controls();}
+    };
+    q('headlessReveal').onclick=()=>{if(!secret||record.metadata.expires_at_ms<=Date.now())return;q('headlessCode').type='text';q('headlessCode').value=secret;q('headlessCode').focus();};
+    q('headlessHide').onclick=()=>{q('headlessCode').type='password';q('headlessCode').value='';};
+    q('headlessOther').onclick=()=>{if(busy||!record)return;try{localStorage.removeItem(selectionKey);if(localStorage.getItem(selectionKey)!==null)throw Error('storage');record=null;policyChanged=false;secret=null;q('headlessName').value='';q('headlessRuntime').value='';q('headlessPolicy').textContent='';q('headlessMetadata').textContent='';q('headlessCode').value='';q('headlessCode').type='password';q('headlessReveal').disabled=true;q('headlessHide').disabled=true;status('Enter a name and runtime, then review the exact read-only connection before creating its code.');}catch{storageReady=false;status('Private request tracking is unavailable in this tab. No enrollment request will be sent.');}controls();};
+    q('headlessRead').onclick=async()=>{const saved=record?.metadata;if(busy||!uuid(saved?.operation_id))return;busy=true;controls();try{const op=await api('/api/dashboard/authority/operations/'+encodeURIComponent(saved.operation_id)),m=safeResult(op.result);if(op.id!==saved.operation_id||op.operation!=='agent_pairing_create'||m.operation_id!==saved.operation_id||m.pairing_id!==saved.pairing_id)throw Error('binding');metadata(m);status('Saved pairing metadata confirmed. This does not confirm redemption or a service connection.');}catch{status('Saved operation could not be confirmed. No create or redemption request was sent.');}finally{busy=false;controls();}};
+    controls();
+  }
+
   async function renderConnections() {
     pollFn=null;setCrumb(QI.msg('Connections'));main.innerHTML='<p class="loading">'+QI.msg('Loading your connections…')+'</p>';
     let data;try{data=await api('/api/dashboard/connections');}catch(e){if(state.page==='connections')errBox(main,QI.msg('Could not load connections.'),()=>renderConnections(),e);return;}
@@ -1729,6 +1828,7 @@
         '<button data-disconnect="'+esc(a.kind+':'+a.id)+'" data-name="'+esc(appName(a)+' · '+a.name)+'"'+(a.state&&a.state!=='verified'?' data-unfinished="1">'+QI.msg("Cancel setup"):'>'+QI.msg("Disconnect"))+'</button></div>';};
     main.innerHTML='<section class="work connections"><header><h1>'+QI.msg("Connections")+'</h1><p>'+esc(data.workspace)+'. '+QI.msg("MCP clients connected to this memory, and how it is processed.")+'</p></header><p id="connectionsStatus" class="work-status" role="status" aria-live="polite"></p>'+
       '<section aria-labelledby="connectedTitle"><h2 id="connectedTitle"></h2><div id="connectedApplications"></div><div id="connectionWizard"></div></section>'+
+      '<div id="headlessService"></div>'+
       '<section class="connection-summary"><div class="connection-line"><div><h2>'+QI.msg("Memory model")+'</h2><p id="connectionsModelSummary"></p><p id="connectionsModelChecked" class="meta"></p></div><button id="connectionsModel">'+QI.msg("Settings")+'</button></div>'+
       '<div class="connection-line"><div><h2>'+QI.msg("My Qoopia agent")+'</h2><p id="connectionsStewardName">'+esc(stewards||QI.msg("Not assigned"))+'</p></div><button id="connectionsSteward">'+QI.msg("Open agent")+'</button></div></section>'+
       '<details class="connection-options"><summary>'+QI.msg("Session memory settings")+'</summary><p>'+QI.msg("Configure automatic context for a Claude Code or Codex agent. This is separate from its access to notes.")+'</p>'+
@@ -1745,6 +1845,7 @@
       $('#connectedApplications').innerHTML=apps.map(appRow).join('')||'<p class="meta">'+QI.msg("No application has connected yet.")+'</p>';
     }
     overview(data);
+    renderHeadlessServicePairing($('#headlessService'),data.workspace_id);
     void renderConnectionWizard($('#connectionWizard'),data.workspace,data.workspace_id,async()=>{const next=await api('/api/dashboard/connections');if(state.page==='connections')overview(next);}).catch(e=>{if(state.page==='connections')$('#connectionWizard').textContent=e.message;});
     if(state.page!=='connections')return;
     const status=$('#connectionsStatus');

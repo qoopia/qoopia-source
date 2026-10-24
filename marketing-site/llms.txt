@@ -6,9 +6,9 @@ Each page exists in English and Russian with the same content. Full text for AI 
 
 ## Current release
 
-- Qoopia 5.0.22, released 2026-10-18 (source 8d0a1ff). Machine-readable manifest: https://qoopia.ai/release.json
-- macOS Apple Silicon, DMG: https://qoopia.ai/download/mac (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.22/qoopia-5.0.22-darwin-arm64.dmg), SHA-256 7a732f97fe4a12b94d51cf45f2333338327130b80b3e8b2b0a5cb474d6df5303
-- Linux x64, TAR.GZ: https://qoopia.ai/download/linux (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.22/qoopia-5.0.22-linux-x64.tar.gz), SHA-256 7df5f7d6b537541e54e797247e0ed0141c22ad274826c56604a92955d6b7e1cd
+- Qoopia 5.0.23, released 2026-10-24 (source e902e82). Machine-readable manifest: https://qoopia.ai/release.json
+- macOS Apple Silicon, DMG: https://qoopia.ai/download/mac (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.23/qoopia-5.0.23-darwin-arm64.dmg), SHA-256 9e95b5dcb96ebf10f06d3b9a9c76a5b0000a69d3dba781cc7114a42a37509e22
+- Linux x64, TAR.GZ: https://qoopia.ai/download/linux (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.23/qoopia-5.0.23-linux-x64.tar.gz), SHA-256 1925aaaac7c3428d6aab39d947bd28cfa2620ed97fcf0314281561e5b80990fc
 
 ## Requirements
 

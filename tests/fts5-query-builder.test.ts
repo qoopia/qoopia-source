@@ -99,3 +99,36 @@ describe("Russian inflections find each other without embeddings", () => {
     expect(await found("қазақстан")).toContain("Қазақстан филиалы ашылды");
   });
 });
+
+describe("ё and е find each other; Kazakh words are found in any case [5.0.23]", () => {
+  let yoWs = "", yoAgent = "";
+  const notes = ["Ёлка на площади зелёная", "Решение принято: всё переносим на Corsair", "Еще раз проверить ежедневный бэкап",
+    "Қазақстан бойынша есеп дайын", "ӘЛЕМ ЖАҢАЛЫҚТАРЫ: шолу"];
+  beforeAll(() => {
+    const w = createWorkspace({ name: "FTS5 yo", slug: "fts5-yo" });
+    yoWs = w.id; yoAgent = createAgent({ name: "fts5-yo-agent", workspaceSlug: w.slug }).id;
+    for (const text of notes) createNote({ workspace_id: yoWs, agent_id: yoAgent, type: "memory", text });
+    saveMessage({ session_id: "fts5-yo-session", workspace_id: yoWs, agent_id: yoAgent, role: "user", content: "Где зелёная папка?" });
+  });
+  const found = async (query: string) =>
+    (await recall({ workspace_id: yoWs, caller_agent_id: yoAgent, is_admin: false, query, mode: "fts5" })).results.map((row) => row.text);
+
+  test("a word typed with е finds the stored ё, and the other way round", async () => {
+    expect(await found("елка")).toContain(notes[0]);
+    expect(await found("зеленая")).toContain(notes[0]);
+    expect(await found("все переносим")).toContain(notes[1]);
+    expect(await found("ещё")).toContain(notes[2]);
+    expect(await found("ёжедневный")).toContain(notes[2]);
+    expect(sessionSearch({ workspace_id: yoWs, agent_id: yoAgent, query: "зеленая" }).results.map((row: { content: string }) => row.content))
+      .toEqual(["Где зелёная папка?"]);
+  });
+
+  test("Kazakh letters fold case and are never stemmed as Russian", async () => {
+    expect(await found("қазақстан")).toContain(notes[3]);
+    expect(await found("ҚАЗАҚСТАН")).toContain(notes[3]);
+    expect(await found("әлем")).toContain(notes[4]);
+    expect(await found("жаңалықтары")).toContain(notes[4]);
+    // Kazakh words keep their letters: no Russian stem is cut from them.
+    expect(sanitizeFtsQuery("жаңалықтары")).toBe('"жаңалықтары"*');
+  });
+});

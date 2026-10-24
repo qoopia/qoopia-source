@@ -1,6 +1,7 @@
 import {test,expect,spyOn} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import {installMemoryClient,migrateMemoryHooks,removeMemoryClient,runMemoryHook,transcriptMessages} from '../src/delivery/memory-client.ts';
 import {hash} from '../src/utils/fs.ts';
 import {spawnSync} from 'node:child_process';
@@ -300,6 +301,42 @@ test('doctor reports a memory client whose deliveries fail, from the local curso
   expect(run.stdout).not.toContain('PRIVATE-TRANSCRIPT-TEXT');expect(run.stdout).not.toContain(root);
   status=200;await runMemoryHook(file,hook);
   expect(memoryClientsCheck(root,home)).toMatchObject({status:'pass',reason:'DELIVERING',runtimes:[{failing_sessions:0,hooks:'6/6',mcp_entry:'present'}]});
+ } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('without the server the cursors keep their place, and doctor and the agent are told how far memory is behind [5.0.23]',async()=>{
+ const {memoryClientsCheck,deliveryBacklog}=await import('../src/delivery/memory-client.ts');
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-client-offline-')),home=path.join(root,'home'),logs=path.join(home,'.claude/projects/p');
+ fs.mkdirSync(logs,{recursive:true,mode:0o700});let status=200;
+ const server=Bun.serve({port:0,async fetch(req){if(oldServer(req))return new Response('',{status:404});const event=await req.json() as any;if(status!==200)return new Response('',{status});
+   return Response.json({accepted:event.messages.map((m:any)=>m.id),session_id:event.session_id,tail:[]});}});
+ try {
+  installMemoryClient({format:'qoopia-memory-connection/1',url:`http://127.0.0.1:${server.port}`,agent_id:'fixture',key:'q_fixturekey',runtime:'claude_code'},root,process.execPath,home);
+  const file=path.join(root,'memory-clients/claude_code/connection.json'),cursors=path.join(root,'memory-clients/claude_code/cursors'),transcript=path.join(logs,'offline.jsonl');
+  const line=(text:string,uuid:string)=>JSON.stringify({type:'user',uuid,message:{role:'user',content:text}})+'\n';
+  fs.writeFileSync(transcript,line('первый ход','u1'));
+  const hook={session_id:'offline',cwd:'/project',transcript_path:transcript,hook_event_name:'Stop'};
+  await runMemoryHook(file,hook);
+  expect(deliveryBacklog(cursors).sessions).toBe(0);
+  // The server stops answering; the session goes on and its turns wait on this computer.
+  status=503;fs.appendFileSync(transcript,line('второй ход','u2'));await runMemoryHook(file,hook);
+  const cursor=path.join(cursors,fs.readdirSync(cursors).find(f=>f.endsWith('.json'))!),state=JSON.parse(fs.readFileSync(cursor,'utf8'));
+  state.last_sync=new Date(Date.now()-30*60_000).toISOString();fs.writeFileSync(cursor,JSON.stringify(state));
+  const backlog=deliveryBacklog(cursors);
+  expect(backlog).toMatchObject({sessions:1});expect(backlog.bytes).toBeGreaterThan(0);expect(backlog.minutes_behind).toBeGreaterThanOrEqual(29);
+  const offline=memoryClientsCheck(root,home);
+  expect(offline).toMatchObject({status:'fail',reason:'SERVER_UNAVAILABLE',runtimes:[{mode:'offline',waiting:{sessions:1}}]});
+  expect(offline.action).toContain('wait on this computer since');
+  // A new session is told that earlier work has not reached memory yet.
+  fs.writeFileSync(path.join(logs,'next.jsonl'),'');
+  const started=await runMemoryHook(file,{session_id:'next',cwd:'/project',transcript_path:path.join(logs,'next.jsonl'),hook_event_name:'SessionStart'}) as any;
+  expect(started?.hookSpecificOutput?.additionalContext).toContain('Qoopia memory on this computer is behind: 1 session');
+  // The server answers again: the waiting turns go out and the warning ends.
+  // After a failure hooks leave the server alone for a minute; that minute has passed.
+  status=200;fs.rmSync(path.join(root,'memory-clients/claude_code/cursors/.server-unavailable'),{force:true});
+  await runMemoryHook(file,hook);
+  expect(deliveryBacklog(cursors).sessions).toBe(0);
+  expect(memoryClientsCheck(root,home).runtimes[0]).toMatchObject({mode:'current',waiting:{sessions:0}});
  } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
 });
 
@@ -725,4 +762,74 @@ test('Codex 0.162 null and metadata-only rollouts deliver hook turns durably, wi
   await hook('manual-payload','Stop',{turn_id:'auto',last_assistant_message:'auto answer'});
   expect([...stored.values()].some(m=>m.content.startsWith('manual'))).toBe(false);
  } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('Codex Desktop edits through apply_patch inside code-mode exec are captured with the file digest [5.0.23]',async()=>{
+ const {transcriptMessages}=await import('../src/delivery/memory-client.ts');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-exec-patch-'));fs.writeFileSync(path.join(dir,'notes.md'),'# notes\n');
+ const code='await tools.apply_patch("*** Begin Patch\\n*** Update File: notes.md\\n@@\\n+line\\n*** Add File: new.txt\\n+x\\n*** End Patch")';
+ const line=JSON.stringify({type:'response_item',payload:{type:'function_call',name:'exec',call_id:'call_1',arguments:JSON.stringify({code})}});
+ const [message]=transcriptMessages(line,'codex',0,dir);
+ expect(message!.content).toMatch(/\[file state\] notes\.md sha256:[0-9a-f]{16}/);
+ expect(message!.content).toContain('[file state] new.txt missing');
+ fs.rmSync(dir,{recursive:true,force:true});
+});
+
+test('files a Codex exec writes with a shell command reach memory with their digest; AGENTS.md text is not a user turn [5.0.23]',async()=>{
+ const {workTree}=await import('../src/delivery/memory-client.ts');
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-worktree-')),home=path.join(root,'home'),project=path.join(root,'project'),delivered:any[]=[];
+ const server=Bun.serve({port:0,async fetch(req){if(new URL(req.url).pathname==='/memory/canon')return new Response('',{status:404});const event=await req.json() as any;delivered.push(event);return Response.json({accepted:event.messages.map((m:any)=>m.id),session_id:event.session_id,tail:[]});}});
+ const sh=(cmd:string)=>expect(spawnSync('/bin/sh',['-c',cmd],{cwd:project}).status).toBe(0);
+ try {
+  fs.mkdirSync(project);sh('git init -q && printf "start\\n" > app.txt && printf "mine\\n" > before.txt && git add app.txt && git -c user.email=t@t -c user.name=t commit -qm init');
+  installMemoryClient({format:'qoopia-memory-connection/1',url:`http://127.0.0.1:${server.port}`,agent_id:'fixture',key:'q_fixturekey',runtime:'codex'},root,process.execPath,home);
+  const file=path.join(root,'memory-clients/codex/connection.json'),transcript=path.join(home,'.codex/sessions/exec.jsonl');fs.mkdirSync(path.dirname(transcript),{recursive:true,mode:0o700});
+  const row=(role:string,text:string)=>JSON.stringify({type:'response_item',payload:{type:'message',role,content:[{type:'input_text',text}]}})+'\n';
+  const hook={session_id:'exec',cwd:project,transcript_path:transcript,hook_event_name:'SessionStart'};
+  await runMemoryHook(file,hook);
+  // before.txt was already uncommitted when the session started: it is not this session's change.
+  expect(Object.keys(JSON.parse(fs.readFileSync(path.join(root,'memory-clients/codex/cursors',hash(transcript)+'.json'),'utf8')).tree.dirty)).toEqual(['before.txt']);
+  fs.writeFileSync(transcript,row('user','# AGENTS.md instructions\n\n<INSTRUCTIONS>\nrules\n</INSTRUCTIONS>\n<environment_context>x</environment_context>')+row('user','Write plan.md and finish app.txt.'));
+  // Codex exec writes through Python in a shell, not apply_patch: only the working tree shows it.
+  sh('python3 -c "open(\'plan.md\',\'w\').write(\'route\\\\n\')" && printf "done\\n" > app.txt');
+  fs.appendFileSync(transcript,row('assistant','Codex finished'));
+  await runMemoryHook(file,{...hook,hook_event_name:'Stop'});
+  const messages=delivered.flatMap(e=>e.messages);
+  expect(messages.filter((m:any)=>m.role==='user').map((m:any)=>m.content)).toEqual(['Write plan.md and finish app.txt.']);
+  const report=messages.find((m:any)=>m.content.startsWith('[workspace changes]'));
+  expect(report.role).toBe('tool');
+  expect(report.content).toContain('[file state] app.txt sha256:'+hash(fs.readFileSync(path.join(project,'app.txt'))).slice(0,16));
+  expect(report.content).toContain('[file state] plan.md sha256:'+hash(fs.readFileSync(path.join(project,'plan.md'))).slice(0,16));
+  expect(report.content).not.toContain('before.txt');
+  // Unchanged tree: not sent again. A commit made during the session still counts as its change.
+  await runMemoryHook(file,{...hook,hook_event_name:'Stop'});
+  expect(delivered.flatMap(e=>e.messages).filter((m:any)=>m.content.startsWith('[workspace changes]'))).toHaveLength(1);
+  sh('git add plan.md app.txt && git -c user.email=t@t -c user.name=t commit -qm work');
+  await runMemoryHook(file,{...hook,hook_event_name:'SessionEnd'});
+  const last=delivered.flatMap(e=>e.messages).filter((m:any)=>m.content.startsWith('[workspace changes]')).at(-1);
+  expect(last.content).toMatch(/\[file state\] app\.txt sha256:[0-9a-f]{16}\n\[file state\] plan\.md sha256:/);
+  expect(workTree(path.join(root,'home'))).toBeUndefined(); // not a git directory: no report at all
+ } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('a Codex tool output given as text blocks is stored as its text, line by line [5.0.23]',()=>{
+ const line=JSON.stringify({type:'response_item',payload:{type:'custom_tool_call_output',call_id:'c1',output:[{type:'input_text',text:'Script completed\nOutput:'},{type:'input_text',text:'{"exit_code":0}'}]}});
+ expect(transcriptMessages(line,'codex',0)[0]!.content).toBe('Result for c1:\nScript completed\nOutput:\n{"exit_code":0}');
+});
+
+test('doctor names every Claude Code and Codex profile on the computer and which are not saved to Qoopia [5.0.23]',async()=>{
+ const {memoryClientsCheck,installMemoryClient:install}=await import('../src/delivery/memory-client.ts');
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-profiles-')),home=path.join(root,'home');
+ for(const [dir,mark] of [['.claude','settings.json'],['.claude-work','settings.json'],['.codex','config.toml'],['.codex-canary','config.toml'],['.claude-empty',null]] as const){
+  fs.mkdirSync(path.join(home,dir),{recursive:true});if(mark)fs.writeFileSync(path.join(home,dir,mark),mark.endsWith('.toml')?'':'{}');}
+ try {
+  install({format:'qoopia-memory-connection/1',url:'http://127.0.0.1:1',agent_id:'fixture',key:'q_fixturekey',runtime:'claude_code'},root,process.execPath,home);
+  const report=memoryClientsCheck(root,home) as any;
+  expect(report.client_profiles).toEqual([
+   {runtime:'claude_code',profile:'~/.claude',linked:true},{runtime:'claude_code',profile:'~/.claude-work',linked:false},
+   {runtime:'codex',profile:'~/.codex',linked:false},{runtime:'codex',profile:'~/.codex-canary',linked:false}]);
+  expect(report.unlinked_profiles).toHaveLength(3);
+  expect(report.unlinked_note).toContain('Claude Code ~/.claude-work');expect(report.unlinked_note).toContain('Codex ~/.codex-canary');
+  expect(JSON.stringify(report)).not.toContain(root);
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
 });

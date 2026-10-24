@@ -25,6 +25,7 @@ const MECHANISMS:{id:string;title:string;match:RegExp;flag?:string}[]=[
   {id:'agentcomm',title:'Messages between agents, inbox, reply and wake',match:/^agent_(send|inbox|reply|status|session_)/},
   {id:'skills',title:'Skills',match:/^(skill_|runtime_|operation_get$)/},
   {id:'canon',title:'Canon: rules loaded into context',match:/^canon_/},
+  {id:'work',title:'Work handoff between agents and claims',match:/^work_/},
   {id:'knowledge',title:'Knowledge pages',match:/^entity_/,flag:'QOOPIA_ENTITY_PAGES'},
   {id:'bridges',title:'Bridges and external material',match:/^bridge_/},
   {id:'files',title:'Files',match:/^file_/},

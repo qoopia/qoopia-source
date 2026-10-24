@@ -17,7 +17,8 @@ import { recordConflict, v4Metrics } from "../utils/observability.ts";
 import { hash } from "../utils/fs.ts";
 
 const EXPORT_FORMAT = "qoopia-v4-export/1" as const;
-const EXPORT_SCHEMA_VERSION = 32 as const;
+/** The schema a workspace transfer describes: the current one (5.0.23 moved it from the legacy schema 32). */
+export const EXPORT_SCHEMA_VERSION = 55 as const;
 const PLAN_TTL_MS = 15 * 60 * 1_000;
 const PLAN_CACHE_MAX = 256;
 const MANIFEST_MAX_BYTES = 8 * 1024 * 1024;
@@ -166,8 +167,8 @@ function loadPolicy(): { document: PolicyDocument; raw: string; sha: string } {
   const raw = fs.readFileSync(POLICY_PATH, "utf8");
   const document = JSON.parse(raw) as PolicyDocument;
   if (document.database_schema_version !== EXPORT_SCHEMA_VERSION ||
-      document.logical_table_count !== document.tables.length || document.tables.length !== 40) {
-    throw new QoopiaError("UNSUPPORTED_SCHEMA", "export policy does not describe schema 32 exactly");
+      document.logical_table_count !== document.tables.length) {
+    throw new QoopiaError("UNSUPPORTED_SCHEMA", `export policy does not describe schema ${EXPORT_SCHEMA_VERSION} exactly`);
   }
   const names = new Set(document.tables.map((table) => table.name));
   if (names.size !== document.tables.length) throw new QoopiaError("UNSUPPORTED_SCHEMA", "duplicate export table policy");
@@ -189,7 +190,7 @@ function assertLegacyTransferSchema(database: Database): void {
   if (schema.version !== EXPORT_SCHEMA_VERSION) {
     throw new QoopiaError(
       "UNSUPPORTED_SCHEMA",
-      `legacy schema 32 workspace transfer is unavailable for schema ${schema.version}; use installation backup plus restoreNew for a complete installation data copy`,
+      `workspace transfer describes schema ${EXPORT_SCHEMA_VERSION}, this database is schema ${schema.version}; migrate first, or use installation backup plus restoreNew for a complete installation data copy`,
     );
   }
 }
@@ -867,7 +868,9 @@ export function validateImportPlan(input: {
   for (const row of rowsByTable.get("entity_links") ?? []) { requireRef("entity_pages", row.source_entity_id, entities); requireRef("entity_pages", row.target_entity_id, entities); }
   for (const row of rowsByTable.get("agent_comm_messages") ?? []) requireRef("agent_comm_messages", row.parent_message_id, messages);
   for (const row of rowsByTable.get("agent_wake_events") ?? []) requireRef("agent_comm_messages", row.message_id, messages);
-  for (const row of rowsByTable.get("agent_comm_delivery_receipts") ?? []) requireRef("agent_comm_messages", row.message_id, messages);
+  for (const row of rowsByTable.get("note_temporal_provenance") ?? []) requireRef("notes", row.note_id, notes);
+  const canons = new Set((rowsByTable.get("canons") ?? []).map((row) => String(row.id)));
+  for (const row of rowsByTable.get("canon_applications") ?? []) requireRef("canons", row.canon_id, canons);
   for (const ref of missing) conflicts.push({ table: ref.split(":", 1)[0]!, row_id: ref, code: "MISSING_REFERENCE", source_hash: null, target_hash: null });
   database.exec("COMMIT");
   if (conflicts.length > 0) recordConflict("import");

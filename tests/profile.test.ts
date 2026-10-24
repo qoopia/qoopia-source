@@ -82,3 +82,47 @@ test('profile links lead to the website page in its own language, not to a query
     expect(html).not.toMatch(/qoopia\.ai\/[a-z]*\?lang=/);
   }
 });
+
+test('account deletion removes the sign-in identity and its records, revokes connections and spares the service owner',async()=>{
+  const db=new Database(':memory:'),origin='https://auth.example.test',mails:string[]=[];
+  const config={origin,resendKey:'fixture',from:'test@example.test',googleClientId:'fixture',googleClientSecret:'fixture',owner:{accountId:'owner-account'}};
+  const provider=(async(_input,init)=>{mails.push(JSON.parse(String(init?.body)).text);return Response.json({id:'fixture'});}) as typeof fetch;
+  const handler=loginBroker(db,config,provider);
+  const call=async(path:string,body:unknown,cookies:Record<string,string>)=>{
+    const result=await handler(new Request(origin+path,{method:body===undefined?'GET':'POST',headers:{cookie:Object.entries(cookies).map(([k,v])=>k+'='+v).join('; '),...(body===undefined?{}:{origin,'content-type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)}),'test');
+    for(const value of result.headers.getSetCookie()){const [key,...rest]=value.split(';')[0]!.split('=');cookies[key!]=rest.join('=');}
+    return result;
+  };
+  const login=async(email:string,cookies:Record<string,string>)=>{
+    const started=await call('/profile/start',{method:'email',email},cookies);const code=(await started.json() as {code:string}).code;
+    const token=new URL(mails.at(-1)!.match(/https:\/\/[^\s]+/)![0]).hash.slice(1);
+    expect((await call('/confirm',{token,code},{})).status).toBe(200);
+    expect((await call('/profile/poll',{},cookies)).status).toBe(200);
+  };
+  const count=(table:string,id:string)=>(db.query(`SELECT COUNT(*) n FROM ${table} WHERE account_id=?`).get(id) as {n:number}).n;
+  try{
+    const jar:Record<string,string>={},other:Record<string,string>={};
+    await login('leaving@example.test',jar);await login('staying@example.test',other);
+    const id=(db.query('SELECT id FROM connection_accounts WHERE email=?').get('leaving@example.test') as {id:string}).id;
+    expect((await call('/profile/dashboard',{url:'https://memory.example.test'},jar)).status).toBe(200);
+    expect((await call('/profile/news',{subscribed:true,language:'en'},jar)).status).toBe(200);
+    db.exec(`CREATE TABLE IF NOT EXISTS connection_devices(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,state TEXT NOT NULL,revoked_at INTEGER,cleanup_done INTEGER NOT NULL DEFAULT 0)`);
+    db.query("INSERT INTO connection_devices(id,account_id,state) VALUES ('device-1',?,'active')").run(id);
+    // The app page asks for confirmation instead of opening the saved dashboard.
+    const page=await(await call('/profile?app=ios&delete=1',undefined,jar)).text();
+    expect(page).toContain('id="app-delete"');expect(page).not.toContain('signin=account');
+    expect(await(await call('/profile?app=ios',undefined,{})).text()).toContain('delete=1');
+    expect((await call('/profile/delete',{},jar)).status).toBe(400);
+    expect((await call('/profile/delete',{confirm:true},jar)).status).toBe(200);
+    expect(db.query('SELECT 1 FROM connection_accounts WHERE id=?').get(id)).toBeNull();
+    for(const table of ['profile_sessions','profile_dashboards','account_activity','news_preferences','news_consents'])expect(count(table,id)).toBe(0);
+    expect(db.query('SELECT state,cleanup_done FROM connection_devices WHERE id=?').get('device-1')).toEqual({state:'revoked',cleanup_done:0});
+    expect((await call('/profile/delete',{confirm:true},jar)).status).toBe(401);
+    expect(await(await call('/profile',undefined,other)).text()).toContain('staying@example.test');
+    // The service owner's account is never removed from a web page.
+    db.query("UPDATE connection_accounts SET id='owner-account' WHERE email='staying@example.test'").run();
+    db.query("UPDATE profile_sessions SET account_id='owner-account'").run();
+    expect((await call('/profile/delete',{confirm:true},other)).status).toBe(409);
+    expect(db.query("SELECT 1 FROM connection_accounts WHERE id='owner-account'").get()).not.toBeNull();
+  }finally{db.close();}
+});

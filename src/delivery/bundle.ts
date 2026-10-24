@@ -8,7 +8,7 @@ export const bundleSchema = z.object({
   format: z.literal('qoopia-bundle/1'), version: z.string().regex(/^5\.0\.(?:0|[1-9][0-9]*)(?:-[a-z0-9.-]+)?$/),
   horizon: z.literal('QOOPIA-V-1'), api_version: z.literal(1), build_sha: z.string().regex(/^[a-f0-9]{40}$/),
   source_digest: hex, target: z.enum(['darwin-arm64', 'linux-x64']), bun_version: z.string(),
-  schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43),z.literal(44),z.literal(45),z.literal(46),z.literal(47),z.literal(48),z.literal(49),z.literal(50),z.literal(51),z.literal(52),z.literal(53)]),
+  schema_min: z.literal(32), schema_max: z.union([z.literal(37),z.literal(38),z.literal(39),z.literal(40),z.literal(41),z.literal(42),z.literal(43),z.literal(44),z.literal(45),z.literal(46),z.literal(47),z.literal(48),z.literal(49),z.literal(50),z.literal(51),z.literal(52),z.literal(53),z.literal(54),z.literal(55)]),
   signing: z.enum(['test-fixture', 'publisher']), publisher_key_sha256: hex,
   platform_signing: z.enum(['NOT_RUN', 'externally_verified']),
   members: z.record(z.string(), z.object({ size: z.number().int().nonnegative(), sha256: hex, mode: z.union([z.literal(0o600),z.literal(0o644),z.literal(0o700),z.literal(0o755)]) }).strict()),
@@ -55,6 +55,8 @@ export function verifyBundle(root: string, publicKey: string, allowTest = false,
   if(m.schema_max>=48&&!m.members['assets/migrations/048-read-path-indexes.sql'])throw new Error('Required read path index migration missing');
   if(m.schema_max>=49&&!m.members['assets/migrations/049-agent-wake-claims.sql'])throw new Error('Required agent wake claim migration missing');
   if(m.schema_max>=50&&!m.members['assets/migrations/050-canon.sql'])throw new Error('Required canon migration missing');
+  if(m.schema_max>=55&&!m.members['assets/migrations/055-work-claims.sql'])throw new Error('Required work claims migration missing');
+  if(m.schema_max>=54&&!m.members['assets/migrations/054-continuity-current-note.sql'])throw new Error('Required working-state note migration missing');
   if(m.schema_max>=53&&!m.members['assets/migrations/053-canon-proposals.sql'])throw new Error('Required canon proposal migration missing');
   if(m.schema_max>=52&&!m.members['assets/migrations/052-api-key-age.sql'])throw new Error('Required key age migration missing');
   if(m.schema_max>=51&&!m.members['assets/migrations/051-polling-indexes.sql'])throw new Error('Required polling index migration missing');

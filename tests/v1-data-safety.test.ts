@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe("V1 data-safety boundary", () => {
-  test("legacy schema-32 workspace export refuses installed schema 37 with the complete-copy path", () => {
+  test("workspace export of another schema than the current refuses installed schema 37 with the complete-copy path", () => {
     const f = ownerFixture(37);
     try {
       expect(() => createExportPlan({
@@ -92,7 +92,7 @@ describe("V1 data-safety boundary", () => {
         release_sha: "v1-safety",
         signer: { private_key: generateKeyPairSync("ed25519").privateKey },
         database: f.database,
-      })).toThrow(/legacy schema 32.*backup.*restoreNew.*complete installation/i);
+      })).toThrow(/describes schema 55.*schema 37.*backup.*restoreNew.*complete installation/i);
     } finally {
       f.database.close();
     }

@@ -71,7 +71,7 @@ test('confirming writes the prepared note once; a repeat and a re-request return
   expect((db.query('SELECT agent_id FROM notes WHERE id=?').get(saved.note_id!) as any).agent_id).toBe(agent);
 });
 
-test('a declined request, an expired one and a restart all leave nothing behind',()=>{
+test('a declined request and an expired one leave nothing behind',()=>{
   const declined=requestId(refused(()=>createNote({workspace_id:workspace,agent_id:agent,text:'Синтетика: отклонить.'})));
   expect(decideSaveRequest({workspace_id:workspace,actor_id:owner,id:declined,accept:false}).state).toBe('declined');
   expect(refused(()=>decideSaveRequest({workspace_id:workspace,actor_id:owner,id:declined,accept:true})).code).toBe('CONFLICT');
@@ -180,4 +180,27 @@ test('a confirmation that fails to record its decision writes no note and keeps 
   expect(decideSaveRequest({workspace_id:workspace,actor_id:owner,id,accept:true}).state).toBe('saved');
   expect(notes(text)).toBe(1);
   setMemoryPolicy({workspace_id:workspace,agent_id:asker,mode:'auto',actor_id:owner});
+});
+
+test('a prepared save survives a restart for its 24 hours, in a private file and never in the database [5.0.23]',async()=>{
+  const fs=await import('node:fs'),path=await import('node:path');
+  const {DB_PATH}=await import('../src/db/connection.ts');
+  setMemoryPolicy({workspace_id:workspace,agent_id:agent,mode:'manual',actor_id:owner});expireSaveRequests(Date.now()+SAVE_REQUEST_TTL_MS+1);
+  const text='Синтетический материал: запрос должен пережить перезапуск.';
+  const id=requestId(refused(()=>createNote({workspace_id:workspace,agent_id:agent,text})));
+  const file=path.join(path.dirname(DB_PATH),'memory-save-requests.json');
+  expect(fs.statSync(file).mode&0o777).toBe(0o600);
+  expect(notes(text)).toBe(0);
+  // A new server process (same data directory) still lists the request with its deadline.
+  const probe=`import {pendingSavesFor} from './src/services/memory-policy.ts';console.log(JSON.stringify(pendingSavesFor(${JSON.stringify(workspace)},${JSON.stringify(agent)}).map(r=>r.id)))`;
+  const restarted=()=>JSON.parse(Bun.spawnSync([process.execPath,'-e',probe],{env:process.env,cwd:process.cwd()}).stdout.toString().trim().split('\n').pop()!);
+  expect(restarted()).toContain(id);
+  // The owner's decision after the restart writes the note once.
+  const decided=decideSaveRequest({workspace_id:workspace,actor_id:owner,id,accept:true}) as {note_id?:string};
+  expect(notes(text)).toBe(1);expect(decided.note_id).toBeTruthy();
+  expect(restarted()).not.toContain(id);
+  // An expired request is not brought back.
+  const later=requestId(refused(()=>createNote({workspace_id:workspace,agent_id:agent,text:text+' (истекает)'})));
+  expireSaveRequests(Date.now()+SAVE_REQUEST_TTL_MS+1);
+  expect(restarted()).not.toContain(later);
 });

@@ -155,9 +155,34 @@ export function wakePrompt(agent: Pick<AgentConfig, 'name'>, job: WakeMessage): 
   ].join('\n');
 }
 
-export function runtimeCommand(agent: AgentConfig, resume: string | undefined, lastMessageFile: string) {
-  const blocked = ['mcp__qoopia_memory__agent_send', 'mcp__qoopia_memory__agent_reply'];
+const readConfig = (file: string, parse: (text: string) => any) => { try { return parse(fs.readFileSync(file, 'utf8')) ?? {}; } catch { return {}; } };
+/** The names under which this agent's client reaches Qoopia, read from the client's own MCP settings:
+ * the turn's answer is the reply, so its own agent_send/agent_reply must be off whatever the server is
+ * called there (`qoopia_memory` from memory-link, or a name the owner chose). A server counts when its
+ * name or address names Qoopia or its URL has this runner's Qoopia origin. */
+export function qoopiaMcpServers(runtime: AgentConfig['runtime'], cwd: string, server: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const home = env.HOME ?? os.homedir();
+  const origin = (url: unknown) => { try { return new URL(String(url)).origin; } catch { return ''; } };
+  const tables: Array<Record<string, any> | undefined> = runtime === 'claude_code'
+    ? (() => {
+        const user = readConfig(path.join(env.CLAUDE_CONFIG_DIR ?? home, '.claude.json'), JSON.parse);
+        return [user.mcpServers, user.projects?.[cwd]?.mcpServers, readConfig(path.join(cwd, '.mcp.json'), JSON.parse).mcpServers];
+      })()
+    : [readConfig(path.join(env.CODEX_HOME ?? path.join(home, '.codex'), 'config.toml'), Bun.TOML.parse).mcp_servers,
+        readConfig(path.join(cwd, '.codex', 'config.toml'), Bun.TOML.parse).mcp_servers];
+  const names = new Set<string>();
+  for (const table of tables) for (const [name, entry] of Object.entries(table ?? {})) {
+    const e = (entry ?? {}) as Record<string, unknown>;
+    if (/qoopia/i.test(name) || /qoopia/i.test(JSON.stringify([e.url, e.command, e.args])) || (e.url && origin(e.url) === origin(server))) names.add(name);
+  }
+  return [...names];
+}
+
+export function runtimeCommand(agent: AgentConfig, resume: string | undefined, lastMessageFile: string, servers: string[] = []) {
+  const tools = ['agent_send', 'agent_reply'];
   if (agent.runtime === 'claude_code') {
+    // Claude names a tool mcp__<server>__<tool>, with characters outside [A-Za-z0-9_-] in the server name replaced by _.
+    const blocked = [...new Set(['qoopia_memory', ...servers].map((s) => s.replace(/[^A-Za-z0-9_-]/g, '_')))].flatMap((s) => tools.map((t) => `mcp__${s}__${t}`));
     const session = resume ?? randomUUID();
     return {
       session,
@@ -166,8 +191,13 @@ export function runtimeCommand(agent: AgentConfig, resume: string | undefined, l
         '--disallowedTools', ...blocked],
     };
   }
+  // An isolated turn loads no user config and so no MCP server. Otherwise each Qoopia server present
+  // there loses the two tools; a -c for a server the config lacks would define a broken one, so only
+  // names read from it are used, and only those a -c key path can address.
+  const disabled = agent.isolated ? [] : servers.filter((s) => /^[A-Za-z0-9_-]+$/.test(s))
+    .flatMap((s) => ['-c', `mcp_servers.${s}.disabled_tools=${JSON.stringify(tools)}`]);
   const shared = ['--json', '--skip-git-repo-check', '-o', lastMessageFile, '-c', 'sandbox_mode="read-only"',
-    ...(agent.isolated ? ['--ignore-user-config'] : []),
+    ...(agent.isolated ? ['--ignore-user-config'] : []), ...disabled,
     ...(agent.model ? ['-m', agent.model] : []), ...(agent.effort ? ['-c', `model_reasoning_effort="${agent.effort}"`] : [])];
   return { session: resume, args: resume ? ['exec', 'resume', ...shared, resume, '-'] : ['exec', ...shared, '-C', agent.cwd, '-'] };
 }
@@ -315,10 +345,11 @@ export class WakeRunner {
 
   private async run(agent: AgentConfig, job: Job, resume: string | undefined) {
     const lastFile = path.join(this.state, `last-${job.message_id}.txt`);
-    const command = runtimeCommand(agent, resume, lastFile);
-    const started = Date.now();
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: [path.dirname(agent.command), process.env.PATH ?? "/usr/bin:/bin"].join(":") };
     for (const name of Object.keys(env)) if (name.startsWith('QOOPIA_WAKE')) delete env[name];
+    // Read at every turn: the owner may rename or add the Qoopia server between wakes.
+    const command = runtimeCommand(agent, resume, lastFile, qoopiaMcpServers(agent.runtime, agent.cwd, this.config.server, env));
+    const started = Date.now();
     const child = spawnAgentProcess(agent.command, command.args, { cwd: agent.cwd, env });
     this.live.add(child);
     this.record('turn_started', { agent: agent.name, runtime: agent.runtime, message_id: job.message_id, session_id: job.session_id,

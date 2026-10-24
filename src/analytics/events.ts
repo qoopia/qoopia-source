@@ -5,7 +5,7 @@ import {z} from 'zod';
 // Closed vocabulary: never accept request bodies, URLs, identity or error text.
 const eventSchema=z.object({
  id:z.string().uuid(),
- kind:z.enum(['site_view','download_click','download_redirect','site_performance','auth_request','mail_accepted','mail_failed','email_confirmed','login_redeemed','profile_login','profile_logout','profile_saved','auth_http']),
+ kind:z.enum(['site_view','download_click','download_redirect','site_performance','auth_request','mail_accepted','mail_failed','email_confirmed','login_redeemed','profile_login','profile_logout','profile_saved','profile_deleted','auth_http']),
  page:z.enum(['home','docs','releases','mobile','404','profile','confirm','google','requests','redeem','devices','other']).optional(),
  language:z.enum(['en','ru','other']).optional(),
  platform:z.enum(['mac','linux','other']).optional(),

@@ -1,7 +1,10 @@
 import {sameAgentName} from '../utils/agent-name.ts';
 import {ulid} from 'ulid';
 import type {Database} from 'bun:sqlite';
-import {db} from '../db/connection.ts';
+import path from 'node:path';
+import {db,DB_PATH} from '../db/connection.ts';
+import {durableWrite,readJson} from '../utils/fs.ts';
+import {logger} from '../utils/logger.ts';
 import {QoopiaError} from '../utils/errors.ts';
 import {idempotencyMismatch} from './note-idempotency.ts';
 import {toEpochMs} from '../utils/temporal.ts';
@@ -43,14 +46,29 @@ export const SAVE_REQUEST_TTL_MS=24*60*60*1000;
 const MAX_PENDING_PER_AGENT=20,MAX_PENDING_TOTAL=200;
 interface PendingSave {id:string;workspace_id:string;agent_id:string;operation:HeldOperation;request_hash:string;input:object;created_at_ms:number;expires_at_ms:number}
 
-/** Prepared saves live here and nowhere else. The server cannot prove that the user asked for
- * one, so the material is unverified and must not reach the database: a restart discards it and
- * the agent asks again. Only the owner's decision writes anything — the note itself, or a
- * decision row that records who decided, never the text. */
+/** Prepared saves wait in a private file beside the database, never in it. The server cannot prove that
+ * the user asked for one, so the material is unverified and must not reach notes, search or embeddings;
+ * the file only lets a restart or an update keep each request for its 24 hours [5.0.23]. Only the owner's
+ * decision writes anything — the note itself, or a decision row that records who decided, never the text. */
+const SAVES_FILE=path.join(path.dirname(DB_PATH),'memory-save-requests.json');
+const OPERATIONS:HeldOperation[]=['note_create','note_update'];
 const pendingSaves=new Map<string,PendingSave>();
+try {
+  for(const row of readJson<PendingSave[]>(SAVES_FILE))
+    if(typeof row?.id==='string'&&OPERATIONS.includes(row.operation)&&typeof row.input==='object'&&row.input&&row.expires_at_ms>Date.now())pendingSaves.set(row.id,row);
+} catch(error) {
+  if((error as NodeJS.ErrnoException).code!=='ENOENT')logger.warn('Pending memory saves could not be read; they are not restored',{error:String(error).slice(0,200)});
+}
+function persistPendingSaves() {
+  // A failed write keeps the requests in memory: they still wait for the owner until a restart.
+  try{durableWrite(SAVES_FILE,JSON.stringify([...pendingSaves.values()]),0o600);}
+  catch(error){logger.warn('Pending memory saves could not be written',{error:String(error).slice(0,200)});}
+}
 
 export function expireSaveRequests(now=Date.now()) {
-  for(const [id,row] of pendingSaves)if(row.expires_at_ms<=now)pendingSaves.delete(id);
+  let changed=false;
+  for(const [id,row] of pendingSaves)if(row.expires_at_ms<=now){pendingSaves.delete(id);changed=true;}
+  if(changed)persistPendingSaves();
 }
 export function pendingSavesFor(workspace:string,agent?:string):PendingSave[] {
   expireSaveRequests();
@@ -61,7 +79,7 @@ export function pendingSave(workspace:string,id:string):PendingSave|undefined {
   expireSaveRequests();const row=pendingSaves.get(id);
   return row&&row.workspace_id===workspace?row:undefined;
 }
-export function dropPendingSave(id:string){pendingSaves.delete(id);}
+export function dropPendingSave(id:string){if(pendingSaves.delete(id))persistPendingSaves();}
 
 /** The same material is one request however it arrived: transport fields and empty values do not count. */
 function saveMaterialHash(operation:HeldOperation,input:object) {
@@ -92,9 +110,9 @@ export function holdSaveForOwner(workspace:string,agent:string,operation:HeldOpe
     if(pendingSavesFor(workspace,agent).length>=MAX_PENDING_PER_AGENT||pendingSaves.size>=MAX_PENDING_TOTAL)
       throw new QoopiaError('RATE_LIMITED','Too many saves from this agent already wait for the owner. Ask the owner to review them in Qoopia.');
     held={id:ulid(),workspace_id:workspace,agent_id:agent,operation,request_hash:hash,input,created_at_ms:now,expires_at_ms:now+SAVE_REQUEST_TTL_MS};
-    pendingSaves.set(held.id,held);
+    pendingSaves.set(held.id,held);persistPendingSaves();
   }
-  throw new QoopiaError('APPROVAL_REQUIRED',`This agent saves only on request. Nothing was saved: the note is prepared as request ${held.id} and waits for the owner's confirmation in Qoopia (agent card, or memory_save_decide) until ${new Date(held.expires_at_ms).toISOString()}. It is held in the server's memory only and a restart discards it.`);
+  throw new QoopiaError('APPROVAL_REQUIRED',`This agent saves only on request. Nothing was saved: the note is prepared as request ${held.id} and waits for the owner's confirmation in Qoopia (agent card, or memory_save_decide) until ${new Date(held.expires_at_ms).toISOString()}. It is kept outside memory until the owner decides, and a restart keeps it.`);
 }
 
 /** The closed and open manual periods of this agent, from the policy log. */
@@ -267,7 +285,7 @@ export function agentMemoryStatus(workspace:string,agent:string,database:Databas
   const backlog=database.query(`WITH pending AS (SELECT s.last_active,json_extract(s.metadata,'$.continuity_error') AS error
     FROM sessions s WHERE s.workspace_id=?1 AND s.agent_id=?2 AND json_extract(s.metadata,'$.continuity_enabled')=1
       AND EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id AND m.id>COALESCE((SELECT json_extract(n.metadata,'$.through_message_id')
-        FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL),0)))
+        FROM notes n WHERE n.workspace_id=s.workspace_id AND n.agent_id=s.agent_id AND n.session_id=s.id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL AND n.invalidated_at_ms IS NULL),0)))
     SELECT COUNT(*) AS pending,(SELECT error FROM pending WHERE error IS NOT NULL ORDER BY last_active DESC LIMIT 1) AS error FROM pending`)
     .get(workspace,agent) as {pending:number;error:string|null};
   const signIn=['MODEL_NOT_CONNECTED','SIGN_IN_REQUIRED','MODEL_QUOTA','UNAUTHENTICATED'];

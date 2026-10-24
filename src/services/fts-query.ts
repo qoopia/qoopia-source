@@ -61,14 +61,28 @@ export function russianStem(word: string): string {
   return [...word].length - ending.length >= 3 ? word.slice(0, word.length - ending.length) : word;
 }
 
+/** Spellings of one word with and without ё. unicode61 keeps ё and е apart, and Russian text is written
+ * both ways («ёлка», «елка»), so the query asks for each: the word as typed, all ё as е, and every single
+ * е as ё. Words with two ё written as е (трёхзвёздочный) are not found by their е-form; the index is not
+ * rebuilt for that [5.0.23]. */
+export function yoVariants(term: string): string[] {
+  const plain = term.replace(/ё/g, "е"), variants = new Set([term, plain]);
+  for (let i = plain.indexOf("е"); i >= 0 && variants.size < 8; i = plain.indexOf("е", i + 1)) variants.add(plain.slice(0, i) + "ё" + plain.slice(i + 1));
+  return [...variants];
+}
+
 /** One prefix term. A Russian word also matches its other forms through its stem; the exact form
  * still matches both alternatives, so bm25 ranks it first. */
 export function ftsPrefixTerm(term: string): string {
-  const stem = russianStem(term);
-  return stem === term ? `"${term}"*` : `("${term}"* OR "${stem}"*)`;
+  const alternatives = [...new Set(yoVariants(term).flatMap((v) => [`"${v}"*`, `"${russianStem(v)}"*`]))];
+  return alternatives.length === 1 ? alternatives[0]! : `(${alternatives.join(" OR ")})`;
 }
 
 /** "" when no term is searchable. `prefix` appends `*` to each quoted term (and adds Russian stems). */
 export function buildFtsMatch(query: string | null | undefined, join: "OR" | "AND" = "OR", prefix = true): string {
-  return analyzeFtsQuery(query).terms.map((t) => prefix ? ftsPrefixTerm(t) : `"${t}"`).join(` ${join} `);
+  return analyzeFtsQuery(query).terms.map((t) => {
+    if (prefix) return ftsPrefixTerm(t);
+    const exact = yoVariants(t).map((v) => `"${v}"`);
+    return exact.length === 1 ? exact[0]! : `(${exact.join(" OR ")})`;
+  }).join(` ${join} `);
 }
