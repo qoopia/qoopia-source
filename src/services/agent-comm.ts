@@ -2,7 +2,7 @@ import { sameAgentName } from "../utils/agent-name.ts";
 import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
-import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { assertNoSecrets, secretFree, stored } from "../utils/secret-guard.ts";
 import { logActivity } from "./activity.ts";
 import { markDeliveredOnRead, scheduleAgentWakeDrain, wakeDelivery, wakeDeliveryNote, wakeRouteFor } from "./agent-wake.ts";
 import { bootstrapToolAllowed } from "../auth/policy.ts";
@@ -481,7 +481,7 @@ export function agentSessionCreate(input: {
   }
   const body = input.message ? String(input.message).trim() : null;
   if (input.message && !body) throw new QoopiaError("INVALID_INPUT", "message body is required");
-  if (body) assertNoSecrets(body, "agent_comm.message");
+  const safeBody = body ? secretFree(body, "agent_comm.message") : null;
   assertNoSecrets(JSON.stringify(input.metadata ?? {}), "agent_comm.metadata");
 
   const key = normalizeIdempotencyKey(input.idempotency_key);
@@ -555,7 +555,7 @@ export function agentSessionCreate(input: {
           sessionId,
           sender.id,
           target.id,
-          body,
+          stored(safeBody!),
           JSON.stringify(input.metadata || {}),
           key,
           ts,
@@ -618,7 +618,7 @@ export function agentSend(input: AgentSendInput) {
   }
   const body = String(input.body || "").trim();
   if (!body) throw new QoopiaError("INVALID_INPUT", "message body is required");
-  assertNoSecrets(body, "agent_comm.body");
+  const safeBody = secretFree(body, "agent_comm.body");
   assertNoSecrets(JSON.stringify(input.metadata ?? {}), "agent_comm.metadata");
   const key = normalizeIdempotencyKey(input.idempotency_key);
   const sender = resolveAgent(input.workspace_id, input.agent_id);
@@ -723,7 +723,7 @@ export function agentSend(input: AgentSendInput) {
         sender.id,
         target.id,
         kind,
-        body,
+        stored(safeBody),
         JSON.stringify(input.metadata || {}),
         input.parent_message_id || null,
         key,

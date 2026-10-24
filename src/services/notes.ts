@@ -4,7 +4,7 @@ import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
 import { assertCanModifyNote, canReadRow, readLevel, seesWholeWorkspace, visibleRowSql } from "../auth/principal.ts";
-import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { assertNoSecrets, secretFree, stored } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, holdSaveForOwner, type MemoryOrigin } from "./memory-policy.ts";
 import { upsertNoteEmbedding } from "./embedding-store.ts";
 import { bitemporalEnabled, temporalFeatureDisabled, timeBoundSql } from "../utils/temporal.ts";
@@ -230,10 +230,8 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
       `text exceeds ${MAX_TEXT} chars — split into multiple notes`,
     );
   }
-  assertNoSecrets(input.text, "note.text");
-  if (input.metadata) {
-    assertNoSecrets(JSON.stringify(input.metadata), "note.metadata");
-  }
+  const noteText = secretFree(input.text, "note.text");
+  const noteMetadata = secretFree(JSON.stringify(input.metadata || {}), "note.metadata");
 
   // V4.1: темпоральные поля запрещены при выключенном флаге (§7.2).
   const temporalInput: TemporalWriteFields = {
@@ -342,8 +340,8 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
       input.workspace_id,
       input.agent_id,
       type,
-      input.text,
-      JSON.stringify(input.metadata || {}),
+      stored(noteText),
+      stored(noteMetadata),
       input.project_id || null,
       input.task_bound_id || null,
       input.session_id || null,
@@ -687,9 +685,7 @@ export function updateNote(input: NoteUpdateInput) {
   if (input.text !== undefined && input.text.length > MAX_TEXT) {
     throw new QoopiaError("SIZE_LIMIT", `text exceeds ${MAX_TEXT} chars`);
   }
-  if (input.text !== undefined) {
-    assertNoSecrets(input.text, "note.text");
-  }
+  const nextText = input.text === undefined ? undefined : secretFree(input.text, "note.text");
   if (input.metadata) {
     assertNoSecrets(JSON.stringify(input.metadata), "note.metadata");
   }
@@ -707,7 +703,7 @@ export function updateNote(input: NoteUpdateInput) {
 
   if (input.text !== undefined) {
     fields.push(`text = ?`);
-    values.push(input.text);
+    values.push(stored(nextText!));
     updated.push("text");
   }
   if (input.metadata_replace !== undefined) {

@@ -311,6 +311,11 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
     if (projected.canonical_tools.find((t) => t.name === name)?.risk !== risk) throw new Error(`Canon tool missing or wrong risk: ${name}`);
     memoryPolicyTools.push(name);
   }
+  // 5.0.23: handoff of a project's last work between agents and claims; two reads and two write-low tools.
+  for (const [name, risk] of [["work_handoff", "read"], ["work_taken", "read"], ["work_take", "write-low"], ["work_release", "write-low"]] as const) {
+    if (projected.canonical_tools.find((t) => t.name === name)?.risk !== risk) throw new Error(`Work tool missing or wrong risk: ${name}`);
+    memoryPolicyTools.push(name);
+  }
   // 5.0.21 ADR-022: the owner's dreamer switch and the dreamer's workspace transcript read.
   for (const [name, risk] of [["agent_set_dreamer", "admin"], ["session_review", "read"]] as const) {
     if (projected.canonical_tools.find((t) => t.name === name)?.risk !== risk) throw new Error(`Dreamer tool missing or wrong risk: ${name}`);

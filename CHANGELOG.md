@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.0.23 — 2026-10-24
+
+- Work handoff between Claude Code and Codex: a session opening a project receives the newest work another agent of the same owner did there — what was done and what is open, its final answer, the user's last requests, tool errors and the changed files with a content digest checked on this computer — as history, not instructions. `work_handoff` gives the same to clients without hooks.
+- Changed files come from Edit/Write/MultiEdit/NotebookEdit, apply_patch (also inside Codex code-mode exec) and the session directory's git working tree, so a file written by a shell command is listed too. App-generated requests and Codex's AGENTS.md/environment blocks are not conversation.
+- «Work taken» marks: `work_take`, `work_release`, `work_taken`; a mark expires by itself, locks nothing and is never taken over (migration 055).
+- Working notes are facts collected from the record without a model plus a model summary; a limit the model invents is dropped. One working note per session (migration 054).
+- Secrets: one sanitized write path for notes, session messages, summaries, AgentComm and agent-task transcripts; more detectors, an entropy check and an owner allowlist; `session_save` redacts instead of refusing.
+- Very large transcripts: the hook reads from its byte cursor, sends bounded portions with a timeout each and stays inside its budget; the rest goes on in a paced background `qoopia memory-drain`. Doctor tells a server that does not answer /health from delivery that is only behind, and lists Claude Code/Codex profiles that are not connected.
+- ё/е-insensitive search; Kazakh words in any case; a manual agent's prepared save survives a restart; workspace export on the current schema; account deletion from the iPhone app and the website profile; headless read-only service pairing.
+- Dependencies: MCP SDK 1.32.0, zod 4.6.6, body-parser 2.4.0, fast-uri 3.1.9, ip-address 10.7.4. Database schema 55, agent kit revision 16.
+
+
 ## 5.0.22 — owner preview
 
 - Canon is view-and-retire only in the dashboard; agents retain the canon tools.

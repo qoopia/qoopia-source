@@ -1,28 +1,28 @@
 {
   "schema": 1,
-  "version": "5.0.22",
-  "tag": "v5.0.22",
-  "date": "2026-10-18",
-  "source": "8d0a1ff1a0a71d74078f5f23570b786068adfb12",
-  "schema_version": 53,
+  "version": "5.0.23",
+  "tag": "v5.0.23",
+  "date": "2026-10-24",
+  "source": "e902e821f0b4091d19c1ce4684592774b55fa74d",
+  "schema_version": 55,
   "availability": "public",
   "packages": {
     "mac": {
       "label": "macOS Apple Silicon",
       "format": "DMG",
-      "file": "qoopia-5.0.22-darwin-arm64.dmg",
-      "bytes": 142648043,
-      "sha256": "7a732f97fe4a12b94d51cf45f2333338327130b80b3e8b2b0a5cb474d6df5303",
-      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.22/qoopia-5.0.22-darwin-arm64.dmg",
+      "file": "qoopia-5.0.23-darwin-arm64.dmg",
+      "bytes": 142661918,
+      "sha256": "9e95b5dcb96ebf10f06d3b9a9c76a5b0000a69d3dba781cc7114a42a37509e22",
+      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.23/qoopia-5.0.23-darwin-arm64.dmg",
       "requirements": "Apple Silicon Mac, macOS 15.0 or newer. Intel Macs and Windows are not supported."
     },
     "linux": {
       "label": "Linux x64",
       "format": "TAR.GZ",
-      "file": "qoopia-5.0.22-linux-x64.tar.gz",
-      "bytes": 149133420,
-      "sha256": "7df5f7d6b537541e54e797247e0ed0141c22ad274826c56604a92955d6b7e1cd",
-      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.22/qoopia-5.0.22-linux-x64.tar.gz",
+      "file": "qoopia-5.0.23-linux-x64.tar.gz",
+      "bytes": 149154887,
+      "sha256": "1925aaaac7c3428d6aab39d947bd28cfa2620ed97fcf0314281561e5b80990fc",
+      "url": "https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.23/qoopia-5.0.23-linux-x64.tar.gz",
       "requirements": "Linux x64 with glibc 2.34 or newer. Not every Linux distribution is supported."
     }
   }

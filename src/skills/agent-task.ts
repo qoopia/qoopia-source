@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { AuthContext } from '../auth/middleware.ts';
 import { QoopiaError } from '../utils/errors.ts';
-import { assertNoSecrets, redactSensitive } from '../utils/secret-guard.ts';
+import { assertNoSecrets, redactSensitive, secretFree, stored } from '../utils/secret-guard.ts';
 import { canonical, command, digest } from './commands.ts';
 import { bindNativeConnection, connectionRefSchema } from './connection.ts';
 import { entriesOf, currentAssignmentPermission, registration, sessionOpen, RUNTIMES, type RuntimeKind } from './loop.ts';
@@ -71,11 +71,11 @@ function save(database:Database,workspace:string,agent:string,session:string,rol
   // than letting a background run on behalf of an agent become the way around the setting.
   assertAutomaticMemoryAllowed(workspace,agent,'automatic',database);
   if(!content||content.length>100_000)throw new QoopiaError('SIZE_LIMIT','Task session message is empty or too large');
-  assertNoSecrets(content,'agent task message');assertNoSecrets(JSON.stringify(metadata),'agent task metadata');
+  const safe=secretFree(content,'agent task message'),safeMetadata=secretFree(JSON.stringify(metadata),'agent task metadata');
   const now=new Date().toISOString();
   database.query('UPDATE sessions SET last_active=? WHERE id=? AND workspace_id=? AND agent_id=?').run(now,session,workspace,agent);
   database.query('INSERT INTO session_messages(workspace_id,session_id,agent_id,role,content,metadata,created_at) VALUES (?,?,?,?,?,?,?)')
-    .run(workspace,session,agent,role,content,JSON.stringify(metadata),now);
+    .run(workspace,session,agent,role,stored(safe),stored(safeMetadata),now);
 }
 
 function resolveSession(database:Database,workspace:string,agent:string,title:string){

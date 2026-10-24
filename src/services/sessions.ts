@@ -3,7 +3,7 @@ import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso, safeJsonParse } from "../utils/errors.ts";
 import { sanitizeFtsQuery } from "./recall.ts";
 import { readsAllTranscripts, transcriptLevel, visibleTranscriptSql } from "../auth/principal.ts";
-import { assertNoSecrets } from "../utils/secret-guard.ts";
+import { sanitizedMemory, secretFree, stored } from "../utils/secret-guard.ts";
 import { assertAutomaticMemoryAllowed, duringManual, type MemoryOrigin } from "./memory-policy.ts";
 import { parseTimeBound, timeBoundSql } from "../utils/temporal.ts";
 import { hash } from "../utils/fs.ts";
@@ -77,9 +77,13 @@ export function saveMessage(input: SessionSaveInput) {
   if (input.content.length > MAX_CONTENT) {
     throw new QoopiaError("SIZE_LIMIT", `content exceeds ${MAX_CONTENT} chars`);
   }
-  assertNoSecrets(input.content, "session_message.content");
+  // A secret in a turn is cut out, not a reason to lose the turn [5.0.23]: the message is stored with
+  // [REDACTED:<kind>] in its place and the caller learns which kinds were removed.
+  const redaction = sanitizedMemory(input.content);
+  const content = redaction.text;
+  const redacted = redaction.categories.length ? { redacted: redaction.categories } : {};
   // C3 fix: check metadata for secrets before persisting
-  assertNoSecrets(JSON.stringify(input.metadata ?? {}), "session_message.metadata");
+  const metadataText = secretFree(JSON.stringify(input.metadata || {}), "session_message.metadata");
 
   const now = nowIso();
 
@@ -138,8 +142,8 @@ export function saveMessage(input: SessionSaveInput) {
           input.session_id,
           input.agent_id,
           input.role,
-          input.content,
-          JSON.stringify(input.metadata || {}),
+          stored(content),
+          stored(metadataText),
           input.token_count ?? null,
           key,
           now,
@@ -149,8 +153,8 @@ export function saveMessage(input: SessionSaveInput) {
           input.session_id,
           input.agent_id,
           input.role,
-          input.content,
-          JSON.stringify(input.metadata || {}),
+          stored(content),
+          stored(metadataText),
           input.token_count ?? null,
           now,
         ];
@@ -162,10 +166,10 @@ export function saveMessage(input: SessionSaveInput) {
       const original = db
         .prepare(`SELECT id, role, content FROM session_messages WHERE session_id = ? AND ingest_uuid = ?`)
         .get(input.session_id, key) as { id: number; role: string; content: string };
-      if (input.message_id && (original.role !== input.role || original.content !== input.content)) {
+      if (input.message_id && (original.role !== input.role || original.content !== content)) {
         throw new QoopiaError("CONFLICT", "message_id was already used for a different message");
       }
-      return { saved: false, duplicate: true, session_id: input.session_id, id: original.id };
+      return { saved: false, duplicate: true, session_id: input.session_id, id: original.id, ...redacted };
     }
 
     const id = Number(info.lastInsertRowid);
@@ -174,7 +178,7 @@ export function saveMessage(input: SessionSaveInput) {
 
     const seqRow = db.prepare(SESSION_MESSAGE_COUNT).get(input.session_id) as { c: number };
 
-    return { saved: true, id, session_id: input.session_id, seq: seqRow.c };
+    return { saved: true, id, session_id: input.session_id, seq: seqRow.c, ...redacted };
   })();
 }
 
@@ -385,7 +389,7 @@ export function sessionSummarize(input: SessionSummarizeInput) {
     throw new QoopiaError("INVALID_INPUT", "level must be between 1 and 10");
   }
 
-  assertNoSecrets(input.content, "summary.content");
+  const summaryText = secretFree(input.content, "summary.content");
   // A summary is derived session content, so it follows the same policy as the messages.
   assertAutomaticMemoryAllowed(input.workspace_id, input.agent_id);
 
@@ -422,7 +426,7 @@ export function sessionSummarize(input: SessionSummarizeInput) {
       `INSERT INTO summaries
         (id, workspace_id, session_id, agent_id, content, msg_start_id, msg_end_id, level, token_count, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, input.workspace_id, input.session_id, input.agent_id, input.content, input.msg_start_id, input.msg_end_id, level, input.token_count ?? null, nowIso());
+    ).run(id, input.workspace_id, input.session_id, input.agent_id, stored(summaryText), input.msg_start_id, input.msg_end_id, level, input.token_count ?? null, nowIso());
     return { saved: true, summary_id: id, range, level };
   })();
 }

@@ -138,7 +138,67 @@ const BASE_SECRET_DETECTORS: SecretDetector[] = [
     label: "ssh-private-key",
     re: /-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----/,
   },
+  // 5.0.23 (Alan's comparison): formats that reached agent transcripts with no detector.
+  {
+    // Google API keys are `AIza` + 35; a clipped key keeps 30.
+    label: "google-api-key",
+    re: /AIza[0-9A-Za-z_-]{30,}/,
+  },
+  {
+    // `<bot id>:<35-char secret>`, as BotFather issues it.
+    label: "telegram-bot-token",
+    re: /\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b/,
+  },
+  {
+    label: "gitlab-pat",
+    re: /glpat-[A-Za-z0-9_-]{20,}/,
+  },
+  {
+    label: "npm-token",
+    re: /\bnpm_[A-Za-z0-9]{30,}/,
+  },
+  {
+    // Letters only after `hf_`: a snake_case identifier (`hf_model_name`) has underscores.
+    label: "huggingface-token",
+    re: /\bhf_[A-Za-z]{30,}\b/,
+  },
+  {
+    // A long hex value labelled as a key, token or secret («api_key: 9f86d0…», «secret=…»). A bare hex string
+    // is a digest or a commit and stays.
+    label: "hex-key",
+    re: /(?:\b(?:api[_-]?key|access[_-]?key|secret|token|private[_-]?key|signing[_-]?key)|(?<!\p{L})(?:ключ|токен|секрет)(?!\p{L}))["']?\s*[:=]\s*["']?[0-9a-fA-F]{32,}\b/iu,
+  },
+  {
+    // A service token of the form <prefix>_<30+ letters and digits> (ai-memory's aim_, and many others) — only
+    // when the payload mixes upper case, lower case and digits, so snake_case identifiers stay.
+    label: "prefixed-token",
+    re: /\b[a-z]{2,10}_(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{30,}\b/,
+  },
+  {
+    // A password written as prose, English or Russian: «DB password is "…"», «пароль: …», «пароль от
+    // почты — …», «пароль такой: …». The value must look like one: quoted, or 6+ characters with a digit
+    // or symbol, so «password is required» and «пароль — смотри в 1Password» stay. References such as
+    // `process.env.X` or `${VAR}` are not values. Only the value is redacted (see PASSWORD_VALUE).
+    label: "password",
+    re: /((?:\b(?:passw(?:or)?d|passphrase|pwd)\b|(?<!\p{L})(?:пароль|пароля|паролем|код доступа)(?!\p{L}))(?:\s+(?:от|для|к|for|of|to)\s+[^\s:=]{1,40})?(?:\s*[:=]\s*|\s+(?:is|was|это|будет|такой(?:-то)?:?|[—–-])\s*))(?!process\.env|os\.environ|env\.|config\.|settings\.|getenv|\$|\{\{)(?:(["'«“])[^"'»”\n]{4,}["'»”]|(?=[^\s"'»”,;]*?[0-9!@#%^&*_+=~-])[^\s"'»”,;]{5,}[^\s"'»”,;.!?:)\]])/iu,
+  },
 ];
+
+/** Long random-looking strings a detector does not name (an unknown provider's key, a session secret).
+ * Hex digests, UUIDs, ULIDs, paths and identifiers stay: the span must be 32+ characters mixing upper,
+ * lower and 3+ digits, without a lowercase run longer than 6 (words and camelCase have them), with
+ * Shannon entropy of at least 4 bits per character. Applied when memory is captured, not to explicit
+ * writes: there it would refuse a whole note over, say, a document id. */
+const ENTROPY_CANDIDATE = /(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{32,256}(?![A-Za-z0-9_+/=-])/g;
+export function highEntropy(token: string): boolean {
+  if (/^[0-9a-f-]+$/i.test(token) || !/[A-Z]/.test(token) || !/[a-z]/.test(token) || (token.match(/[0-9]/g)?.length ?? 0) < 3) return false;
+  if (/[a-z]{7,}/.test(token)) return false;
+  const counts = new Map<string, number>();
+  for (const ch of token) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let bits = 0;
+  for (const n of counts.values()) { const p = n / token.length; bits -= p * Math.log2(p); }
+  return bits >= 4;
+}
 
 function warnSecretPattern(message: string): void {
   console.warn(`[secret-guard] ${message}`);
@@ -223,13 +283,53 @@ function allSecretDetectors(): SecretDetector[] {
   return [...BASE_SECRET_DETECTORS, ...extraSecretDetectors()];
 }
 
+/**
+ * Values the owner declares are not secrets, so no detector cuts or refuses them:
+ * `QOOPIA_SECRET_ALLOWLIST='["sk-test-placeholder", "re:^AIzaSyFAKE"]'` — a literal, or `re:` and a pattern
+ * matched against the whole span a detector found [5.0.23].
+ */
+function allowlist(): Array<(span: string) => boolean> {
+  const raw = process.env.QOOPIA_SECRET_ALLOWLIST || "";
+  if (!raw.trim()) return [];
+  try {
+    const entries = JSON.parse(raw) as unknown;
+    if (!Array.isArray(entries)) throw new Error("not an array");
+    return entries.filter((e): e is string => typeof e === "string" && e.length > 0).flatMap((entry) => {
+      if (!entry.startsWith("re:")) return [(span: string) => span === entry || span.includes(entry)];
+      try { const re = new RegExp(entry.slice(3)); return [(span: string) => re.test(span)]; }
+      catch (err) { warnSecretPattern(`Skipping invalid QOOPIA_SECRET_ALLOWLIST pattern: ${err}`); return []; }
+    });
+  } catch (err) {
+    warnSecretPattern(`Invalid QOOPIA_SECRET_ALLOWLIST; nothing is allowed by it: ${err}`);
+    return [];
+  }
+}
+const allowed = (span: string, list = allowlist()) => list.some((ok) => ok(span));
+
+declare const SANITIZED: unique symbol;
+/** Text that has passed the secret guard. Memory writers (notes, session messages, summaries, AgentComm,
+ * agent-task transcripts) bind only this type into their statements, and only the two functions below make
+ * it, so text that skipped the guard does not compile into a write [5.0.23]. */
+export type Sanitized = string & { readonly [SANITIZED]: true };
+/** An explicit write: a secret refuses it, as before. */
+export function secretFree(text: string, context: string): Sanitized {
+  assertNoSecrets(text, context);
+  return text as Sanitized;
+}
+/** Captured memory and conversation turns: secrets are cut out and their kinds reported. */
+export function sanitizedMemory(text: string): { text: Sanitized; categories: string[] } {
+  const { text: clean, categories } = redactMemory(text);
+  return { text: clean as Sanitized, categories };
+}
+/** The value a write statement binds. Takes only Sanitized, so the compiler checks each write site. */
+export const stored = (text: Sanitized): string => text;
+
 export function detectSecretLabels(text: string): string[] {
   if (!text) return [];
-  const labels: string[] = [];
+  const labels: string[] = [], ok = allowlist();
   for (const detector of allSecretDetectors()) {
-    if (detector.re.test(text)) {
-      labels.push(detector.label);
-    }
+    const re = new RegExp(detector.re.source, detector.re.flags.replace("g", "") + "g");
+    if ([...text.matchAll(re)].some((m) => !allowed(m[0], ok))) labels.push(detector.label);
   }
   return labels;
 }
@@ -249,9 +349,12 @@ export function redactSecretSpans(text: string, seen?: Set<string>): string {
   let clean = text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, () => {
     seen?.add('private-key'); return '[REDACTED:private-key]';
   });
+  const ok = allowlist();
   for (const { label, re } of allSecretDetectors()) {
-    clean = clean.replace(new RegExp(re.source, re.flags.replace('g', '') + 'g'), () => {
-      seen?.add(label); return `[REDACTED:${label}]`;
+    clean = clean.replace(new RegExp(re.source, re.flags.replace('g', '') + 'g'), (match: string, keep?: unknown) => {
+      if (allowed(match, ok)) return match;
+      // The password detector keeps its own words («пароль от почты: ») and loses the value.
+      seen?.add(label); return (label === 'password' && typeof keep === 'string' ? keep : '') + `[REDACTED:${label}]`;
     });
   }
   return clean;
@@ -267,7 +370,11 @@ const CREDENTIAL_PATH = /[\\/](?:\.ssh|\.gnupg|\.aws|\.azure|\.kube|\.docker|key
  * paths of credential files are hidden. */
 export function redactSensitive(text: string, options: { keepPaths?: boolean } = {}): { text: string; categories: string[] } {
   const categories = new Set<string>();
-  const clean = redactSecretSpans(text, categories).replace(/\b(?:password|api_key|secret|token)\s*[:=]\s*["']?[^\s"',;]{8,}/gi, () => {
+  const ok = allowlist();
+  const clean = redactSecretSpans(text, categories).replace(ENTROPY_CANDIDATE, (token: string) => {
+    if (!highEntropy(token) || allowed(token, ok)) return token;
+    categories.add('high-entropy'); return '[REDACTED:high-entropy]';
+  }).replace(/\b(?:password|api_key|secret|token)\s*[:=]\s*["']?[^\s"',;]{8,}/gi, () => {
     categories.add('credential-assignment'); return '[REDACTED:credential-assignment]';
   }).replace(/https?:\/\/[^\s/:]+:[^\s/@]+@[^\s]+/gi, () => {
     categories.add('credential-url'); return '[REDACTED:credential-url]';

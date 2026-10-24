@@ -34,6 +34,7 @@ import {
   createExportPlan,
   materializeExportBundle,
   validateImportPlan,
+  EXPORT_SCHEMA_VERSION,
 } from "../services/export.ts";
 import { seesWholeWorkspace, ADMIN_TYPES, liveActor } from "../auth/principal.ts";
 import { hash } from "../utils/fs.ts";
@@ -557,7 +558,7 @@ const exportTools: ToolDef[] = [
   {
     name: "export_plan",
     risk: "admin",
-    description: "Legacy schema 32 only: build a privileged read-only count and policy plan for the caller's workspace; no row body is returned.",
+    description: "Build a privileged read-only count and policy plan for the caller's workspace on the current schema; no row body is returned.",
     rawSchema: { include_ephemeral: z.boolean().default(false) },
     handler: (args, auth) => {
       requireExportAdmin(auth);
@@ -575,7 +576,7 @@ const exportTools: ToolDef[] = [
   {
     name: "export_bundle",
     risk: "admin",
-    description: "Legacy schema 32 only: generate a signed high-sensitivity export inside the sanctioned root and return only opaque identifiers and hashes.",
+    description: "Generate a signed high-sensitivity export of the caller's workspace on the current schema inside the sanctioned root; returns only opaque identifiers and hashes.",
     rawSchema: {
       plan_hash: z.string().regex(/^[0-9a-f]{64}$/),
       idempotency_key: z.string().min(8).max(200),
@@ -601,7 +602,7 @@ const exportTools: ToolDef[] = [
   {
     name: "import_plan",
     risk: "admin",
-    description: "Legacy schema 32 only: validate one sanctioned export artifact for this workspace. Import apply is never an MCP operation.",
+    description: "Validate one sanctioned export artifact (current schema) for this workspace. Import apply is never an MCP operation.",
     rawSchema: {
       artifact_id: z.string().min(1).max(200),
       target_workspace_id: z.string().min(1),
@@ -636,7 +637,7 @@ function currentSchemaVersion(): number | null {
 }
 
 export function enabledV4Tools(schemaVersion: number | null = currentSchemaVersion()): ToolDef[] {
-  const enabled: ToolDef[] = schemaVersion === 32 ? [...exportTools] : [];
+  const enabled: ToolDef[] = schemaVersion === EXPORT_SCHEMA_VERSION ? [...exportTools] : [];
   if (process.env.QOOPIA_V4_RELATIONS === "true") enabled.push(...relationTools);
   if (process.env.QOOPIA_V4_EXTRACTION === "true") enabled.push(...extractionTools);
   if (process.env.QOOPIA_V4_RECALL_EXPLAIN === "true") enabled.push(recallTools[0]!);

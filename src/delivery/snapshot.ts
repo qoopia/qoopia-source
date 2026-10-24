@@ -10,7 +10,7 @@ import { hash, privateDirectory, durableWrite, durableCopyFile, readJson, readJs
 import { tableExists } from '../db/introspect.ts';
 
 /** Schemas a unified snapshot can carry. One list: backup, retention and restore read it from here. */
-const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53] as const;
+const UNIFIED_SNAPSHOT_SCHEMAS=[37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55] as const;
 export const unifiedSnapshotSchema=(schema:number)=>(UNIFIED_SNAPSHOT_SCHEMAS as readonly number[]).includes(schema);
 
 export function inspectSnapshot(database: Database, format: LogicalHashFormat = 1) {

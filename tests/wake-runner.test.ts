@@ -16,7 +16,7 @@ import { db } from "../src/db/connection.ts";
 import { agentSend } from "../src/services/agent-comm.ts";
 import { drainAgentWakeQueue } from "../src/services/agent-wake.ts";
 import { wakeReply } from "../src/services/wake-reply.ts";
-import { WakeRunner, addWakeRunnerAgent, executableReplaced, wakePrompt, loadWakeRunnerConfig, wakeRunnerServerEnv, wakeRunnerService, loadService, type WakeRunnerConfig } from "../src/delivery/wake-runner.ts";
+import { WakeRunner, addWakeRunnerAgent, executableReplaced, wakePrompt, loadWakeRunnerConfig, wakeRunnerServerEnv, wakeRunnerService, loadService, qoopiaMcpServers, runtimeCommand, type WakeRunnerConfig } from "../src/delivery/wake-runner.ts";
 
 let ws = "", alice = "", bob = "", carol = "";
 const SECRET_A = "a".repeat(40), SECRET_B = "b".repeat(40);
@@ -298,4 +298,37 @@ test('a reinstall waits for launchd to let the old job go instead of leaving the
   expect(calls).toEqual(['bootout', 'bootstrap', 'bootstrap', 'bootstrap']);
   // Any other bootstrap failure is reported at once, not retried.
   expect(() => loadService(load, '/x.plist', () => ({ status: 1, stderr: 'Bootstrap failed: 37: Operation already in progress' }), () => {})).toThrow('bootstrap failed');
+});
+
+test('a woken turn loses agent_send/agent_reply on the Qoopia server whatever the client calls it', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'qoopia-wr-names-')), cwd = path.join(home, 'work');
+  fs.mkdirSync(cwd);
+  const server = 'https://memory.example.test';
+  // Claude: a user-scope entry named by the owner, a project-local entry by its address only, a stdio
+  // client of the Qoopia binary and an unrelated server.
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
+    mcpServers: { qoopia: { type: 'http', url: server + '/mcp?profile=full' }, github: { command: '/bin/gh-mcp' } },
+    projects: { [cwd]: { mcpServers: { 'my memory': { type: 'http', url: server + '/mcp/c/abc' } } } },
+  }));
+  fs.writeFileSync(path.join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { local: { command: '/opt/q/qoopia', args: ['mcp'] } } }));
+  const env = { HOME: home } as NodeJS.ProcessEnv;
+  const claudeNames = qoopiaMcpServers('claude_code', cwd, server, env);
+  expect(claudeNames.sort()).toEqual(['local', 'my memory', 'qoopia']);
+  const agent = { agent_id: 'A', name: 'a', path: '/hooks/a', secret: 'x'.repeat(40), runtime: 'claude_code' as const, command: '/bin/claude', cwd, isolated: false, timeout_seconds: 60 };
+  const claude = runtimeCommand(agent, undefined, '/tmp/last', claudeNames).args;
+  const blocked = claude.slice(claude.indexOf('--disallowedTools') + 1);
+  for (const s of ['qoopia', 'my_memory', 'local', 'qoopia_memory']) expect(blocked).toEqual(expect.arrayContaining([`mcp__${s}__agent_send`, `mcp__${s}__agent_reply`]));
+  expect(blocked.some((t) => t.includes('github'))).toBe(false);
+
+  // Codex: the server from config.toml, under its own name.
+  fs.mkdirSync(path.join(home, '.codex'));
+  fs.writeFileSync(path.join(home, '.codex', 'config.toml'), `[mcp_servers.qoopia]\nurl = "${server}/mcp"\n[mcp_servers.docs]\nurl = "https://docs.example.test/mcp"\n`);
+  const codexNames = qoopiaMcpServers('codex', cwd, server, env);
+  expect(codexNames).toEqual(['qoopia']);
+  const codex = runtimeCommand({ ...agent, runtime: 'codex' }, undefined, '/tmp/last', codexNames).args;
+  expect(codex).toEqual(expect.arrayContaining(['-c', 'mcp_servers.qoopia.disabled_tools=["agent_send","agent_reply"]']));
+  expect(codex.join(' ')).not.toContain('mcp_servers.docs');
+  // An isolated turn loads no user MCP server at all, so it gets no override that would define one.
+  expect(runtimeCommand({ ...agent, runtime: 'codex', isolated: true }, undefined, '/tmp/last', codexNames).args.join(' ')).not.toContain('disabled_tools');
+  fs.rmSync(home, { recursive: true, force: true });
 });

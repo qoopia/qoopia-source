@@ -48,7 +48,7 @@ function owner(ownerId:string){const auth=localOwner(db,ownerId);authorize(db,au
 export function memorySetupState(ownerId:string) {
   const auth=owner(ownerId),login=logins.get(auth.workspace_id);
   const sessions=db.query(`SELECT COUNT(*) AS tracked,COUNT(n.id) AS summarized FROM sessions s LEFT JOIN notes n
-    ON n.session_id=s.id AND n.agent_id=s.agent_id AND n.workspace_id=s.workspace_id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL
+    ON n.session_id=s.id AND n.agent_id=s.agent_id AND n.workspace_id=s.workspace_id AND n.source='qoopia-continuity' AND n.deleted_at IS NULL AND n.invalidated_at_ms IS NULL
     WHERE s.workspace_id=? AND json_extract(s.metadata,'$.continuity_enabled')=1`).get(auth.workspace_id);
   return {model:memoryModelStatus(auth.workspace_id),embedding:embeddingCoverage(auth.workspace_id),sessions,busy:busy.has(auth.workspace_id)||operations.get(auth.workspace_id)?.state==='running',operation:operations.get(auth.workspace_id)??null,
     login:login?{state:login.state,url:login.url,code:login.code}:null,

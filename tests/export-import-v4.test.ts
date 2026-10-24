@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, generateKeyPairSync, sign as signBytes } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { applyMigrationsToDatabase } from "../src/db/v4-migrations.ts";
+import { p1Database } from "./helpers/p1-fixtures.ts";
 import { configureWritableDatabase } from "../src/db/sqlite.ts";
 import {
   clearExportPlanCacheForTests,
@@ -12,19 +12,27 @@ import {
   createExportPlan,
   materializeExportBundle,
   validateImportPlan,
+  EXPORT_SCHEMA_VERSION,
 } from "../src/services/export.ts";
 import { createVerifiedBackup, rehearseRestore } from "../src/services/backup.ts";
 
 const roots: string[] = [];
-const MIGRATIONS = path.resolve(import.meta.dir, "..", "migrations");
+
+/** A database file at the current schema, built from the migration files like the other fixtures. */
+function currentSchemaFile(filename: string): Database {
+  const memory = p1Database(EXPORT_SCHEMA_VERSION);
+  fs.writeFileSync(filename, memory.serialize());
+  memory.close();
+  const db = new Database(filename);
+  configureWritableDatabase(db);
+  return db;
+}
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "qoopia-p08-export-"));
   roots.push(root);
   const filename = path.join(root, "source.db");
-  const db = new Database(filename, { create: true });
-  configureWritableDatabase(db);
-  applyMigrationsToDatabase(db, { migrationsDir: MIGRATIONS, targetVersion: 32 });
+  const db = currentSchemaFile(filename);
   db.query("INSERT INTO workspaces (id,name,slug,settings) VALUES ('ws-p08','P08','p08','{}')").run();
   db.query(
     `INSERT INTO agents (id,workspace_id,name,type,api_key_hash,metadata,tool_profile)
@@ -46,14 +54,14 @@ afterEach(() => {
 });
 
 describe("P08 export/import and DR", () => {
-  test("complete schema-32 bundle is checksummed, signed, 0600, and plans as no-op", () => {
+  test("a complete bundle of the current schema is checksummed, signed, 0600, and plans as no-op", () => {
     const f = fixture();
     const signer = { private_key: f.privatePem };
     const plan = createExportPlan({
       workspace_id: "ws-p08", actor_id: "agent-owner", release_sha: "p08-test-sha", signer, database: f.db,
     });
-    expect(plan.schema_version).toBe(32);
-    expect(Object.keys(plan.policies)).toHaveLength(40);
+    expect(plan.schema_version).toBe(EXPORT_SCHEMA_VERSION);
+    expect(Object.keys(plan.policies)).toHaveLength(93);
     expect(plan.counts.notes).toBe(1);
     const bundle = materializeExportBundle({
       plan_hash: plan.plan_hash,
@@ -81,7 +89,7 @@ describe("P08 export/import and DR", () => {
     });
     expect(replay).toEqual(bundle);
     const manifest = JSON.parse(fs.readFileSync(path.join(bundle.output_dir, "manifest.json"), "utf8"));
-    expect(manifest.tables).toHaveLength(40);
+    expect(manifest.tables).toHaveLength(93);
     expect(manifest.tables.find((row: any) => row.name === "oauth_tokens").path).toBeNull();
     expect(manifest.tables.find((row: any) => row.name === "notes").row_count).toBe(1);
     const result = validateImportPlan({
@@ -101,9 +109,7 @@ describe("P08 export/import and DR", () => {
       trust_store: { [bundle.signature_key_id]: f.publicPem },
       database: f.db,
     })).toEqual(result);
-    const target = new Database(path.join(f.root, "empty-target.db"), { create: true });
-    configureWritableDatabase(target);
-    applyMigrationsToDatabase(target, { migrationsDir: MIGRATIONS, targetVersion: 32 });
+    const target = currentSchemaFile(path.join(f.root, "empty-target.db"));
     const freshPlan = validateImportPlan({
       bundle_dir: bundle.output_dir,
       artifact_id: bundle.artifact_id,
@@ -133,9 +139,7 @@ describe("P08 export/import and DR", () => {
       actor_id: "agent-owner", release_sha: "p08-refs", source_instance_id: "scratch", signer,
       export_root: path.join(f.root, "exports"), database: f.db,
     });
-    const target = new Database(path.join(f.root, "refs-target.db"), { create: true });
-    configureWritableDatabase(target);
-    applyMigrationsToDatabase(target, { migrationsDir: MIGRATIONS, targetVersion: 32 });
+    const target = currentSchemaFile(path.join(f.root, "refs-target.db"));
     const result = validateImportPlan({
       bundle_dir: bundle.output_dir, artifact_id: bundle.artifact_id, target_workspace_id: "ws-p08",
       trust_store: { [bundle.signature_key_id]: f.publicPem }, database: target,
@@ -174,9 +178,7 @@ describe("P08 export/import and DR", () => {
       actor_id: "agent-owner", release_sha: "p08-identity", source_instance_id: "scratch",
       signer, export_root: path.join(f.root, "exports"), database: f.db,
     });
-    const target = new Database(path.join(f.root, "identity-target.db"), { create: true });
-    configureWritableDatabase(target);
-    applyMigrationsToDatabase(target, { migrationsDir: MIGRATIONS, targetVersion: 32 });
+    const target = currentSchemaFile(path.join(f.root, "identity-target.db"));
     target.query("INSERT INTO workspaces (id,name,slug) VALUES ('ws-other','Other','other')").run();
     target.query(
       `INSERT INTO agents (id,workspace_id,name,type,api_key_hash,metadata,tool_profile)

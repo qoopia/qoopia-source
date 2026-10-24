@@ -47,6 +47,17 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
     db.query('DELETE FROM profile_pending WHERE expires<=?').run(Date.now());
     db.query('DELETE FROM profile_news_pending WHERE hash NOT IN (SELECT hash FROM profile_pending)').run();
   };
+  // Apple 5.1.1(v): deleting the account removes identity, sessions, saved address, news records and pending sign-ins.
+  // External connections are revoked (provider routes are removed by maintenance) and remain only as tombstones.
+  const erase=db.transaction((account:{id:string;email:string})=>{
+    const exists=(table:string)=>!!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+    for(const table of ['profile_sessions','profile_dashboards','account_activity','news_preferences','news_consents','news_deliveries','connection_device_grants'])
+      if(exists(table))db.query(`DELETE FROM ${table} WHERE account_id=?`).run(account.id);
+    if(exists('connection_devices'))db.query("UPDATE connection_devices SET state='revoked',revoked_at=COALESCE(revoked_at,?) WHERE account_id=? AND state!='revoked'").run(Date.now(),account.id);
+    db.query('DELETE FROM account_handoffs WHERE email=?').run(account.email);
+    if(exists('login_requests'))db.query('DELETE FROM login_requests WHERE email=?').run(account.email);
+    db.query('DELETE FROM connection_accounts WHERE id=?').run(account.id);
+  });
   const busy=new Set<string>();
   const json=(status:number,body:unknown)=>Response.json(body,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
   const current=(req:Request)=>db.query(`SELECT a.id,a.email,a.google_sub,d.url FROM profile_sessions s JOIN connection_accounts a ON a.id=s.account_id
@@ -70,11 +81,11 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       if(url.searchParams.get('app')==='ios'){
         const id=url.searchParams.get('request');
         if(id&&(!/^[A-Za-z0-9_-]{43}$/.test(id)||!handoff.get(id)))return page(ru?'Вход истёк':'Sign-in expired',`<a href="/profile?app=ios">${ru?'Вернуться в Qoopia':'Return to Qoopia'}</a>`,'',410,ru?'ru':'en');
-        return appProfileView(page,ru,account,pendingOpen(req),id);
+        return appProfileView(page,ru,account,pendingOpen(req),id,url.searchParams.get('delete')==='1');
       }
       let suggested='';try{suggested=dashboardAddress(url.searchParams.get('dashboard'));}catch{/* Untrusted URL is never reflected without validation. */}
       const preference=account?news.preference(account.id):null;
-      return profileView(page,ru,account,suggested,pendingOpen(req),{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id});
+      return profileView(page,ru,account,suggested,pendingOpen(req),{subscribed:!!preference?.subscribed&&preference.email===account?.email,owner:!!account&&ownerOptions.accountId===account.id,deleting:url.searchParams.get('delete')==='1'});
     }
     if(req.method==='GET'&&url.pathname==='/profile/device'){
       const ru=(url.searchParams.get('lang')??req.headers.get('cookie')?.match(/(?:^|;\s*)qoopia_language=(en|ru)(?:;|$)/)?.[1]??(req.headers.get('accept-language')?.startsWith('ru')?'ru':'en'))==='ru';
@@ -152,6 +163,15 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
         else db.query('INSERT INTO profile_dashboards VALUES (?,?) ON CONFLICT(account_id) DO UPDATE SET url=excluded.url').run(account.id,dashboardAddress(body.url));
         record({kind:'profile_saved',outcome:'ok'});
         return json(200,{ok:true});
+      }
+      if(url.pathname==='/profile/delete'){
+        if(body.confirm!==true)return json(400,{error:'INVALID_REQUEST'});
+        // The service owner's account designates the owner portal; it is never removed from a web page.
+        if(ownerOptions.accountId===account.id)return json(409,{error:'OWNER_ACCOUNT'});
+        erase(account);
+        db.query('DELETE FROM profile_pending WHERE hash=?').run(hash(cookie(req,pendingName)));
+        record({kind:'profile_deleted',outcome:'ok'});
+        const out=json(200,{ok:true});out.headers.append('set-cookie',setCookie(sessionName,'',0));out.headers.append('set-cookie',setCookie(pendingName,'',0));return out;
       }
       if(url.pathname==='/profile/logout'){
         db.query('DELETE FROM profile_sessions WHERE hash=?').run(hash(cookie(req,sessionName)));

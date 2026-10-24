@@ -32,7 +32,8 @@ ARG QOOPIA_GIT_SHA
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates bubblewrap procps && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /app && dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' > /app/os-packages.txt && chmod 0444 /app/os-packages.txt
 WORKDIR /app
-COPY package.json bun.lock ./
+# A private checkout may be mode 0600: the final USER bun must still read its manifest.
+COPY --chmod=0444 package.json bun.lock ./
 COPY --from=verify /prod/node_modules ./node_modules
 COPY --from=verify /app/src ./src
 COPY --from=verify /app/migrations ./migrations
@@ -75,4 +76,6 @@ LABEL org.opencontainers.image.title="Qoopia" \
   org.opencontainers.image.created="${QOOPIA_CREATED}" \
   org.opencontainers.image.revision="${QOOPIA_GIT_SHA}"
 USER bun
+# Exercise the final user and package lookup before accepting the runtime image.
+RUN bun -e 'const p = await Bun.file("package.json").json(); if (typeof p.scripts?.start !== "string") throw new Error("Runtime start script missing"); await Bun.file("src/release-entry.ts").text();'
 CMD ["bun", "run", "start"]

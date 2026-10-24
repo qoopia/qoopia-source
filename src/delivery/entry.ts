@@ -144,6 +144,7 @@ async function main(){
    const input=await Bun.stdin.text();if(input.length>2*1024*1024)throw new Error('Hook input too large');
    const output=await runMemoryHook(need('config'),JSON.parse(input));if(output)console.log(JSON.stringify(output));return;
  }
+ if(cmd==='memory-drain'){const {drainMemoryBacklog}=await import('./memory-client.ts');emit(await drainMemoryBacklog(need('config')));return;}
  if(cmd==='wake-runner'){const {wakeRunnerCli}=await import('./wake-runner.ts');await wakeRunnerCli(argv,arg,flag);return;}
  if(cmd==='hermes-sync'){const {hermesSyncCli}=await import('./hermes-sync.ts');await hermesSyncCli(argv,arg,flag,platformPaths(arg('root')).root);return;}
  if(cmd==='client-link'){
@@ -256,10 +257,10 @@ async function main(){
    // The server itself is only probed for reachability (read-only /health, no credentials).
    const local=fs.existsSync(path.join(root,'current.json'))?'inactive':'absent',server=await probeServerWorkspace(remote),reachable=server==='reachable';
    // The hooks still run on this computer and deliver to the server: their failures are only visible here.
-   const {memoryClientsCheck}=await import('./memory-client.ts'),{wakeRunnerHealth}=await import('./wake-runner.ts'),{cliCommandCheck}=await import('./doctor-checks.ts');
+   const {memoryClientsCheck,memoryServerAnswers}=await import('./memory-client.ts'),{wakeRunnerHealth}=await import('./wake-runner.ts'),{cliCommandCheck}=await import('./doctor-checks.ts');
    // The wake runner and the command line also live on this computer, whatever server it opens.
    let wake_runner;try{wake_runner=wakeRunnerHealth(root);}catch{wake_runner={status:'unknown' as const,reason:'CHECK_UNREADABLE',action:'Rerun doctor; the wake runner files could not be read.'};}
-   const report={state:'SERVER_WORKSPACE',url:remote,data_location:'server',local_installation:local,server,memory_clients:memoryClientsCheck(root),wake_runner,cli_command:cliCommandCheck(root),
+   const report={state:'SERVER_WORKSPACE',url:remote,data_location:'server',local_installation:local,server,memory_clients:memoryClientsCheck(root,undefined,await memoryServerAnswers(root)),wake_runner,cli_command:cliCommandCheck(root),
      next_action:(reachable?'Memory runs on your Qoopia server: check its status in that dashboard, or run qoopia doctor where the server runs.':
        server==='unreachable'?'Your Qoopia server did not answer from this computer. Check the network and that the server is running, then run doctor again.':
        'The selected address does not answer as a Qoopia server. Select the right server with qoopia use-server --url https://YOUR-SERVER --commit.')+

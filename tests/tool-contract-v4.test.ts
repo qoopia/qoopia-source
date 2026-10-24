@@ -9,6 +9,7 @@ import { createNoteRelation } from "../src/services/note-relations.ts";
 import { createExtractionRun } from "../src/services/extraction.ts";
 import { createRecallTrace, type RecallDiagnosticItem } from "../src/services/recall-traces.ts";
 import { enabledV4Tools, V4_TOOL_NAMES } from "../src/mcp/v4-tools.ts";
+import { EXPORT_SCHEMA_VERSION } from "../src/services/export.ts";
 
 const FLAGS = [
   "QOOPIA_V4_RELATIONS",
@@ -72,7 +73,10 @@ describe("P05 frozen tool contract", () => {
       "recall_feedback",
       "recall_trace_get",
     ]);
-    expect(enabledV4Tools().map(({ name, risk }) => [name, risk])).toEqual([
+    // 5.0.23: on the current schema the workspace transfer tools are listed too; an older schema omits them.
+    expect(enabledV4Tools(EXPORT_SCHEMA_VERSION).slice(0, 3).map(({ name, risk }) => [name, risk])).toEqual([
+      ["export_plan", "admin"], ["export_bundle", "admin"], ["import_plan", "admin"]]);
+    expect(enabledV4Tools(37).map(({ name, risk }) => [name, risk])).toEqual([
       ["note_relation_list", "read"],
       ["note_supersede", "write-destructive"],
       ["extraction_preview", "write-low"],
@@ -85,7 +89,7 @@ describe("P05 frozen tool contract", () => {
   });
 
   test("P08 export tools fail closed without owner/steward, full profile, and OAuth admin scope", () => {
-    const handler = tool("export_plan", 32).handler;
+    const handler = tool("export_plan", EXPORT_SCHEMA_VERSION).handler;
     expect(() => handler({ include_ephemeral: false }, {
       ...auth,
       type: "standard",

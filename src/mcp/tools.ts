@@ -39,6 +39,7 @@ import { adminTools } from "./admin-tools.ts";
 import { entityTools } from "./entity_tools.ts";
 import { skillTools } from "./skill_tools.ts";
 import { canonTools } from "./canon-tools.ts";
+import { workTools } from "./work-tools.ts";
 import { fileList, fileGet, filePut } from "../services/files.ts";
 import { assertInstanceWriteAllowed, isReadOnlyInstance } from "../utils/instance-role.ts";
 import { enabledV4Tools } from "./v4-tools.ts";
@@ -847,6 +848,7 @@ if (process.env.QOOPIA_SKILLS === "true") {
 
 // Canon: rules loaded into context by the server (5.0.21). Always on: brief, hooks and wakes use it too.
 tools.push(...canonTools);
+tools.push(...workTools);
 
 // V4 tools are canonical and additive, but each bounded context stays absent
 // until its explicit feature flag is enabled. Export/import bindings are owned
