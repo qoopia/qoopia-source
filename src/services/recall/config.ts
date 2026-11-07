@@ -190,3 +190,47 @@ export function passageForRerank(text: string, query: string, maxChars: number):
 export function rerankMaxDocChars(): number {
   return Number(process.env.QOOPIA_RERANK_MAX_DOC_CHARS || 2000);
 }
+
+/**
+ * Demotion of type='context' notes in ordinary recall (see context-demotion.ts).
+ * Factor multiplies the positional score 1/(k+i): 1 disables it, 0.85 moves a
+ * first-place summary to about twelfth. The cap keeps at most N summaries in the
+ * first `window` positions; a negative cap disables it.
+ */
+export function contextDemotionFactor(): number {
+  const value = Number(process.env.QOOPIA_RECALL_CONTEXT_FACTOR ?? 0.85);
+  return Number.isFinite(value) && value > 0 ? Math.min(value, 1) : 1;
+}
+export function contextTopCap(): number {
+  const value = Number(process.env.QOOPIA_RECALL_CONTEXT_CAP ?? 2);
+  return Number.isInteger(value) ? value : 2;
+}
+export function contextCapWindow(): number {
+  const value = Number(process.env.QOOPIA_RECALL_CONTEXT_WINDOW ?? 10);
+  return Number.isInteger(value) && value > 0 ? value : 10;
+}
+/** Whose summaries move down: "others" keeps the caller's own in place, "all" moves every one. */
+export function contextDemotionScope(): "others" | "all" {
+  return process.env.QOOPIA_RECALL_CONTEXT_SCOPE === "all" ? "all" : "others";
+}
+
+/**
+ * low_confidence thresholds (see confidence.ts). A call is flagged when the best
+ * term coverage of the top N results is below COVERAGE and their best cosine is
+ * below COSINE. The cosine scale belongs to the embedder: the default fits the
+ * builtin multilingual-e5-small; 0 ignores the vector signal. Defaults were picked on the
+ * recall eval (synthetic + answerless questions; real queries held out): the most answerless
+ * questions flagged with no correct first answer flagged (benchmarks/recall-eval/results).
+ */
+export function lowConfidenceCoverage(): number {
+  const value = Number(process.env.QOOPIA_RECALL_LOW_CONF_COVERAGE ?? 0.6);
+  return Number.isFinite(value) ? value : 0.6;
+}
+export function lowConfidenceCosine(): number {
+  const value = Number(process.env.QOOPIA_RECALL_LOW_CONF_COSINE ?? 0.86);
+  return Number.isFinite(value) ? value : 0.86;
+}
+export function lowConfidenceTopN(): number {
+  const value = Number(process.env.QOOPIA_RECALL_LOW_CONF_TOP_N ?? 3);
+  return Number.isInteger(value) && value > 0 ? value : 3;
+}

@@ -285,6 +285,22 @@ function inPredecessors(workspace:string,agent:string,first:unknown,messages:{id
   }
   return found;
 }
+/** Record ids unique beyond one transcript: a Claude Code record uuid, or the client's hash of role, content and
+ * original timestamp for a record without one. Offsets and Hermes row numbers repeat across files and stay per session. */
+const NATIVE_RECORD=/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|h:[0-9a-f]{64}):/i;
+/** Which of these records another session of this agent already holds, and where. Resume, fork and a process
+ * restart all open a new session id whose transcript starts with a copy of the earlier one, even while that
+ * one is still running, so no predecessor link can be relied on to find it [5.0.24]. */
+function storedElsewhere(workspace:string,agent:string,session:string,messages:{id:string}[]) {
+  const found=new Map<string,string>(),ids=messages.map(m=>m.id).filter(id=>NATIVE_RECORD.test(id));
+  for(let i=0;i<ids.length;i+=400) {
+    const page=ids.slice(i,i+400);
+    const rows=db.query(`SELECT ingest_uuid,session_id FROM session_messages WHERE workspace_id=? AND agent_id=? AND session_id!=?
+      AND ingest_uuid IN (${page.map(()=>'?').join(',')}) ORDER BY id`).all(workspace,agent,session,...page) as {ingest_uuid:string;session_id:string}[];
+    for(const row of rows)if(!found.has(row.ingest_uuid))found.set(row.ingest_uuid,row.session_id);
+  }
+  return found;
+}
 export function continuityEvent(workspace:string,agent:string,raw:unknown) {
   const event=continuityEventSchema.parse(raw);
   // Manual keeps reading and restoring available while recording nothing new: the hook
@@ -351,9 +367,19 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
         new Date().toISOString(),event.session_id);
     if(event.capture_error)db.query("UPDATE sessions SET metadata=json_set(metadata,'$.capture_error',?) WHERE id=?").run(event.capture_error,event.session_id);
     else db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.capture_error') WHERE id=?").run(event.session_id);
+    const elsewhere=storedElsewhere(workspace,agent,event.session_id,fresh);
+    // A session that opens with such a copy continues the one it was copied from: linked, restore and handoff
+    // follow that history. A link the client already proved stays, and the source keeps an earlier successor.
+    const opening=fresh.find(m=>NATIVE_RECORD.test(m.id)),source=opening&&elsewhere.get(opening.id);
+    if(source&&!metadata.continuity_previous&&!db.query('SELECT 1 FROM session_messages WHERE session_id=? LIMIT 1').get(event.session_id)) {
+      db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_previous',?,'$.continuity_copied_from',?) WHERE id=?").run(source,source,event.session_id);
+      db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_successor',?) WHERE id=? AND json_extract(metadata,'$.continuity_successor') IS NULL")
+        .run(event.session_id,source);
+      metadata.continuity_previous=source;
+    }
     const copied=inPredecessors(workspace,agent,metadata.continuity_previous,fresh);
     for(const message of fresh) {
-      if(copied.has(message.id))continue;
+      if(copied.has(message.id)||elsewhere.has(message.id))continue;
       const content=redactMemory(message.content).text;
       if(content.trim())saveMessage({workspace_id:workspace,agent_id:agent,session_id:event.session_id,role:message.role,content,
         ingest_uuid:message.id,metadata:{native_timestamp:message.timestamp??null}});

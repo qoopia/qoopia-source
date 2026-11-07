@@ -1,4 +1,6 @@
 import {beforeAll,expect,test} from 'bun:test';
+import fs from 'node:fs';
+import path from 'node:path';
 import {runMigrations} from '../src/db/migrate.ts';
 import {db} from '../src/db/connection.ts';
 import {createWorkspace} from '../src/admin/workspaces.ts';
@@ -144,6 +146,67 @@ test('a resumed conversation written to a new transcript does not store its earl
     messages:[turn('r-a:0:0','первый'),turn('r-b:0:0','второй'),turn('r-c:0:0','третий'),turn('r-d:0:0','четвёртый')]});
   expect([count('claude_code:resume-1'),count('claude_code:resume-2'),count('claude_code:resume-3')]).toEqual([2,1,1]);
   expect(restoreContext(workspace,agent,'claude_code:resume-3').tail.map(m=>m.content)).toEqual(['первый','второй','третий','четвёртый']);
+});
+test('a copy of another session’s history under a new session id is stored once and linked to its source, without any predecessor hint [5.0.24]',()=>{
+  const uuid=(n:number)=>`0000000${n}-aaaa-4bbb-8ccc-dddddddddddd`;
+  const turn=(id:string,content:string,role:'user'|'assistant'='user')=>({id,role,content});
+  const count=(session:string)=>(db.query('SELECT COUNT(*) AS n FROM session_messages WHERE session_id=?').get(session) as {n:number}).n;
+  const meta=(id:string)=>JSON.parse((db.query('SELECT metadata FROM sessions WHERE id=?').get(id) as {metadata:string}).metadata);
+  const history=[turn(uuid(1)+':0:0','есть доступ к Corsair?'),turn(uuid(2)+':0:0','Да, доступ есть.','assistant'),turn('h:'+'e'.repeat(64)+':0:0','без uuid')];
+  continuityEvent(workspace,agent,{session_id:'claude_code:copy-src',project:'/copy',runtime:'claude_code',event:'progress',messages:history});
+  // The process restarts while the source still runs: no previous_session_id, a new id, the history copied first.
+  const resumed={session_id:'claude_code:copy-new',project:'/copy',runtime:'claude_code',event:'progress',messages:[...history,turn(uuid(3)+':0:0','что дальше?')]};
+  continuityEvent(workspace,agent,{...resumed,event:'start',messages:[]});
+  continuityEvent(workspace,agent,resumed);continuityEvent(workspace,agent,resumed);
+  expect([count('claude_code:copy-src'),count('claude_code:copy-new')]).toEqual([3,1]);
+  expect(meta('claude_code:copy-new')).toMatchObject({continuity_previous:'claude_code:copy-src',continuity_copied_from:'claude_code:copy-src'});
+  expect(meta('claude_code:copy-src').continuity_successor).toBe('claude_code:copy-new');
+  expect(restoreContext(workspace,agent,'claude_code:copy-new').tail.map(m=>m.content)).toEqual(['есть доступ к Corsair?','Да, доступ есть.','без uuid','что дальше?']);
+  // The source keeps running: its own new turn is stored; a second copy opened from it keeps the first successor.
+  continuityEvent(workspace,agent,{session_id:'claude_code:copy-src',project:'/copy',runtime:'claude_code',event:'progress',messages:[turn(uuid(4)+':0:0','ещё в исходной')]});
+  continuityEvent(workspace,agent,{session_id:'claude_code:copy-fork',project:'/copy',runtime:'claude_code',event:'progress',messages:[...history,turn(uuid(5)+':0:0','ветка')]});
+  expect([count('claude_code:copy-src'),count('claude_code:copy-fork')]).toEqual([4,1]);
+  expect(meta('claude_code:copy-fork').continuity_previous).toBe('claude_code:copy-src');
+  expect(meta('claude_code:copy-src').continuity_successor).toBe('claude_code:copy-new');
+  // A predecessor the client proved stays; copies from elsewhere are still dropped.
+  continuityEvent(workspace,agent,{session_id:'claude_code:copy-proved',project:'/copy',runtime:'claude_code',event:'start',previous_session_id:'claude_code:copy-fork',
+    messages:[history[0]!,turn(uuid(6)+':0:0','своё')]});
+  expect(count('claude_code:copy-proved')).toBe(1);expect(meta('claude_code:copy-proved').continuity_previous).toBe('claude_code:copy-fork');
+  // Ids that repeat across files (a line offset, a Hermes row) never count as copies; another agent stores its own.
+  continuityEvent(workspace,agent,{session_id:'claude_code:offset-a',project:'/copy',runtime:'claude_code',event:'progress',messages:[turn('0:0:0','a')]});
+  continuityEvent(workspace,agent,{session_id:'claude_code:offset-b',project:'/copy',runtime:'claude_code',event:'progress',messages:[turn('0:0:0','b')]});
+  continuityEvent(workspace,other,{session_id:'claude_code:copy-other',project:'/copy',runtime:'claude_code',event:'progress',messages:history});
+  expect([count('claude_code:offset-a'),count('claude_code:offset-b'),count('claude_code:copy-other')]).toEqual([1,1,3]);
+  expect(meta('claude_code:offset-b').continuity_previous).toBeUndefined();expect(meta('claude_code:copy-other').continuity_previous).toBeUndefined();
+});
+test('kill and resume of a Claude Code session through the hooks adds no rows for the replayed history, only the new turns [5.0.24]',async()=>{
+  const {installMemoryClient,runMemoryHook}=await import('../src/delivery/memory-client.ts');
+  const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-resume-dedupe-')),home=path.join(root,'home'),logs=path.join(home,'.claude/projects/p');
+  fs.mkdirSync(logs,{recursive:true,mode:0o700});
+  const server=Bun.serve({port:0,async fetch(req){
+    if(new URL(req.url).pathname!=='/memory/continuity')return new Response('',{status:404});
+    return Response.json(continuityEvent(workspace,agent,await req.json()));}});
+  const count=(session:string)=>(db.query('SELECT COUNT(*) AS n FROM session_messages WHERE session_id=?').get(session) as {n:number}).n;
+  // Claude Code copies each record into the resumed transcript under its uuid and original time, with the new sessionId.
+  const record=(sessionId:string,n:number,type:'user'|'assistant',text:string,uuid=true)=>JSON.stringify({type,sessionId,timestamp:`2026-10-26T20:0${n}:00.000Z`,
+    ...(uuid?{uuid:`1111111${n}-aaaa-4bbb-8ccc-dddddddddddd`}:{}),message:{role:type,content:type==='user'?text:[{type:'text',text}]}})+'\n';
+  const lines=(id:string)=>record(id,1,'user','проверь бэкап')+record(id,2,'assistant','Бэкап проверен.')+record(id,3,'user','без uuid',false);
+  try {
+    installMemoryClient({format:'qoopia-memory-connection/1',url:`http://127.0.0.1:${server.port}`,agent_id:'fixture',key:'q_fixturekey',runtime:'claude_code'},root,process.execPath,home);
+    const file=path.join(root,'memory-clients/claude_code/connection.json'),first=path.join(logs,'kill-1.jsonl'),second=path.join(logs,'kill-2.jsonl');
+    const hook=(id:string,transcript:string,hook_event_name:string)=>runMemoryHook(file,{session_id:id,cwd:'/p',transcript_path:transcript,hook_event_name});
+    fs.writeFileSync(first,lines('kill-1'));
+    await hook('kill-1',first,'SessionStart');await hook('kill-1',first,'Stop');
+    expect(count('claude_code:kill-1')).toBe(3);
+    // Killed: no SessionEnd. The resumed process writes a new transcript that starts with the copy.
+    fs.writeFileSync(second,lines('kill-2'));
+    await hook('kill-2',second,'SessionStart');await hook('kill-2',second,'Stop');
+    expect(count('claude_code:kill-2')).toBe(0);
+    fs.appendFileSync(second,record('kill-2',4,'user','новый ход')+record('kill-2',5,'assistant','Новый ответ.'));
+    await hook('kill-2',second,'Stop');
+    expect([count('claude_code:kill-1'),count('claude_code:kill-2')]).toEqual([3,2]);
+    expect(JSON.parse((db.query('SELECT metadata FROM sessions WHERE id=?').get('claude_code:kill-2') as {metadata:string}).metadata).continuity_previous).toBe('claude_code:kill-1');
+  } finally {server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
 });
 test('memory keeps file paths in the journal and the summary; credential files stay hidden',async()=>{
   const session='claude_code:paths-kept',file='/Users/example/Code/qoopia/src/services/continuity.ts';

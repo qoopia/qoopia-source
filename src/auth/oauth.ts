@@ -1,3 +1,4 @@
+import {stringArraySubsetOf} from './dcr-policy.ts';
 import {connectionOrigin, connectionResource, connectionIssuer, resourceConnection, publicConnection} from "../services/connection-identity.ts";
 import crypto from "node:crypto";
 import { db } from "../db/connection.ts";
@@ -284,7 +285,8 @@ function consumeGrant(hash: string, type: "code" | "refresh", clientId: string):
           WHERE a.id = oauth_tokens.agent_id
             AND a.active = 1
             AND a.workspace_id = oauth_tokens.workspace_id
-            AND c.workspace_id = oauth_tokens.workspace_id
+            AND (c.workspace_id = oauth_tokens.workspace_id OR
+              (c.id GLOB 'qcp_*' AND c.agent_id IS NULL AND c.workspace_id IS NULL AND oauth_tokens.resource IS NOT NULL))
        )`,
   ).run(hash, type, nowIso(), clientId).changes === 1;
 }
@@ -410,8 +412,8 @@ export function revokeTokenForClient(
 }
 
 /**
- * ADR-017 §1 / ADR-020: only the steward and the human owner may register OAuth
- * clients. Standard-agent-creates-connector is a quiet privilege escalation:
+ * ADR-017 §1 / ADR-020: only the steward and the human owner may register pre-bound
+ * OAuth clients. Public DCR creates an unbound identity without any grant (#37). Standard-agent-creates-connector is a quiet privilege escalation:
  * a compromised standard agent could mint an OAuth surface targeting its own
  * workspace data.
  *
@@ -438,11 +440,11 @@ export function assertCanRegisterOAuth(auth: AuthContext): void {
 const REGISTRATION_LIMIT = 20;
 /** A client that retries a failed connect registers again each time, and the Claude and ChatGPT
  * callbacks register without credentials. Registrations that never received a code or token and
- * outlived a consent ticket are dead: reclaim them. Fresh or used ones still count. */
-function reserveRegistration(agentId: string): void {
-  const registered = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id=?").get(agentId) as { n: number }).n;
+ * outlived a consent ticket are dead: reclaim them. Fresh or used bound registrations still count; the public unbound quota counts only unused identities. */
+function reserveRegistration(agentId: string | null): void {
+  const registered = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id IS ? AND (? IS NOT NULL OR NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id))").get(agentId,agentId) as { n: number }).n;
   if (registered() < REGISTRATION_LIMIT) return;
-  const unused = `agent_id=? AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
+  const unused = `agent_id IS ? AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
     AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`;
   db.query(`DELETE FROM oauth_clients WHERE ${unused} AND created_at<=?`).run(agentId, plusSec(-CONSENT_TICKET_TTL_SEC));
   // The Claude and ChatGPT callbacks register without credentials, so anyone can fill the quota
@@ -474,7 +476,7 @@ export function registerClient(
     grant_types?: string[];
     response_types?: string[];
   },
-  auth: AuthContext,
+  auth: AuthContext | null,
 ): {
   client_id: string;
   client_secret?: string;
@@ -520,14 +522,17 @@ export function registerClient(
     }
   }
 
+  if (!stringArraySubsetOf(input.grant_types, ['authorization_code','refresh_token']) || !stringArraySubsetOf(input.response_types,['code'])) {
+    throw new QoopiaError('INVALID_INPUT','Only authorization_code/refresh_token and code responses are supported');
+  }
   const authMethod = input.token_endpoint_auth_method || "none";
   if (authMethod !== "none" && authMethod !== "client_secret_post" && authMethod !== "client_secret_basic") {
     throw new QoopiaError("INVALID_INPUT", "token_endpoint_auth_method must be 'none', 'client_secret_post', or 'client_secret_basic'");
   }
   const isPublic = authMethod === "none";
-  reserveRegistration(auth.agent_id);
+  reserveRegistration(auth?.agent_id??null);
 
-  const client_id = `qc_${crypto.randomBytes(16).toString("base64url")}`;
+  const client_id = `${auth?"qc":"qcp"}_${crypto.randomBytes(16).toString("base64url")}`;
   let client_secret: string | undefined;
   let secretHash = "";
   if (!isPublic) {
@@ -542,8 +547,8 @@ export function registerClient(
   ).run(
     client_id,
     input.client_name || "Unnamed Client",
-    auth.agent_id,
-    auth.workspace_id,
+    auth?.agent_id??null,
+    auth?.workspace_id??null,
     secretHash,
     JSON.stringify(input.redirect_uris),
     nowIso(),
@@ -572,7 +577,7 @@ export function registerClient(
 export function getClient(client_id: string): {
   id: string;
   name: string;
-  agent_id: string;
+  agent_id: string | null;
   workspace_id: string | null;
   client_secret_hash: string;
   redirect_uris: string[];
@@ -583,7 +588,7 @@ export function getClient(client_id: string): {
     | {
         id: string;
         name: string;
-        agent_id: string;
+        agent_id: string | null;
         workspace_id: string | null;
         client_secret_hash: string;
         redirect_uris: string;
@@ -598,6 +603,11 @@ export function getClient(client_id: string): {
     logger.warn("OAuth client has unparseable redirect_uris; every redirect will be refused", { client_id });
   }
   return { ...row, redirect_uris: uris };
+}
+
+/** Public DCR registers a client identity only; authority is granted to an explicit resource by consent. */
+export function isUnboundPublicClient(client:ReturnType<typeof getClient>):boolean {
+  return !!client&&client.id.startsWith('qcp_')&&client.agent_id===null&&client.workspace_id===null;
 }
 
 /**

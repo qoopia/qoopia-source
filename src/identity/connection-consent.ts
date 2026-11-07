@@ -4,7 +4,7 @@ import {brandHead,brandLockup} from '../brand.ts';
 import {loginEmail} from './broker.ts';
 import {localOwner} from '../delivery/owner-onboarding.ts';
 import {connectionOrigin,publicConnection,resourceConnection} from '../services/connection-identity.ts';
-import {getConsentTicket,consentTicketStatus,getClient,approveConsentTicket,denyConsentTicket,finalizeConsentTicket,replayFinalizeRedirect} from '../auth/oauth.ts';
+import {getConsentTicket,consentTicketStatus,getClient,isUnboundPublicClient,approveConsentTicket,denyConsentTicket,finalizeConsentTicket,replayFinalizeRedirect} from '../auth/oauth.ts';
 import { hash, randomToken } from '../utils/fs.ts';
 import { escapeHtml as escape } from '../utils/html.ts';
 import {readBoundedText} from '../utils/http-json.ts';
@@ -57,7 +57,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
       const id=ticket.resource?resourceConnection(ticket.resource):undefined;
       if(!id)throw new ConsentError('SCOPED_CONNECTION_REQUIRED',403);
       const connection=publicConnection(id),origin=connectionOrigin(id),client=getClient(ticket.client_id);
-      if(!origin.startsWith('https://')||client?.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id||ticket.workspace_id!==connection.workspace_id)
+      if(!client||!origin.startsWith('https://')||(!isUnboundPublicClient(client)&&(client.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id))||ticket.workspace_id!==connection.workspace_id)
         throw new ConsentError('CONNECTION_UNAVAILABLE',403);
       const callback=new URL(ticket.redirect_uri);
       if(!client.redirect_uris.includes(ticket.redirect_uri)||!['http:','https:'].includes(callback.protocol))
@@ -134,7 +134,7 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
             if(!flow.verified)throw new ConsentError('SIGN_IN_REQUIRED',403);
             // Re-check active human authority and exact client binding after the human confirmation.
             const current=localOwner(database,owner.agent_id),active=publicConnection(id);
-            if(current.session_version!==flow.version||current.workspace_id!==active.workspace_id||active.agent_id!==client.agent_id||active.owner_id!==current.agent_id)
+            if(current.session_version!==flow.version||current.workspace_id!==active.workspace_id||(!isUnboundPublicClient(client)&&active.agent_id!==client.agent_id)||active.owner_id!==current.agent_id)
               throw new ConsentError('AUTHORITY_CHANGED',403);
             if(!approveConsentTicket(ticket.id,active.agent_id))throw new ConsentError('CONSENT_EXPIRED',410);
             flow.approvalNonce=form.get('nonce')!;

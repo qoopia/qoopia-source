@@ -1,3 +1,4 @@
+import {processAlive as alive} from './helpers/process-alive.ts';
 import {test,expect,beforeAll,setSystemTime,spyOn} from 'bun:test';
 import {spawn,spawnSync} from 'node:child_process';
 import fs from 'node:fs';
@@ -14,7 +15,7 @@ import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import * as agentProcess from '../src/services/agent-process.ts';
 beforeAll(()=>runMigrations());
 async function until(predicate:()=>boolean){const end=Date.now()+5000;while(!predicate()){if(Date.now()>end)throw new Error('Regression fixture timed out');await Bun.sleep(10);}}
-const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH';}};
+
 function ownerFixture(){
   const slug='rc4-'+randomUUID();db.query('INSERT INTO workspaces(id,name,slug) VALUES(?,?,?)').run(slug,slug,slug);
   const owner=bootstrapOwner(db,'Regression owner',undefined,slug),agent=createAgent({name:'Regression steward',workspaceSlug:slug,type:'steward'});

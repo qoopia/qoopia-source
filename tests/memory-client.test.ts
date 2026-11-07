@@ -58,7 +58,7 @@ test('native hooks preserve settings, resume unacknowledged UTF-8 events, and re
   // The kit is installed: the hook names the file. A connection older than the kit has no such
   // file, and the hook must say so and point at the protocol served by the connection itself.
   const protocolFile=path.join(home,'.codex/qoopia-protocol.md'),installedKit=fs.readFileSync(protocolFile);
-  expect((await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext).toMatch(/^Before Qoopia work, read "[^"]*\/\.codex\/qoopia-protocol\.md"\./);
+  expect((await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext).toStartWith('Qoopia: use qoopia_guide');
   fs.rmSync(protocolFile);
   const missing=(await runMemoryHook(file,hook))?.hookSpecificOutput.additionalContext as string;
   expect(missing).toContain('qoopia_protocol');expect(fs.readFileSync(protocolFile)).toEqual(installedKit);
@@ -724,7 +724,7 @@ test('Codex 0.162 null and metadata-only rollouts deliver hook turns durably, wi
   const hook=(session:string,event:string,extra:any={})=>runMemoryHook(file,{session_id:session,cwd:'/synthetic',transcript_path:null,hook_event_name:event,...extra});
   // A thread with no transcript and no turn is not registered: the bootstrap only, no request (A7-08).
   const start=(await hook('ephemeral','SessionStart'))?.hookSpecificOutput.additionalContext;
-  expect(start).toContain('Before Qoopia work');expect(start).not.toContain('restored');expect(received).toHaveLength(0);
+  expect(start).toContain('qoopia_guide');expect(start).not.toContain('restored');expect(received).toHaveLength(0);
   fail=true;await hook('ephemeral','UserPromptSubmit',{turn_id:'turn-1',prompt:'Synthetic вопрос 🔧'});
   const cursor=path.join(root,'memory-clients/codex/cursors',hash('hooks:ephemeral')+'.json');
   expect(JSON.parse(fs.readFileSync(cursor,'utf8')).pending[0].content).toBe('Synthetic вопрос 🔧');
@@ -832,4 +832,24 @@ test('doctor names every Claude Code and Codex profile on the computer and which
   expect(report.unlinked_note).toContain('Claude Code ~/.claude-work');expect(report.unlinked_note).toContain('Codex ~/.codex-canary');
   expect(JSON.stringify(report)).not.toContain(root);
  } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
+
+test('SessionStart stays within 2 KiB with multibyte context, events, handoff and canon',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-hook-budget-')),home=path.join(root,'home'),logs=path.join(home,'.claude/projects/p');
+ fs.mkdirSync(logs,{recursive:true});
+ const huge=('Қазақша 🌍\n"\\').repeat(800);
+ const server=Bun.serve({port:0,async fetch(req){const event=await req.json() as any;
+  if(new URL(req.url).pathname==='/memory/canon')return Response.json({text:huge});
+  return Response.json({accepted:event.messages.map((m:any)=>m.id),session_id:'synthetic',note_id:'synthetic-note',context:huge,tail:[{role:'tool',content:huge}],handoff:{text:huge,files:[]}});
+ }});
+ try{
+  installMemoryClient({format:'qoopia-memory-connection/1',url:`http://127.0.0.1:${server.port}`,agent_id:'fixture',key:'q_fixturekey',runtime:'claude_code'},root,process.execPath,home);
+  const file=path.join(root,'memory-clients/claude_code/connection.json'),transcript=path.join(logs,'s.jsonl');fs.writeFileSync(transcript,JSON.stringify({type:'user',uuid:'u1',message:{content:'synthetic'}})+'\n');
+  const output=await runMemoryHook(file,{session_id:'s',cwd:'/project',transcript_path:transcript,hook_event_name:'SessionStart'});
+  expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(2048);
+  expect(output!.hookSpecificOutput.additionalContext).toContain('canon_match before acting');
+  expect(output!.hookSpecificOutput.additionalContext).toContain('session_expand/work_handoff');
+  const instructions=fs.readFileSync(path.join(home,'.claude/CLAUDE.md'),'utf8');expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(2048);expect(instructions).not.toContain('@qoopia-protocol.md');
+ }finally{server.stop(true);fs.rmSync(root,{recursive:true,force:true});}
 });

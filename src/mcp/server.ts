@@ -1,3 +1,4 @@
+import {installToolSurface} from './surface.ts';
 import {agentProtocol,installationLanguage,MCP_INSTRUCTIONS} from '../agent-kit/index.ts';
 import {z} from "zod";
 import {verifyClientConnection,observeClientProtocol} from "../services/client-connections.ts";
@@ -81,5 +82,6 @@ export function createMcpServer(
   const call=handlers.get('tools/call')!;
   handlers.set('tools/call',async(request,ctx)=>{try{return await call(request,ctx);}catch(error){
     if(error instanceof Error&&/^Tool .* (?:not found|disabled)$/s.test(error.message))return sdkToolError(error.message);throw error;}});
+  installToolSurface(server,authProvider,opts);
   return server;
 }

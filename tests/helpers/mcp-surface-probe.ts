@@ -18,6 +18,8 @@ const server = createMcpServer(() => auth, 'full', {isSteward: true, agentToolPr
 const client = new Client({name: 'surface-probe', version: '1'});
 const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 await server.connect(serverTransport); await client.connect(clientTransport);
+// Exhaustive schema/risk contract, including tools hidden in the default surface.
+process.env.QOOPIA_TOOL_SURFACE='classic';
 const {tools} = await client.listTools();
 const capabilities = await client.callTool({name: 'qoopia_capabilities', arguments: {}});
 const operations = JSON.parse((capabilities.content as {text: string}[])[0]!.text).operations as {name: string; input_schema: {properties?: object}}[];

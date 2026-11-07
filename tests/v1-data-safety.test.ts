@@ -92,7 +92,7 @@ describe("V1 data-safety boundary", () => {
         release_sha: "v1-safety",
         signer: { private_key: generateKeyPairSync("ed25519").privateKey },
         database: f.database,
-      })).toThrow(/describes schema 55.*schema 37.*backup.*restoreNew.*complete installation/i);
+      })).toThrow(/describes schema 56.*schema 37.*backup.*restoreNew.*complete installation/i);
     } finally {
       f.database.close();
     }

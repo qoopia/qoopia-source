@@ -32,6 +32,8 @@ struct Workspace: Codable, Identifiable, Equatable {
 
 enum WorkspaceError: Error { case invalidAddress }
 
+struct AppleSignInRequest: Equatable { let id: String; let nonce: String }
+
 enum URLPolicy {
     static let account = URL(string: "https://auth.qoopia.ai/profile?app=ios")!
 
@@ -74,6 +76,19 @@ enum URLPolicy {
               parts.query == "install=1" || parts.query == nil && fromAccount, parts.fragment == nil else { return nil }
         parts.query = nil
         return parts.url.flatMap { try? Workspace($0.absoluteString) }
+    }
+
+    static let appleNative = URL(string: "https://auth.qoopia.ai/apple/native")!
+
+    /// Native Sign in with Apple, requested only by the account page with its own request ID and nonce.
+    static func appleSignIn(_ url: URL, from source: URL?) -> AppleSignInRequest? {
+        guard url.scheme == "qoopia-app", url.host == "apple-sign-in", url.path.isEmpty, url.fragment == nil,
+              let source, sameOrigin(account, source),
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems, items.count == 2,
+              let id = items.first(where: { $0.name == "request" })?.value,
+              let nonce = items.first(where: { $0.name == "nonce" })?.value,
+              [id, nonce].allSatisfy({ $0.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil }) else { return nil }
+        return AppleSignInRequest(id: id, nonce: nonce)
     }
 
     static func safeExternal(_ url: URL) -> Bool {

@@ -108,6 +108,12 @@ export function prepareMemoryLaunch(profile:MemoryProfile,directory:string,promp
     // Plain JSON plus schema validation needs one model response. Claude's
     // --json-schema adds a StructuredOutput tool round trip even with no tools.
     launch.args.splice(launch.args.length-1,0,'--max-turns','1','--system-prompt',MEMORY_SYSTEM);
+    // No extended thinking: --effort low does not turn it off, and on these small classification
+    // and summary steps it was most of the time (7-12 s of thinking for three search queries, about
+    // 1 s without) and of the output tokens [5.0.24].
+    const index=launch.args.indexOf('--settings')+1;
+    launch.args[index]=JSON.stringify({...JSON.parse(launch.args[index]!),alwaysThinkingEnabled:false});
+    launch.env.MAX_THINKING_TOKENS='0';
   } else {
     const instructions=path.join(directory,'memory-instructions.txt');durableWrite(instructions,MEMORY_SYSTEM);
     launch.args.push('-c','model_instructions_file='+JSON.stringify(instructions));
@@ -150,7 +156,8 @@ export function memoryPrompt(instruction:string,input:unknown) {
 /** `wait_ms` bounds the wait for the slot: an interactive caller gives up with MODEL_BUSY rather than
  * queue behind other work. A `background` call yields: any other caller stops it and it fails with
  * MODEL_BUSY, to be retried later [F-341]. */
-export async function memoryText(workspace:string,instruction:string,input:unknown,options:{wait_ms?:number;background?:boolean}={}):Promise<{text:string;model:string;observed_models:string[]}> {
+export async function memoryText(workspace:string,instruction:string,input:unknown,options:{wait_ms?:number;budget_ms?:number;background?:boolean}={}):Promise<{text:string;model:string;observed_models:string[]}> {
+  const entered=Date.now();
   const profile=memoryProfile(workspace);
   if(!profile)throw new QoopiaError('MODEL_NOT_CONNECTED','Connect your Claude or ChatGPT subscription in Memory settings');
   const prompt=memoryPrompt(instruction,input);
@@ -167,8 +174,13 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
   }
   await previous;active=true;const started=Date.now();
   let directory:string|undefined,yielded=false;
-  const term=options.background?memoryTimeouts.background_term_ms:memoryTimeouts.term_ms;
+  const limit=options.background?memoryTimeouts.background_term_ms:memoryTimeouts.term_ms;
+  // A caller's own budget, when shorter, ends the run early. Running out of it says nothing about
+  // the subscription, so it is MODEL_BUDGET like MODEL_BUSY: no status change, no warning.
+  const budget=options.budget_ms!==undefined&&options.budget_ms<limit?options.budget_ms-(Date.now()-entered):undefined;
+  const term=budget??limit;
   try {
+    if(budget!==undefined&&budget<1000)throw new QoopiaError('MODEL_BUDGET','The caller time budget is spent');
     const base=privateDirectory(`/var/tmp/qoopia-memory-${process.getuid!()}`);
     directory=fs.mkdtempSync(path.join(base,'request-'));fs.chmodSync(directory,0o700);
     const launch=prepareMemoryLaunch(profile,directory,prompt,await nativeRuntimeEnvironment(memoryRoot(),{PATH:process.env.PATH}));
@@ -196,6 +208,7 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
       child.once('error',()=>{clearTimeout(timer);clearTimeout(hard);process.off('exit',killGroup);reject(new QoopiaError('MODEL_UNAVAILABLE','Native runtime could not start'));});
       child.once('close',code=>{clearTimeout(timer);clearTimeout(hard);process.off('exit',killGroup);if(options.background)yieldSlot=undefined;
         if(failed==='yield')reject(new QoopiaError('MODEL_BUSY','Memory processing yielded to another request'));
+        else if(failed==='time'&&budget!==undefined)reject(new QoopiaError('MODEL_BUDGET','The caller time budget is spent'));
         else if(failed)reject(new QoopiaError(failed==='time'?'MODEL_TIMEOUT':'MODEL_INVALID_RESPONSE',failed==='time'?`Memory model exceeded its ${term/1000}-second time budget`:'Memory model exceeded its output budget'));
         else resolve({code,stdout,stderr});});
     });
@@ -213,6 +226,13 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
       if(profile.runtime==='codex'&&event.type==='item.completed'&&event.item?.type==='agent_message')try{parsed=parseMemoryJson(event.item.text);}catch{/* Validated below; failure becomes MODEL_INVALID_RESPONSE. */}
       if(profile.runtime==='codex'&&event.type==='turn.completed')completed=true;
     }
+    // Small models sometimes put the requested JSON value itself in result ({"result":["a","b"]})
+    // instead of its text. That value is what was asked for: carry it as JSON text and let the call
+    // site validate it as it validates any result.
+    if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&Object.keys(parsed).length===1) {
+      const value=(parsed as {result?:unknown}).result;
+      if(value!==null&&typeof value==='object')parsed={result:JSON.stringify(value)};
+    }
     const payload=z.object({result:z.string().min(1).max(24_000)}).strict().safeParse(parsed);
     if(!completed||!payload.success)throw new QoopiaError('MODEL_INVALID_RESPONSE','Model did not return the requested structured result');
     // Some Claude releases wrap the requested JSON once again when enforcing
@@ -224,7 +244,7 @@ export async function memoryText(workspace:string,instruction:string,input:unkno
   } catch(error) {
     const code=error instanceof QoopiaError?error.code:'';
     // A yielded call says nothing about the subscription.
-    if(code==='MODEL_BUSY')throw error;
+    if(code==='MODEL_BUSY'||code==='MODEL_BUDGET')throw error;
     logger.warn('Memory model unavailable: '+redactSensitive(error instanceof Error?error.message:'Unknown dependency failure').text.slice(0,300),
       {code:code||'DEPENDENCY_UNAVAILABLE',runtime:profile.runtime,elapsed_ms:Date.now()-started,input_chars:prompt.length});
     const state:MemoryStatus['state']=code==='UNAUTHENTICATED'?'auth_required':code==='MODEL_QUOTA'?'quota':code==='MODEL_TIMEOUT'?'timeout':code==='MODEL_INVALID_RESPONSE'?'invalid_response':'unavailable';

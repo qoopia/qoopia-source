@@ -133,7 +133,7 @@ test("malformed or non-object JSON on the dashboard memory POSTs is 400 invalid_
 
 test("DCR with a non-object body or a non-string client_name never echoes engine text (F-149)", async () => {
   const json = { "content-type": "application/json" };
-  expect((await fetch(`${base}/oauth/register`, { method: "POST", headers: json, body: "null" })).status).toBe(401);
+  expect((await fetch(`${base}/oauth/register`, { method: "POST", headers: json, body: "null" })).status).toBe(400);
   const steward = { ...json, authorization: `Bearer ${STEW}` };
   const nul = await fetch(`${base}/oauth/register`, { method: "POST", headers: steward, body: "null" });
   expect(nul.status).toBe(400);

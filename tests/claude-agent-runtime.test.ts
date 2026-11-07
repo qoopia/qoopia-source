@@ -1,3 +1,4 @@
+import {processAlive as alive} from './helpers/process-alive.ts';
 import {test,expect} from 'bun:test';
 import {ClaudeAgentRuntime,claudeLoginUrl} from '../src/services/claude-agent-runtime.ts';
 import fs from 'node:fs';
@@ -7,7 +8,7 @@ import {privateDirectory,durableWrite} from '../src/utils/fs.ts';
 
 async function until(predicate:()=>boolean,ms=2000){for(const end=Date.now()+ms;Date.now()<end;await new Promise(r=>setTimeout(r,10)))if(predicate())return;throw new Error('Fixture did not finish');}
 // A job that is gone can never write later: tests poll for that instead of outliving its timer.
-const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH';}};
+
 const pids=(file:string)=>fs.existsSync(file)?fs.readFileSync(file,'utf8').split(' ').map(Number).filter(n=>n>0):[];
 const fixture=`
 import readline from 'node:readline';

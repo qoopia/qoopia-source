@@ -361,13 +361,15 @@
 				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
 				<string>AppIcon</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>3</string>
+				<string>5</string>
 				<key>MARKETING_VERSION</key>
 				<string>5.0.8</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
 				<string>1</string>
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key>
+				<string>Qoopia/Qoopia.entitlements</string>
 				<key>SUPPORTED_PLATFORMS</key>
 				<string>iphoneos iphonesimulator</string>
 				<key>SUPPORTS_MACCATALYST</key>
@@ -400,13 +402,15 @@
 				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
 				<string>AppIcon</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>3</string>
+				<string>5</string>
 				<key>MARKETING_VERSION</key>
 				<string>5.0.8</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
 				<string>1</string>
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key>
+				<string>Qoopia/Qoopia.entitlements</string>
 				<key>SUPPORTED_PLATFORMS</key>
 				<string>iphoneos iphonesimulator</string>
 				<key>SUPPORTS_MACCATALYST</key>

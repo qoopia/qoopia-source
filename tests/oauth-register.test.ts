@@ -7,7 +7,7 @@
  *     agent_id, workspace_id, client_secret_hash
  *   - a legacy claude-privileged agent cannot register (ADR-020: an
  *     ordinary agent); the pre-V1 claude.ai DCR still binds to its row
- *   - ADMIN_SECRET header alone (no Bearer) → 401 (regression: ADMIN_SECRET
+ *   - ADMIN_SECRET alone grants no authority; public DCR stays unbound (regression: ADMIN_SECRET
  *     is no longer the auth identity for registration)
  *   - regression: wsCount > 1 no longer blocks registration in beta-style
  *     multi-workspace DBs
@@ -133,24 +133,13 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-describe("ADR-017 /oauth/register: Bearer is required, not ADMIN_SECRET", () => {
-  test("no Bearer with a generic callback → 401 and no client row", async () => {
-    const r = await postRegister(
-      {
-        client_name: "no-bearer-client",
-        redirect_uris: ["https://example.com/cb"],
-      },
-      // Deliberately omit Authorization. ADMIN_SECRET is not an identity and
-      // generic unauthenticated DCR is closed by ADR-018.
-      { "x-admin-secret": process.env.QOOPIA_ADMIN_SECRET || "test-admin-secret" },
-    );
-    expect(r.status).toBe(401);
-    // RFC 7235 §3.1: a 401 must carry a challenge, or OAuth clients cannot tell which scheme is wanted.
-    expect(r.headers.get("www-authenticate")).toBe('Bearer realm="qoopia"');
-    const row = db
-      .prepare(`SELECT 1 FROM oauth_clients WHERE name = 'no-bearer-client'`)
-      .get();
-    expect(row).toBeFalsy();
+describe("/oauth/register: public DCR is unbound; supplied Bearer must be authorized", () => {
+  test("root DCR needs no authorization and grants no agent or workspace",async()=>{
+    const r=await postRegister({client_name:'no-bearer-client',redirect_uris:['https://example.com/cb']});expect(r.status).toBe(201);
+    const body=await r.json() as any;expect(body.client_id).toMatch(/^qcp_/);
+    expect(db.query('SELECT agent_id,workspace_id FROM oauth_clients WHERE id=?').get(body.client_id)).toEqual({agent_id:null,workspace_id:null});
+    const denied=await fetch(baseUrl+'/oauth/authorize?'+new URLSearchParams({client_id:body.client_id,redirect_uri:'https://example.com/cb',response_type:'code',code_challenge:'a'.repeat(43),code_challenge_method:'S256'}),{redirect:'manual'});
+    expect(new URL(denied.headers.get('location')!).searchParams.get('error')).toBe('invalid_target');
   });
 
   test("Bearer for a standard agent → 403 forbidden (FORBIDDEN code)", async () => {
@@ -432,30 +421,30 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
     expect(r.status).toBe(201);
   });
 
-  test("generic unauthenticated DCR rejects unsupported callback hosts", async () => {
+  test("generic root DCR registers an unbound client with a valid HTTPS callback", async () => {
     const r = await postRegister({
       client_name: "ChatGPT wrong callback",
       redirect_uris: ["https://example.com/wrong/callback"],
       token_endpoint_auth_method: "client_secret_post",
     });
-    expect(r.status).toBe(401);
+    expect(r.status).toBe(201);
     const row = db
       .prepare(`SELECT 1 FROM oauth_clients WHERE name = 'ChatGPT wrong callback'`)
       .get();
-    expect(row).toBeFalsy();
+    expect(row).toBeTruthy();
   });
 
-  test("generic public clients must authenticate with an API key", async () => {
+  test("generic public clients register without an API key", async () => {
     const r = await postRegister({
       client_name: "not-claude-unauth",
       redirect_uris: ["https://example.com/callback"],
       token_endpoint_auth_method: "none",
     });
-    expect(r.status).toBe(401);
+    expect(r.status).toBe(201);
     const row = db
       .prepare(`SELECT 1 FROM oauth_clients WHERE name = 'not-claude-unauth'`)
       .get();
-    expect(row).toBeFalsy();
+    expect(row).toBeTruthy();
   });
 
   // F-520-dcr-bound: anonymous registration used to store any size and any number of rows.
@@ -485,13 +474,13 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
     expect(db.query("SELECT 1 FROM oauth_clients WHERE id = ?").get(last)).not.toBeNull();
   });
 
-  test("Claude.ai unauthenticated DCR rejects unsupported client auth methods", async () => {
+  test("root DCR supports RFC client_secret_basic without granting authority", async () => {
     const r = await postRegister({
       client_name: "claude-basic-unauth",
       redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
       token_endpoint_auth_method: "client_secret_basic",
     });
-    expect(r.status).toBe(401);
+    expect(r.status).toBe(201);
   });
 });
 

@@ -372,6 +372,23 @@ class AlertDeliveryTests(unittest.TestCase):
         code, status = self.run_main(self.channels, self.receiver())
         self.assertEqual((code, status['status'], len(self.sent)), (1, 'ALERT', 1))
 
+    def test_one_run_blip_never_pages_but_a_repeated_problem_does(self):
+        healthy = {'issues': [], 'status': 'OK'}
+        Path(self.root, 'status.json').write_text(json.dumps(healthy))
+        # One failing run: the real issues are recorded, the owner is not paged.
+        code, status = self.run_main(self.channels, self.receiver())
+        self.assertTrue(status['issues'])
+        self.assertEqual((status['alerted_issues'], self.sent), ([], []))
+        # The network recovers on the next run: nothing was ever sent.
+        Path(self.root, 'status.json').write_text(json.dumps({**healthy, 'alerted_issues': []}))
+        # The same problem on two consecutive runs: exactly one ALERT, then no repeats.
+        self.run_main(self.channels, self.receiver())
+        self.assertEqual(self.sent, [])
+        code, status = self.run_main(self.channels, self.receiver())
+        self.assertEqual((code, status['status'], len(self.sent)), (1, 'ALERT', 1))
+        self.run_main(self.channels, self.receiver())
+        self.assertEqual(len(self.sent), 1)
+
     def test_unconfigured_monitor_sends_nothing(self):
         def forbidden(*_a, **_k):
             raise AssertionError('no channel configured')

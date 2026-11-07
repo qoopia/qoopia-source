@@ -28,7 +28,7 @@ const EXPORT_FILES=new Set(['.dockerignore','.gitleaks.toml','DESIGN.md','Docker
  'docs/10-as-is/README.md','docs/20-to-be/README.md','docs/30-migration/README.md','docs/BRIDGES.md','docs/INTERFACE-LANGUAGES.md',
  'docs/MEMORY-V1.md','docs/P1-AUTHORITY.md','docs/P2-LOOP.md','docs/P3-CONTRACT.md','docs/analytics/README.md','docs/v1-setup.md',
  'docs/discovery/CLAIM-POLICY.md','docs/discovery/UNDERSTAND-EN.md','docs/discovery/UNDERSTAND-RU.md','docs/discovery/answers.json','docs/discovery/prompts.json',
- 'docs/operations/agent-kit-refresh.md','docs/operations/connections.md','docs/operations/ios-direct-dashboard.md','docs/operations/my-qoopia-agent.md',
+ 'docs/operations/mcp-tool-surface.md','docs/operations/agent-kit-refresh.md','docs/operations/connections.md','docs/operations/ios-direct-dashboard.md','docs/operations/my-qoopia-agent.md',
  'docs/operations/news-and-owner.md','docs/operations/operational-normalization.md','docs/operations/release-consistency.md',
  'docs/operations/storage-full-check.md','docs/operations/telegram-subscription-runtime.md','docs/operations/unified-release-503-20260915.md']);
 // Adapted or public-only: never copied from canonical. Port canonical changes into them by a reviewed public PR.

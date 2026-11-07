@@ -153,6 +153,9 @@ async function issueToken(scope = ""): Promise<{
 }
 
 async function mcpList(accessToken: string, profile?: "full"): Promise<string[]> {
+  // Exhaustive registry/scope contract. Lean discovery is covered in tool-surface.test.ts.
+  const previous=process.env.QOOPIA_TOOL_SURFACE;process.env.QOOPIA_TOOL_SURFACE="classic";
+  try {
   const r = await fetch(`${baseUrl}/mcp${profile ? "?profile=full" : ""}`, {
     method: "POST",
     headers: {
@@ -169,6 +172,7 @@ async function mcpList(accessToken: string, profile?: "full"): Promise<string[]>
   return (json.result?.tools || [])
     .map((tool) => tool.name || "")
     .filter(Boolean);
+  } finally {if(previous===undefined)delete process.env.QOOPIA_TOOL_SURFACE;else process.env.QOOPIA_TOOL_SURFACE=previous;}
 }
 
 async function mcpCall(

@@ -435,7 +435,14 @@ def main():
         # differs from it and alerts then; one the deploy fixed never pages anyone.
         status.update(status='MAINTENANCE', summary='MAINTENANCE until ' + window.isoformat() + ' — ' + summary,
                       maintenance_until=window.isoformat(), maintenance_issues=status['issues'], issues=previous.get('issues', []))
-    elif previous.get('issues') != status['issues']:
+    elif (previous and previous.get('alerted_issues', previous.get('issues')) != status['issues']
+          and status['issues'] not in (previous.get('issues'), previous.get('maintenance_issues'))):
+        # A change must be seen on two consecutive runs (about a minute) before it pages the owner:
+        # a single network blip on one public URL used to send an ALERT and an OK a minute apart.
+        # status.json keeps the real issues; only the page waits. A problem that outlived a deploy
+        # window was already seen inside it, so it pages at once.
+        status['alerted_issues'] = previous.get('alerted_issues', previous.get('issues', []))
+    elif previous.get('alerted_issues', previous.get('issues')) != status['issues']:
         transition = {'at': status['at'], 'status': status['status'], 'issues': status['issues']}
         with (root / 'transitions.jsonl').open('a') as f:
             f.write(json.dumps(transition) + '\n')
@@ -443,6 +450,7 @@ def main():
             # Only the latest transition is owed; an undelivered one is retried every run.
             pending = {'id': 'release-health-' + hashlib.sha256(json.dumps(transition).encode()).hexdigest()[:32],
                        'payload': {'installation': 'release-health', 'component': 'public-release', 'subject': status['status'], 'cause': ','.join(status['issues'])[:2048] or None, 'at': status['at']}}
+    status.setdefault('alerted_issues', previous.get('alerted_issues', previous.get('issues', [])) if window else status['issues'])
     try:
         channels = alert_channels(a.alert_channels)
         state = 'not_configured' if not channels else 'idle' if not pending else 'delivered' if deliver_alert(channels, pending) else 'failed'

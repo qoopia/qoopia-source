@@ -28,7 +28,9 @@ const text = (r: Awaited<ReturnType<Client['callTool']>>) => [r.isError, (r.cont
 test('an unknown argument is refused as INVALID_INPUT by every tool registered from src/mcp', async () => {
   // Authority and bridge operations keep their own JSON error shape (outside src/mcp).
   const elsewhere = new Set([...authorityOperations.map(op => op.name), ...BRIDGE_TOOL_NAMES]);
-  const {tools} = await client.listTools();
+  // This is the exhaustive schema-validation contract, including hidden tools.
+  const previous=process.env.QOOPIA_TOOL_SURFACE;process.env.QOOPIA_TOOL_SURFACE='classic';
+  let tools;try{({tools}=await client.listTools());}finally{if(previous===undefined)delete process.env.QOOPIA_TOOL_SURFACE;else process.env.QOOPIA_TOOL_SURFACE=previous;}
   expect(tools.some(t => t.name === 'memory_policy_list')).toBe(true);
   const wrong: unknown[] = [];
   for (const tool of tools.filter(t => !elsewhere.has(t.name))) {

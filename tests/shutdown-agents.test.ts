@@ -1,3 +1,4 @@
+import {processAlive as alive} from './helpers/process-alive.ts';
 import {expect,test} from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,7 +7,7 @@ import net from 'node:net';
 import {spawn} from 'node:child_process';
 
 const repo=path.join(import.meta.dir,'..');
-const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
+
 async function until(check:()=>boolean,ms:number){const end=Date.now()+ms;while(!check()){if(Date.now()>end)return false;await Bun.sleep(25);}return true;}
 
 // An open MCP request keeps the HTTP server's 'close' event from firing, so

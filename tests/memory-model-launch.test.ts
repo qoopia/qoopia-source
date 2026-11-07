@@ -1,3 +1,4 @@
+import {processAlive as alive} from './helpers/process-alive.ts';
 import {expect,test} from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,7 +34,9 @@ test('memory launch feeds stored memory through stdin and keeps both runtimes to
         expect(after(args,'--tools')).toBe('');
         expect(after(args,'--mcp-config')).toBe('{"mcpServers":{}}');
         expect(args).toContain('--strict-mcp-config');
-        expect(JSON.parse(after(args,'--settings')!)).toMatchObject({disableAllHooks:true,disableBundledSkills:true});
+        expect(JSON.parse(after(args,'--settings')!)).toMatchObject({disableAllHooks:true,disableBundledSkills:true,alwaysThinkingEnabled:false});
+        // Thinking off: --effort low alone leaves it on, and it was most of each step's time [5.0.24].
+        expect(launch.env.MAX_THINKING_TOKENS).toBe('0');
       } else {
         expect(args.at(-1)).toBe('-');
         expect(args).not.toContain('');
@@ -163,7 +166,7 @@ test('a timed-out model run is stopped with everything it started, so the slot i
   fs.writeFileSync(path.join(bin,'codex'),['#!/bin/sh',`[ "$1" = --version ] && { echo 'codex-cli ${RUNTIMES.codex.version}'; exit 0; }`,
     `case " $* " in *' login status '*) echo 'Logged in using ChatGPT'; exit 0;; esac`,'sleep 30 &','echo $! > "$(dirname "$0")/helper"','exec sleep 30',''].join('\n'),{mode:0o700});
   const helper=()=>Number(fs.readFileSync(path.join(bin,'helper'),'utf8'));
-  const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
+
   try {
     enableMemoryRoot(root);process.env.PATH=bin+path.delimiter+path0;selectMemoryProfile('ws-orphan','codex');
     Object.assign(memoryTimeouts,{term_ms:300,kill_ms:600});

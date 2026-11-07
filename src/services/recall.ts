@@ -1,4 +1,6 @@
-import {memoryProfile,memoryText,parseMemoryJson,memoryModelStatus} from './memory-model.ts';
+import {memoryProfile,memoryText,parseMemoryJson,memoryModelStatus,memoryTimeouts} from './memory-model.ts';
+/** Default wall-clock budget for recall's model steps (expansion + judging) when judge=true. */
+export const RECALL_MODEL_BUDGET_MS=20_000;
 import {z} from 'zod';
 import { db } from "../db/connection.ts";
 import { QoopiaError, safeJsonParse } from "../utils/errors.ts";
@@ -14,6 +16,8 @@ import { isReadOnlyInstance } from "../utils/instance-role.ts";
 import { runV4Recall, v4RecallRequested, type V4RecallResponse } from "./recall/v4-pipeline.ts";
 import { boundDefaultRecall, type FullBodyRequest } from "./recall/response-envelope.ts";
 import { chooseRerankBackend, rerankResults } from "./recall/rerank.ts";
+import { contextDemotionApplies, demoteContext, demotedContext } from "./recall/context-demotion.ts";
+import { isLowConfidence, recallConfidence } from "./recall/confidence.ts";
 import { bitemporalEnabled } from "../utils/temporal.ts";
 import { readLevel, transcriptLevel, visibleRowSql, visibleTranscriptSql } from "../auth/principal.ts";
 import {
@@ -132,6 +136,15 @@ export interface RecallParams {
    * cross-encoder rather than running both).
    */
   deep_llm?: boolean;
+  /**
+   * Use the workspace subscription model for this call: query expansion when
+   * keywords find fewer than three notes, then relevance judging. Off unless
+   * true: each model step costs seconds (5-25s measured with Haiku), so an
+   * interactive recall stays on keyword/vector ranking by default.
+   */
+  judge?: boolean;
+  /** Wall-clock budget for the model steps when judge=true (default 20s). */
+  model_budget_ms?: number;
   /** V4 relation-aware head selection. Effective default is flag-controlled. */
   latest_only?: boolean;
   /** V4 audit mode. Requires include_archived=true and disables latest_only. */
@@ -826,10 +839,15 @@ export async function recallBaseline(p: RecallParams) {
   // metadata carries the ADR-020 shared-context toggle: switching it mid-call also revokes.
   const principalQuery=db.query('SELECT active,type,tool_profile,policy_epoch,session_version,metadata FROM agents WHERE id=? AND workspace_id=?');
   const principalBefore=JSON.stringify(principalQuery.get(p.caller_agent_id,p.workspace_id));
-  const subscription=memoryProfile(p.workspace_id);
-  // The model steps are optional: past this short wait for the shared slot, recall keeps its FTS
-  // ranking (MODEL_BUSY) instead of queueing behind a background checkpoint.
-  const modelDeadline=Date.now()+500,modelWait=()=>({wait_ms:Math.max(0,modelDeadline-Date.now())});
+  // The model steps run only when the caller asks (judge=true): they take seconds, the rest of
+  // recall milliseconds. Past a short wait for the shared slot recall keeps its FTS ranking
+  // (MODEL_BUSY) instead of queueing behind a background checkpoint, and both steps together stay
+  // inside the caller's budget (MODEL_BUDGET) instead of the processor's 45 seconds.
+  const subscription=p.judge===true?memoryProfile(p.workspace_id):null;
+  const available=!subscription&&p.judge!==true&&!!memoryProfile(p.workspace_id);
+  const started=Date.now(),modelDeadline=started+500;
+  const budgetEnd=started+Math.min(Math.max(p.model_budget_ms??RECALL_MODEL_BUDGET_MS,1000),memoryTimeouts.term_ms);
+  const modelWait=()=>({wait_ms:Math.max(0,modelDeadline-Date.now()),budget_ms:budgetEnd-Date.now()});
   let modelApplied=false,modelFailure:string|undefined,evidenceSufficient:boolean|undefined;
   const limit = Math.min(Math.max(p.limit || 10, 1), 50);
   const sanitized = sanitizeFtsQuery(p.query);
@@ -864,6 +882,9 @@ export async function recallBaseline(p: RecallParams) {
   // fusion below maps those ordinal positions to one comparable RRF scale.
   const noteResults: ResultRow[] = [];
   const entityResults: ResultRow[] = [];
+  // Absolute per-note signals for low_confidence; RRF itself keeps only positions.
+  let vectorSim: Map<string, number> | null = null;
+  const ftsIds = new Set<string>();
 
   if (scope === "notes" || scope === "all") {
     if (requestedMode === "hybrid") {
@@ -880,6 +901,8 @@ export async function recallBaseline(p: RecallParams) {
         fts_rank: row.rowid_rank,
         fts_score: row.rank,
       }));
+      for (const row of ftsRows) ftsIds.add(row.id);
+      if (vecRows.length) vectorSim = new Map(vecRows.map((row) => [row.note_id, row.sim]));
       vecRows.forEach((row) => mergeDiagnostic(diagnostics, "notes", row.note_id, {
         source_channel: diagnostics?.get(diagnosticKey("notes", row.note_id))?.fts_rank
           ? "both"
@@ -913,6 +936,7 @@ export async function recallBaseline(p: RecallParams) {
     } else {
       // Pure FTS5 path — original behaviour.
       const ftsRows = ftsNoteCandidates(p, sanitized, candidateLimit);
+      for (const row of ftsRows) ftsIds.add(row.id);
       ftsRows.forEach((row) => mergeDiagnostic(diagnostics, "notes", row.id, {
         source_channel: "fts5",
         fts_rank: row.rowid_rank,
@@ -960,6 +984,12 @@ export async function recallBaseline(p: RecallParams) {
       post_rerank_rank:index+1,rerank_score:rerankSucceeded?-row.rank:null,
       fallback_reason:rerankSucceeded?null:(judged.fallback_reason??'rerank_fallback'),
     }));
+  }
+
+  // Other agents' session summaries rank high for almost any topic; ordinary
+  // recall moves them down without dropping them (context-demotion.ts).
+  if (noteResults.length > 1 && contextDemotionApplies(p)) {
+    noteResults.splice(0, noteResults.length, ...demoteContext(noteResults, demotedContext(p.caller_agent_id)));
   }
 
   if (
@@ -1178,14 +1208,17 @@ export async function recallBaseline(p: RecallParams) {
     }
   }
 
+  const confidence = recallConfidence(p.query, results, vectorSim, ftsIds, FTS_STOP_WORDS);
   return {
     results,
     total_found: results.length,
     query: p.query,
     sanitized_query: sanitized,
     mode: effectiveMode,
+    low_confidence: isLowConfidence(confidence, results.length, modelApplied ? evidenceSufficient : undefined),
+    confidence,
     judging: { attempted: !!subscription||!!rerankBackendLabel, applied: subscription?modelApplied:rerankSucceeded, backend: subscription?'subscription':rerankBackendLabel,
-      ...(subscription?{status:memoryModelStatus(p.workspace_id).state,error:modelFailure,sufficient:evidenceSufficient}: {}) },
+      ...(subscription?{status:memoryModelStatus(p.workspace_id).state,error:modelFailure,sufficient:evidenceSufficient}:available?{status:'available'}:{}) },
     cost: {
       tokens_returned: tokensReturned,
       tokens_full_scan_estimate: fullScanTokens,

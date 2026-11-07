@@ -24,10 +24,10 @@ afterAll(async () => { await new Promise<void>(r => server.close(() => r())); })
 
 async function tools(key: string, query = "") {
   const r = await fetch(`${base}/mcp${query}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {name:"tool_search",arguments:{query:"file_get file_list activity_list agent_send",limit:8}} }) });
   const text = await r.text();
   const data = text.includes("data:") ? text.split("\n").find(l => l.startsWith("data:"))!.slice(5) : text;
-  return (JSON.parse(data).result.tools as Array<{ name: string }>).map(t => t.name);
+  return (JSON.parse(JSON.parse(data).result.content[0].text).tools as Array<{ name: string }>).map(t => t.name);
 }
 
 test("a URL parameter cannot widen a connection's stored access profile", async () => {

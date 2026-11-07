@@ -220,7 +220,7 @@ describe("dreamer role", () => {
     const line = text.split("\n").find((l) => l.startsWith("data:"));
     return JSON.parse(line ? line.slice(5) : text).result;
   };
-  const toolNames = async (key: string) => ((await mcp(key, "tools/list")).tools as { name: string }[]).map((t) => t.name);
+  const toolNames = async (key: string) => JSON.parse((await mcp(key, "tools/call", {name:"tool_search",arguments:{query:"session_review agent_set_dreamer",limit:8}})).content[0].text).tools.map((t: {name:string})=>t.name);
 
   test("MCP: only the owner grants it, by name, audited once, idempotent; never to the steward or the owner", () => {
     expect(dreamerTool.risk).toBe("admin");

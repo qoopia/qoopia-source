@@ -180,7 +180,10 @@ function authenticatedConnection(auth:AuthContext,id:string) {
   const row=publicConnection(id);
   if(row.agent_id!==auth.agent_id||row.workspace_id!==auth.workspace_id)throw new QoopiaError('FORBIDDEN','Connection belongs to another principal');
   if(auth.source!=='oauth'||!auth.oauth_client_id||auth.connection_id!==id)throw new QoopiaError('FORBIDDEN','Use the client OAuth connection');
-  if(!db.query('SELECT 1 FROM oauth_clients WHERE id=? AND agent_id=? AND workspace_id=?').get(auth.oauth_client_id,row.agent_id,row.workspace_id))
+  if(!db.query(`SELECT 1 FROM oauth_clients c WHERE id=? AND ((agent_id=? AND workspace_id=?) OR
+      (id GLOB 'qcp_*' AND agent_id IS NULL AND workspace_id IS NULL AND EXISTS(
+        SELECT 1 FROM oauth_tokens t WHERE t.client_id=c.id AND t.agent_id=? AND t.workspace_id=? AND t.revoked=0 AND t.expires_at>?)))`)
+      .get(auth.oauth_client_id,row.agent_id,row.workspace_id,row.agent_id,row.workspace_id,nowIso()))
     throw new QoopiaError('FORBIDDEN','OAuth client does not belong to this connection');
   return row;
 }

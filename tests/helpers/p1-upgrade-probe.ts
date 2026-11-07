@@ -33,6 +33,8 @@ async function mcp(auth: AuthContext, name: string, args: Record<string, unknown
   try {
     await server.connect(st); await client.connect(ct);
     const catalog = (await client.listTools()).tools.map((t) => t.name);
+    const found=await client.callTool({name:'tool_search',arguments:{query:name,limit:1}});
+    if(!found.isError)for(const tool of JSON.parse((found.content as any)[0].text).tools)if(tool.name===name)catalog.push(name);
     try {
       const result = await client.callTool({ name, arguments: args });
       return { ok: result.isError !== true, catalog, result };

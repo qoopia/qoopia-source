@@ -123,7 +123,7 @@ test("a working note is facts from the record plus the model's summary, and the 
 });
 
 test("edited files carry their content digest from capture, and the next session sees whether the edit is still there", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qoopia-file-state-")), file = path.join(dir, "cart.ts");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qh-")), file = path.join(dir, "cart.ts");
   fs.writeFileSync(file, "const DISCOUNT=0.1\n");
   const claude = transcriptMessages(JSON.stringify({ type: "assistant", uuid: "u1", message: { role: "assistant", content: [{ type: "tool_use", name: "Write", input: { file_path: file, content: "x" } }] } }), "claude_code", 0);
   const recorded = /sha256:[0-9a-f]{16}/.exec(claude[0]!.content)![0];

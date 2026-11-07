@@ -21,6 +21,7 @@ import { hash, randomToken } from '../utils/fs.ts';
 import { escapeHtml as escape } from '../utils/html.ts';
 import { hasColumn } from '../db/introspect.ts';
 import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
+import { createLocalJWKSet, jwtVerify, type JSONWebKeySet, type JWTPayload } from 'jose';
 
 const lifetime = 10 * 60_000;
 export const HSTS = 'max-age=31536000; includeSubDomains';
@@ -29,8 +30,11 @@ export function loginEmail(value: unknown): string {
   if (typeof value !== 'string' || value.length > 254 || /[\x00-\x1f\x7f]/.test(value) || !/^[^\s<>"@]+@[^\s<>"@]+\.[^\s<>"@]+$/.test(value)) throw new Error('Enter a valid email address');
   return value.toLowerCase();
 }
-export type LoginIdentity = {email: string; googleSub?: string};
-type Flow = {language:LoginLanguage;id:string;challenge:string;expires:number;email:string|null;google_sub:string|null;state:string|null;pkce:string|null;mail_token:string|null;confirmed:number;device_peer:string|null;confirm_code:string|null;confirm_failures:number;starter_net:string|null};
+export type LoginIdentity = {email: string; googleSub?: string; appleSub?: string};
+/** Sign in with Apple: tokens are issued by Apple for this bundle ID and verified with Apple's published keys. */
+export const APPLE_ISSUER = 'https://appleid.apple.com';
+export const APPLE_KEYS_URL = APPLE_ISSUER+'/auth/keys';
+type Flow = {language:LoginLanguage;id:string;challenge:string;expires:number;email:string|null;google_sub:string|null;state:string|null;pkce:string|null;mail_token:string|null;confirmed:number;device_peer:string|null;confirm_code:string|null;confirm_failures:number;starter_net:string|null;apple_sub:string|null;apple_nonce:string|null};
 
 /** The network a sign-in belongs to: an IPv4 address or an IPv6 /64. A private or loopback address
  * says nothing about the device (null), so the caller's own address stands in for it. Any other
@@ -49,7 +53,7 @@ export function signInNetwork(ip:string):string|null {
   }
   return v||null;
 }
-type Config = {releaseManifestUrl?:string;releaseSha?:string|null;owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
+type Config = {releaseManifestUrl?:string;releaseSha?:string|null;owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;appleAudience?:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
 
 /** Same stamp as the server image (scripts/release-stamp.ts); /health reports it for release monitoring. */
 export function releaseStampSha(file?:string):string|null {
@@ -60,7 +64,7 @@ export function releaseStampSha(file?:string):string|null {
 }
 /** Separate sign-in service: it never receives workspace content or model credentials. */
 /** First path segment from a fixed list: logs never carry identifiers that sit deeper in a path. */
-const ROUTE_CLASSES=new Set(['profile','owner','confirm','google','requests','redeem','devices','device','news','bridge','health','ready']);
+const ROUTE_CLASSES=new Set(['profile','owner','confirm','google','requests','redeem','devices','device','news','bridge','health','ready','apple']);
 export function routeClass(path:string):string{const first=path.split('/')[1]??'';return ROUTE_CLASSES.has(first)?first:'other';}
 
 export function loginBroker(db: Database, config: Config, request: typeof fetch = fetch) {
@@ -76,6 +80,8 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   if(!hasColumn(db,'login_requests','confirm_code'))
     db.exec('ALTER TABLE login_requests ADD COLUMN confirm_code TEXT; ALTER TABLE login_requests ADD COLUMN confirm_failures INTEGER NOT NULL DEFAULT 0');
   if(!hasColumn(db,'login_requests','starter_net'))db.exec('ALTER TABLE login_requests ADD COLUMN starter_net TEXT');
+  if(!hasColumn(db,'login_requests','apple_sub'))db.exec('ALTER TABLE login_requests ADD COLUMN apple_sub TEXT');
+  if(!hasColumn(db,'login_requests','apple_nonce'))db.exec('ALTER TABLE login_requests ADD COLUMN apple_nonce TEXT');
   const identify=accounts(db),news=newsletter(db);
   const handoff=accountHandoff(db);
   const codes=deviceCodes(db);
@@ -133,6 +139,34 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   // A network-bound sign-in finishes only from the network where it started: a link or a Google
   // account someone else completes from elsewhere signs in nobody. This replaces the F-125 code.
   const sameNetwork=(flow:{starter_net:string|null},clientIp:string)=>!!flow.starter_net&&flow.starter_net===signInNetwork(clientIp);
+  // Sign in with Apple (native iPhone app). Only Apple's public keys are needed: no Apple private key,
+  // client secret or refresh token exists here, so there is nothing held at Apple to revoke later.
+  const appleAudience=config.appleAudience||'ai.qoopia.ios';
+  let appleKeys:{set:ReturnType<typeof createLocalJWKSet>;until:number}|null=null;
+  const appleKeySet=async(refresh:boolean)=>{
+    if(refresh||!appleKeys||appleKeys.until<=Date.now()){
+      const keys=await providerJson(APPLE_KEYS_URL,{headers:{accept:'application/json'}});
+      if(!Array.isArray(keys.keys))throw new Error('Sign-in provider is temporarily unavailable');
+      appleKeys={set:createLocalJWKSet(keys as unknown as JSONWebKeySet),until:Date.now()+3_600_000};
+    }
+    return appleKeys.set;
+  };
+  /** Signature, issuer, this app as audience, expiry and the nonce this request issued (Apple returns its SHA-256). */
+  async function appleIdentity(token:string,nonce:string):Promise<{sub:string;email:string|null}> {
+    const refused=()=>new Error('Apple did not confirm this sign-in');
+    const verify=async(refresh:boolean)=>(await jwtVerify(token,await appleKeySet(refresh),{issuer:APPLE_ISSUER,audience:appleAudience,algorithms:['RS256'],clockTolerance:30})).payload;
+    let claims:JWTPayload;
+    try{claims=await verify(false);}
+    catch(error){
+      if(error instanceof Error&&error.message==='Sign-in provider is temporarily unavailable')throw error;
+      // Apple rotates its keys: a token naming an unknown key refreshes them once (bounded).
+      if((error as {code?:string}).code!=='ERR_JWKS_NO_MATCHING_KEY'||!allowance('apple-keys',10,3_600_000))throw refused();
+      try{claims=await verify(true);}catch{throw refused();}
+    }
+    if(claims.nonce!==createHash('sha256').update(nonce).digest('hex')||typeof claims.sub!=='string'||!claims.sub||claims.sub.length>255)throw refused();
+    const verified=claims.email_verified===true||claims.email_verified==='true';
+    return {sub:claims.sub,email:typeof claims.email==='string'&&verified?loginEmail(claims.email):null};
+  }
   const handler=async (req: Request, clientIp: string): Promise<Response> => {
     const url = new URL(req.url), now = Date.now();
     if(url.pathname==='/internal/owner')return ownerBridge(req);
@@ -172,7 +206,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
       if (req.method === 'GET' && url.pathname === '/device') return new Response(null,{status:302,headers:{...headers,location:'/profile/device'+url.search}});
       if(url.pathname==='/news/unsubscribe')return unsubscribePage(req,news,page);
       if(url.pathname==='/owner'||url.pathname.startsWith('/owner/')||url.pathname==='/profile'||url.pathname.startsWith('/profile/'))return profile.handler(req,clientIp);
-      if (req.method === 'GET' && url.pathname === '/privacy') return page('Sign-in & bridge privacy','<p>Qoopia uses your email address and, when you choose Google, your Google account identifier to confirm sign-in. It does not request access to your inbox, files, contacts, or calendar.</p><p>Pending sign-in requests are removed after ten minutes. Temporary abuse-prevention counters expire within one day. Resend delivers confirmation emails; Google handles Google account selection. Those providers process information under their own policies.</p><p>Your notes, tasks, conversations, and model credentials remain in your Qoopia installation. Signing in does not upload or synchronise that workspace.</p><h2>Service statistics</h2><p>Qoopia keeps aggregate operational counts and timestamped sign-in events (step, language, success or error, and duration) in a separate analytics store. Analytics events do not include email addresses, passwords, tokens, confirmation links or memory content. Installer downloads through qoopia.ai/download are counted by this service as they are redirected to GitHub: platform, version and referral type only (direct, qoopia.ai or other), with no cookies, stored identifier or IP; known crawlers are not counted. Other website analytics is optional, uses no persistent visitor identifier, and respects the choice in website privacy settings. Do Not Track and Global Privacy Control turn both off.</p><h2>Website profile</h2><p>After you sign in, your profile stores your account identity and an optional dashboard address you choose to save. Profile sessions last one year and renew when you visit; pending website sign-ins expire after ten minutes. You can remove the saved address or sign out in your profile. A saved address is a navigation shortcut, not permission to access a workspace. Your notes and model credentials remain in your installation.</p><h2>Delete your account</h2><p>You can delete your Qoopia account at any time in the iPhone app (sign-in screen, Delete account) or in your <a href="/profile?delete=1">profile</a>. Deletion removes your account email and Google identifier, profile sessions, saved dashboard address, news preference and consent records, and pending sign-ins, and revokes your external connections. Memory in your Qoopia installation stays on your computer or server and is not affected.</p><h2>Optional Qoopia news</h2><p>News, release announcements and guides are sent only if you opt in. The checkbox is off by default. You can change your choice in your profile or unsubscribe using the link in any newsletter, without signing in. Sign-in messages are separate and continue when you unsubscribe from news.</p><p>The private account store records your subscription email, language, choice, time, source and consent-text version. It also records new account creation dates and successful sign-in times and counts. Historical registration dates are not reconstructed. Only the designated service owner can view account-level records. Consent history is kept while needed to honour your choice and demonstrate consent; deleting your account removes these records. News delivery records contain the campaign, outcome and provider message identifier; no email-open tracking is added.</p><h2>Optional external connections</h2><p>When you enable external access, this service links your confirmed account to independent installation identifiers, workspace identifiers, device public keys, labels and routing addresses. It stores provisioning and revocation state, and hashes of short-lived enrollment grants. Revoked device identifiers remain as tombstones so a revoked key cannot silently regain access. It does not receive your memory database or private device keys.</p><p>Cloudflare Tunnel carries authorized MCP requests and results. Cloudflare terminates HTTPS and can process transit content, IP addresses, timing and traffic volume. This path is not end-to-end encrypted. The local installation enforces each client permission; the account service does not execute memory tools. Disabling external access stops the connection without deleting local memory.</p><h2>Optional bridges</h2><p>When you create or join a bridge, the Qoopia pilot relay stores the group name, display names, installation public keys, membership decisions and invitation hashes. These are independent of your sign-in email. Membership records remain while the group exists and are removed within thirty days after its creator closes it. Expired invitation records are removed after one additional day.</p><p>Catalogues and selected files are signed by their sender and encrypted for their intended recipient. The relay has no private decryption keys. It temporarily buffers encrypted packets in memory for up to two minutes; the sender retains its own delivery queue. The relay observes network addresses, participant routing, timing and traffic volume. Membership freshness and delivery availability rely on the relay. Leaving or removal ends new access but cannot erase copies already received.</p><p>The pilot uses existing Qoopia hosting, with limits of 32 installations per bridge, 100 published entries per catalogue and 1 MiB per material. No payment is requested by this flow. Local memory remains available when the relay is offline.</p>');
+      if (req.method === 'GET' && url.pathname === '/privacy') return page('Sign-in & bridge privacy','<p>Qoopia uses your email address and, when you choose Google or Sign in with Apple, that provider\'s account identifier to confirm sign-in. It does not request access to your inbox, files, contacts, or calendar.</p><p>Sign in with Apple in the iPhone app asks Apple only for your email address, not your name. If you choose Hide My Email, Apple gives Qoopia a private relay address that forwards to you, and Qoopia uses that address as your account email. Qoopia verifies Apple\'s signed sign-in token and keeps Apple\'s account identifier; it stores no Apple tokens. You can stop using Sign in with Apple for Qoopia in your Apple Account settings.</p><p>Pending sign-in requests are removed after ten minutes. Temporary abuse-prevention counters expire within one day. Resend delivers confirmation emails; Google handles Google account selection; Apple handles Apple Account authentication. Those providers process information under their own policies.</p><p>Your notes, tasks, conversations, and model credentials remain in your Qoopia installation. Signing in does not upload or synchronise that workspace.</p><h2>Service statistics</h2><p>Qoopia keeps aggregate operational counts and timestamped sign-in events (step, language, success or error, and duration) in a separate analytics store. Analytics events do not include email addresses, passwords, tokens, confirmation links or memory content. Installer downloads through qoopia.ai/download are counted by this service as they are redirected to GitHub: platform, version and referral type only (direct, qoopia.ai or other), with no cookies, stored identifier or IP; known crawlers are not counted. Other website analytics is optional, uses no persistent visitor identifier, and respects the choice in website privacy settings. Do Not Track and Global Privacy Control turn both off.</p><h2>Website profile</h2><p>After you sign in, your profile stores your account identity and an optional dashboard address you choose to save. Profile sessions last one year and renew when you visit; pending website sign-ins expire after ten minutes. You can remove the saved address or sign out in your profile. A saved address is a navigation shortcut, not permission to access a workspace. Your notes and model credentials remain in your installation.</p><h2>Delete your account</h2><p>You can delete your Qoopia account at any time in the iPhone app (sign-in screen, Delete account) or in your <a href="/profile?delete=1">profile</a>. Deletion removes your account email and Google or Apple identifier, profile sessions, saved dashboard address, news preference and consent records, and pending sign-ins, and revokes your external connections. Qoopia holds no Apple tokens, so nothing remains with Apple to revoke. Memory in your Qoopia installation stays on your computer or server and is not affected.</p><h2>Optional Qoopia news</h2><p>News, release announcements and guides are sent only if you opt in. The checkbox is off by default. You can change your choice in your profile or unsubscribe using the link in any newsletter, without signing in. Sign-in messages are separate and continue when you unsubscribe from news.</p><p>The private account store records your subscription email, language, choice, time, source and consent-text version. It also records new account creation dates and successful sign-in times and counts. Historical registration dates are not reconstructed. Only the designated service owner can view account-level records. Consent history is kept while needed to honour your choice and demonstrate consent; deleting your account removes these records. News delivery records contain the campaign, outcome and provider message identifier; no email-open tracking is added.</p><h2>Optional external connections</h2><p>When you enable external access, this service links your confirmed account to independent installation identifiers, workspace identifiers, device public keys, labels and routing addresses. It stores provisioning and revocation state, and hashes of short-lived enrollment grants. Revoked device identifiers remain as tombstones so a revoked key cannot silently regain access. It does not receive your memory database or private device keys.</p><p>Cloudflare Tunnel carries authorized MCP requests and results. Cloudflare terminates HTTPS and can process transit content, IP addresses, timing and traffic volume. This path is not end-to-end encrypted. The local installation enforces each client permission; the account service does not execute memory tools. Disabling external access stops the connection without deleting local memory.</p><h2>Optional bridges</h2><p>When you create or join a bridge, the Qoopia pilot relay stores the group name, display names, installation public keys, membership decisions and invitation hashes. These are independent of your sign-in email. Membership records remain while the group exists and are removed within thirty days after its creator closes it. Expired invitation records are removed after one additional day.</p><p>Catalogues and selected files are signed by their sender and encrypted for their intended recipient. The relay has no private decryption keys. It temporarily buffers encrypted packets in memory for up to two minutes; the sender retains its own delivery queue. The relay observes network addresses, participant routing, timing and traffic volume. Membership freshness and delivery availability rely on the relay. Leaving or removal ends new access but cannot erase copies already received.</p><p>The pilot uses existing Qoopia hosting, with limits of 32 installations per bridge, 100 published entries per catalogue and 1 MiB per material. No payment is requested by this flow. Local memory remains available when the relay is offline.</p>');
       if (req.method === 'GET' && url.pathname === '/confirm') {
         const language=loginLanguage(url.searchParams.get('lang')),view=confirmationView(language,url.searchParams.get('code')==='1',url.searchParams.get('auto')==='1');
         return page(view.title,view.content,view.script,200,language);
@@ -216,11 +250,12 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
       if (req.method !== 'POST') return json(404,{error:'Not found'});
       if (req.headers.get('origin') && req.headers.get('origin')!==origin) return json(403,{error:'Origin refused'});
       if (req.headers.get('content-type')?.split(';')[0]!=='application/json') return json(400,{error:'JSON required'});
-      const text=await req.text();if(text.length>2048)return json(413,{error:'Request too large'});
+      // Apple's identity token is about 1 KB; every other body stays under 2 KB.
+      const text=await req.text();if(text.length>(url.pathname==='/apple/native'?8192:2048))return json(413,{error:'Request too large'});
       const body=JSON.parse(text);
       if (!body || typeof body!=='object' || Array.isArray(body)) return json(400,{error:'Invalid request'});
       if (url.pathname === '/requests') {
-        if (!['email','google','account','device'].includes(body.method) || !/^[a-f0-9]{64}$/.test(body.challenge)) return json(400,{error:'Invalid sign-in request'});
+        if (!['email','google','apple','account','device'].includes(body.method) || !/^[a-f0-9]{64}$/.test(body.challenge)) return json(400,{error:'Invalid sign-in request'});
         if(body.device_peer!==undefined&&(!devices||typeof body.device_peer!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(body.device_peer)))return json(400,{error:'Device registration is unavailable'});
         if (!allowance('start:'+clientIp,20,3_600_000)) return json(429,{error:'Too many sign-in attempts. Please try again later'});
         if(body.method==='account'){
@@ -237,7 +272,10 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
           record({kind:'auth_request',method:'other',language});
           return json(201,{id,expires_in:lifetime/1000,interval:5,user_code,verification_uri:origin+'/device',verification_uri_complete:origin+'/device?code='+user_code});
         }
+        if(body.method==='apple'&&body.device_peer!==undefined)return json(400,{error:'Device registration is unavailable'});
         const email=body.method==='email'?loginEmail(body.email):undefined,id=randomToken(),language=loginLanguage(body.language);
+        // Sign in with Apple: the page that started gets a one-use nonce; Apple signs its SHA-256 into the token.
+        const appleNonce=body.method==='apple'?randomToken():null;
         // F-125: the mailbox owner's click must not sign in whoever typed their address. Current clients
         // bind the request to the starting network (`bind:'network'`, the starter's address reported by
         // the installation that serves it, or this caller's own); clients up to 5.0.15 still ask for a code.
@@ -247,12 +285,12 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         // would list and revoke the account's devices. Installations send device keys from their own network.
         const reported=typeof body.starter_ip==='string'&&body.starter_ip.length<=64&&body.device_peer===undefined?signInNetwork(body.starter_ip):null;
         const starter_net=body.bind==='network'||body.device_peer!==undefined?reported??signInNetwork(clientIp)??'unknown:'+id:null;
-        db.query('INSERT INTO login_requests(id,challenge,expires,device_peer,language,confirm_code,starter_net) VALUES (?,?,?,?,?,?,?)').run(id,body.challenge,now+lifetime,body.device_peer??null,language,confirm_code,starter_net);
+        db.query('INSERT INTO login_requests(id,challenge,expires,device_peer,language,confirm_code,starter_net,apple_nonce) VALUES (?,?,?,?,?,?,?,?)').run(id,body.challenge,now+lifetime,body.device_peer??null,language,confirm_code,starter_net,appleNonce&&hash(appleNonce));
         record({kind:'auth_request',method:body.method,language});
         try {
           if(email)await sendConfirmation({id,language,confirm_code,starter_net} as Flow,{email});
         }catch(error){db.query('DELETE FROM login_requests WHERE id=?').run(id);throw error;}
-        return json(201,{id,expires_in:600,...(code?{confirm_code:code}:{}),...(email?{email}:{google_url:origin+'/google?request='+id})});
+        return json(201,{id,expires_in:600,...(code?{confirm_code:code}:{}),...(email?{email}:appleNonce?{apple:{request:id,nonce:appleNonce}}:{google_url:origin+'/google?request='+id})});
       }
       if (url.pathname === '/confirm') {
         if (req.headers.get('origin')!==origin || typeof body.token!=='string' || !/^[A-Za-z0-9_-]{43}$/.test(body.token)) return json(400,{error:'Invalid confirmation link'});
@@ -268,6 +306,26 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         if(result.changes)record({kind:'email_confirmed',outcome:'ok'});
         return result.changes?json(200,{ok:true}):json(400,{error:'This link expired or was already used. Request a new sign-in from Qoopia.'});
       }
+      if (url.pathname === '/apple/native') {
+        // The iPhone app posts Apple's identity token for the request its account page started. The nonce,
+        // which only that page received, binds Apple's proof to this request; the page then redeems it.
+        const shape=/^[A-Za-z0-9_-]{43}$/;
+        if(typeof body.request!=='string'||!shape.test(body.request)||typeof body.nonce!=='string'||!shape.test(body.nonce)||typeof body.identity_token!=='string'||!body.identity_token||body.identity_token.length>6144)return json(400,{error:'Invalid sign-in request'});
+        if (!allowance('apple:'+clientIp,20,3_600_000)) return json(429,{error:'Too many sign-in attempts. Please try again later'});
+        const flow=db.query('SELECT id FROM login_requests WHERE id=? AND apple_nonce=? AND email IS NULL AND confirmed=0 AND expires>?').get(body.request,hash(body.nonce),now) as Pick<Flow,'id'>|null;
+        if(!flow)return json(410,{error:'Sign-in expired. Please start again'});
+        // One token per request: a refused token ends it and the page starts a new sign-in.
+        db.query('UPDATE login_requests SET apple_nonce=NULL WHERE id=?').run(flow.id);
+        let apple:{sub:string;email:string|null};
+        try{apple=await appleIdentity(body.identity_token,body.nonce);}
+        catch(error){record({kind:'email_confirmed',method:'apple',outcome:'rejected'});throw error;}
+        // Apple includes the email it shares (or its relay address); without one, only a known Apple account continues.
+        const email=apple.email??(db.query('SELECT email FROM connection_accounts WHERE apple_sub=?').get(apple.sub) as {email:string}|null)?.email;
+        if(!email){record({kind:'email_confirmed',method:'apple',outcome:'rejected'});return json(400,{error:'Apple did not share an email address. Sign in with email instead.'});}
+        db.query('UPDATE login_requests SET email=?,apple_sub=?,confirmed=1 WHERE id=?').run(email,apple.sub,flow.id);
+        record({kind:'email_confirmed',method:'apple',outcome:'ok'});
+        return json(200,{ok:true});
+      }
       if (url.pathname === '/redeem') {
         if(typeof body.id!=='string'||typeof body.verifier!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(body.verifier)) return json(400,{error:'Invalid sign-in request'});
         if(handoff.get(body.id))return json(200,handoff.redeem(body.id,body.verifier,body.account_code));
@@ -277,9 +335,9 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         // Grant issuance and proof consumption share a transaction: a replay cannot obtain a second account grant.
         return db.transaction(()=>{
           if(!db.query('DELETE FROM login_requests WHERE id=? AND confirmed=1').run(flow.id).changes)return json(410,{error:'Sign-in expired. Please start again'});
-          record({kind:'login_redeemed',method:flow.google_sub?'google':'email',language:loginLanguage(flow.language),outcome:'ok'});
-          const identity={email:flow.email!,...(flow.google_sub?{googleSub:flow.google_sub}:{})};
-          const known=db.query('SELECT 1 FROM connection_accounts WHERE email=? OR google_sub=?').get(identity.email,identity.googleSub??null);
+          record({kind:'login_redeemed',method:flow.google_sub?'google':flow.apple_sub?'apple':'email',language:loginLanguage(flow.language),outcome:'ok'});
+          const identity:LoginIdentity={email:flow.email!,...(flow.google_sub?{googleSub:flow.google_sub}:{}),...(flow.apple_sub?{appleSub:flow.apple_sub}:{})};
+          const known=db.query('SELECT 1 FROM connection_accounts WHERE email=? OR google_sub=? OR apple_sub=?').get(identity.email,identity.googleSub??null,identity.appleSub??null);
           const accountId=identify(identity);
           if(!known)sendWelcome(identity.email,loginLanguage(flow.language));
           db.query('UPDATE account_activity SET last_login_at=?,login_count=login_count+1 WHERE account_id=?').run(now,accountId);
@@ -299,7 +357,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     });
     // The origin is HTTPS-only (checked above); every page, sign-in included, refuses a downgrade.
     response.headers.set('strict-transport-security',HSTS);
-    const routes:Record<string,'profile'|'confirm'|'google'|'requests'|'redeem'|'devices'>={'/profile':'profile','/profile/start':'profile','/profile/logout':'profile','/profile/dashboard':'profile','/confirm':'confirm','/google':'google','/google/callback':'google','/requests':'requests','/redeem':'redeem','/devices':'devices'};
+    const routes:Record<string,'profile'|'confirm'|'google'|'apple'|'requests'|'redeem'|'devices'>={'/apple/native':'apple','/profile':'profile','/profile/start':'profile','/profile/logout':'profile','/profile/dashboard':'profile','/confirm':'confirm','/google':'google','/google/callback':'google','/requests':'requests','/redeem':'redeem','/devices':'devices'};
     if(routes[path])record({kind:'auth_http',page:routes[path],outcome:response.status>=500?'error':response.status>=400?'rejected':response.status===202?'pending':'ok',duration_ms:Math.min(300000,Math.round(performance.now()-start))});
     if(response.status>=500)console.error(JSON.stringify({at:new Date().toISOString(),event:'server_error',route:routeClass(path),status:response.status,duration_ms:Math.round(performance.now()-start)}));
     return response;
@@ -309,7 +367,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
 
 if (import.meta.main) {
   process.umask(0o077);
-  const config:Config={origin:process.env.QOOPIA_LOGIN_ORIGIN??'https://auth.qoopia.ai',resendKey:process.env.RESEND_API_KEY??'',from:process.env.QOOPIA_LOGIN_FROM??'Qoopia <login@mail.qoopia.ai>',googleClientId:process.env.GOOGLE_CLIENT_ID??'',googleClientSecret:process.env.GOOGLE_CLIENT_SECRET??''};
+  const config:Config={origin:process.env.QOOPIA_LOGIN_ORIGIN??'https://auth.qoopia.ai',resendKey:process.env.RESEND_API_KEY??'',from:process.env.QOOPIA_LOGIN_FROM??'Qoopia <login@mail.qoopia.ai>',googleClientId:process.env.GOOGLE_CLIENT_ID??'',googleClientSecret:process.env.GOOGLE_CLIENT_SECRET??'',appleAudience:process.env.QOOPIA_APPLE_AUDIENCE||undefined};
   config.owner={accountId:process.env.QOOPIA_OWNER_ACCOUNT_ID,analyticsFile:process.env.QOOPIA_OWNER_ANALYTICS_FILE,releaseTag:process.env.QOOPIA_PUBLIC_RELEASE_TAG,postalAddress:process.env.QOOPIA_NEWS_POSTAL_ADDRESS};
   config.ownerBridgeSecret=process.env.QOOPIA_OWNER_BRIDGE_SECRET;
   config.releaseSha=releaseStampSha(process.env.QOOPIA_RELEASE_STAMP_PATH);

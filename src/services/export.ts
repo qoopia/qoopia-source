@@ -18,7 +18,7 @@ import { hash } from "../utils/fs.ts";
 
 const EXPORT_FORMAT = "qoopia-v4-export/1" as const;
 /** The schema a workspace transfer describes: the current one (5.0.23 moved it from the legacy schema 32). */
-export const EXPORT_SCHEMA_VERSION = 55 as const;
+export const EXPORT_SCHEMA_VERSION = 56 as const;
 const PLAN_TTL_MS = 15 * 60 * 1_000;
 const PLAN_CACHE_MAX = 256;
 const MANIFEST_MAX_BYTES = 8 * 1024 * 1024;

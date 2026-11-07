@@ -28,6 +28,18 @@ precondition((try? Workspace("https://workspace.example.")) == workspace)
 precondition((try? Workspace("https://10.0.0.5")) != nil)
 print("iOS workspace URL policy: passed")
 
+let appleID = String(repeating: "a", count: 43), appleNonce = String(repeating: "B", count: 43)
+let appleLink = URL(string: "qoopia-app://apple-sign-in?request=\(appleID)&nonce=\(appleNonce)")!
+precondition(URLPolicy.appleSignIn(appleLink, from: URL(string: "https://auth.qoopia.ai/profile?app=ios")) == AppleSignInRequest(id: appleID, nonce: appleNonce))
+precondition(URLPolicy.appleSignIn(appleLink, from: URL(string: "https://evil.test/profile")) == nil)
+precondition(URLPolicy.appleSignIn(appleLink, from: workspace.dashboard) == nil)
+precondition(URLPolicy.appleSignIn(appleLink, from: nil) == nil)
+precondition(URLPolicy.appleSignIn(URL(string: "qoopia-app://apple-sign-in?request=short&nonce=\(appleNonce)")!, from: URLPolicy.account) == nil)
+precondition(URLPolicy.appleSignIn(URL(string: "qoopia-app://apple-sign-in?request=\(appleID)&nonce=\(appleNonce)&token=x")!, from: URLPolicy.account) == nil)
+precondition(URLPolicy.appleSignIn(URL(string: "qoopia-app://settings?request=\(appleID)&nonce=\(appleNonce)")!, from: URLPolicy.account) == nil)
+precondition(URLPolicy.appleSignIn(URL(string: "https://auth.qoopia.ai/apple-sign-in?request=\(appleID)&nonce=\(appleNonce)")!, from: URLPolicy.account) == nil)
+print("iOS Sign in with Apple link policy: passed")
+
 precondition(URLPolicy.accountWorkspace(URL(string: "https://workspace.example/dashboard?signin=account")!, from: URLPolicy.account) == workspace)
 precondition(URLPolicy.accountWorkspace(URL(string: "https://workspace.example/dashboard?signin=account")!, from: URL(string: "https://evil.test")) == nil)
 precondition(URLPolicy.accountWorkspace(URL(string: "https://workspace.example/dashboard?signin=account&token=secret")!, from: URLPolicy.account) == nil)

@@ -21,6 +21,8 @@ import {
   type TraceSourceChannel,
 } from "../recall-traces.ts";
 import { seesWholeWorkspace } from "../../auth/principal.ts";
+import { capContext, contextDemotionApplies, demotedContext } from "./context-demotion.ts";
+import type { RecallConfidence } from "./confidence.ts";
 
 const RRF_K = 60;
 
@@ -31,6 +33,8 @@ type BaselineResponse = {
   sanitized_query: string;
   mode: string;
   judging?: {attempted:boolean;applied:boolean;backend:string|null;status?:string;error?:string;sufficient?:boolean};
+  low_confidence?: boolean;
+  confidence?: RecallConfidence;
   cost: {
     tokens_returned: number;
     tokens_full_scan_estimate: number;
@@ -461,6 +465,12 @@ export async function runV4Recall(p: RecallParams, baselineRecall: BaselineRecal
     if (a.updated_ms !== b.updated_ms) return b.updated_ms - a.updated_ms;
     return a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0;
   });
+  // Lifecycle and governance factors may lift a demoted session summary back up;
+  // the cap on summaries near the top holds after them too.
+  if (contextDemotionApplies(p)) {
+    const demoted = demotedContext(p.caller_agent_id);
+    pool = capContext(pool, (candidate) => demoted(candidate.row));
+  }
   const selected = pool.slice(0, limit);
   const results = selected.map((candidate) => plainResult(candidate, options.explain));
   const diagnostics: RecallDiagnosticItem[] = selected.map((candidate, index) => ({
@@ -491,6 +501,8 @@ export async function runV4Recall(p: RecallParams, baselineRecall: BaselineRecal
     ...baseline,
     results,
     total_found: results.length,
+    // The baseline judged its own top; an empty V4 selection is never confident.
+    ...(baseline.low_confidence === undefined ? {} : { low_confidence: baseline.low_confidence || results.length === 0 }),
     cost: {
       ...baseline.cost,
       tokens_returned: tokensReturned,

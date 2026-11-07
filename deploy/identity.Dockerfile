@@ -19,7 +19,7 @@ RUN git init && git fetch /tmp/history.bundle HEAD && git reset --mixed FETCH_HE
 RUN test -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching -- src scripts package.json bun.lock)"
 RUN bun run typecheck
 RUN bun test --timeout 30000 tests/identity-login.test.ts tests/identity-proxy.test.ts tests/identity-ux.test.ts \
-  tests/connection-consent.test.ts tests/account-handoff.test.ts tests/account-local-login.test.ts tests/profile.test.ts \
+  tests/connection-consent.test.ts tests/account-handoff.test.ts tests/account-local-login.test.ts tests/profile.test.ts tests/identity-apple.test.ts \
   tests/device-registry.test.ts tests/device-registry-capacity.test.ts tests/managed-transport.test.ts \
   tests/bridges.test.ts tests/bridges-api.test.ts tests/owner-panel-bridge.test.ts tests/owner-github.test.ts \
   tests/analytics-events.test.ts tests/brand-assets.test.ts tests/newsletter.test.ts

@@ -7,7 +7,11 @@ This is a hybrid client, not an independent on-device agent runtime.
 
 ## Account and data
 
-- First launch opens `https://auth.qoopia.ai/profile?app=ios`: a compact Google or email sign-in.
+- First launch opens `https://auth.qoopia.ai/profile?app=ios`: a compact Apple, Google or email sign-in.
+  Sign in with Apple runs natively (email scope only) and posts Apple's identity token to
+  `https://auth.qoopia.ai/apple/native`; the page then finishes the sign-in itself (see
+  `docs/operations/identity-login.md`). Requires the Sign in with Apple capability
+  (`Qoopia/Qoopia.entitlements`).
   Google opens in a Safari sheet and the app continues by itself; an email link opened on the
   same network confirms by itself. The existing saved HTTPS
   workspace opens automatically; its linked owner is checked without a second email.

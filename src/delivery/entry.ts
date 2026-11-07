@@ -39,7 +39,7 @@ const failureText=(error:unknown,limit:number)=>String(diskFull(error)??redactSe
 export async function adopt(step:string,run:()=>unknown|Promise<unknown>) {
   try{await run();}catch(error){console.error(JSON.stringify({event:'start_step_failed',step,reason:failureText(error,300),next_action:'Qoopia keeps running; run qoopia doctor for the affected part.'}));}
 }
-/** AgentComm wake routes (AGENTCOMM_<NAME>_WEBHOOK_*) are the one operator setting the isolated server keeps:
+/** AgentComm wake routes (AGENTCOMM_<NAME>_WEBHOOK_*) are operator settings the isolated server keeps:
  * from the environment that started it, and for an app or package installation, which has no environment of
  * its own, from agentcomm.env in its data folder (what wake-runner server-env writes) [A6-02]. */
 export function agentcommEnvironment(env:NodeJS.ProcessEnv,file?:string){
@@ -55,6 +55,12 @@ export function agentcommEnvironment(env:NodeJS.ProcessEnv,file?:string){
   for(const line of fs.readFileSync(file,'utf8').split('\n')){const m=/^(AGENTCOMM_[A-Z0-9_]+)=(.*)$/.exec(line.trim());if(m)out[m[1]!]=m[2]!;}
   return out;
 }
+/** Operator discovery switches survive standalone isolation; credentials still do not. */
+export function mcpSurfaceEnvironment(env:NodeJS.ProcessEnv){
+  return Object.fromEntries(Object.entries(env).filter(([key,value])=>
+    key==='QOOPIA_TOOL_SURFACE'?value==='lean'||value==='classic':
+    key==='QOOPIA_CODE_MODE'&&(value==='on'||value==='off')));
+}
 function configure(root:string,bundle:string,port=3737,layout?:ReturnType<typeof platformPaths>,instance?:string) {
   bindNativeOwnerHome(os.homedir());
   bindNativeClientDirectories(process.env);
@@ -67,6 +73,7 @@ function configure(root:string,bundle:string,port=3737,layout?:ReturnType<typeof
     QOOPIA_LOG_LEVEL:'error',QOOPIA_MANAGED_LOGS:layout?'true':'false',QOOPIA_BUNDLE_ASSETS:path.join(bundle,'assets'),QOOPIA_SKILLS:'true',QOOPIA_ENTITY_PAGES:'true',
     QOOPIA_STANDALONE:'true',...(instance?{QOOPIA_INSTANCE_ID:instance}:{}),QOOPIA_EXPECTED_RELEASE_SHA:QOOPIA_BUILD_SHA,QOOPIA_RELEASE_STAMP_PATH:path.join(bundle,'manifest.json'),QOOPIA_ADMIN_SECRET:randomBytes(32).toString('hex'),QOOPIA_SESSION_SECRET:layout?localSessionSecret(layout.root):randomBytes(32).toString('hex')};
   Object.assign(runtimeEnv,agentcommEnvironment(process.env,layout?path.join(layout.root,'agentcomm.env'):undefined));
+  Object.assign(runtimeEnv,mcpSurfaceEnvironment(process.env));
   if(layout){
     Object.assign(runtimeEnv,{QOOPIA_OPS_STATE_DIR:operationsDirectory(layout.root,readCurrent(layout.root)),QOOPIA_STANDALONE_LAYOUT:JSON.stringify({root:layout.root,logs:layout.logs}),QOOPIA_OPS_CHANNELS_FILE:path.join(layout.root,'ops-channels.json')});
     for(const directory of [layout.config,layout.state,layout.logs])privateDirectory(directory);
@@ -100,7 +107,7 @@ export async function claimInstallationPort(port:number,instance:string) {
  * USER/LOGNAME, which Bun's os.userInfo() reads for the first owner's name (without them it is "unknown"). */
 export function dispatchEnvironment(env:NodeJS.ProcessEnv){
   const keys=['TMPDIR','HOME','USER','LOGNAME','CODEX_HOME','CLAUDE_CONFIG_DIR','XDG_DATA_HOME','XDG_CONFIG_HOME','XDG_STATE_HOME'] as const;
-  return {...Object.fromEntries(keys.map(key=>[key,env[key]])),...agentcommEnvironment(env)} as NodeJS.ProcessEnv;
+  return {...Object.fromEntries(keys.map(key=>[key,env[key]])),...agentcommEnvironment(env),...mcpSurfaceEnvironment(env)} as NodeJS.ProcessEnv;
 }
 /** start opens no browser: without an owner it must name the one command that creates the owner. */
 export function startedMessage(owner:boolean,port:number,root?:string){

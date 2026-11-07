@@ -14,7 +14,7 @@ import {
   type DashboardAuth,
 } from "../dashboard-api.ts";
 import type { AuthContext } from "../auth/middleware.ts";
-import { stringArraySubsetOf, isChatGptRedirectArray, isClaudeRedirectArray } from "../auth/dcr-policy.ts";
+import { stringArraySubsetOf, isChatGptRedirectArray, isClaudeRedirectArray, connectionRedirectsAllowed } from "../auth/dcr-policy.ts";
 import {
   exchangeCodeForTokens,
   refreshTokens,
@@ -229,6 +229,9 @@ export function handleAuthorizeRedirect(
       error_description: "redirect_uri not registered for this client",
     });
   }
+  // Root DCR creates a client identity only. It cannot infer an owner's memory. Bind each
+  // authorization ticket to the explicit protected resource; consent still grants all access.
+  const unbound=client.id.startsWith('qcp_')&&client.agent_id===null&&client.workspace_id===null;
   const assignedConnection=db.query("SELECT id FROM client_connections WHERE agent_id=?").get(client.agent_id) as {id:string}|null;
   // F-190: every other error goes back to the validated callback with state and iss.
   const fail = (error: string, description?: string) => {
@@ -273,12 +276,16 @@ export function handleAuthorizeRedirect(
   if(!resourceId&&edgeClientKey(req))return fail("invalid_target","Use the connection address from Qoopia (Connections → the agent → its /mcp/c/… URL), not the general /mcp address");
   if(resourceId){
     const connection=publicConnection(resourceId);
-    if(client.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id)return fail("invalid_target");
+    if(unbound){
+      if(!connectionRedirectsAllowed(connection.surface,client.redirect_uris))return fail('invalid_request','Callback is not allowed for this connection');
+      client.workspace_id=connection.workspace_id;
+    } else if(client.agent_id!==connection.agent_id||client.workspace_id!==connection.workspace_id)return fail("invalid_target");
     // A client that names no scope gets the connection's own; "".split(" ") is [""], never a scope.
     if(!scope)scope=connection.access_mode==="read"?"mcp:read":"mcp:read mcp:write";
     if(connection.access_mode==="read"&&scope.split(" ").some(s=>s!=="mcp:read"))return fail("invalid_scope");
     if(scope.includes("mcp:admin"))return fail("invalid_scope");
   }
+  if(unbound&&!resourceId)return fail("invalid_target","A public registration requires the selected connection resource");
   if (!client.workspace_id) {
     // Legacy oauth_clients row that escaped migration 011's backfill.
     // Refuse rather than silently bind to whatever workspace getClient()
@@ -470,7 +477,7 @@ function resolveClaudeAiUnauthenticatedDcrAuthParsed(parsed: Record<string, unkn
 export function handleRegister(
   body: Buffer,
   res: ServerResponse,
-  auth: AuthContext,
+  auth: AuthContext | null,
 ) {
   let parsed: Record<string, unknown>;
   try {
@@ -500,7 +507,7 @@ export function handleRegister(
       auth,
     );
     logger.info(
-      `OAuth register client_id=${out.client_id} name="${out.client_name}" auth=${out.token_endpoint_auth_method} workspace=${auth.workspace_id}`,
+      `OAuth register client_id=${out.client_id} name="${out.client_name}" auth=${out.token_endpoint_auth_method} workspace=${auth?.workspace_id??"unbound"}`,
     );
     res.writeHead(201, {
       "content-type": "application/json",
@@ -897,7 +904,9 @@ export function handleDashboardOAuthConsentApprove(
   // connector its own authority (ADR-020: a steward approving a legacy connector grant binds
   // that connector's ordinary agent, not the steward).
   const client=getClient(ticket.client_id);
-  const agent=client&&db.query("SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND principal_kind='agent'").get(client.agent_id,auth.workspace_id) as {id:string}|null;
+  const targetAgent=client?.id.startsWith('qcp_')&&client.agent_id===null&&ticket.resource
+    ?publicConnection(resourceConnection(ticket.resource)!).agent_id:client?.agent_id;
+  const agent=client&&db.query("SELECT id FROM agents WHERE id=? AND workspace_id=? AND active=1 AND principal_kind='agent'").get(targetAgent??null,auth.workspace_id) as {id:string}|null;
   if(!agent)return json(res,403,{error:'forbidden',error_description:'Connect with a separate active agent identity.'});
   if (!approveConsentTicket(ticket.id, agent.id)) {
     // Lost the race — ticket was approved/denied/redeemed/expired between

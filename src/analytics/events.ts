@@ -6,12 +6,12 @@ import {z} from 'zod';
 const eventSchema=z.object({
  id:z.string().uuid(),
  kind:z.enum(['site_view','download_click','download_redirect','site_performance','auth_request','mail_accepted','mail_failed','email_confirmed','login_redeemed','profile_login','profile_logout','profile_saved','profile_deleted','auth_http']),
- page:z.enum(['home','docs','releases','mobile','404','profile','confirm','google','requests','redeem','devices','other']).optional(),
+ page:z.enum(['home','docs','releases','mobile','404','profile','confirm','google','apple','requests','redeem','devices','other']).optional(),
  language:z.enum(['en','ru','other']).optional(),
  platform:z.enum(['mac','linux','other']).optional(),
  // Public release version of the offered installer (not a client identifier).
  version:z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[0-9A-Za-z.-]{1,40})?$/).optional(),
- method:z.enum(['email','google','other']).optional(),
+ method:z.enum(['email','google','apple','other']).optional(),
  outcome:z.enum(['ok','pending','rejected','error']).optional(),
  viewport:z.enum(['small','medium','large']).optional(),
  referrer:z.enum(['direct','search','social','internal','other']).optional(),

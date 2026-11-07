@@ -24,7 +24,7 @@ test('Codex and Claude get the same versioned protocol, preserving user guidance
    const before=fs.readFileSync(entry,'utf8');installAgentInstructions(profile,runtime);expect(fs.readFileSync(entry,'utf8')).toBe(before);
    expect((before.match(/qoopia:protocol:start/g)||[]).length).toBe(1);
    expect(fs.readFileSync(result.protocol_file,'utf8')).toBe(agentKitFiles['qoopia-protocol.md']);
-   if(runtime==='claude_code')expect(before).toContain('@qoopia-protocol.md');else expect(fs.readFileSync(path.join(profile,'AGENTS.md'),'utf8')).toBe('Inactive original\n');
+   if(runtime==='claude_code'){expect(before).toContain('qoopia_guide');expect(before).not.toContain('@qoopia-protocol.md');}else expect(fs.readFileSync(path.join(profile,'AGENTS.md'),'utf8')).toBe('Inactive original\n');
    fs.appendFileSync(entry,'\nNew personal guidance.\n');installAgentInstructions(profile,runtime);expect(fs.readFileSync(entry,'utf8')).toEndWith('New personal guidance.\n');
   }
  }finally{fs.rmSync(root,{recursive:true,force:true});}
@@ -32,7 +32,7 @@ test('Codex and Claude get the same versioned protocol, preserving user guidance
 test('foreign documents, tampered managed blocks and symlinks are refused without overwriting user files',()=>{
  const root=temporary();try{
   durableWrite(path.join(root,'qoopia-protocol.md'),'My own protocol');expect(()=>installAgentInstructions(root,'codex')).toThrow('not managed');expect(fs.readdirSync(root)).toEqual(['qoopia-protocol.md']);fs.unlinkSync(path.join(root,'qoopia-protocol.md'));
-  const result=installAgentInstructions(root,'codex'),entry=result.instruction_file;fs.writeFileSync(entry,fs.readFileSync(entry,'utf8').replace('Before working','Edited before working'));
+  const result=installAgentInstructions(root,'codex'),entry=result.instruction_file;fs.writeFileSync(entry,fs.readFileSync(entry,'utf8').replace('Use only the selected','Edited selected'));
   const altered=fs.readFileSync(entry,'utf8');expect(()=>installAgentInstructions(root,'codex')).toThrow('block was edited');expect(fs.readFileSync(entry,'utf8')).toBe(altered);
   fs.unlinkSync(entry);fs.symlinkSync(path.join(root,'qoopia-protocol.md'),entry);expect(()=>installAgentInstructions(root,'codex')).toThrow('Links');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
@@ -106,6 +106,7 @@ test('completed writes with pending receipt finalize; reconnect preserves the st
 // digest recorded, which is also the moment a reader decides the change is worth
 // re-publishing to every profile.
 const PUBLISHED_REVISIONS: Record<number, string> = {
+  17: "9afc2ebd91367b7d006436dc674ac029bb150fe22f0323c1f49eb8201b05737d",
   16: "4c4dd7fd5cc01a790c23e31b69508d0aee5cdee0f3840067b6db1d77ce853ecb",
   15: "877fb08c9b01b56b38acddc18886c3aad2063b8695c91822ab72c5b5b1510404",
   14: '535220e878306c4a049e0961f8303f853d905407641f15784235d5710206a32e',
@@ -183,7 +184,7 @@ test('refresh upgrades a prior revision with valid receipts, preserving steward 
   const manifest=JSON.parse(fs.readFileSync(manifestFile,'utf8'));manifest.revision=3;
   const oldManifest=JSON.stringify(manifest,null,2)+'\n';durableWrite(manifestFile,oldManifest);
   const entry=path.join(profile,'CLAUDE.md');
-  const old=fs.readFileSync(entry,'utf8').split('\n').filter(line=>!line.startsWith('Compare the revision in ')).join('\n');durableWrite(entry,old);
+  const old=fs.readFileSync(entry,'utf8').split('\n').filter(line=>!line.includes('Compare manifest.json')).join('\n');durableWrite(entry,old);
   const receipt=JSON.parse(fs.readFileSync(receiptFile,'utf8'));
   receipt.files['qoopia/manifest.json'].after=hash(oldManifest);
   receipt.blocks=[hash(old.slice(old.indexOf('<!-- qoopia:protocol:start -->'),old.indexOf('<!-- qoopia:protocol:end -->')+'<!-- qoopia:protocol:end -->'.length))];
@@ -214,7 +215,7 @@ test('bind-mounted instruction profiles retain reader paths and agent identity a
    const text=fs.readFileSync(entry,'utf8');
    expect(text).toStartWith('You are Liam. Preserve LIAM_RUNTIME.md');
    expect(text).not.toContain(writer);expect(text).not.toContain('You are My Qoopia agent');
-   for(const file of ['manifest.json','SOUL.md','OPERATIONS.md','MCP-CONNECTIONS.md'])expect(text).toContain(reader+'/qoopia/'+file);
+   expect(text).toContain(reader+'/qoopia-protocol.md');expect(text).toContain(reader+'/qoopia');expect(text).toContain('manifest.json');expect(text).toContain('SOUL.md');expect(text).toContain('OPERATIONS.md');
    expect(JSON.parse(fs.readFileSync(path.join(writer,'qoopia/instructions-receipt.json'),'utf8')).reference_directory).toBe(reader);
    fs.rmSync(path.join(writer,'qoopia/MCP-CONNECTIONS.md'));
    installAgentInstructions(writer,runtime);
@@ -300,23 +301,23 @@ test('a block Qoopia wrote in an earlier revision stays managed after the Codex 
   const agents=path.join(root,'AGENTS.md'),override=path.join(root,'AGENTS.override.md'),receiptFile=path.join(root,'qoopia/instructions-receipt.json');
   durableWrite(agents,'# base\n');installAgentInstructions(root,'codex');
   // An older kit wrote a different block into AGENTS.md, as the upgrade test simulates.
-  const older=fs.readFileSync(agents,'utf8').split('\n').filter(line=>!line.startsWith('Compare the revision in ')).join('\n');durableWrite(agents,older);
+  const older=fs.readFileSync(agents,'utf8').split('\n').filter(line=>!line.includes('Compare manifest.json')).join('\n');durableWrite(agents,older);
   const receipt=JSON.parse(fs.readFileSync(receiptFile,'utf8'));
   receipt.blocks=[hash(older.slice(older.indexOf('<!-- qoopia:protocol:start -->'),older.indexOf('<!-- qoopia:protocol:end -->')+'<!-- qoopia:protocol:end -->'.length))];
   durableWrite(receiptFile,JSON.stringify(receipt));
   durableWrite(override,'# temporary override\n');installAgentInstructions(root,'codex');
-  expect(fs.readFileSync(override,'utf8')).toContain('Compare the revision in ');
+  expect(fs.readFileSync(override,'utf8')).toContain('Compare manifest.json');
   fs.rmSync(override);
   installAgentInstructions(root,'codex');
   expect(fs.readFileSync(agents,'utf8')).toStartWith('# base\n');
-  expect(fs.readFileSync(agents,'utf8')).toContain('Compare the revision in ');
+  expect(fs.readFileSync(agents,'utf8')).toContain('Compare manifest.json');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
 // Agents follow the kit literally, so a tool it names must exist under that name [F-520-kit-tools].
 test('every tool the kit names is a real MCP tool, and the corrected claims stay corrected',()=>{
   const source=['src/mcp','src/api'].flatMap(dir=>fs.readdirSync(dir).filter(name=>name.endsWith('.ts')).map(name=>fs.readFileSync(path.join(dir,name),'utf8'))).join('\n');
-  const tools=new Set([...source.matchAll(/(?:name: ?|registerTool\()['"]([a-z_]+)['"]/g)].map(match=>match[1]));
+  const tools=new Set([...source.matchAll(/(?:name: ?|registerTool\(|register\()['"]([a-z_]+)['"]/g)].map(match=>match[1]));
   const named=new Set([agentKitFiles,agentKitFilesEn].flatMap(kit=>Object.values(kit)).flatMap(text=>[...text.matchAll(/`((?:note|session|agent|memory|skill|entity|extraction|connection|qoopia|recall|file|canon)_[a-z_]+)`/g)].map(match=>match[1]!))
     .filter(name=>!/_(id|name|key|url|mode)$/.test(name)&&name!=='qoopia_memory'));
   expect(named.size).toBeGreaterThan(10);

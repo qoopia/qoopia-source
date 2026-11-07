@@ -5,7 +5,7 @@ temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 xcrun swiftc Qoopia/Workspace.swift tests/main.swift -o "$temporary/workspace-tests"
 "$temporary/workspace-tests"
-plutil -lint Qoopia/Info.plist Qoopia/PrivacyInfo.xcprivacy Qoopia.xcodeproj/project.pbxproj
+plutil -lint Qoopia/Info.plist Qoopia/PrivacyInfo.xcprivacy Qoopia/Qoopia.entitlements Qoopia.xcodeproj/project.pbxproj
 python3 - <<'PY'
 import json, pathlib, re
 root=pathlib.Path('Qoopia')

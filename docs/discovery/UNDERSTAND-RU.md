@@ -1,6 +1,6 @@
 # Подходит ли вам Qoopia?
 
-Reviewed: 2026-10-14 for Qoopia 5.0.23.
+Reviewed: 2026-10-14 for Qoopia 5.0.24.
 
 
 ## Когда Qoopia полезна?

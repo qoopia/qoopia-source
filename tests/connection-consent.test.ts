@@ -33,10 +33,10 @@ test('remote owner consent binds browser, account and exact client; real finaliz
   let handler=remoteConnectionConsent(root,db,network,loginOrigin);
   const server=startHttpServer();if(!server.listening)await once(server,'listening');
   const base='http://127.0.0.1:'+(server.address() as AddressInfo).port;
-  const make=()=>{
+  const make=(rootDcr=false)=>{
     const connection=(connectionAction(owner.agent_id,{action:'apply',surface:'chatgpt_web',access_mode:'read_write',request_key:randomUUID()}) as any).connection;
     const redirect_uris=['https://chatgpt.com/connector_platform_oauth_redirect'];
-    const client=registerClient({client_name:'Synthetic <Client>',redirect_uris},connectionRegistrationAuth(connection.id,redirect_uris));
+    const client=registerClient({client_name:'Synthetic <Client>',redirect_uris},rootDcr?null:connectionRegistrationAuth(connection.id,redirect_uris));
     const verifier=randomBytes(32).toString('base64url');
     const ticket=createConsentTicket({clientId:client.client_id,workspaceId:owner.workspace_id,redirectUri:client.redirect_uris[0]!,
       codeChallenge:createHash('sha256').update(verifier).digest('base64url'),codeChallengeMethod:'S256',scope:'mcp:read mcp:write',state:'client-state',resource:connection.mcp_url});
@@ -73,7 +73,7 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     expect((await boundedBrowser.post('start',{method:'email',email:binding.email})).result.status).toBe(503);
     expect(cancelled).toBe(true);expect(getConsentTicket(bounded.ticket.id)!.approved_by_agent_id).toBeNull();
     oversized=false;
-    const first=make(),browser=await session(first,'ru');
+    const first=make(true),browser=await session(first,'ru'); // issue #37: unbound root DCR also uses owner consent
     // A Russian phone opens consent without ?lang (ChatGPT redirects to the bare ticket URL): it follows Accept-Language.
     const phone=make(),phoneHtml=await (await handler(new Request(origin+'/oauth/consent?ticket='+phone.ticket.id,{headers:{'accept-language':'ru-RU,ru;q=0.9'}}))).text();
     expect(phoneHtml).toContain('<html lang="ru">');expect(phoneHtml).toContain('Подключение памяти');

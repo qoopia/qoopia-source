@@ -212,7 +212,7 @@ test('switching the dashboard to Claude retains Codex history, verifies selected
     expect((await myAgentAction(owner.agent_id,request)).id).toBe(result.id);
     expect(db.query('SELECT count(*) n FROM session_messages WHERE session_id=?').get(c.id)).toEqual({n:2});
     expect(myAgentState(owner.agent_id).conversations.length).toBe(2);
-    expect(fs.readFileSync(path.join(folder,'claude_code','CLAUDE.md'),'utf8')).toContain('@qoopia-protocol.md');
+    expect(fs.readFileSync(path.join(folder,'claude_code','CLAUDE.md'),'utf8')).toContain('qoopia_guide');
   }finally{await stopMyAgents();fs.rmSync(selected,{force:true});fs.rmSync(path.join(base,'claude_code'),{recursive:true,force:true});}
 });
 

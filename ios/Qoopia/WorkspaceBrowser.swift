@@ -1,11 +1,14 @@
+import AuthenticationServices
 import Combine
+import CryptoKit
 import Foundation
 import Network
 import UIKit
 import WebKit
 
 @MainActor
-final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate,
+    ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
     @Published private(set) var workspaces: [Workspace] = []
     @Published private(set) var active: Workspace?
     @Published private(set) var loading = false
@@ -47,7 +50,8 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
         config.websiteDataStore = .default()
         // No native message bridge or injected credentials. Server owner checks remain authoritative.
         config.defaultWebpagePreferences.preferredContentMode = .mobile
-        config.applicationNameForUserAgent = "Qoopia-iOS/3"
+        // 4: handles native Sign in with Apple (the account page offers it from this version).
+        config.applicationNameForUserAgent = "Qoopia-iOS/4"
         #if DEBUG
         if entryProbe {
             // Exercise actual WebKit navigation without account cookies or private workspace data.
@@ -174,6 +178,9 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
            let source = action.sourceFrame.request.url, active?.contains(source) == true {
             decisionHandler(.cancel); showSettings = true; return
         }
+        if action.sourceFrame.isMainFrame, let apple = URLPolicy.appleSignIn(url, from: action.sourceFrame.request.url) {
+            decisionHandler(.cancel); signInWithApple(apple); return
+        }
         if action.sourceFrame.isMainFrame, let workspace = URLPolicy.accountWorkspace(url, from: action.sourceFrame.request.url) {
             #if DEBUG
             if entryProbe {
@@ -261,6 +268,56 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
             navigationBecameDownload = false; deadline?.cancel(); loading = false; return
         }
         deadline?.cancel(); loading = false; failed = true
+    }
+
+    // MARK: Sign in with Apple (App Store guideline 4.8)
+    // The account page started the request; the app proves the Apple account and the page finishes the sign-in.
+    private var appleRequest: AppleSignInRequest?
+
+    private func signInWithApple(_ request: AppleSignInRequest) {
+        guard appleRequest == nil else { return }
+        appleRequest = request
+        let apple = ASAuthorizationAppleIDProvider().createRequest()
+        apple.requestedScopes = [.email]
+        apple.nonce = SHA256.hash(data: Data(request.nonce.utf8)).map { String(format: "%02x", $0) }.joined()
+        let controller = ASAuthorizationController(authorizationRequests: [apple])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
+    }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        webView.window ?? ASPresentationAnchor()
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let request = appleRequest else { return }
+        appleRequest = nil
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+              let data = credential.identityToken, let token = String(data: data, encoding: .utf8) else { appleFailed(); return }
+        Task { await self.sendAppleToken(token, for: request) }
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        appleRequest = nil
+        if (error as? ASAuthorizationError)?.code == .canceled { resume() } else { appleFailed() }
+    }
+
+    private func sendAppleToken(_ token: String, for request: AppleSignInRequest) async {
+        var post = URLRequest(url: URLPolicy.appleNative, timeoutInterval: 20)
+        post.httpMethod = "POST"
+        post.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        post.httpBody = try? JSONSerialization.data(withJSONObject: ["request": request.id, "nonce": request.nonce, "identity_token": token])
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        guard let (_, response) = try? await session.data(for: post), (response as? HTTPURLResponse)?.statusCode == 200 else { appleFailed(); return }
+        // The page's own poll redeems the sign-in; its session cookie is set inside WebKit.
+        resume()
+    }
+
+    private func appleFailed() {
+        guard let url = webView.url, URLPolicy.sameOrigin(URLPolicy.account, url) else { return }
+        webView.evaluateJavaScript("window.dispatchEvent(new Event('qoopia-apple-failed'))", completionHandler: nil)
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) { download.delegate = self }

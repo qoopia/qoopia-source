@@ -51,10 +51,12 @@ test('connect-agent refuses, without replacing it, an active agent whose key was
   expect(db.query("SELECT COUNT(*) AS n FROM agents WHERE workspace_id=? AND name='Qoopia Codex memory' AND active=1").get(slug)).toEqual({n:1});
 });
 
+// An earlier test file may fix memoryRoot() with enableMemoryRoot (v1-workspace does); moving env.ROOT_DIR alone
+// would leave these fixtures writing into its directory, so each moves both and restores both.
 test('an installed Qoopia binds local Claude Code to loopback, and moves a binding 5.0.16 left on the tunnel origin',async()=>{
   const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-memory-setup-loopback-')),home=path.join(root,'home');fs.mkdirSync(home,{mode:0o700});
-  const prior={url:env.PUBLIC_URL,root:env.ROOT_DIR,standalone:process.env.QOOPIA_STANDALONE};
-  env.PUBLIC_URL='https://c-fixture.qoopia.ai';env.ROOT_DIR=root;bindNativeOwnerHome(home);
+  const prior={url:env.PUBLIC_URL,root:env.ROOT_DIR,memory:memoryRoot(),standalone:process.env.QOOPIA_STANDALONE};
+  env.PUBLIC_URL='https://c-fixture.qoopia.ai';env.ROOT_DIR=root;enableMemoryRoot(root);bindNativeOwnerHome(home);
   try {
     // 5.0.16: a tunnel replaced PUBLIC_URL at startup and connect-agent stored that origin.
     delete process.env.QOOPIA_STANDALONE;
@@ -67,7 +69,7 @@ test('an installed Qoopia binds local Claude Code to loopback, and moves a bindi
     expect(binding).toMatchObject({url:'http://127.0.0.1:'+env.PORT,agent_id:stored.agent_id,key:stored.key});
     expect(JSON.parse(fs.readFileSync(path.join(home,'.claude.json'),'utf8')).mcpServers.qoopia_memory.url).toBe('http://127.0.0.1:'+env.PORT+'/mcp');
   } finally {
-    env.PUBLIC_URL=prior.url;env.ROOT_DIR=prior.root;
+    env.PUBLIC_URL=prior.url;env.ROOT_DIR=prior.root;enableMemoryRoot(prior.memory);
     if(prior.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=prior.standalone;
     fs.rmSync(root,{recursive:true,force:true});
   }
@@ -75,7 +77,7 @@ test('an installed Qoopia binds local Claude Code to loopback, and moves a bindi
 
 test('the server moves a binding 5.0.16 left on the tunnel origin to loopback at start, with no relink',()=>{
   const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-memory-origin-')),home=path.join(root,'home');fs.mkdirSync(home,{mode:0o700});
-  const prior={root:env.ROOT_DIR,standalone:process.env.QOOPIA_STANDALONE};env.ROOT_DIR=root;bindNativeOwnerHome(home);
+  const prior={root:env.ROOT_DIR,memory:memoryRoot(),standalone:process.env.QOOPIA_STANDALONE};env.ROOT_DIR=root;enableMemoryRoot(root);bindNativeOwnerHome(home);
   try {
     // 5.0.16 stored and linked the tunnel origin; the binary path does not matter for the binding.
     const created=createAgent({name:'Origin fixture '+randomUUID(),workspaceSlug:slug,type:'standard'});
@@ -93,7 +95,7 @@ test('the server moves a binding 5.0.16 left on the tunnel origin to loopback at
     expect(fs.readFileSync(path.join(home,'.claude/settings.json'))).toEqual(settings);
     expect(migrateMemoryOrigins()).toEqual([{state:'current',runtime:'claude_code'}]);
   } finally {
-    env.ROOT_DIR=prior.root;
+    env.ROOT_DIR=prior.root;enableMemoryRoot(prior.memory);
     if(prior.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=prior.standalone;
     fs.rmSync(root,{recursive:true,force:true});
   }
@@ -103,7 +105,7 @@ test('the server moves a binding 5.0.16 left on the tunnel origin to loopback at
 // hooks and MCP entry on the tunnel address. At start they move to loopback, with the same agent and key.
 test('a binding to this installation\'s own tunnel address moves to loopback at start, MCP entry included',async()=>{
   const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-memory-own-tunnel-')),home=path.join(root,'home');fs.mkdirSync(home,{mode:0o700});
-  const prior={root:env.ROOT_DIR,standalone:process.env.QOOPIA_STANDALONE};env.ROOT_DIR=root;bindNativeOwnerHome(home);
+  const prior={root:env.ROOT_DIR,memory:memoryRoot(),standalone:process.env.QOOPIA_STANDALONE};env.ROOT_DIR=root;enableMemoryRoot(root);bindNativeOwnerHome(home);
   try {
     const installation=randomUUID(),workspace=randomUUID(),origin='https://c-own.qoopia.ai';
     writeTransport(root,{format:'qoopia-transport/1',owner_id:randomUUID(),workspace_id:workspace,installation_id:installation,identity:await newIdentity(),
@@ -119,7 +121,7 @@ test('a binding to this installation\'s own tunnel address moves to loopback at 
     expect(fs.readFileSync(path.join(home,'.codex/config.toml'),'utf8')).toContain('url = '+JSON.stringify(loopback+'/mcp'));
     expect(migrateMemoryOrigins()).toEqual([]);
   } finally {
-    env.ROOT_DIR=prior.root;
+    env.ROOT_DIR=prior.root;enableMemoryRoot(prior.memory);
     if(prior.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=prior.standalone;
     fs.rmSync(root,{recursive:true,force:true});
   }
@@ -129,8 +131,8 @@ test('a binding to this installation\'s own tunnel address moves to loopback at 
 // the tunnel origin and its own agent, while this computer keeps the loopback binding.
 test('an installed Qoopia downloads a file for another computer at its external address, with a separate agent',async()=>{
   const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-memory-setup-remote-'));
-  const prior={url:env.PUBLIC_URL,root:env.ROOT_DIR,standalone:process.env.QOOPIA_STANDALONE};
-  env.ROOT_DIR=root;process.env.QOOPIA_STANDALONE='true';
+  const prior={url:env.PUBLIC_URL,root:env.ROOT_DIR,memory:memoryRoot(),standalone:process.env.QOOPIA_STANDALONE};
+  env.ROOT_DIR=root;enableMemoryRoot(root);process.env.QOOPIA_STANDALONE='true';
   try {
     env.PUBLIC_URL='http://127.0.0.1:'+env.PORT;
     await expect(memorySetupAction(owner.agent_id,{action:'connect-agent',runtime:'codex',target:'another_computer'})).rejects.toMatchObject({code:'NOT_READY'});
@@ -145,7 +147,7 @@ test('an installed Qoopia downloads a file for another computer at its external 
     const moved=await memorySetupAction(owner.agent_id,{action:'connect-agent',runtime:'codex',target:'another_computer'}) as Connected&{connection:{url:string}};
     expect(moved.connection).toMatchObject({url:'https://c-moved.qoopia.ai',agent_id:remote.connection.agent_id,key:remote.connection.key});
   } finally {
-    env.PUBLIC_URL=prior.url;env.ROOT_DIR=prior.root;
+    env.PUBLIC_URL=prior.url;env.ROOT_DIR=prior.root;enableMemoryRoot(prior.memory);
     if(prior.standalone===undefined)delete process.env.QOOPIA_STANDALONE;else process.env.QOOPIA_STANDALONE=prior.standalone;
     fs.rmSync(root,{recursive:true,force:true});
   }

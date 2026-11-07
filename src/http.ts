@@ -770,12 +770,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
         });
         return handleRegister(body, res, publicDcr.auth);
       }
-      audit({ event: "auth_failure", result: "deny", ip: clientIp, scope: "/oauth/register" });
-      return json(res, 401, {
-        error: "unauthorized",
-        error_description:
-          "Bearer api_key required (steward or workspace owner).",
-      });
+      // MCP clients may use root discovery even for a named connection (#37). Registration
+      // creates no grant and chooses no workspace. Authorization requires an explicit resource.
+      audit({event:'oauth_register',result:'allow',ip:clientIp,detail:'unbound public DCR'});
+      return handleRegister(body,res,null);
     }
     try {
       assertCanRegisterOAuth(auth);

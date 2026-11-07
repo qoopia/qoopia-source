@@ -31,7 +31,7 @@ case " $* " in *' login status '*) [ "$(cat "$dir/mode")" = unauth ] && { echo '
 printf . >> "$dir/runs"; cat >/dev/null
 # A killed run cannot clean up, so the marker holds its pid and only a live one counts.
 [ -e "$dir/running" ] && kill -0 "$(cat "$dir/running")" 2>/dev/null && printf x >> "$dir/overlaps"; echo $$ > "$dir/running"; trap 'rm -f "$dir/running"' EXIT
-case $(cat "$dir/mode") in quota) echo 'usage limit reached' >&2; exit 1;; sleep) sleep 1;;
+case $(cat "$dir/mode") in quota) echo 'usage limit reached' >&2; exit 1;; sleep) sleep 1;; slow) sleep 4;;
   crash) cat "$dir/crash"; exit 1;; esac
 cat "$dir/response"
 `,{mode:0o700});
@@ -135,7 +135,7 @@ test('interactive recall does not queue behind a background model call; it ranks
   try {
     const background=memoryText(ws.id,'Background checkpoint.',{}).catch(()=>null);
     const started=Date.now();
-    const result=await recall({workspace_id:ws.id,caller_agent_id:agent,is_admin:false,query:'busyslotmark',mode:'fts5'});
+    const result=await recall({workspace_id:ws.id,caller_agent_id:agent,is_admin:false,query:'busyslotmark',mode:'fts5',judge:true});
     expect(Date.now()-started).toBeLessThan(1000);
     expect(result.results).toHaveLength(2);
     expect(result.judging).toMatchObject({applied:false,error:'MODEL_BUSY'});
@@ -274,4 +274,48 @@ test('a quota failure that is over does not keep the agent at «needs sign-in» 
   expect(notes(ws.id)).toBe(3);
   expect(agentMemoryStatus(ws.id,agent)).toMatchObject({error_code:null,pending_sessions:0});
   expect(agentMemoryStatus(ws.id,agent).state).not.toBe('sign_in');
+});
+
+test('recall stays on keyword ranking unless the caller asks for the model, and says the model is there',async()=>{
+  const ws=createWorkspace({name:'No judge',slug:'maintenance-no-judge'}),agent=createAgent({name:'no-judge-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');
+  for(const text of ['nojudgemark первый документ','nojudgemark второй документ'])createNote({workspace_id:ws.id,agent_id:agent,text});
+  const before=runs(),started=Date.now();
+  const result=await recall({workspace_id:ws.id,caller_agent_id:agent,is_admin:false,query:'nojudgemark',mode:'fts5'});
+  expect(Date.now()-started).toBeLessThan(1000);
+  expect(runs()).toBe(before);
+  expect(result.results).toHaveLength(2);
+  expect(result.judging).toMatchObject({attempted:false,applied:false,status:'available'});
+});
+
+test('a caller budget shorter than the run ends it as MODEL_BUDGET and leaves the subscription status alone',async()=>{
+  const ws=createWorkspace({name:'Budget',slug:'maintenance-budget'}),agent=createAgent({name:'budget-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');
+  for(const text of ['budgetmark первый документ','budgetmark второй документ'])createNote({workspace_id:ws.id,agent_id:agent,text});
+  mode('slow');
+  try {
+    let started=Date.now();
+    await expect(memoryText(ws.id,'Interactive.',{},{budget_ms:1200})).rejects.toMatchObject({code:'MODEL_BUDGET'});
+    expect(Date.now()-started).toBeLessThan(3500);
+    expect(memoryModelStatus(ws.id).state).toBe('selected');
+    started=Date.now();
+    const result=await recall({workspace_id:ws.id,caller_agent_id:agent,is_admin:false,query:'budgetmark',mode:'fts5',judge:true,model_budget_ms:1200});
+    expect(Date.now()-started).toBeLessThan(3500);
+    expect(result.results).toHaveLength(2);
+    expect(result.judging).toMatchObject({attempted:true,applied:false,error:'MODEL_BUDGET'});
+    expect(memoryModelStatus(ws.id).state).toBe('selected');
+  } finally {mode('ok');}
+  expect(memoryModelBusy()).toBe(false);
+},20_000);
+
+test('a result that holds the requested JSON value instead of its text is accepted as that value',async()=>{
+  const ws=createWorkspace({name:'Value result',slug:'maintenance-value-result'});selectMemoryProfile(ws.id,'codex');
+  const response=path.join(bin,'response'),saved=fs.readFileSync(response,'utf8');
+  try {
+    for(const text of [JSON.stringify({result:['one','two']}),JSON.stringify({result:'["one","two"]'})]) {
+      fs.writeFileSync(response,[{type:'item.completed',item:{type:'agent_message',text}},{type:'turn.completed'}].map(e=>JSON.stringify(e)).join('\n')+'\n');
+      expect(JSON.parse((await memoryText(ws.id,'Queries.',{})).text)).toEqual(['one','two']);
+    }
+    expect(memoryModelStatus(ws.id).state).toBe('ready');
+  } finally {fs.writeFileSync(response,saved);}
 });

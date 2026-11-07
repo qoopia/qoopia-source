@@ -182,7 +182,7 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   const beforeRecall = historical.canonical_tools.find((tool) => tool.name === "recall")!;
   // V1 changes explanatory copy for built-in retrieval/subscription judging;
   // the input types, risk and envelope remain part of the frozen contract.
-  if (!recall?.description.includes('4k serialized-byte envelope') || !recall.description.includes('connected workspace subscription')) throw new Error("V1 recall budget/subscription description drift");
+  if (!recall?.description.includes('returns excerpts and ids') || !recall.description.includes('judge=true requests bounded model judging')) throw new Error("V1 recall budget/subscription description drift");
   recall.description = beforeRecall.description;
   const recallProps = (recall.input_schema as {properties: Record<string, Record<string, Json>>}).properties;
   const oldRecallProps = (beforeRecall.input_schema as {properties: Record<string, Record<string, Json>>}).properties;
@@ -191,6 +191,11 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   // ADR-020 states who reads other agents' transcripts in the sessions scope; the enum stays frozen.
   if (!String(recallProps.scope?.description).includes('while your shared context is on')) throw new Error("ADR-020 recall sessions scope transcript-rule description drift");
   for (const field of ['query','deep','deep_llm','cross_workspace','scope']) recallProps[field]!.description=oldRecallProps[field]!.description!;
+  // 5.0.24: the subscription model steps are opt-in (judge) and bounded (model_budget_ms); both optional,
+  // so every frozen V3/V4 call keeps its meaning and only gets faster.
+  if (recallProps.judge?.type !== 'boolean' || recallProps.model_budget_ms?.type !== 'integer') throw new Error("5.0.24 recall judge/model_budget_ms schema drift");
+  if (((recall.input_schema as {required?: string[]}).required ?? []).some((field) => field === 'judge' || field === 'model_budget_ms')) throw new Error("5.0.24 recall model fields must stay optional");
+  delete recallProps.judge; delete recallProps.model_budget_ms;
   const searchScope = (projected.canonical_tools.find((tool) => tool.name === "session_search")?.input_schema as {properties: Record<string, Record<string, Json>>} | undefined)?.properties.scope;
   if (!String(searchScope?.description).includes('no search leaves your own workspace')) throw new Error("ADR-020 session_search scope description drift");
   delete searchScope!.description;
@@ -231,6 +236,12 @@ function checkedP1Projection(live: Awaited<ReturnType<typeof captureCurrent>>) {
   // F-137 reserves kind 'system' (the server never sends it); the rest of the enum is frozen.
   if (stable(agentSendProps.kind?.enum) !== stable(["request", "ack", "reply", "status"])) throw new Error("F-137 agent_send must not accept kind 'system'");
   agentSendProps.kind!.enum = ["request", "ack", "reply", "status", "system"];
+  // 5.0.24 adds bounded batch reads while preserving the single-id call and its response.
+  const noteGet=projected.canonical_tools.find(tool=>tool.name==='note_get')!;
+  const noteGetSchema=noteGet.input_schema as {properties:Record<string,any>;required?:string[]};
+  if(!noteGet.description.includes('single id keeps the legacy response')||noteGetSchema.required?.includes('id')||noteGetSchema.properties.ids?.maxItems!==50||noteGetSchema.properties.ids?.items?.maxLength!==128||noteGetSchema.properties.max_chars?.maximum!==100000)throw new Error('5.0.24 batch note_get contract drift');
+  delete noteGetSchema.properties.ids;delete noteGetSchema.properties.max_chars;noteGetSchema.required=['id'];
+  noteGet.description=historical.canonical_tools.find(tool=>tool.name==='note_get')!.description;
   // F-255 bounds note ids and tags at the MCP boundary and makes note_list a preview list; types stay frozen.
   const propsOf = (name: string) => (projected.canonical_tools.find((tool) => tool.name === name)!.input_schema as {properties: Record<string, Record<string, Json>>}).properties;
   for (const [name, fields] of [["note_create", ["project_id", "task_bound_id", "session_id"]], ["note_get", ["id"]], ["note_delete", ["id"]], ["note_update", ["id"]]] as const) {

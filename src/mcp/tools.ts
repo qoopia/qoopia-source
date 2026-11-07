@@ -174,7 +174,7 @@ const tools: ToolDef[] = [
     name: "recall",
     risk: "read",
     description:
-      "Search notes, activity log, and session messages. Note retrieval combines keywords and multilingual semantic similarity, with permission checks before ranking. A connected workspace subscription adds bounded query expansion, related-note retrieval and relevance judging automatically; judging metadata reports whether it ran. Without a usable model, keyword/vector retrieval remains available. Every scope fits a conservative 4k serialized-byte envelope with explicit completeness; use each excerpt's full_body_request (note_get, entity_get, or session_expand for your own messages) for its full body. The deep/deep_llm switches additionally select configured legacy rerank services.",
+      "Search memory; returns excerpts and ids. Fetch full text with note_get. Fast by default; judge=true requests bounded model judging. low_confidence means weak matches; verify sources.",
     rawSchema: {
       query: z.string().min(1).max(1000).describe("Describe what you need, or provide specific keywords."),
       limit: z.number().int().min(1).max(50).optional(),
@@ -202,14 +202,20 @@ const tools: ToolDef[] = [
         .boolean()
         .optional()
         .describe(
-          "Request the configured legacy cross-encoder reranker. Overrides its server default; does not disable automatic judging by a connected workspace subscription.",
+          "Request the configured legacy cross-encoder reranker. Overrides its server default; independent of judge.",
         ),
       deep_llm: z
         .boolean()
         .optional()
         .describe(
-          "Request the configured legacy LLM reranker instead of the legacy cross-encoder. Workspace subscription judging is automatic when connected.",
+          "Request the configured legacy LLM reranker instead of the legacy cross-encoder. Independent of judge.",
         ),
+      judge: z.boolean().optional().describe(
+        "Use the workspace subscription model for this call: query expansion when keywords find fewer than three notes, then relevance judging. Default false: each model step takes seconds. Use for hard or cross-language queries.",
+      ),
+      model_budget_ms: z.number().int().min(1000).max(45000).optional().describe(
+        "Wall-clock limit for the model steps when judge=true (default 20000). When it runs out, keyword/vector ranking is returned with judging.error MODEL_BUDGET.",
+      ),
       latest_only: z.boolean().optional().describe(
         "Return active supersede heads only. Effective default remains false until QOOPIA_V4_LATEST_ONLY is enabled. include_history=true forces false when omitted and rejects explicit true.",
       ),
@@ -245,6 +251,8 @@ const tools: ToolDef[] = [
         include_archived: args.include_archived as boolean | undefined,
         deep: args.deep as boolean | undefined,
         deep_llm: args.deep_llm as boolean | undefined,
+        judge: args.judge as boolean | undefined,
+        model_budget_ms: args.model_budget_ms as number | undefined,
         // V4.1: поля присутствуют в схеме только при включённом флаге; при
         // выключенном прямой вызов всё равно отсеивается FEATURE_DISABLED.
         valid_as_of: args.valid_as_of as string | undefined,
@@ -331,12 +339,22 @@ const tools: ToolDef[] = [
   {
     name: "note_get",
     risk: "read",
-    description: "Fetch a single note by ULID.",
+    description: "Read a note by id or batch ids. max_chars bounds each body; a single id keeps the legacy response.",
     rawSchema: {
-      id: z.string().min(1).max(128),
+      id: z.string().min(1).max(128).optional(),
+      ids: z.array(z.string().min(1).max(128)).min(1).max(50).optional(),
+      max_chars: z.number().int().min(1).max(100_000).optional(),
     },
-    handler: (args, auth) =>
-      getNote(auth.workspace_id, String(args.id), auth.agent_id, seesWholeWorkspace(auth)),
+    handler: (args, auth) => {
+      if(Boolean(args.id)===Boolean(args.ids))throw new QoopiaError('INVALID_INPUT','Provide exactly one of id or ids');
+      const read=(id:string)=>{
+        const note=getNote(auth.workspace_id,id,auth.agent_id,seesWholeWorkspace(auth));
+        const max=args.max_chars as number|undefined ?? (args.ids?2000:undefined);
+        return max!==undefined&&note.text.length>max?{...note,text:note.text.slice(0,max),completeness:'excerpt',total_chars:note.text.length}:note;
+      };
+      if(args.id)return read(String(args.id));
+      return {notes:(args.ids as string[]).map(id=>{try{return read(id);}catch(error){if(error instanceof QoopiaError&&['NOT_FOUND','FORBIDDEN'].includes(error.code))return {id,error:'NOT_FOUND'};throw error;}})};
+    },
   },
   {
     name: "note_list",

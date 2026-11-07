@@ -99,7 +99,7 @@ export async function connectInstalled(raw: unknown, context: Context, approval?
       stage = 'CAPABILITY_PROBE';
       await server.connect(st); await client.connect(ct);
       const catalog = await client.listTools(); tools = catalog.tools.map(tool => tool.name);
-      for (const name of ['qoopia_capabilities', 'note_create', 'note_get', 'recall']) if (!tools.includes(name)) throw new Error('Required memory tool unavailable');
+      for (const name of ['note_create', 'note_get', 'recall']) if (!tools.includes(name)) throw new Error('Required memory tool unavailable');
       const call = async (name: string, args: Record<string, unknown>) => {
         const result = await client.callTool({ name, arguments: args });
         if (result.isError || !Array.isArray(result.content)) throw new Error('Scoped MCP check failed: ' + name);
@@ -107,7 +107,9 @@ export async function connectInstalled(raw: unknown, context: Context, approval?
         if (!text || typeof text.text !== 'string') throw new Error('MCP result missing');
         return JSON.parse(text.text);
       };
+      // Hidden schemas remain callable in lean mode; probe the capability operation directly.
       const capability = await call('qoopia_capabilities', {});
+      tools=[...new Set([...tools,'qoopia_capabilities'])];
       if (capability.profile !== 'memory-worker') throw new Error('Capability profile mismatch');
       configDigest = capability.config_digest;
       const marker = 'qoopiaconnect' + randomUUID().replaceAll('-', '');

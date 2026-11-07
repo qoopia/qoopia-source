@@ -30,7 +30,7 @@ afterAll(async()=>{env.PUBLIC_URL=saved.public;env.OAUTH_ISSUER=saved.issuer;env
 function apply(who=owner,mode:'read'|'read_write'='read_write',key=randomBytes(8).toString('hex')) {
   return (connectionAction(who.agent_id,{action:'apply',surface:'codex',access_mode:mode,request_key:key}) as any).connection;
 }
-async function authorize(connection:any,who=owner,deny=false,omit:{scope?:boolean;resource?:boolean}={}) {
+async function authorize(connection:any,who=owner,deny=false,omit:{scope?:boolean;resource?:boolean;rootDcr?:boolean}={}) {
   authLimiter.resetForTests();dashboardLimiter.resetForTests();
   const unauthorized=await fetch(connection.mcp_url,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
   expect(unauthorized.status).toBe(401);
@@ -40,7 +40,7 @@ async function authorize(connection:any,who=owner,deny=false,omit:{scope?:boolea
   const discovery=await (await fetch(issuer.origin+'/.well-known/oauth-authorization-server'+issuer.pathname)).json() as any;
   expect(discovery.issuer).toBe(issuer.href);expect(discovery.scopes_supported).not.toContain('mcp:admin');
   const callback='http://127.0.0.1:19191/callback';
-  const registration=await fetch(discovery.registration_endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_name:'Synthetic Codex',redirect_uris:[callback],token_endpoint_auth_method:'none'})});
+  const registration=await fetch(omit.rootDcr?base+'/oauth/register':discovery.registration_endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_name:'Synthetic Codex',redirect_uris:[callback],token_endpoint_auth_method:'none'})});
   expect(registration.status).toBe(201);const client=await registration.json() as any;
   const verifier=randomBytes(32).toString('base64url'),challenge=createHash('sha256').update(verifier).digest('base64url');
   const url=new URL(discovery.authorization_endpoint);for(const [key,value] of Object.entries({client_id:client.client_id,redirect_uri:callback,response_type:'code',code_challenge:challenge,code_challenge_method:'S256',...omit.scope?{}:{scope:discovery.scopes_supported.join(' ')},...omit.resource?{}:{resource:connection.mcp_url}}))url.searchParams.set(key,value as string);
@@ -94,6 +94,13 @@ test('Muse Code and cloud Grok Bot get distinct HTTPS addresses and remain unver
 });
 // Claude Code's SDK names a scope only when the metadata advertises one; ours does not, so a read
 // connection must default to mcp:read instead of reading "" as an unknown scope (invalid_scope).
+test('issue 37: root unauthenticated DCR completes PKCE and owner consent for a named connection',async()=>{
+  const connection=apply(owner,'read'),token=await authorize(connection,owner,false,{rootDcr:true});
+  expect(token.client_id).toMatch(/^qcp_/);
+  expect((await call(connection,token.access_token,'qoopia_guide',{})).data.result.isError).not.toBe(true);
+  expect((await call(connection,token.access_token,'note_create',{text:'refused',idempotency_key:'root-dcr-read-denied'})).data.result.isError).toBe(true);
+  const stranger=apply(other);expect((await call(stranger,token.access_token,'recall',{query:'private'})).status).toBe(401);
+});
 test('a read connection connects a client that requests no scope',async()=>{
   const connection=apply(owner,'read'),token=await authorize(connection,owner,false,{scope:true});
   expect(token.scope).toBe('mcp:read');

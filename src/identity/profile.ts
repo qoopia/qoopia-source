@@ -81,7 +81,9 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       if(url.searchParams.get('app')==='ios'){
         const id=url.searchParams.get('request');
         if(id&&(!/^[A-Za-z0-9_-]{43}$/.test(id)||!handoff.get(id)))return page(ru?'Вход истёк':'Sign-in expired',`<a href="/profile?app=ios">${ru?'Вернуться в Qoopia':'Return to Qoopia'}</a>`,'',410,ru?'ru':'en');
-        return appProfileView(page,ru,account,pendingOpen(req),id,url.searchParams.get('delete')==='1');
+        // Sign in with Apple is native: only app builds that handle it (Qoopia-iOS/4 and later) are offered it.
+        const apple=Number(/\bQoopia-iOS\/(\d+)/.exec(req.headers.get('user-agent')??'')?.[1]??0)>=4;
+        return appProfileView(page,ru,account,pendingOpen(req),id,url.searchParams.get('delete')==='1',apple);
       }
       let suggested='';try{suggested=dashboardAddress(url.searchParams.get('dashboard'));}catch{/* Untrusted URL is never reflected without validation. */}
       const preference=account?news.preference(account.id):null;
@@ -101,16 +103,16 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       const body=JSON.parse(text);if(!body||typeof body!=='object'||Array.isArray(body))return json(400,{error:'INVALID_REQUEST'});
       if(url.pathname==='/profile/start'){
         // This browser finishes its own sign-in: a device code or account continuation it never sees is not opened for it.
-        if(!['email','google'].includes(body.method)||body.news!==undefined&&typeof body.news!=='boolean')return json(400,{error:'INVALID_REQUEST'});
+        if(!['email','google','apple'].includes(body.method)||body.news!==undefined&&typeof body.news!=='boolean')return json(400,{error:'INVALID_REQUEST'});
         const verifier=randomToken(),pending=randomToken();
         // F-125: the sign-in finishes only from this browser's network; nothing to copy between screens.
         const response=await call('/requests',{method:body.method,email:body.email,language:body.language==='ru'?'ru':'en',bind:'network',challenge:hash(verifier)},ip);
-        const result=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {id?:string;error?:string;email?:string;google_url?:string};
+        const result=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {id?:string;error?:string;email?:string;google_url?:string;apple?:{request:string;nonce:string}};
         if(!response.ok)return json(response.status,{error:result.error});
         db.query('DELETE FROM profile_pending WHERE hash=?').run(hash(cookie(req,pendingName)));
         db.query('INSERT INTO profile_pending(hash,request_id,verifier,expires) VALUES (?,?,?,?)').run(hash(pending),result.id!,verifier,Date.now()+600_000);
         if(body.news===true)db.query('INSERT INTO profile_news_pending VALUES (?,?)').run(hash(pending),body.language==='ru'?'ru':'en');
-        const out=json(200,{email:result.email,google_url:result.google_url});out.headers.set('set-cookie',setCookie(pendingName,pending,600));return out;
+        const out=json(200,{email:result.email,google_url:result.google_url,apple:result.apple});out.headers.set('set-cookie',setCookie(pendingName,pending,600));return out;
       }
       if(url.pathname==='/profile/poll'){
         const key=hash(cookie(req,pendingName));
@@ -120,13 +122,13 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
         busy.add(key);
         try{
           const response=await call('/redeem',{id:pending.request_id,verifier:pending.verifier},ip);
-          const data=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {email?:string;googleSub?:string;pending?:boolean;error?:string};
+          const data=JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as {email?:string;googleSub?:string;appleSub?:string;pending?:boolean;error?:string};
           if(response.status===202)return json(202,{pending:true});
           db.query('DELETE FROM profile_pending WHERE hash=?').run(key);
           if(!response.ok||!data.email)return json(410,{error:'LOGIN_EXPIRED'});
           const token=randomToken();
           db.transaction(()=>{
-            const id=identify({email:data.email!,googleSub:data.googleSub});
+            const id=identify({email:data.email!,googleSub:data.googleSub,appleSub:data.appleSub});
             if(pending.news)news.change({id,email:data.email!},true,pending.language,'signup');
             db.query('DELETE FROM profile_sessions WHERE hash=?').run(hash(cookie(req,sessionName)));
             db.query('INSERT INTO profile_sessions VALUES (?,?,?)').run(hash(token),id,Date.now()+SESSION_DAYS*86_400_000);

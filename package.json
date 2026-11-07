@@ -1,6 +1,6 @@
 {
   "name": "qoopia",
-  "version": "5.0.23",
+  "version": "5.0.24",
   "description": "Memory and truth layer for AI agents",
   "type": "module",
   "bin": {
@@ -31,12 +31,14 @@
   },
   "dependencies": {
     "@huggingface/tokenizers": "0.2.0",
+    "@jitl/quickjs-singlefile-cjs-release-sync": "0.32.0",
     "@modelcontextprotocol/sdk": "1.32.0",
     "@modelcontextprotocol/server": "2.3.1",
     "dingbat-to-unicode": "file:./scripts/vendor/transpect-fontmap-to-unicode",
     "jose": "6.2.2",
     "mammoth": "1.12.2",
     "qrcode-generator": "2.0.4",
+    "quickjs-emscripten-core": "0.32.0",
     "ulid": "2.4.0",
     "unpdf": "1.4.0",
     "zod": "4.6.6"
@@ -54,9 +56,9 @@
   "overrides": {
     "dingbat-to-unicode": "file:./scripts/vendor/transpect-fontmap-to-unicode",
     "@xmldom/xmldom": "^0.8.15",
-    "qs": "^6.16.0",
+    "qs": "^6.16.1",
     "hono": "^4.13.7",
-    "@hono/node-server": "^1.19.15",
+    "@hono/node-server": "^2.1.3",
     "ip-address": "^10.7.4",
     "fast-uri": "^3.1.9",
     "body-parser": "^2.4.0",
