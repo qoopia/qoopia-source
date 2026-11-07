@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.0.24 — 2026-11-07
+
+- Lean tool catalog: direct MCP clients receive a short core set by default (9 tools, 5.1 KB instead of 42 tools, 34.7 KB in 5.0.23). Every other tool stays callable by its old name; `tool_search` returns matching tools and schemas on demand. Existing connections keep working without reconnection.
+- Read-only Code Mode: `qoopia_execute` combines searches, batch reads and filtering in isolated QuickJS-WASM with the caller's permissions; nested calls are logged; no writes, confirmations, network, filesystem, timers or imports; 10 seconds, 50 calls, 20 KB output, 32 MiB heap.
+- `note_get` reads up to 50 notes with bounded bodies (`max_chars`); `recall` returns short excerpts with ids. `qoopia_guide` opens individual rule chapters in English or Russian; compact session-start rules within 2 KiB. Agent kit revision 17.
+- Fast recall: answers in well under a second by default without waiting for the memory model; `judge: true` with `model_budget_ms` asks for the model's judgement. The memory model runs without extended thinking. Recall hygiene demotes context-only material and flags low-confidence results.
+- Resumed ingestion deduplicates retried messages across the persisted resume boundary (migration 056). Sign in with Apple fixes.
+- Root OAuth Dynamic Client Registration accepts unauthenticated MCP clients instead of answering 401 (#37); rate limits and metadata validation stay, and registration alone grants no access.
+- Rollback switches: `QOOPIA_TOOL_SURFACE=classic` restores full discovery, `QOOPIA_CODE_MODE=off` disables Code Mode; restart the server after changing either.
+- Dependencies: qs floor 6.16.1, @hono/node-server floor 2.1.3; `bun audit` without ignores. Database schema 56, agent kit revision 17.
+
+
 ## 5.0.23 — 2026-10-24
 
 - Work handoff between Claude Code and Codex: a session opening a project receives the newest work another agent of the same owner did there — what was done and what is open, its final answer, the user's last requests, tool errors and the changed files with a content digest checked on this computer — as history, not instructions. `work_handoff` gives the same to clients without hooks.
