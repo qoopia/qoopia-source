@@ -7,6 +7,7 @@ import {localOwner} from '../delivery/owner-onboarding.ts';
 import {assertNoSecrets} from '../utils/secret-guard.ts';
 import {QoopiaError} from '../utils/errors.ts';
 import {getSkillVersion} from '../skills/authority.ts';
+import {isTextual} from '../services/files.ts';
 import {BRIDGE_RELAY,MAX_FILE,MAX_RPC,catalogueItem,fingerprint,id,invitationCode,label,newIdentity,openPacket,ownerStatement,peerId,publicIdentity,sealPacket,secret,sha,signRPC,
   type Identity,type Packet,type PublicIdentity} from './protocol.ts';
 
@@ -331,7 +332,9 @@ export function bridgeService(db:Database,relay=BRIDGE_RELAY,request:typeof fetc
   }
   function stage(auth:AuthContext,input:z.infer<typeof materialInput>) {
     const p=actor(auth,true),a=materialInput.parse(input),bytes=contentBytes(a.content_base64),v=version(a);
-    assertNoSecrets(a.title+'\n'+a.description,'external catalogue');
+    assertNoSecrets(a.title+'\n'+a.description+'\n'+a.filename,'external catalogue');
+    // What leaves for another owner is read as a note is: text only, the bytes of a binary file or a sealed skill are not.
+    if(a.kind==='note'||isTextual(a.mime,a.filename))assertNoSecrets(bytes.toString('utf8'),'external material');
     const old=row<Material>('SELECT * FROM bridge_materials WHERE workspace_id=? AND id=?',p.workspace_id,a.id);
     if(old){if(old.version!==v||old.direction!=='outgoing')throw new QoopiaError('IDEMPOTENCY_MISMATCH','Material retry changed');return {id:a.id,version:v};}
     if(row<{n:number}>('SELECT count(*) n FROM bridge_materials WHERE workspace_id=?',p.workspace_id)!.n>=1000)throw new QoopiaError('SIZE_LIMIT','Pilot external-folder limit: 1,000 materials');

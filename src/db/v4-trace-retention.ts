@@ -31,6 +31,11 @@ export function expireRecallTraceBatch(
     throw new Error(`Trace expiry batch size must be an integer in [1, 1000]`);
   }
 
+  // The hourly pass usually finds nothing. It then takes no write lock: with one it queued behind every
+  // other writer, and held them up in turn, to do nothing [5.0.25].
+  if (!db.query("SELECT 1 FROM recall_traces WHERE expires_at <= ? LIMIT 1").get(options.cutoff)) {
+    return { selected: 0, detached_feedback: 0, deleted_items: 0, deleted_traces: 0 };
+  }
   db.exec("BEGIN IMMEDIATE");
   try {
     const traces = db
@@ -85,7 +90,10 @@ export function expireRecallTraceBatch(
         .run(...args).changes;
     }
 
-    const violations = db.query("PRAGMA foreign_key_check").all();
+    // Only the two tables that reference a trace: the check of the whole database ran under the write
+    // lock on every pass, and a broken row anywhere else stopped trace expiry.
+    const violations = ["recall_feedback", "recall_trace_items"]
+      .flatMap((table) => db.query(`PRAGMA foreign_key_check(${table})`).all());
     if (violations.length > 0) {
       throw new Error(
         `Trace expiry foreign_key_check failed with ${violations.length} violation(s)`,

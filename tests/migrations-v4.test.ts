@@ -502,4 +502,32 @@ describe("V4 recall trace retention", () => {
       .toEqual({ count: 1 });
     fixture.db.close();
   });
+
+  test("with nothing to expire no write lock is taken, and a batch checks only the tables it touched [M7]", () => {
+    const fixture = scratchDatabase();
+    const seeded = seedTrace(fixture.db, "scoped");
+    // Another process is writing (a backup, the CLI): an empty pass must not queue behind it.
+    const writer = new Database(fixture.filename);
+    writer.exec("BEGIN IMMEDIATE");
+    fixture.db.exec("PRAGMA busy_timeout = 0");
+    try {
+      expect(expireRecallTraceBatch(fixture.db, { cutoff: "2020-01-01T00:00:00.000Z" }))
+        .toEqual({ selected: 0, detached_feedback: 0, deleted_items: 0, deleted_traces: 0 });
+    } finally { writer.exec("ROLLBACK"); writer.close(); }
+
+    // A broken reference in a table this batch never touches is not its failure: the whole-database
+    // check made one such row stop trace expiry for good, and ran under the write lock every time.
+    fixture.db.exec("PRAGMA foreign_keys = OFF");
+    const other = insertWorkspace(fixture.db, "trace-unrelated");
+    insertNote(fixture.db, other, insertAgent(fixture.db, other, "trace-unrelated"), "note-trace-unrelated");
+    fixture.db.exec("PRAGMA foreign_keys = OFF");
+    fixture.db.query("UPDATE notes SET workspace_id = 'ws-gone' WHERE id = 'note-trace-unrelated'").run();
+    fixture.db.exec("PRAGMA foreign_keys = ON");
+    expect(seeded.traceId).toBe("trace-scoped");
+    expect(fixture.db.query("PRAGMA foreign_key_check").all().length).toBeGreaterThan(0);
+    expect(fixture.db.query("PRAGMA foreign_key_check(recall_feedback)").all()).toEqual([]);
+    expect(expireRecallTraceBatch(fixture.db, { cutoff: "2026-02-01T00:00:00.000Z" }))
+      .toMatchObject({ selected: 1, deleted_traces: 1 });
+    fixture.db.close();
+  });
 });

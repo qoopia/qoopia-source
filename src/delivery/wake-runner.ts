@@ -14,6 +14,7 @@
  * to each other forever.
  */
 import fs from 'node:fs';
+import { installationLauncher } from './launcher.ts';
 import os from 'node:os';
 import path from 'node:path';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -24,6 +25,10 @@ import { spawnAgentProcess, terminateAgentProcess } from '../services/agent-proc
 import { linuxLinger } from './autostart.ts';
 
 const REPLY_PATH = '/api/v1/agentcomm/wake-reply';
+/** runner.log grew for good, a line per turn and per refused signature. At this size it becomes runner.log.1,
+ * replacing the one before: two files at most [5.0.25]. */
+export const RUNNER_LOG_BYTES = 5 * 1024 * 1024;
+const REPLY_REFUSED_KEEP_MS = 24 * 3600_000;
 const MAX_WAKE_BYTES = 2 * 1024 * 1024;
 const MAX_REPLY_CHARS = 48_000;
 const DONE_KEEP = 2000;
@@ -231,6 +236,7 @@ export class WakeRunner {
   private writeJson(name: string, value: unknown) { durableWrite(path.join(this.state, name), JSON.stringify(value)); }
   record(event: string, details: Record<string, unknown>) {
     // Ids, timings and exit codes only: message bodies and answers stay out of the log.
+    try { if (fs.statSync(this.log).size >= RUNNER_LOG_BYTES) fs.renameSync(this.log, this.log + '.1'); } catch { /* No log yet. */ }
     fs.appendFileSync(this.log, JSON.stringify({ at: new Date().toISOString(), event, ...details }) + '\n', { mode: 0o600 });
   }
 
@@ -350,7 +356,17 @@ export class WakeRunner {
     // Read at every turn: the owner may rename or add the Qoopia server between wakes.
     const command = runtimeCommand(agent, resume, lastFile, qoopiaMcpServers(agent.runtime, agent.cwd, this.config.server, env));
     const started = Date.now();
+    // A CLI or folder that is gone (a Node upgrade moves the CLI) ends this turn as unanswered. Unchecked, the
+    // spawn error stopped the whole runner, and the service restarted into the same job for ever.
+    const missing = [agent.command, agent.cwd].find((target) => !fs.existsSync(target));
+    if (missing) {
+      this.record('turn_not_started', { agent: agent.name, message_id: job.message_id, missing: missing === agent.cwd ? 'cwd' : 'command' });
+      return { code: 127, timedOut: false, answer: '', session: command.session };
+    }
     const child = spawnAgentProcess(agent.command, command.args, { cwd: agent.cwd, env });
+    let failed = false;
+    child.once('error', (error) => { failed = true; this.record('turn_not_started', { agent: agent.name, message_id: job.message_id, error: String(error).slice(0, 200) }); });
+    child.stdin.on('error', () => undefined);
     this.live.add(child);
     this.record('turn_started', { agent: agent.name, runtime: agent.runtime, message_id: job.message_id, session_id: job.session_id,
       pid: child.pid, resume: resume ?? null, model: agent.model ?? 'cli default' });
@@ -360,7 +376,7 @@ export class WakeRunner {
     child.stdin.end(wakePrompt(agent, job));
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; void terminateAgentProcess(child).catch(() => undefined); }, agent.timeout_seconds * 1000);
-    const code: number | null = await new Promise((resolve) => child.once('close', (c) => resolve(c)));
+    const code: number | null = await new Promise((resolve) => { child.once('close', (c) => resolve(failed ? 127 : c)); child.once('error', () => resolve(127)); });
     clearTimeout(timer); this.live.delete(child);
 
     let answer = '', session = command.session;
@@ -376,7 +392,11 @@ export class WakeRunner {
     return { code, timedOut, answer, session };
   }
 
-  /** One attempt. Sent, or finally refused (a 4xx other than 429), removes the file; anything else keeps it for the retry timer. */
+  /** One attempt. Sent, or finally refused, removes the file; anything else keeps it for the retry timer.
+   * Final are only the answers about the request itself: 400 and 422 (it is malformed) and 409 (already
+   * answered). 401, 403, 404 and 408 also come from a deploy window, a proxy, or a secret that add-agent
+   * has just rotated: dropped then, a finished answer was lost. They wait like a 5xx, for a day at most,
+   * so an answer to a message that no longer exists is not asked for ever [5.0.25]. */
   private async sendReply(file: string) {
     let pending: { agent_id: string; payload: string };
     try { pending = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return; }
@@ -388,7 +408,8 @@ export class WakeRunner {
         headers: { 'content-type': 'application/json', 'x-webhook-signature': signature }, body: pending.payload, signal: AbortSignal.timeout(15_000) });
       const body = await response.json().catch(() => ({})) as { id?: string; error?: string };
       if (response.ok) { fs.rmSync(file, { force: true }); this.record('reply_sent', { agent: agent.name, message_id, reply_message_id: body.id ?? null }); return; }
-      if (response.status < 500 && response.status !== 429) { fs.rmSync(file, { force: true }); this.record('reply_refused', { agent: agent.name, message_id, http_status: response.status, error: body.error ?? null }); return; }
+      const expired = response.status < 500 && response.status !== 429 && Date.now() - fs.statSync(file).mtimeMs > REPLY_REFUSED_KEEP_MS;
+      if ([400, 409, 422].includes(response.status) || expired) { fs.rmSync(file, { force: true }); this.record('reply_refused', { agent: agent.name, message_id, http_status: response.status, error: body.error ?? null, ...(expired ? { waited_out: true } : {}) }); return; }
       this.record('reply_deferred', { agent: agent.name, message_id, http_status: response.status });
     } catch (error) { this.record('reply_deferred', { agent: agent.name, message_id, error: String(error).slice(0, 200) }); }
   }
@@ -507,7 +528,7 @@ export function installWakeRunnerService(binary: string, configFile: string, com
   loadWakeRunnerConfig(configFile);
   privateDirectory(path.join(path.dirname(configFile), 'wake-runner-state'));
   const service = wakeRunnerService(binary, configFile);
-  if (!commit) return { state: 'PREVIEW', service_file: service.file, requires: '--commit' };
+  if (!commit) return { state: 'PREVIEW', service_file: service.file, program: binary, requires: '--commit' };
   fs.mkdirSync(path.dirname(service.file), { recursive: true });
   durableWrite(service.file, service.bytes, 0o644);
   loadService(service.load, service.file);
@@ -527,7 +548,7 @@ export function uninstallWakeRunnerService(commit: boolean) {
   return { state: 'REMOVED', service_file: service.file };
 }
 
-export async function wakeRunnerCli(argv: string[], arg: (n: string) => string | undefined, flag: (n: string) => boolean) {
+export async function wakeRunnerCli(argv: string[], arg: (n: string) => string | undefined, flag: (n: string) => boolean, root: string) {
   const action = argv[1], config = arg('config');
   const emit = (v: unknown) => console.log(JSON.stringify(v));
   if (action === 'serve') {
@@ -556,7 +577,9 @@ export async function wakeRunnerCli(argv: string[], arg: (n: string) => string |
     agent_id: arg('agent-id'), name: arg('name'), runtime: arg('runtime'), command: arg('command'), cwd: arg('cwd'),
     model: arg('model'), effort: arg('effort'), isolated: flag('isolated'), server: arg('server'), host: arg('host'), port: arg('port'),
   }));
-  if (action === 'install') return emit(installWakeRunnerService(process.execPath, safePath(config!), flag('commit')));
+  // The launcher of the installation, as the memory hooks use: a unit that named this bundle's own file kept
+  // running the old version after an update and lost its program after the second one [5.0.25].
+  if (action === 'install') return emit(installWakeRunnerService(installationLauncher(root, process.execPath), safePath(config!), flag('commit')));
   if (action === 'uninstall') return emit(uninstallWakeRunnerService(flag('commit')));
   throw new Error('wake-runner serve|check|add-agent|server-env|install|uninstall --config FILE');
 }

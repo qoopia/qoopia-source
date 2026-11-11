@@ -164,6 +164,27 @@ test('an interactive call stops a background checkpoint; the checkpoint retries 
   expect(fs.existsSync(path.join(bin,'overlaps'))).toBe(false);
 },20_000);
 
+test('a session whose summary keeps failing for any reason waits longer each time, not five minutes for ever [5.0.25]',async()=>{
+  const ws=createWorkspace({name:'Failing summary',slug:'maintenance-failing'}),agent=createAgent({name:'failing-agent',workspaceSlug:ws.slug}).id;
+  selectMemoryProfile(ws.id,'codex');pending(ws.id,agent,'codex:failing');
+  // The model answers, but never with the result that was asked for: each retry spent a model call.
+  const response=path.join(bin,'response'),good=fs.readFileSync(response);
+  fs.writeFileSync(response,[{type:'item.completed',item:{type:'agent_message',text:'not the structured result'}},{type:'turn.completed'}].map(e=>JSON.stringify(e)).join('\n')+'\n');
+  try {
+    const pauses:number[]=[];
+    for(let i=0;i<3;i++) {
+      const started=Date.now();await processMemoryMaintenance();
+      expect(meta('codex:failing').continuity_error).toBe('MODEL_INVALID_RESPONSE');
+      pauses.push(Math.round((meta('codex:failing').continuity_retry_at-started)/60_000));
+      db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_retry_at',0) WHERE id=?").run('codex:failing');
+    }
+    expect(pauses).toEqual([5,10,20]);
+    fs.writeFileSync(response,good);await processMemoryMaintenance();
+    expect(notes(ws.id)).toBe(1);
+    expect(meta('codex:failing')).not.toHaveProperty('continuity_backoff');
+  } finally {fs.writeFileSync(response,good);}
+},20_000);
+
 test('a single message that keeps timing out pauses its session longer each time [F-341]',async()=>{
   const ws=createWorkspace({name:'Backoff',slug:'maintenance-backoff'}),agent=createAgent({name:'backoff-agent',workspaceSlug:ws.slug}).id;
   selectMemoryProfile(ws.id,'codex');pending(ws.id,agent,'codex:backoff');
@@ -217,9 +238,12 @@ test('a failing embedding model backs off between maintenance ticks, and /health
   const saved={endpoint:process.env.QOOPIA_EMBED_ENDPOINT,auto:process.env.QOOPIA_AUTO_EMBED};
   process.env.QOOPIA_EMBED_ENDPOINT=`http://127.0.0.1:${server.port}/api/embed`;process.env.QOOPIA_AUTO_EMBED='true';
   try {
+    await processMemoryMaintenance();await Bun.sleep(200);
+    // A pass goes past a note that fails and ends at three failures in a row (the model, not the notes) [5.0.25].
+    const first=calls;expect(first).toBeGreaterThanOrEqual(1);expect(first).toBeLessThanOrEqual(3);
     for(let tick=0;tick<3;tick++){await processMemoryMaintenance();await Bun.sleep(100);}
-    // One failed attempt, then a pause: not a failing inference and a WARN on every 5-second tick.
-    expect(calls).toBe(1);
+    // Then a pause: not failing inferences and a WARN on every 5-second tick.
+    expect(calls).toBe(first);
     expect(embeddingHealth()).toBe('unavailable');
   } finally {
     server.stop(true);

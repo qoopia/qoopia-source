@@ -77,6 +77,18 @@ describe("writing canons", () => {
     expect(listCanons({ workspace_id: WS, actor: a() }).items.every((c) => c.scope !== "agent" || c.agent_id === A)).toBe(true);
   });
 
+  test("a workspace canon that replaced an agent's own one does not show that text in its history to others [X14]", () => {
+    const own = createCanon({ workspace_id: WS, actor: b(), text: "Бета хранит черновики отчётов в личной папке drafts-beta." }).canon;
+    const shared = createCanon({ workspace_id: WS, actor: steward(), scope: "workspace", supersedes_id: own.id,
+      text: "Черновики отчётов хранят в общей папке reports.", on_conflict: "keep_both" }).canon;
+    expect(shared.supersedes_id).toBe(own.id);
+    // Everyone reads the workspace canon; the version before it is still Beta's own.
+    expect(getCanon({ workspace_id: WS, actor: a(), id: shared.id }).history).toEqual([]);
+    expect(code(() => getCanon({ workspace_id: WS, actor: a(), id: own.id }))).toBe("NOT_FOUND");
+    for (const reader of [b(), steward()])
+      expect(getCanon({ workspace_id: WS, actor: reader, id: shared.id }).history.map((h) => h.id)).toEqual([own.id]);
+  });
+
   test("new text is a new version; mode and triggers change in place; retire stops loading", () => {
     const c = createCanon({ workspace_id: WS, actor: a(), text: "Секреты никогда не выводи в чат и в логи.", triggers: { words: ["секрет"] } }).canon;
     const moved = updateCanon({ workspace_id: WS, actor: a(), id: c.id, mode: "always" }).canon;

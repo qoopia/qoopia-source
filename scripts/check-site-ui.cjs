@@ -24,7 +24,7 @@ const axe=process.env.QOOPIA_AXE_CORE&&fs.readFileSync(process.env.QOOPIA_AXE_CO
     assert.equal(await page.locator('h1').count(),1,name+' single h1 '+route);
     assert.equal(await page.locator('img').evaluateAll(es=>es.some(e=>!e.complete||!e.naturalWidth)),false,name+' broken image '+route);
     if(route==='/'||route==='/ru/'){
-     await page.locator('#download-action a').waitFor();assert.match(await page.locator('#download-action a').getAttribute('href'),/^https:\/\/github.com\/qoopia\/qoopia-downloads\//);
+     await page.locator('#download-action a').waitFor();assert.match(await page.locator('#download-action a').getAttribute('href'),/^\/download\/(mac|linux)$/);
      assert((await page.locator('#platform').boundingBox()).height>=44,'platform touch target');await page.locator('#platform').selectOption('linux');assert.match(await page.locator('#download-action a').getAttribute('href'),/linux/);
      await shot({path:dir+'/'+name+'-hero-'+lang+'.png'});await shot({path:dir+'/'+name+'-home-'+lang+'.png',fullPage:true});
     }

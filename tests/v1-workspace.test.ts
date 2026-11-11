@@ -14,8 +14,15 @@ import {lockInstallation} from '../src/delivery/operations.ts';
 import {hash,safePath} from '../src/utils/fs.ts';
 import {startHttpServer} from '../src/http.ts';
 import {env} from '../src/utils/env.ts';
+import {managedClaudePolicy} from '../src/skills/adapter.ts';
 
-test('local workspace enforces owner cookie and origin, connects once, runs once and keeps conversation history',async()=>{
+// Connecting Claude Code is refused on a computer whose Claude Code is under managed policy, by design. There this
+// test cannot reach its subject, and it says so instead of failing. The question is asked of the product's own check
+// (managedClaudePolicy in src/skills/adapter.ts), so a managed file that only sets harmless switches, as on the
+// owner's Macs since 3 November 2026, no longer skips it. CI and the release image have no managed file.
+const managedHost=managedClaudePolicy();
+if(managedHost)console.log('SKIP local workspace test: this computer has a managed Claude Code policy, so the connect step is refused by design.');
+test.skipIf(managedHost)('local workspace enforces owner cookie and origin, connects once, runs once and keeps conversation history',async()=>{
   const keychains=()=>process.platform==='darwin'?spawnSync('/usr/bin/security',['list-keychains','-d','user'],{env:{HOME:os.userInfo().homedir,PATH:'/usr/bin:/bin'},encoding:'utf8'}).stdout:'';
   const originalKeychains=keychains();
   runMigrations();

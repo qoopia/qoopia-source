@@ -26,13 +26,16 @@ import type { OAuthScope } from "../auth/oauth.ts";
 import { grantedScopeAllowsRisk } from "../auth/oauth.ts";
 import { QoopiaError } from "../utils/errors.ts";
 import { db } from "../db/connection.ts";
-import {
+import {assertMetadataSize,
   createNote,
   getNote,
   listNotes,
   updateNote,
   deleteNote,
 } from "../services/notes.ts";
+
+/** Legacy aliases build note metadata from fields their schemas do not bound; the canonical tools bound it in the schema. */
+const bounded = <T>(metadata: T): T => { assertMetadataSize(metadata); return metadata; };
 import { logActivity, listActivity } from "../services/activity.ts";
 import {
   boundedMetadata,
@@ -130,7 +133,7 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
         agent_id: auth.agent_id,
         text: composeTaskText(args.title, args.description),
         type: "task",
-        metadata: buildTaskMetadata(args),
+        metadata: bounded(buildTaskMetadata(args)),
         project_id: (args.project_id as string) || null,
         tags: (args.tags as string[]) || [],
       });
@@ -143,7 +146,7 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
         agent_id: auth.agent_id,
         text: name,
         type: "deal",
-        metadata: buildDealMetadata(args),
+        metadata: bounded(buildDealMetadata(args)),
         project_id: (args.project_id as string) || null,
         tags: (args.tags as string[]) || [],
       });
@@ -156,7 +159,7 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
         agent_id: auth.agent_id,
         text: name,
         type: "contact",
-        metadata: buildContactMetadata(args),
+        metadata: bounded(buildContactMetadata(args)),
         tags: (args.tags as string[]) || [],
       });
     }
@@ -168,7 +171,7 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
         agent_id: auth.agent_id,
         text: name,
         type: "finance",
-        metadata: buildFinanceMetadata(args),
+        metadata: bounded(buildFinanceMetadata(args)),
         project_id: (args.project_id as string) || null,
         tags: (args.tags as string[]) || [],
       });
@@ -181,7 +184,7 @@ export function v2Create(args: Record<string, unknown>, auth: AuthContext) {
         agent_id: auth.agent_id,
         text: name,
         type: "project",
-        metadata: buildProjectMetadata(args),
+        metadata: bounded(buildProjectMetadata(args)),
         tags: (args.tags as string[]) || [],
       });
     }
@@ -340,7 +343,7 @@ function v2Update(args: Record<string, unknown>, auth: AuthContext) {
     is_admin: seesWholeWorkspace(auth),
     id,
     text: textOverride,
-    metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    metadata: Object.keys(metadata).length > 0 ? bounded(metadata) : undefined,
     tags: (args.tags as string[]) || undefined,
   });
 }

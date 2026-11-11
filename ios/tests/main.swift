@@ -26,6 +26,15 @@ precondition(!workspace.contains(URLPolicy.owner(URL(string: "blob:null/4f8a2c1e
 precondition(!workspace.contains(URL(string: "blob:https://workspace.example/4f8a2c1e")!))
 precondition((try? Workspace("https://workspace.example.")) == workspace)
 precondition((try? Workspace("https://10.0.0.5")) != nil)
+// Retry after a failed switch: the web view still holds the previous workspace's page, which must not come back.
+let other = try Workspace("https://other.example")
+precondition(URLPolicy.reloadsInPlace(workspace.dashboard, active: workspace))
+precondition(!URLPolicy.reloadsInPlace(workspace.dashboard, active: other))
+precondition(!URLPolicy.reloadsInPlace(workspace.dashboard, active: nil))
+precondition(URLPolicy.reloadsInPlace(URLPolicy.account, active: other))
+precondition(URLPolicy.reloadsInPlace(URLPolicy.account, active: nil))
+precondition(!URLPolicy.reloadsInPlace(nil, active: workspace))
+precondition(!URLPolicy.reloadsInPlace(URL(string: "https://evil.test/dashboard")!, active: workspace))
 print("iOS workspace URL policy: passed")
 
 let appleID = String(repeating: "a", count: 43), appleNonce = String(repeating: "B", count: 43)

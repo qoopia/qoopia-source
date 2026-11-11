@@ -1,4 +1,4 @@
-import {beforeAll,afterEach,expect,test} from 'bun:test';
+import {beforeAll,afterEach,expect,spyOn,test} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -12,7 +12,7 @@ import {bootstrapOwner} from '../src/auth/pairings.ts';
 import {createAgent} from '../src/admin/agents.ts';
 import {durableWrite,privateDirectory} from '../src/utils/fs.ts';
 import {agentDirectory,myAgentAction,myAgentState,stopMyAgents} from '../src/services/my-agent.ts';
-import {telegramAction,telegramState,pollTelegramOwner,deliverTelegram,runTelegramQueue,stopTelegramChannels,simpleTelegramApproval} from '../src/services/my-agent-telegram.ts';
+import {telegramAction,telegramState,pollTelegramOwner,deliverTelegram,runTelegramQueue,startTelegramChannels,stopTelegramChannels,simpleTelegramApproval} from '../src/services/my-agent-telegram.ts';
 import {channel,ensureChannel,recoverTelegram,queueTelegram,telegramChunks,TELEGRAM_LOGIN_REQUIRED} from '../src/services/telegram-store.ts';
 import {fakeFetch} from './helpers/fake-fetch.ts';
 beforeAll(()=>runMigrations());
@@ -321,6 +321,42 @@ test('a prepared save is asked once in Telegram, only the bound owner decides it
   expect(sent.slice(before).some(message=>String(message.text).includes(asked))).toBe(false);
 });
 
+test('a save Telegram cannot show whole carries no Save button, and a button cannot approve it [X12]',async()=>{
+  const {owner}=fixture();
+  const {setMemoryPolicy,pendingSavesFor}=await import('../src/services/memory-policy.ts');
+  const {createNote,updateNote}=await import('../src/services/notes.ts');
+  const settings=db.query('SELECT workspace_id,agent_id FROM qoopia_agent_settings WHERE owner_id=?').get(owner) as {workspace_id:string;agent_id:string};
+  const existing=createNote({...settings,text:'Синтетика: запись, у которой меняют только метки.'}).id;
+  setMemoryPolicy({...settings,mode:'manual',actor_id:owner});
+  const held=(write:()=>unknown)=>{
+    try{write();}catch(error){return /request (\S+) and waits/.exec((error as Error).message)![1]!;}
+    throw new Error('the write was accepted');
+  };
+  const tail='ХВОСТ, которого в сообщении нет',long='Синтетика: длинная запись. '+'я'.repeat(2800)+tail;
+  const longId=held(()=>createNote({...settings,text:long}));
+  const tagsId=held(()=>updateNote({...settings,is_admin:false,id:existing,tags:['synthetic']}));
+  const shortId=held(()=>createNote({...settings,text:'Синтетика: короткая запись.'}));
+
+  const updates:any[]=[],sent=mockTelegram(updates);
+  for(let i=0;i<3;i++)await deliverTelegram(owner);
+  const buttons=(id:string)=>sent.filter(message=>JSON.stringify(message.reply_markup??'').includes(id));
+  expect(buttons(shortId)).toHaveLength(1);
+  expect(buttons(longId)).toEqual([]);expect(buttons(tagsId)).toEqual([]);
+  // The owner is still told, and pointed at the place that shows all of it.
+  const pointers=sent.filter(message=>!message.reply_markup&&/dashboard/.test(String(message.text)));
+  expect(pointers).toHaveLength(2);
+  expect(sent.some(message=>String(message.text).includes(tail))).toBe(false);
+
+  // A Save button from a message sent before this rule decides nothing; Decline still works.
+  const press=(id:number,request:string,answer:string)=>updates.push({update_id:id,callback_query:{id:'cb'+id,from:{id:123},data:'qs:'+request+':'+answer,message:{chat:{id:123,type:'private'}}}});
+  press(80,longId,'yes');press(81,tagsId,'yes');await pollTelegramOwner(owner);
+  expect((db.query('SELECT COUNT(*) AS n FROM notes WHERE workspace_id=? AND text=?').get(settings.workspace_id,long) as {n:number}).n).toBe(0);
+  expect((db.query('SELECT tags FROM notes WHERE id=?').get(existing) as {tags:string}).tags).toBe('[]');
+  expect(pendingSavesFor(settings.workspace_id).map(row=>row.id).sort()).toEqual([longId,tagsId,shortId].sort());
+  updates.length=0;press(82,longId,'no');await pollTelegramOwner(owner);
+  expect(pendingSavesFor(settings.workspace_id).map(row=>row.id).sort()).toEqual([tagsId,shortId].sort());
+});
+
 test('dashboard task approvals reach Telegram only when the owner chose the Telegram channel',async()=>{
   const {owner,folder}=fixture();
   binary(folder,`import readline from 'node:readline';const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');for await(const line of readline.createInterface({input:process.stdin})){const m=JSON.parse(line);if(!m.id||m.id===900)continue;let result={};if(m.method==='account/read')result={account:{type:'chatgpt'}};if(m.method==='thread/start'||m.method==='thread/resume')result={thread:{id:'t'}};if(m.method==='turn/start')result={turn:{id:'u'}};send({id:m.id,result});if(m.method==='turn/start')setTimeout(()=>send({id:900,method:'item/commandExecution/requestApproval',params:{threadId:'t',turnId:'u',command:'cat dashboard-only.txt'}}),10);}`);
@@ -365,4 +401,15 @@ test('a button tap Telegram no longer lets Qoopia answer is acknowledged and nev
   expect(db.query('SELECT telegram_offset n FROM qoopia_agent_settings WHERE owner_id=?').get(owner)).toEqual({n:72});
   expect(telegramState(owner).queued).toBe(1);
   expect(channel(owner)?.failures).toBe(0);
+});
+
+test('a storage fault inside the Telegram timer stays in it: nothing reaches the process as an uncaught exception [X11]',async()=>{
+  fixture();mockTelegram([]);
+  const escaped:unknown[]=[],seen=(error:unknown)=>escaped.push(error);process.on('uncaughtException',seen);
+  startTelegramChannels();
+  const owners='telegram_username IS NOT NULL',real=db.query.bind(db);
+  const query=spyOn(db,'query').mockImplementation(((sql:string)=>{if(sql.includes(owners))throw new Error('database is locked');return real(sql);}) as never);
+  try{await until(()=>query.mock.calls.some(([sql])=>String(sql).includes(owners)));await Bun.sleep(20);}
+  finally{query.mockRestore();process.off('uncaughtException',seen);stopTelegramChannels();}
+  expect(escaped).toEqual([]);
 });

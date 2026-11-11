@@ -125,7 +125,9 @@ test('Claude Stop terminates a stalled subscription check without waiting for it
  try{
   await rpc.start();const checking=rpc.call('account/read',{});await until(()=>fs.existsSync(marker));
   const pid=Number(fs.readFileSync(marker,'utf8')),began=Date.now();await rpc.stop();expect(Date.now()-began).toBeLessThan(3000);
-  expect((await checking).account).toBeNull();expect(()=>process.kill(pid,0)).toThrow();
+  // The killed child may not be reaped at the very instant stop() returns: on a busy CI runner the check
+  // made right away still found the pid, and this test failed about one run in four on main.
+  expect((await checking).account).toBeNull();await until(()=>{try{process.kill(pid,0);return false;}catch{return true;}});
  }finally{await rpc.stop();fs.rmSync(root,{recursive:true,force:true});}
 });
 

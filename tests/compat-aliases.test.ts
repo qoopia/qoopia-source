@@ -101,6 +101,19 @@ describe("V2 compat aliases through registerTools", () => {
     expect(getNote(alice.workspace_id, deal.id, alice.agent_id, false).text).toBe("Compat deal");
   });
 
+  test("an alias stores no more metadata than note_create accepts [X13]", async () => {
+    // The alias schemas leave `timeline` and `notes` unbounded; 16 KiB is the limit of every other entry point.
+    const timeline = Array.from({ length: 400 }, (_, i) => ({ at: i, text: "x".repeat(40) }));
+    expect((await call(alice, "create", { entity: "deals", name: "Big deal", timeline })).error).toMatch(/^SIZE_LIMIT: metadata exceeds 16384 bytes/);
+    expect((await call(alice, "create", { entity: "tasks", title: "Big task", notes: "n".repeat(20_000) })).error).toMatch(/^SIZE_LIMIT/);
+    expect(JSON.stringify(await call(alice, "list", { entity: "deals" }))).not.toContain("Big deal");
+    const deal = await call(alice, "create", { entity: "deals", name: "Small deal", timeline: timeline.slice(0, 3) });
+    expect((await call(alice, "update", { entity: "deals", id: deal.id, timeline })).error).toMatch(/^SIZE_LIMIT/);
+    expect(getNote(alice.workspace_id, deal.id, alice.agent_id, false).metadata.timeline).toHaveLength(3);
+    // The limit belongs to what a client may send. The server's own writers (imports, summaries) are not clients.
+    expect(createNote({ workspace_id: alice.workspace_id, agent_id: alice.agent_id, text: "direct", metadata: { timeline } }).id).toBeString();
+  });
+
   test("another agent's private note is invisible to every alias", async () => {
     const secret = createNote({
       workspace_id: bob.workspace_id,

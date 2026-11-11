@@ -170,6 +170,24 @@ describe("F-090: standalone gates", () => {
     expect(await r.json()).toMatchObject({ error: "Host refused" });
   });
 
+  // F-207 let the operator bind one private address; the gate before every route still knew only loopback,
+  // so such an installation answered «Host refused» to everything [5.0.25].
+  test("the one private address the operator bound is accepted; the local login stays loopback-only", async () => {
+    const bound = process.env.QOOPIA_HOST;
+    process.env.QOOPIA_HOST = "10.20.30.5";
+    try {
+      const host = `10.20.30.5:${env.PORT}`;
+      const viaBound = await fetch(`${local}/api/dashboard/agents`, { headers: { host } });
+      expect(viaBound.status).toBe(401); // reached the route: no session yet
+      expect((await fetch(`${local}/api/dashboard/agents`)).status).toBe(401);
+      for (const other of [`10.20.30.6:${env.PORT}`, "10.20.30.5:1", "rebind.example"])
+        expect([other, (await fetch(`${local}/api/dashboard/agents`, { headers: { host: other } })).status]).toEqual([other, 403]);
+      const login = await fetch(`${local}/api/dashboard/local-login`, { method: "POST", headers: { host, origin: `http://${host}`, "content-type": "application/json" },
+        body: JSON.stringify({ code: issueLocalLogin(k.ownerId) }) });
+      expect(login.status).toBe(403);
+    } finally { if (bound === undefined) delete process.env.QOOPIA_HOST; else process.env.QOOPIA_HOST = bound; }
+  });
+
   test("local-login needs a same-origin POST and a live code", async () => {
     const post = (origin: string | null, code: string) => fetch(`${local}/api/dashboard/local-login`, {
       method: "POST", headers: { "content-type": "application/json", ...(origin ? { origin } : {}) }, body: JSON.stringify({ code }) });

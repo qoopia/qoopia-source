@@ -16,7 +16,7 @@ import { db } from "../src/db/connection.ts";
 import { agentSend } from "../src/services/agent-comm.ts";
 import { drainAgentWakeQueue } from "../src/services/agent-wake.ts";
 import { wakeReply } from "../src/services/wake-reply.ts";
-import { WakeRunner, addWakeRunnerAgent, executableReplaced, wakePrompt, loadWakeRunnerConfig, wakeRunnerServerEnv, wakeRunnerService, loadService, qoopiaMcpServers, runtimeCommand, type WakeRunnerConfig } from "../src/delivery/wake-runner.ts";
+import { RUNNER_LOG_BYTES, WakeRunner, addWakeRunnerAgent, executableReplaced, wakePrompt, loadWakeRunnerConfig, wakeRunnerServerEnv, wakeRunnerService, loadService, qoopiaMcpServers, runtimeCommand, type WakeRunnerConfig } from "../src/delivery/wake-runner.ts";
 
 let ws = "", alice = "", bob = "", carol = "";
 const SECRET_A = "a".repeat(40), SECRET_B = "b".repeat(40);
@@ -167,6 +167,111 @@ describe("wake runner: recovery", () => {
     expect(fs.readdirSync(path.join(state, "replies"))).toEqual([]);
   });
 
+  test("an answer refused with 401 or 404 (a deploy, a secret just rotated) waits and is sent; only an answer the server can never take is dropped [D12]", async () => {
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    bind(port);
+    const refusals = [401, 404, 403, 408];
+    const flaky = (async (url: string | URL | Request, init?: RequestInit) => {
+      const status = refusals.shift();
+      return status ? Response.json({ error: "refused" }, { status }) : serverFetch(url, init);
+    }) as unknown as typeof fetch;
+    const state = path.join(tmp, `state-${port}`);
+    runner = new WakeRunner(config(port), state, flaky, 40);
+    runner.start();
+    agentSend({ workspace_id: ws, agent_id: carol, to_agent: bob, body: "answer me after the deploy", topic: "refused once" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 1);
+    expect(replies[0]!.status).toBe(200);
+    expect(fs.readdirSync(path.join(state, "replies"))).toEqual([]);
+    await runner.stop();
+
+    // 400 is the server's final word, and an answer no server took for a day stops being asked.
+    const always = (status: number) => (async () => Response.json({ error: "refused" }, { status })) as unknown as typeof fetch;
+    const pending = (dir: string, name: string) => { fs.mkdirSync(path.join(dir, "replies"), { recursive: true, mode: 0o700 }); const file = path.join(dir, "replies", name); fs.writeFileSync(file, JSON.stringify({ agent_id: bob, payload: "{}" })); return file; };
+    const final = path.join(tmp, `state-final-${port}`), old = path.join(tmp, `state-old-${port}`);
+    pending(final, "m1.json");
+    runner = new WakeRunner(config(port), final, always(400), 40);
+    await runner.flushReplies();
+    expect(fs.readdirSync(path.join(final, "replies"))).toEqual([]);
+    const stale = pending(old, "m2.json"), fresh = pending(old, "m3.json");
+    fs.utimesSync(stale, new Date(Date.now() - 25 * 3600_000), new Date(Date.now() - 25 * 3600_000));
+    runner = new WakeRunner(config(port), old, always(404), 40);
+    await runner.flushReplies();
+    expect(fs.readdirSync(path.join(old, "replies"))).toEqual([path.basename(fresh)]);
+  });
+
+  test("runner.log is rotated by size and keeps one previous file [D11]", () => {
+    const state = path.join(tmp, "state-log"), log = path.join(state, "runner.log");
+    runner = new WakeRunner(config(1), state, serverFetch);
+    runner.record("first", {});
+    fs.truncateSync(log, RUNNER_LOG_BYTES);
+    runner.record("second", {});
+    expect(fs.statSync(log + ".1").size).toBe(RUNNER_LOG_BYTES);
+    expect(fs.readFileSync(log, "utf8")).toContain('"event":"second"');
+    expect(fs.statSync(log).size).toBeLessThan(200);
+    // The next rotation replaces the previous file: two files at most.
+    fs.truncateSync(log, RUNNER_LOG_BYTES + 5);
+    runner.record("third", {});
+    expect(fs.statSync(log + ".1").size).toBe(RUNNER_LOG_BYTES + 5);
+    expect(fs.readdirSync(state).filter((f) => f.startsWith("runner.log")).sort()).toEqual(["runner.log", "runner.log.1"]);
+    expect(fs.statSync(log).mode & 0o777).toBe(0o600);
+  });
+
+  test("an agent whose command or folder is gone gets a refusal answer; the runner and the other agents go on", async () => {
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    bind(port);
+    const state = path.join(tmp, `state-${port}`), c = config(port);
+    // bob's CLI was removed (a Node upgrade moves it); alice's working folder was deleted.
+    c.agents[1] = { ...c.agents[1]!, command: path.join(tmp, "no-such-claude") };
+    runner = new WakeRunner(c, state, serverFetch);
+    runner.start();
+    const toBob = agentSend({ workspace_id: ws, agent_id: carol, to_agent: bob, body: "is your CLI there", topic: "gone command" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 1);
+    const body = (id: string) => (db.prepare(`SELECT body FROM agent_comm_messages WHERE id = ?`).get(id) as any).body as string;
+    expect(replies[0]!.status).toBe(200);
+    expect(body(replies[0]!.body.id)).toContain("did not finish");
+    expect(fs.readdirSync(path.join(state, "spool", bob)).filter((f) => f.endsWith(".json"))).toEqual([]);
+    // The same runner still wakes an agent whose command is fine.
+    agentSend({ workspace_id: ws, agent_id: carol, to_agent: alice, body: "and you", topic: "gone command" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 2);
+    expect(body(replies[1]!.body.id)).toBe("ANSWER from runtime");
+    await runner.stop(); runner = null;
+
+    const gone = config(port + 1);
+    gone.agents[0] = { ...gone.agents[0]!, cwd: path.join(tmp, "no-such-folder") };
+    bind(port + 1);
+    runner = new WakeRunner(gone, path.join(tmp, `state-${port + 1}`), serverFetch);
+    runner.start();
+    agentSend({ workspace_id: ws, agent_id: carol, to_agent: alice, body: "is your folder there", topic: "gone folder" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 3);
+    expect(body(replies[2]!.body.id)).toContain("did not finish");
+    expect(fs.readFileSync(path.join(state, "runner.log"), "utf8")).toContain('"event":"turn_not_started"');
+    void toBob;
+  });
+
+  test("an answer that carries something secret-shaped reaches the sender with it cut out, instead of vanishing", async () => {
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    bind(port);
+    // The runtime's own words, not a deliberate write: refused whole, the sender never learned the turn had answered.
+    const leaky = path.join(tmp, "fake-claude-leaky.sh");
+    fs.writeFileSync(leaky, `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' "turn $*" >> '${turns}'\nprintf '{"type":"result","is_error":false,"result":"Rotated. The DB password: hunter42x is gone.","session_id":"sess-1"}\\n'\n`, { mode: 0o755 });
+    const c = config(port), state = path.join(tmp, `state-${port}`);
+    c.agents[1] = { ...c.agents[1]!, command: leaky };
+    runner = new WakeRunner(c, state, serverFetch);
+    runner.start();
+    agentSend({ workspace_id: ws, agent_id: carol, to_agent: bob, body: "did you rotate it", topic: "secret in the answer" });
+    await drainAgentWakeQueue();
+    await until(() => replies.length === 1);
+    expect(replies[0]!.status).toBe(200);
+    const reply = db.prepare(`SELECT body, metadata FROM agent_comm_messages WHERE id = ?`).get(replies[0]!.body.id) as any;
+    expect(reply.body).toBe("Rotated. The DB password: [REDACTED:password] is gone.");
+    expect(JSON.parse(reply.metadata)).toMatchObject({ via: "wake-runner", redacted: ["password"] });
+    expect(fs.readdirSync(path.join(state, "replies"))).toEqual([]);
+  });
+
   test("a job file that cannot be read is set aside and the agent still wakes for the next message [A1-04]", async () => {
     const port = 20000 + Math.floor(Math.random() * 20000);
     bind(port);
@@ -284,6 +389,24 @@ describe("wake runner: config", () => {
     }
     expect(wakeRunnerService("/opt/q/qoopia", "/home/example/wr/config.json", "darwin", "/home/example").bytes).toContain("/home/example/wr/wake-runner.err");
   });
+});
+
+test('the service is told to start Qoopia by a path that survives updates, not by this bundle\'s own file', async () => {
+  const { wakeRunnerCli } = await import("../src/delivery/wake-runner.ts");
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qoopia-wr-root-"))), file = path.join(root, "wake-runner", "config.json");
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify({ format: "qoopia-wake-runner/1", server: "http://qoopia.test", listen: { host: "127.0.0.1", port: 8790 }, max_parallel: 1,
+      agents: [{ agent_id: "A", name: "a", path: "/hooks/agentcomm/a", secret: "s".repeat(40), runtime: "claude_code", command: fakeClaude, cwd: root, isolated: false, timeout_seconds: 30 }] }), { mode: 0o600 });
+    const preview = async () => { const lines: string[] = [], log = console.log; console.log = (line: string) => { lines.push(line); };
+      try { await wakeRunnerCli(["wake-runner", "install"], (n) => n === "config" ? file : undefined, () => false, root); } finally { console.log = log; }
+      return JSON.parse(lines[0]!) as { state: string; program: string }; };
+    // No installation in this folder: the program that runs now is the one to start.
+    expect(await preview()).toMatchObject({ state: "PREVIEW", program: process.execPath });
+    // An installation keeps its bundles under bundles/<digest> and prunes old ones; only bin/qoopia follows the selected one.
+    fs.writeFileSync(path.join(root, "current.json"), JSON.stringify({ format: "qoopia-installation/1", bundle: "a".repeat(64) }), { mode: 0o600 });
+    expect(await preview()).toMatchObject({ state: "PREVIEW", program: path.join(root, "bin", "qoopia") });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('a reinstall waits for launchd to let the old job go instead of leaving the service unloaded', () => {

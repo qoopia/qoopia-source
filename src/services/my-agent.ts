@@ -21,7 +21,7 @@ import {prepareNativeKeychain,nativeOwnerHome} from '../delivery/native-keychain
 import {CodexAppServer} from './codex-app-server.ts';
 import {localServiceOrigin} from '../utils/standalone.ts';
 import {QoopiaError} from '../utils/errors.ts';
-import {logger} from '../utils/logger.ts';
+import {guardedTick,logger} from '../utils/logger.ts';
 import {saveMessage} from './sessions.ts';
 import {automaticMemoryOn} from './memory-policy.ts';
 import {restoreContext} from './continuity.ts';
@@ -268,7 +268,7 @@ async function runtime(ownerId:string):Promise<Live> {
     initializing.set(ownerId,rpc);
     try{await rpc.start();if(epoch!==(stopEpoch.get(ownerId)??0)){await rpc.stop();throw new QoopiaError('CONFLICT','Agent start was cancelled');}}catch(error){void rpc.stop().catch(()=>{/* The original start error is rethrown. */});throw error;}finally{if(initializing.get(ownerId)===rpc)initializing.delete(ownerId);}
     live.set(ownerId,session);
-    if(!accessTimer){accessTimer=setInterval(()=>{for(const [owner,current] of live){try{credentials(owner);expireApprovals(current);}catch{current.rpc.stop();}}expireIdleMyAgentRuns();},2000);accessTimer.unref();}
+    if(!accessTimer){accessTimer=setInterval(guardedTick('Agent access check',()=>{for(const [owner,current] of live){try{credentials(owner);expireApprovals(current);}catch{current.rpc.stop();}}expireIdleMyAgentRuns();}),2000);accessTimer.unref();}
     try{const result=await rpc.call('account/read',{refreshToken:false});session.account=result.account?.type===(session.provider==='codex'?'chatgpt':'claude');}catch{session.account=false;}
     if(session.account&&live.get(ownerId)===session)resumeTelegramAfterLogin(ownerId);
     return session;

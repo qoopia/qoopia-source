@@ -469,7 +469,7 @@
       '<span aria-hidden="true">/</span>' + (i === parts.length - 1 ? '<strong aria-current="page">' + esc(part) + '</strong>' : '<button type="button" data-path="' + esc(parts.slice(0, i + 1).join('/')) + '">' + esc(part) + '</button>')).join('');
     let files;
     try { files = (await api('/api/dashboard/files' + (here ? '?folder=' + encodeURIComponent(here) : ''))).files || []; }
-    catch (e) { errBox(list, QI.msg("Failed to load files."), filesLoadList, e); return; }
+    catch (e) { if (filesPath === here && list.isConnected) errBox(list, QI.msg("Failed to load files."), filesLoadList, e); return; } // Not over a folder opened meanwhile.
     if (filesPath !== here || !list.isConnected) return;
     const folderIcon = lineIcon('<path d="M3 6h6l2 2h10v11H3z"/>');
     const rows = [...kids].sort((a, b) => a[0].localeCompare(b[0])).map(([name, n]) =>
@@ -513,7 +513,8 @@
         filesNew = filesNew.filter(f => f !== folder); filesPath = folder; void filesLoadFolders();
       } else if (xhr.status === 413) { if (prog) prog.textContent = QI.msg('File too large (maximum 100 MB).'); }
       else if (xhr.status === 429) { if (prog) prog.textContent = QI.msg('Qoopia is reading other files right now. Nothing was saved; try again in a minute.'); }
-      else { var d = ''; try { var j = JSON.parse(xhr.responseText); d = ' — ' + (j.detail || j.error || ''); } catch { /* Non-JSON error body; the status code is shown alone. */ } if (prog) prog.textContent = uploadRefusal(j) || QI.msg('Could not load (') + xhr.status + ')' + d; }
+      // The server's sentence when it gave one, else the reason in words; codes stay off the page (F-323).
+      else { try { var j = JSON.parse(xhr.responseText); } catch { /* Non-JSON error body: the reason is worded from the status. */ } if (prog) prog.textContent = uploadRefusal(j) || QI.msg("Upload error.") + ' ' + (j && j.detail || errReason({ status: xhr.status })); }
     };
     xhr.onerror = () => { if (prog) prog.textContent = (QI.msg("Upload error.")); };
     xhr.send(fd);
@@ -606,7 +607,7 @@
     view.hidden=!items.length;
     const version=JSON.stringify(items);if(view.dataset.version===version)return;view.dataset.version=version;
     view.innerHTML='<h2 class="section-title">'+QI.msg('Rules from the nightly review')+'</h2><p class="meta">'+QI.msg('These are drafts. Only an accepted rule is loaded into context.')+'</p>'+items.map(p=>
-      '<article class="canon-item"><p class="canon-text">'+esc(p.text)+'</p><p class="meta">'+esc(canonScope(p))+' · '+esc(canonMode(p))+'</p><p>'+esc(p.reason)+'</p><details><summary>'+QI.msg('Sources')+'</summary><ul>'+p.source_refs.map(ref=>'<li class="mono">'+esc(ref)+'</li>').join('')+'</ul></details><div class="work-actions"><button type="button" data-proposal-id="'+esc(p.id)+'" data-accept="true">'+QI.msg('Accept rule')+'</button><button type="button" data-proposal-id="'+esc(p.id)+'" data-accept="false">'+QI.msg('Reject rule')+'</button></div><p role="status" class="meta"></p></article>').join('');
+      '<article class="canon-item"><p class="canon-text">'+esc(p.text)+'</p><p class="meta">'+esc(canonScope(p))+(p.project_name?' · '+esc(p.project_name):'')+' · '+esc(canonMode(p))+'</p>'+(p.supersedes_id?'<p class="meta">'+esc(QI.msg('Replaces the rule:'))+' '+esc(p.supersedes_text||p.supersedes_id)+'</p>':'')+'<p>'+esc(p.reason)+'</p><details><summary>'+QI.msg('Sources')+'</summary><ul>'+p.source_refs.map(ref=>'<li class="mono">'+esc(ref)+'</li>').join('')+'</ul></details><div class="work-actions"><button type="button" data-proposal-id="'+esc(p.id)+'" data-accept="true">'+QI.msg('Accept rule')+'</button><button type="button" data-proposal-id="'+esc(p.id)+'" data-accept="false">'+QI.msg('Reject rule')+'</button></div><p role="status" class="meta"></p></article>').join('');
     view.querySelectorAll('[data-proposal-id]').forEach(button=>button.onclick=async()=>{
       const row=button.closest('article'),buttons=[...row.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
       try{await apiWrite('/api/dashboard/canon-proposals/'+encodeURIComponent(button.dataset.proposalId)+'/decision',{accept:button.dataset.accept==='true'});await fillOverview();}
@@ -837,11 +838,12 @@
       card.querySelectorAll('button').forEach(b => b.disabled = true);
       try {
         await apiWrite('/api/dashboard/memory-saves/' + encodeURIComponent(card.dataset.save), { accept });
-        card.remove(); result.textContent = accept ? QI.msg("Saved to memory.") : QI.msg("Declined. The prepared text was removed.");
+        card.remove(); const done = accept ? QI.msg("Saved to memory.") : QI.msg("Declined. The prepared text was removed.");
         const left = host.querySelectorAll('article').length;
         if (a.memory) a.memory.pending_saves = left;
-        if (left) host.querySelector('h2').textContent = QI.resolve(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(left);
-        else host.remove();
+        if (left) { host.querySelector('h2').textContent = QI.resolve(QI.msg("Waiting for your confirmation:")) + ' ' + fmtNum(left); result.textContent = done; }
+        // The last decision removes this block and its status line with it: the page's own line says the result.
+        else { host.remove(); const page = $('#uiFeedback'); if (page) page.textContent = done; }
       } catch (e) { card.querySelectorAll('button').forEach(b => b.disabled = false); await memoryWriteFailed(e, QI.msg("Could not complete this. Only the workspace owner can confirm a save.")); }
     });
   }
@@ -853,7 +855,8 @@
   }
   // ---------- Canon (ADR-021) ----------
   // Agents and dreaming create rules. The owner views and retires them here.
-  const canonScope = c => c.scope === 'workspace' ? QI.msg("Whole workspace") : c.scope === 'project' ? QI.msg("Project") : QI.msg("This agent");
+  const canonScope = (c, onAgent) => c.scope === 'workspace' ? QI.msg("Whole workspace") : c.scope === 'project' ? QI.msg("Project")
+    : !onAgent && c.agent_name ? QI.msg("Agent {name}", { name: c.agent_name }) : QI.msg("This agent");
   const canonMode = c => c.mode === 'always' ? QI.msg("Always loaded") : QI.msg("Loaded when relevant");
   async function renderCanonList(el, agentId) {
     const d = state.drill, page = state.page;
@@ -862,13 +865,15 @@
       if (state.drill !== d || state.page !== page || !el.isConnected) return;
       setConn(true);
       el.innerHTML = '<p class="meta" id="canonResult" role="status"></p>' + (data.items.length ? '<ul class="canon-list">' + data.items.map(c =>
-        '<li class="canon-item"><p class="canon-text">' + esc(c.text) + '</p><p class="meta">' + esc(canonScope(c)) + ' · ' + esc(canonMode(c)) + '</p><p class="meta">' +
+        '<li class="canon-item"><p class="canon-text">' + esc(c.text) + '</p><p class="meta">' + esc(canonScope(c, !!agentId)) + ' · ' + esc(canonMode(c)) + '</p><p class="meta">' +
           QI.msg("Loaded into turns:") + ' ' + fmtNum(c.applied_count || 0) + (c.last_applied_at ? ' · ' + QI.msg("last") + ' ' + fmtTime(c.last_applied_at) : '') +
           '</p>' + (localWorkspace ? '<button type="button" class="btn" data-retire="' + esc(c.id) + '">' + QI.msg("Retire") + '</button>' : '') + '</li>').join('') + '</ul>'
         : '<div class="empty">' + QI.msg("No canons yet. A canon is a short rule Qoopia gives the agent by itself: at every session start, or on the turns it matters for.") + '</div>');
       el.querySelectorAll('[data-retire]').forEach(b => b.onclick = async () => {
+        // The dashboard cannot bring a retired canon back: ask first, as deleting a file and disconnecting do, and say when it is done.
+        if (!window.confirm(QI.resolve(QI.msg("Retire this canon? Agents will no longer receive it.")))) return;
         b.disabled = true;
-        try { await apiWrite('/api/dashboard/canons/' + encodeURIComponent(b.dataset.retire) + '/retire', {}); void renderCanonList(el, agentId); }
+        try { await apiWrite('/api/dashboard/canons/' + encodeURIComponent(b.dataset.retire) + '/retire', {}); await renderCanonList(el, agentId); const r = $('#canonResult'); if (r) r.textContent = QI.msg("Canon retired"); }
         catch (e) { b.disabled = false; const r = $('#canonResult'); if (r) r.textContent = e.message; }
       });
     } catch (e) { if (el.isConnected) errBox(el, QI.msg("Could not load canons."), () => renderCanonList(el, agentId), e); }
@@ -994,10 +999,12 @@
     if (q) await doSearch();
     async function doSearch() {
       const results = $('#searchResults'); const qq = (state.drill.searchQuery || '').trim();
+      results.dataset.query = qq; // An answer is shown only while its query is still the one asked.
       if (!qq) { results.innerHTML = ("<div class=\"empty\">" + QI.msg("Type to search…") + "</div>"); return; }
       results.innerHTML = ("<div class=\"loading\">" + QI.msg("Searching…") + "</div>");
       try {
         const data = await api('/api/dashboard/agents/' + encodeURIComponent(a.id) + '/search?q=' + encodeURIComponent(qq) + '&limit=80');
+        if (!results.isConnected || results.dataset.query !== qq) return;
         setConn(true);
         if (!data.items.length) { results.innerHTML = ("<div class=\"empty\">" + QI.msg("Nothing found.") + "</div>"); return; }
         results.innerHTML = '<div class="transcript">' + data.items.map(m => '<button type="button" class="msg search-result" data-role="' + esc(m.role) + '" data-session="' + esc(m.session_id) + '"><div class="msg-head">' + roleIcon(m.role) +
@@ -1007,7 +1014,7 @@
           '<div class="msg-content">' + esc(m.content) + '</div></button>').join('') + '</div>';
         results.querySelectorAll('.copyable').forEach((el, i) => { const sid = data.items[i].session_id; el.onclick = (ev) => { ev.stopPropagation(); copyText(el, sid); }; });
         results.querySelectorAll('.msg').forEach(el => { el.onclick = () => openDrill('agents', { kind: 'session', agent: a, session: { id: el.getAttribute('data-session'), title: null } }); });
-      } catch (e) { errBox(results, QI.msg("Search failed."), doSearch, e); }
+      } catch (e) { if (results.isConnected && results.dataset.query === qq) errBox(results, QI.msg("Search failed."), doSearch, e); }
     }
   }
   async function renderSession() {
@@ -1279,7 +1286,9 @@
       if(existing&&!fork){if(existing.draft_id)args.draft_id=existing.draft_id;else args.skill_id=existing.skill_id;}if(fork)args.parent_skill_id=existing.skill_id;
       if(kind==='manual'||kind==='native')args.text=$('#skRaw').value||content.procedure.map((s,i)=>(i+1)+'. '+s).join('\n');else args.source_id=$('#skSourceId').value;
       if(kind==='session'){args.first_message_id=Number($('#skFirst').value);args.last_message_id=Number($('#skLast').value);}
-      try{const saved=await skillApi('/skills/captures','POST',args,args.expected_revision);if(saved.data.outcome==='refused'){skillStatus(QI.resolve(QI.msg(saved.data.reason||""))+(" " + QI.msg("— keep it as memory or a rule.")),true);return;}await skillDetail(saved.data.skill_id||existing?.skill_id);skillStatus((QI.msg("Draft saved.") + " ")+(saved.data.findings||[]).join(', '));}catch(e){skillFailure(e);}
+      // One request per save: every submit gets its own idempotency key, so a second click made a second draft.
+      const save=$('#skillForm').querySelector('[type=submit]');if(save.disabled)return;save.disabled=true;
+      try{const saved=await skillApi('/skills/captures','POST',args,args.expected_revision);if(saved.data.outcome==='refused'){skillStatus(QI.resolve(QI.msg(saved.data.reason||""))+(" " + QI.msg("— keep it as memory or a rule.")),true);return;}await skillDetail(saved.data.skill_id||existing?.skill_id);skillStatus((QI.msg("Draft saved.") + " ")+(saved.data.findings||[]).join(', '));}catch(e){skillFailure(e);}finally{save.disabled=false;}
     };
     $('#skTitle').focus();
   }
@@ -1406,7 +1415,8 @@
       try {
         data=await api('/api/dashboard/bridges');if(!here())return;
         const old=$('#bridgeGroup').value;
-        $('#bridgeGroup').innerHTML=("<option value=\"\">" + QI.msg("Choose a bridge") + "</option>")+data.groups.filter(g=>!['left','removed'].includes(g.state)).map(g=>'<option value="'+esc(g.id)+'">'+esc(g.name)+'</option>').join('');
+        // The 5-second refresh rewrites the select and the lists only when they changed: an open select, focus and a pressed button stay.
+        patch($('#bridgeGroup'),("<option value=\"\">" + QI.msg("Choose a bridge") + "</option>")+data.groups.filter(g=>!['left','removed'].includes(g.state)).map(g=>'<option value="'+esc(g.id)+'">'+esc(g.name)+'</option>').join(''));
         $('#bridgeGroup').value=data.groups.some(g=>g.id===old&&!['left','removed'].includes(g.state))?old:data.groups.find(g=>!['left','removed'].includes(g.state))?.id||'';
         if(first){$('#bridgeAgent').innerHTML=("<option value=\"\">" + QI.msg("No agent selected") + "</option>")+data.agents.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name+(a.type==='steward'?(" " + QI.msg("· steward")):''))+'</option>').join('');$('#bridgeAgent').value=data.agent_id||'';
           $('#bridgeSource').insertAdjacentHTML('beforeend',(data.recent_sources||[]).map(s=>'<option value="'+esc(s.kind+':'+s.id)+'">'+esc(s.kind+' · '+s.title)+'</option>').join(''));first=false;}
@@ -1415,28 +1425,29 @@
       }catch(e){status(e.message);}
     }
     function draw() {
-      const g=selected(),query=$('#bridgeSearch').value.toLocaleLowerCase(),matches=m=>(m.title+' '+(m.description||'')).toLocaleLowerCase().includes(query),list=$('#bridgeList');
+      const g=selected(),query=$('#bridgeSearch').value.toLocaleLowerCase(),matches=m=>(m.title+' '+(m.description||'')).toLocaleLowerCase().includes(query),list=$('#bridgeList');let html;
       $('#bridgeInvite').disabled=!g?.creator||g.state!=='active';$('#bridgeRefresh').disabled=g?.state!=='active';$('#bridgeAdd').hidden=section!=='outgoing';
-      $('#bridgeConnection').innerHTML=(g?'<p class="meta">'+esc(g.state==='pending'?(QI.msg("Waiting for the creator to confirm your membership.")):g.state==='creating'?(QI.msg("Creating your bridge…")):g.online?(QI.msg("Connected ·") + " ")+QI.count(g.members.filter(m=>m.state==='active').length,'member'):(QI.msg("Offline · deliveries remain in their owners’ queues.")))+'</p>':'')+(data.pending_controls.length?("<p role=\"status\">" + QI.msg("Access changes are saved locally and waiting for the relay. They will be retried automatically.") + "</p>"):'')+(g?.state==='pending'?'<div class="work-actions"><button id="bridgeWithdraw">'+QI.msg("Withdraw request")+'</button></div>':'');
+      patch($('#bridgeConnection'),(g?'<p class="meta">'+esc(g.state==='pending'?(QI.msg("Waiting for the creator to confirm your membership.")):g.state==='creating'?(QI.msg("Creating your bridge…")):g.online?(QI.msg("Connected ·") + " ")+QI.count(g.members.filter(m=>m.state==='active').length,'member'):(QI.msg("Offline · deliveries remain in their owners’ queues.")))+'</p>':'')+(data.pending_controls.length?("<p role=\"status\">" + QI.msg("Access changes are saved locally and waiting for the relay. They will be retried automatically.") + "</p>"):'')+(g?.state==='pending'?'<div class="work-actions"><button id="bridgeWithdraw">'+QI.msg("Withdraw request")+'</button></div>':''));
       const withdraw=$('#bridgeWithdraw');if(withdraw)withdraw.onclick=()=>{show('<h2>'+esc(QI.msg("Withdraw request"))+'</h2><p>'+esc(QI.msg("The creator will no longer see your request. You can ask again with an invitation."))+'</p><div class="work-actions"><button class="primary" id="bridgeWithdrawConfirm">'+esc(QI.msg("Withdraw request"))+'</button></div>');$('#bridgeWithdrawConfirm').onclick=async()=>{try{await act('membership',{group:g.id,operation:'leave'});dialog.close();await load();}catch(e){status(e.message);}};};
       const empty=text=>'<p class="bridge-empty">'+text+'</p>';
       if(section==='outgoing'||section==='received') {
         const materials=data.materials.filter(m=>m.direction===section&&matches(m));
-        list.innerHTML=materials.length?materials.map(m=>{const pub=g&&data.publications.find(p=>p.group_id===g.id&&p.material_id===m.id);return '<article class="bridge-row"><div><h3>'+esc(m.title)+'</h3><p>'+esc(m.description)+'</p><p class="meta">'+(section==='received'?(QI.msg("Received · kept separate from your memory")):pub?(pub.auto_send?(QI.msg("Listed · automatic sending on request")):(QI.msg("Listed · sending needs approval"))):(QI.msg("Private draft · not listed")))+'</p></div><div class="work-actions"><button data-material="'+esc(m.id)+'">'+(section==='received'?(QI.msg("Review received")):(QI.msg("Review & publish")))+'</button></div></article>';}).join(''):empty(section==='received'?(QI.msg("Received materials will appear here, with their source.")):(QI.msg("Add a note, file or skill you are willing to share.")));
+        html=materials.length?materials.map(m=>{const pub=g&&data.publications.find(p=>p.group_id===g.id&&p.material_id===m.id);return '<article class="bridge-row"><div><h3>'+esc(m.title)+'</h3><p>'+esc(m.description)+'</p><p class="meta">'+(section==='received'?(QI.msg("Received · kept separate from your memory")):pub?(pub.auto_send?(QI.msg("Listed · automatic sending on request")):(QI.msg("Listed · sending needs approval"))):(QI.msg("Private draft · not listed")))+'</p></div><div class="work-actions"><button data-material="'+esc(m.id)+'">'+(section==='received'?(QI.msg("Review received")):(QI.msg("Review & publish")))+'</button></div></article>';}).join(''):empty(section==='received'?(QI.msg("Received materials will appear here, with their source.")):(QI.msg("Add a note, file or skill you are willing to share.")));
       }else if(section==='catalogues') {
         const entries=data.catalogues.filter(c=>c.group_id===g?.id).flatMap(c=>c.items.map(m=>({...m,peer:c.peer_id}))).filter(matches);
-        list.innerHTML=entries.length?entries.map(m=>'<article class="bridge-row"><div><h3>'+esc(m.title)+'</h3><p>'+esc(m.description)+'</p><p class="meta">'+esc(name(g,m.peer))+(" " + QI.msg("· catalog only") + "</p></div><button data-request=\"")+esc(m.id)+'" data-peer="'+esc(m.peer)+'" data-version="'+esc(m.version)+("\">" + QI.msg("Request material") + "</button></article>")).join(''):empty((QI.msg("Choose a connected bridge and refresh its catalogs. Only titles and descriptions appear here.")));
+        html=entries.length?entries.map(m=>'<article class="bridge-row"><div><h3>'+esc(m.title)+'</h3><p>'+esc(m.description)+'</p><p class="meta">'+esc(name(g,m.peer))+(" " + QI.msg("· catalog only") + "</p></div><button data-request=\"")+esc(m.id)+'" data-peer="'+esc(m.peer)+'" data-version="'+esc(m.version)+("\">" + QI.msg("Request material") + "</button></article>")).join(''):empty((QI.msg("Choose a connected bridge and refresh its catalogs. Only titles and descriptions appear here.")));
       }else if(section==='requests') {
         const requests=data.requests.filter(r=>r.group_id===g?.id);
-        list.innerHTML=requests.length?requests.map(r=>{const m=data.materials.find(m=>m.id===r.material_id),title=m?.title||data.catalogues.flatMap(c=>c.items).find(m=>m.id===r.material_id)?.title||(QI.msg("Requested material"));return '<article class="bridge-row"><div><h3>'+esc(title)+'</h3><p>'+esc((r.direction==='incoming'?(QI.msg("From") + " "):(QI.msg("To") + " "))+name(g,r.peer_id))+' · '+esc(QI.code(r.state))+'</p></div>'+(r.direction==='incoming'&&r.state==='requested'?'<button data-review-request="'+esc(r.id)+("\">" + QI.msg("Review request") + "</button>"):'')+'</article>';}).join(''):empty((QI.msg("Requests for materials will appear here.")));
+        html=requests.length?requests.map(r=>{const m=data.materials.find(m=>m.id===r.material_id),title=m?.title||data.catalogues.flatMap(c=>c.items).find(m=>m.id===r.material_id)?.title||(QI.msg("Requested material"));return '<article class="bridge-row"><div><h3>'+esc(title)+'</h3><p>'+esc((r.direction==='incoming'?(QI.msg("From") + " "):(QI.msg("To") + " "))+name(g,r.peer_id))+' · '+esc(QI.code(r.state))+'</p></div>'+(r.direction==='incoming'&&r.state==='requested'?'<button data-review-request="'+esc(r.id)+("\">" + QI.msg("Review request") + "</button>"):'')+'</article>';}).join(''):empty((QI.msg("Requests for materials will appear here.")));
       }else {
-        list.innerHTML=g?.members?.length?g.members.map(m=>'<article class="bridge-row"><div><h3>'+esc(m.name)+(m.peer===data.peer_id?(" " + QI.msg("· you")):'')+'</h3><p>'+esc(QI.code(m.state))+'</p><div class="bridge-fingerprint">'+esc(m.peer)+'</div></div>'+(g.creator&&m.peer!==data.peer_id?'<button data-member="'+esc(m.peer)+'" data-operation="'+(m.state==='active'?'remove':'admit')+'">'+(m.state==='active'?(QI.msg("Remove")):(QI.msg("Review membership")))+'</button>':'')+'</article>').join('')+(g.state==='active'?'<div class="work-actions space-before-section"><button data-end="'+(g.creator?'close':'leave')+'">'+(g.creator?(QI.msg("Close bridge")):(QI.msg("Leave bridge")))+'</button></div>':''):empty((QI.msg("Create or join a bridge to see its members.")));
+        html=g?.members?.length?g.members.map(m=>'<article class="bridge-row"><div><h3>'+esc(m.name)+(m.peer===data.peer_id?(" " + QI.msg("· you")):'')+'</h3><p>'+esc(QI.code(m.state))+'</p><div class="bridge-fingerprint">'+esc(m.peer)+'</div></div>'+(g.creator&&m.peer!==data.peer_id?'<button data-member="'+esc(m.peer)+'" data-operation="'+(m.state==='active'?'remove':'admit')+'">'+(m.state==='active'?(QI.msg("Remove")):(QI.msg("Review membership")))+'</button>':'')+'</article>').join('')+(g.state==='active'?'<div class="work-actions space-before-section"><button data-end="'+(g.creator?'close':'leave')+'">'+(g.creator?(QI.msg("Close bridge")):(QI.msg("Leave bridge")))+'</button></div>':''):empty((QI.msg("Create or join a bridge to see its members.")));
       }
       if(section==='members'&&g?.creator) {
         const invitations=data.invitations.filter(i=>i.group_id===g.id);
-        if(invitations.length)list.insertAdjacentHTML('beforeend',("<h3 class=\"space-before-section\">" + QI.msg("Invitations") + "</h3>")+invitations.map(i=>'<article class="bridge-row"><p>'+esc(i.revoked===2?(QI.msg("Revocation queued")):i.revoked?(QI.msg("Revoked")):i.expires_at_ms<=Date.now()?(QI.msg("Expired")):(QI.msg("Expires") + " ")+QI.date(i.expires_at_ms))+'</p>'+(!i.revoked&&i.expires_at_ms>Date.now()?'<button data-revoke-invite="'+esc(i.id)+("\">" + QI.msg("Revoke invitation") + "</button>"):'')+'</article>').join(''));
-        list.querySelectorAll('[data-revoke-invite]').forEach(b=>b.onclick=async()=>{try{await act('revoke-invite',{id:b.dataset.revokeInvite});await load();}catch(e){status(e.message);}});
+        if(invitations.length)html+=("<h3 class=\"space-before-section\">" + QI.msg("Invitations") + "</h3>")+invitations.map(i=>'<article class="bridge-row"><p>'+esc(i.revoked===2?(QI.msg("Revocation queued")):i.revoked?(QI.msg("Revoked")):i.expires_at_ms<=Date.now()?(QI.msg("Expired")):(QI.msg("Expires") + " ")+QI.date(i.expires_at_ms))+'</p>'+(!i.revoked&&i.expires_at_ms>Date.now()?'<button data-revoke-invite="'+esc(i.id)+("\">" + QI.msg("Revoke invitation") + "</button>"):'')+'</article>').join('');
       }
+      patch(list,html);
+      list.querySelectorAll('[data-revoke-invite]').forEach(b=>b.onclick=async()=>{try{await act('revoke-invite',{id:b.dataset.revokeInvite});await load();}catch(e){status(e.message);}});
       list.querySelectorAll('[data-material]').forEach(b=>b.onclick=()=>reviewMaterial(b.dataset.material).catch(e=>status(e.message)));
       list.querySelectorAll('[data-request]').forEach(b=>b.onclick=async()=>{try{await act('request',{id:crypto.randomUUID(),group:g.id,peer:b.dataset.peer,material_id:b.dataset.request,version:b.dataset.version});status((QI.msg("Request queued. The owner decides whether to send this version.")));await load();}catch(e){status(e.message);}});
       list.querySelectorAll('[data-review-request]').forEach(b=>b.onclick=()=>{const r=data.requests.find(r=>r.id===b.dataset.reviewRequest);reviewMaterial(r.material_id,r).catch(e=>status(e.message));});
@@ -1522,7 +1533,7 @@
     async function action(payload) {
       if(actionBusy||!root.isConnected)return;actionBusy=true;
       const status=$('#memoryActionStatus');status.textContent=payload.action==='select'?(QI.msg("Preparing the official client…")):(QI.msg("Working…"));
-      const buttons=[...root.querySelectorAll('button')].filter(b=>!['memoryConnections','memorySessions'].includes(b.id));buttons.forEach(b=>b.disabled=true);
+      const buttons=[...root.querySelectorAll('button')].filter(b=>!['memoryConnections','memorySessions'].includes(b.id)),was=buttons.map(b=>b.disabled);buttons.forEach(b=>b.disabled=true);
       try{
         const result=await apiWrite('/api/dashboard/memory',payload);
         if(!root.isConnected||state.page!=='work')return;
@@ -1530,12 +1541,12 @@
         if(result.accepted)$('#memoryActionStatus').textContent=QI.msg('Preparing your subscription. You can use other pages.');
         else if(result.next)$('#memoryActionStatus').textContent=QI.msg(result.next);
         else if(payload.action==='check')$('#memoryActionStatus').textContent=(QI.msg("Connection checked with a real model response."));
-      }catch(e){if(root.isConnected){status.textContent=e.message;buttons.forEach(b=>b.disabled=false);}}finally{actionBusy=false;}
+      }catch(e){if(root.isConnected){status.textContent=e.message;buttons.forEach((b,i)=>b.disabled=was[i]);}}finally{actionBusy=false;} // A button the state had switched off stays off.
     }
     $('#memorySelect').onclick=()=>action({action:'select',runtime:$('#memoryProvider').value});
     $('#memoryLogin').onclick=()=>action({action:'login'});$('#memoryCheck').onclick=()=>action({action:'check'});
-    // Keep inputs stable. Refresh only when a login or background index changes.
-    pollFn=async()=>{if(polling||actionBusy||!root.isConnected)return;polling=true;try{const next=await api('/api/dashboard/memory');if(root.isConnected&&!actionBusy&&state.page==='work'&&JSON.stringify(next)!==JSON.stringify(data)&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))await renderWorkspace(next);}catch(e){if(root.isConnected)$('#memoryActionStatus').textContent=e.message;}finally{polling=false;}};
+    // Keep inputs stable. Refresh only when a login or background index changes, and never over a typed sign-in code.
+    pollFn=async()=>{if(polling||actionBusy||!root.isConnected)return;polling=true;try{const next=await api('/api/dashboard/memory');if(root.isConnected&&!actionBusy&&state.page==='work'&&JSON.stringify(next)!==JSON.stringify(data)&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)&&!$('#memoryLoginCode')?.value)await renderWorkspace(next);}catch(e){if(root.isConnected)$('#memoryActionStatus').textContent=e.message;}finally{polling=false;}};
   }
 
 
@@ -1842,7 +1853,8 @@
       $('#connectionsModelChecked').textContent=model.checked_at?QI.msg("Last response: ")+date(model.checked_at):'';
       const apps=(next.apps||[]).filter(a=>a.last_seen);
       $('#connectedTitle').textContent=QI.msg("Connected applications")+' · '+apps.length;
-      $('#connectedApplications').innerHTML=apps.map(appRow).join('')||'<p class="meta">'+QI.msg("No application has connected yet.")+'</p>';
+      // The 5-second refresh rewrites the list only when it changed: focus and a «Disconnect» pressed a moment ago stay.
+      patch($('#connectedApplications'),apps.map(appRow).join('')||'<p class="meta">'+QI.msg("No application has connected yet.")+'</p>');
     }
     overview(data);
     renderHeadlessServicePairing($('#headlessService'),data.workspace_id);
@@ -1851,14 +1863,15 @@
     const status=$('#connectionsStatus');
     $('#connectionsSteward').onclick=()=>go('my-agent');$('#connectionsModel').onclick=()=>go('work');
     // Disconnecting ends the application's access; the agent's notes and conversations stay.
+    const disconnecting=new Set(); // A changed list is redrawn with a fresh button while the request runs: one request per application.
     $('#connectedApplications').onclick=async e=>{
-      const b=e.target.closest('[data-disconnect]');if(!b)return;
+      const b=e.target.closest('[data-disconnect]');if(!b||disconnecting.has(b.dataset.disconnect))return;
       if(!window.confirm(QI.resolve(b.dataset.unfinished?QI.msg("Cancel the unfinished setup {value1}? An agent already working with its own key keeps working.",{value1:b.dataset.name})
         :QI.msg("Disconnect {value1}? It loses access to this memory; its notes and conversations stay.",{value1:b.dataset.name}))))return;
-      const [kind,id]=b.dataset.disconnect.split(/:(.*)/);b.disabled=true;
+      const [kind,id]=b.dataset.disconnect.split(/:(.*)/);b.disabled=true;disconnecting.add(b.dataset.disconnect);
       try{await apiWrite('/api/dashboard/connection-setup',kind==='oauth'?{action:'revoke-oauth',agent_id:id}:{action:'disconnect',id});
         status.textContent=QI.resolve(QI.msg("Disconnected: "))+b.dataset.name;const next=await api('/api/dashboard/connections');if(state.page==='connections')overview(next);}
-      catch(err){b.disabled=false;status.textContent=err.message;}
+      catch(err){b.disabled=false;status.textContent=err.message;}finally{disconnecting.delete(b.dataset.disconnect);}
     };
     main.querySelectorAll('[data-memory-client]').forEach(button=>button.onclick=async()=>{
       button.disabled=true;status.textContent=QI.msg('Preparing your connection…');
@@ -1873,16 +1886,27 @@
     });
   }
 
+  // Who is looking: 200 is the owner's workspace, a refusal is an agent. A busy or restarting server (429, 5xx, a
+  // dropped connection) is asked again: read as a refusal, it left the owner without Memory, Connections and the
+  // chat until the page was reloaded [5.0.25].
+  async function ownerWorkspace() {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await send(BASE + '/api/dashboard/memory', { credentials: 'same-origin' });
+        if (response.ok) return await response.json();
+        if (response.status < 500 && response.status !== 429) return null;
+      } catch { /* No answer: asked again below. */ }
+      if (attempt >= 3) return null;
+      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
+    }
+  }
   // ---------- Boot ----------
   async function boot() {
     state = { page: 'overview', drill: null }; tickClock();
     try{const r=await send(BASE+'/api/dashboard/profile',{credentials:'same-origin'});const p=r.ok?await r.json():null;serviceOwner=!!p?.service_owner;$('#ownerEmail').textContent=p?.email||'';$('#ownerEmail').hidden=!p?.email;}catch{serviceOwner=false;$('#ownerEmail').hidden=true;}
     $('#workspaceHost').textContent=location.host;
-    try {
-      const response=await send(BASE+'/api/dashboard/memory',{credentials:'same-origin'});
-      localWorkspace=response.ok?await response.json():null;
-      $('#workspaceName').textContent=localWorkspace?(QI.msg("Owner workspace")):(QI.msg("Agent view"));
-    }catch{localWorkspace=null;}
+    localWorkspace=await ownerWorkspace();
+    $('#workspaceName').textContent=localWorkspace?(QI.msg("Owner workspace")):(QI.msg("Agent view"));
     chat?.dispose();chat=localWorkspace?window.QoopiaChat({api,send,esc,humanSize,onUnauthorized:showLogin}):null;
     state=await stateFromHash();
     route();

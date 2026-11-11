@@ -362,6 +362,24 @@ describe("P04 explain, traces, lifecycle and feedback", () => {
     expect((db.prepare(`SELECT owner_pinned FROM memory_lifecycle WHERE workspace_id = ? AND note_id = ?`)
       .get(workspace, id) as { owner_pinned: number }).owner_pinned).toBe(1);
   });
+
+  test("a retry after trace retention detached the feedback from its trace is the same feedback, not a conflict [M12]", async () => {
+    const id = note(owner, "p04retriedmarker owner note");
+    enable("QOOPIA_V4_RECALL_EXPLAIN", "QOOPIA_V4_LIFECYCLE", "QOOPIA_V4_FEEDBACK");
+    const recalled = await recall({ workspace_id: workspace, caller_agent_id: owner.agent_id, is_admin: true,
+      query: "p04retriedmarker", mode: "fts5", explain: true, trace: true, lifecycle: true, limit: 1 });
+    const feedback = { auth: owner, note_id: id, trace_id: recalled.trace_id, feedback: "confirm" as const, idempotency_key: "p04-retried-0001" };
+    const first = recordRecallFeedback(feedback);
+    // What trace retention does to durable feedback when its trace expires (expireRecallTraceBatch):
+    // the feedback stays, its trace reference is cleared. Done for this one row, not for every trace here.
+    expect(db.prepare(`UPDATE recall_feedback SET trace_id = NULL WHERE id = ? AND trace_id = ?`).run(first.feedback_id, recalled.trace_id!).changes).toBe(1);
+    const retry = recordRecallFeedback(feedback);
+    expect(retry.feedback_id).toBe(first.feedback_id);
+    expect((db.prepare(`SELECT confirmation_count FROM memory_lifecycle WHERE workspace_id = ? AND note_id = ?`)
+      .get(workspace, id) as { confirmation_count: number }).confirmation_count).toBe(1);
+    // The key with other feedback is still a conflict.
+    expect(() => recordRecallFeedback({ ...feedback, feedback: "helpful" })).toThrow("idempotency_key was reused");
+  });
 });
 
 describe("recall_trace_get pagination (F-103)", () => {

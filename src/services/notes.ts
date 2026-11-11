@@ -25,6 +25,14 @@ import {
 } from "./note-idempotency.ts";
 
 const MAX_TEXT = 100_000;
+/** The bound `boundedMetadata` (src/mcp/profiles.ts) puts on the MCP argument, for entry points whose schemas do
+ * not carry it: the legacy aliases build metadata from unbounded fields (`timeline`, `notes`). Not applied
+ * inside the writer: the server's own writers (imports, extraction, summaries) may hold more. */
+const MAX_METADATA_BYTES = 16_384;
+export function assertMetadataSize(metadata: unknown) {
+  if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > MAX_METADATA_BYTES)
+    throw new QoopiaError("SIZE_LIMIT", `metadata exceeds ${MAX_METADATA_BYTES} bytes as JSON`);
+}
 
 /**
  * Auto-embed new / updated notes when QOOPIA_AUTO_EMBED=true (default).
@@ -232,6 +240,7 @@ export function createNote(input: NoteCreateInput): NoteCreateResult {
   }
   const noteText = secretFree(input.text, "note.text");
   const noteMetadata = secretFree(JSON.stringify(input.metadata || {}), "note.metadata");
+  assertNoSecrets(JSON.stringify(input.tags || []), "note.tags");
 
   // V4.1: темпоральные поля запрещены при выключенном флаге (§7.2).
   const temporalInput: TemporalWriteFields = {
@@ -692,6 +701,7 @@ export function updateNote(input: NoteUpdateInput) {
   if (input.metadata_replace) {
     assertNoSecrets(JSON.stringify(input.metadata_replace), "note.metadata");
   }
+  if (input.tags) assertNoSecrets(JSON.stringify(input.tags), "note.tags");
 
   // H2 fix: re-validate project_id and task_bound_id on update (same as create)
   if (input.project_id !== undefined && input.project_id !== null) assertReferencedNote(input.workspace_id, input.agent_id, input.is_admin, input.project_id, "project", "project_id");

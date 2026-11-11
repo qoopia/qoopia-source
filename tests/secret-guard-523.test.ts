@@ -10,6 +10,11 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { saveMessage, saveTurn } from "../src/services/sessions.ts";
 import { db } from "../src/db/connection.ts";
+import { randomUUID } from "node:crypto";
+import { createNote, updateNote } from "../src/services/notes.ts";
+import { filePut } from "../src/services/files.ts";
+import { bridgeService } from "../src/bridges/service.ts";
+import { ownerFixture } from "./helpers/p1-fixtures.ts";
 
 const google = "AI" + "za" + "Sy" + "Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Q";
 const telegram = "123456789" + ":" + "AA" + "Hd3k9QwErTyUiOpAsDfGhJkLzXcVbNm12";
@@ -83,4 +88,33 @@ test("session_save with a secret keeps the turn: the secret is cut out and repor
   expect(turn).toMatchObject({ saved: true });
   const rows = db.query("SELECT role,content FROM session_messages WHERE session_id='secrets-523-b' ORDER BY id").all();
   expect(rows).toEqual([{ role: "user", content: "мой токен [REDACTED:telegram-bot-token]" }, { role: "assistant", content: "Принял, не сохраняю его." }]);
+});
+
+test("note tags, file_put names and text, and text staged for a bridge pass the secret guard too [X8]", async () => {
+  const note = (tags: string[]) => createNote({ workspace_id: workspace, agent_id: agent, text: "Синтетика: заметка с тегами.", tags });
+  expect(() => note(["deploy", gitlab])).toThrow("note.tags");
+  const kept = note(["deploy"]);
+  expect(() => updateNote({ workspace_id: workspace, agent_id: agent, is_admin: false, id: kept.id, tags: [telegram] })).toThrow("note.tags");
+  expect(db.query("SELECT tags FROM notes WHERE id=?").get(kept.id)).toEqual({ tags: '["deploy"]' });
+
+  const base64 = (text: string) => Buffer.from(text).toString("base64");
+  const put = (p: Record<string, string>) => filePut({ workspace_id: workspace, agent_id: agent, agent_name: "secrets-523-agent", filename: "a.md", content: "ok", ...p } as never);
+  await expect(put({ filename: `${gitlab}.md` })).rejects.toThrow("Secret pattern");
+  await expect(put({ folder: `keys/${npm}` })).rejects.toThrow("Secret pattern");
+  await expect(put({ content: `token ${hf}` })).rejects.toThrow("Secret pattern");
+  // Text sent as base64 is still text; bytes of a binary file are not read as text.
+  await expect(put({ content: base64(`token ${hf}`), encoding: "base64" })).rejects.toThrow("Secret pattern");
+  expect((await put({ filename: "blob.bin", content: base64(`\0${hf}`), encoding: "base64" })).filename).toBe("blob.bin");
+  expect(db.query("SELECT filename FROM files WHERE workspace_id=?").all(workspace)).toEqual([{ filename: "blob.bin" }]);
+
+  const fixture = ownerFixture(39), bridge = bridgeService(fixture.database);
+  try {
+    const stage = (p: Record<string, string>) => bridge.stage(fixture.auth, { id: randomUUID(), title: "Title", description: "Description", kind: "note",
+      filename: "x.md", mime: "text/markdown", content_base64: base64("x"), ...p } as never);
+    expect(() => stage({ content_base64: base64(`key ${google}`) })).toThrow("Secret pattern");
+    expect(() => stage({ filename: `${gitlab}.md` })).toThrow("Secret pattern");
+    expect(() => stage({ kind: "file", filename: "notes.txt", mime: "application/octet-stream", content_base64: base64(`key ${google}`) })).toThrow("Secret pattern");
+    expect(stage({ kind: "file", filename: "blob.bin", mime: "application/octet-stream", content_base64: base64(`\0${google}`) })).toHaveProperty("version");
+    expect(stage({})).toHaveProperty("version");
+  } finally { fixture.database.close(); }
 });

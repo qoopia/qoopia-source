@@ -29,7 +29,7 @@ beforeAll(()=>{
     if(req.headers.get('authorization')!=='Bearer '+KEY)return new Response('',{status:401});
     if(status!==200)return new Response('',{status});
     const body=await req.json() as any;requests.push(body);
-    try{return Response.json(continuityEvent(workspace,agent,body));}catch{return Response.json({error:'refused'},{status:400});}
+    try{return Response.json(continuityEvent(workspace,agent,body));}catch(error){return Response.json({error:'refused'},{status:(error as {code?:string}).code==='NOT_FOUND'?404:400});}
   }});
 });
 afterAll(()=>{server.stop(true);fs.rmSync(tmp,{recursive:true,force:true});});
@@ -133,6 +133,33 @@ test('a server outage keeps the cursor; the next run catches up and doctor shows
   expect(hermesSyncHealth(root)).toEqual([expect.objectContaining({status:'pass',reason:'DELIVERING',delivered:45})]);
   // A timer that stopped is a failure too.
   expect(hermesSyncHealth(root,Date.now()+2*3600_000)[0]).toMatchObject({status:'fail',reason:'NOT_RUNNING'});
+  h.state.close();
+});
+
+test('a session another agent holds goes on under an id of its own; a row with a broken time is still delivered [D6]',async()=>{
+  const h=hermesHome('refused');h.session('x');h.session('y');
+  const root=path.join(tmp,'root-refused'),id=(s:string)=>hermesSessionId('hermes',{session_id:s,source:'telegram',chat_id:'136566708',user_id:null});
+  // The same conversation was delivered earlier under another agent: the server answers 404 to this one.
+  const other=createAgent({name:'hermes-former',workspaceSlug:'hermes-sync-check'}).id;
+  continuityEvent(workspace,other,{session_id:id('x'),project:h.home,runtime:'hermes',event:'progress',messages:[{id:'old:0',role:'user',content:'Раньше.'}]});
+  h.add('x','user','Первый вопрос.');h.add('y','user','Другой разговор.');
+  // An address that answers 404 to everything renames nothing.
+  status=404;
+  expect((await hermesSyncOnce({root,home:h.home,connection:connection(),settleMs:0,afterId:0}).catch(e=>e)).code).toBe('WRONG_ADDRESS');
+  expect(JSON.parse(fs.readFileSync(path.join(stateDirectory(root,h.home),'state.json'),'utf8')).renamed).toBeUndefined();
+  status=200;
+  expect(await hermesSyncOnce({root,home:h.home,connection:connection(),settleMs:0,afterId:0})).toMatchObject({sent:2,behind_rows:0});
+  const own=id('x')+'@'+agent;
+  expect(stored(own).map(m=>m.content)).toEqual(['Первый вопрос.']);
+  expect(stored(id('y')).map(m=>m.content)).toEqual(['Другой разговор.']);
+  // The next run continues the same session under the same id; a time SQLite kept as text does not stop the home.
+  h.add('x','assistant','Первый ответ.');
+  h.state.query("INSERT INTO messages(session_id,role,content,timestamp,message_uid) VALUES('y','user','Без времени.','not-a-time','uid-broken-time')").run();
+  h.add('y','assistant','После него.');
+  expect(await hermesSyncOnce({root,home:h.home,connection:connection(),settleMs:0})).toMatchObject({sent:3,behind_rows:0});
+  expect(stored(own).map(m=>m.content)).toEqual(['Первый вопрос.','Первый ответ.']);
+  expect(stored(id('y')).map(m=>m.content)).toEqual(['Другой разговор.','Без времени.','После него.']);
+  expect(hermesSyncHealth(root)).toEqual([expect.objectContaining({status:'pass',reason:'DELIVERING'})]);
   h.state.close();
 });
 

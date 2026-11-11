@@ -561,8 +561,9 @@ export function renewLocalOwnerSession(req: IncomingMessage, res: ServerResponse
   const value = dashboardCookieValue(req);
   const session = value ? verifySession(value) : null;
   if (!session || !authFromSessionCookie(req)) return;
-  // Owners have no absolute deadline. Other dashboard principals keep their original expiry.
-  const boundOwner=!!db.query(`SELECT 1 FROM ${HUMAN_OWNERS} WHERE a.id=?`).get(session.agent_id);
-  const ttl = session.exp === null || boundOwner ? null : session.exp - Math.floor(Date.now()/1000);
+  // An owner-identity session has no absolute deadline. Every other session keeps its original expiry,
+  // the human owner's key sign-in too: renewed as an identity session it was refused on the next read where
+  // owner sign-in is off, and passed for a confirmed identity where it is on [5.0.25].
+  const ttl = session.exp === null ? null : session.exp - Math.floor(Date.now()/1000);
   res.setHeader('set-cookie',buildSessionCookie(req,signSession(session.agent_id,session.sv,ttl)));
 }

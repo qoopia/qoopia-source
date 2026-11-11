@@ -1,6 +1,6 @@
 # Qoopia public claim policy
 
-Owner: Qoopia maintainer. Reviewed 2026-10-14 (phone, platforms, messages and bridges updated for 5.0.20); next substantive review by 2026-11-14, sooner on a relevant release. Never refresh dates merely because a job ran.
+Owner: Qoopia maintainer. Reviewed 2026-11-10 (messages corrected for wake-runner in the packages; canon, handoff, tools and search added for 5.0.24); next substantive review by 2026-12-10, sooner on a relevant release. Never refresh dates merely because a job ran.
 
 `answers.json` is the reviewed public explanation input. Each stable claim ID includes RU/EN wording and source evidence paths. `discovery-content.py` renders both website and repository explanations. Runtime capabilities must be verified against the shipped package source, not presumed from latest main. Dates are review dates, not release dates. Source-code evidence does not prove a user's successful installation.
 
@@ -14,6 +14,8 @@ Owner: Qoopia maintainer. Reviewed 2026-10-14 (phone, platforms, messages and br
 | bridges, messages | Scoped communication and selectively permitted transfer | All installations already form one network; sent=read; received=executed | Distinguish invitation, catalog, content, receipt and execution |
 | recovery | Version-specific backups, actual verification, separate grant revocation | Deleting configs revokes access; destructive troubleshooting without backup | Link version-specific recovery guidance |
 | skills | Versioned procedure with inputs/steps/checks/rollback/capabilities | Arbitrary scripts safe; compatible everywhere; automatic recipient execution | Require recipient review and compatible execution environment |
+| canon, handoff | Rules loaded by scope and match, night-review proposals only after owner acceptance; history of another agent of the same owner offered with shared context on | Canons enforce behaviour; night review changes rules without the owner; handoff shares work across owners or locks files | Name scope, owner acceptance and the shared-context condition; recheck on canon or continuity changes |
+| tools, search | Eight core tools plus discovery; read-only sandboxed composition; model judgement only when requested | Fewer tools means lower cost for every client; the sandbox can write; search always uses a model or a reranker | State the exact tool list and limits; recheck on tool-surface or recall changes |
 
 Consumers: homepage FAQ, docs, releases, generated understand pages, public README and generated Markdown. The generator checks source paths and byte parity; the reviewer checks meaning. Neither proves search ranking. Expiry creates a review finding; if authority cannot be reconfirmed, remove or soften the affected promise rather than extending the date.
 

@@ -37,7 +37,7 @@ COPY src/brand.ts ./src/brand.ts
 COPY src/utils/assets.ts ./src/utils/assets.ts
 COPY src/utils/product-version.ts ./src/utils/product-version.ts
 # Shared helpers the sign-in code imports (tests/identity-image.test.ts keeps this list complete).
-COPY src/utils/fs.ts src/utils/html.ts src/utils/http-json.ts src/utils/cookies.ts ./src/utils/
+COPY src/utils/fs.ts src/utils/html.ts src/utils/http-json.ts src/utils/cookies.ts src/utils/rate-limit.ts ./src/utils/
 COPY src/db/introspect.ts ./src/db/introspect.ts
 COPY scripts/newsletter.ts ./scripts/newsletter.ts
 RUN bun build src/identity/broker.ts --target=bun --outfile /broker.js

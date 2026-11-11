@@ -735,13 +735,23 @@ const VISIBLE_PAGE =
   "(authority_private=0 OR authority_owner_id=? OR EXISTS(SELECT 1 FROM workspace_owners WHERE workspace_id=? AND actor_id=?))";
 const visiblePageParams = (auth: DashboardAuth) => [auth.agent_id, auth.workspace_id, auth.agent_id];
 
-/** Tiny try/catch wrapper: run fn, return its value, or the fallback on throw. */
+/** Tiny try/catch wrapper: run fn, return its value, or the fallback on throw. The page keeps its
+ * other parts, so the log is the only trace of what failed. */
 function ccTry<T>(fn: () => T, fallback: T): T {
   try {
     return fn();
-  } catch {
+  } catch (e) {
+    logger.error("dashboard query failed", { error: (e as Error).message });
     return fallback;
   }
+}
+
+/** An owner-only list refuses (403) only someone who is not the owner. Any other failure is the
+ * server's: 500 and a log line, so the page reports it instead of saying "owner only". */
+function ownerListFailed(res: ServerResponse, error: unknown) {
+  if (error instanceof QoopiaError && error.code === "FORBIDDEN") return json(res, 403, { error: "forbidden" });
+  logger.error("dashboard list failed", { error: (error as Error).message });
+  json(res, 500, { error: "query_failed" });
 }
 
 /** COUNT(*) helper. */
@@ -1002,7 +1012,7 @@ function ccActivity(
     });
   } catch (e) {
     logger.error("dashboard list failed", { error: (e as Error).message });
-    return json(res, 200, { items: [], total: 0, next_before: null, error: "query_failed" });
+    return json(res, 500, { error: "query_failed" });
   }
 }
 
@@ -1314,7 +1324,7 @@ function ccSkills(res: ServerResponse, auth: DashboardAuth, limit: number) {
     });
   } catch (e) {
     logger.error("dashboard list failed", { error: (e as Error).message });
-    return json(res, 200, { items: [], total: 0, error: "query_failed" });
+    return json(res, 500, { error: "query_failed" });
   }
 }
 
@@ -1692,7 +1702,7 @@ export function handleDashboardApi(
     if (method === "POST") void memoryOwnerPost(req,res,auth,body=>decideCanonProposal(auth.workspace_id,{agent_id:auth.agent_id,type:auth.type},decodeURIComponent(proposalRoute[1]!),body.accept as boolean));
     else {
       try { json(res,200,listCanonProposals(auth.workspace_id,auth.agent_id)); }
-      catch { json(res,403,{error:"forbidden"}); }
+      catch (error) { ownerListFailed(res, error); }
     }
     return true;
   }
@@ -1725,7 +1735,7 @@ export function handleDashboardApi(
     else {
       // The prepared text is for the owner alone; other dashboard roles see only the count on the card.
       try { json(res, 200, { items: listSaveRequests(auth.workspace_id, auth.agent_id) }); }
-      catch { json(res, 403, { error: "forbidden" }); }
+      catch (error) { ownerListFailed(res, error); }
     }
     return true;
   }
@@ -1869,11 +1879,19 @@ export function handleDashboardApi(
     return true;
   }
   if (path === "/api/dashboard/canons" || path.startsWith("/api/dashboard/canons/")) {
-    const actor = { agent_id: auth.agent_id, type: auth.type }, id = path.slice("/api/dashboard/canons/".length);
+    // Decoded outside the try: a malformed escape is the caller's 400 at the central handler, not this route's 500.
+    const actor = { agent_id: auth.agent_id, type: auth.type }, id = decodeURIComponent(path.slice("/api/dashboard/canons/".length));
     try {
-      if (path !== "/api/dashboard/canons") json(res, 200, getCanon({ workspace_id: auth.workspace_id, actor, id: decodeURIComponent(id) }));
-      else json(res, 200, listCanons({ workspace_id: auth.workspace_id, actor, agent: u.searchParams.get("agent") ?? undefined,
-        status: (u.searchParams.get("status") ?? "active") as never, query: u.searchParams.get("q") || undefined, limit: intParam("limit", 200) }));
+      if (path !== "/api/dashboard/canons") json(res, 200, getCanon({ workspace_id: auth.workspace_id, actor, id }));
+      else {
+        const list = listCanons({ workspace_id: auth.workspace_id, actor, agent: u.searchParams.get("agent") ?? undefined,
+          status: (u.searchParams.get("status") ?? "active") as never, query: u.searchParams.get("q") || undefined, limit: intParam("limit", 200) });
+        // The Canon page lists every agent's rules: name the agent of an agent canon instead of "This agent".
+        const ids = [...new Set(list.items.map(c => c.agent_id).filter((id): id is string => !!id))];
+        const names = new Map(ids.length ? (db.query(`SELECT id, name FROM agents WHERE workspace_id = ? AND id IN (${ids.map(() => "?").join(",")})`)
+          .all(auth.workspace_id, ...ids) as { id: string; name: string }[]).map(r => [r.id, r.name]) : []);
+        json(res, 200, { ...list, items: list.items.map(c => ({ ...c, agent_name: c.agent_id ? names.get(c.agent_id) ?? null : null })) });
+      }
     } catch (error) {
       const code = error instanceof QoopiaError ? error.code : "INTERNAL";
       json(res, code === "NOT_FOUND" ? 404 : code === "FORBIDDEN" ? 403 : code === "INVALID_INPUT" ? 400 : 500, { error: code.toLowerCase() });

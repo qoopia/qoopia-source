@@ -389,7 +389,7 @@ export function continuityEvent(workspace:string,agent:string,raw:unknown) {
       db.query("UPDATE sessions SET metadata=json_set(metadata,'$.continuity_service',1) WHERE id=?").run(event.session_id);
     else if(fresh.some(m=>m.role==='user'))db.query("UPDATE sessions SET metadata=json_remove(metadata,'$.continuity_service') WHERE id=?").run(event.session_id);
     return {...restoreContext(workspace,agent,event.session_id),accepted:event.messages.map(m=>m.id),...(event.event==='start'?{handoff:projectHandoff(workspace,agent,event.project,event.session_id,event.runtime)}:{})};
-  })();
+  }).immediate();
 }
 /** Escaped-size budget for the summarizer source; memoryText adds its instruction and refuses over 140k. */
 const SOURCE_BUDGET=130_000;
@@ -510,9 +510,12 @@ export async function checkpointSession(workspace:string,agent:string,session:st
     if(meta.continuity_batch_limit!==undefined)db.query(`UPDATE sessions SET metadata=CASE WHEN ?1>=100 THEN json_remove(metadata,'$.continuity_batch_limit')
       ELSE json_set(metadata,'$.continuity_batch_limit',?1) END WHERE id=?2`).run(batchLimit*2,session);
     return {state:'saved',note_id:noteId,revision:version,through_message_id:through};
-  })();
+  }).immediate();
 }
 let timer:ReturnType<typeof setInterval>|undefined,running=false,indexing=false,embedRetryAt=0,embedFailures=0;
+/** Notes whose embedding failed, each waiting on its own (10 s doubling to 10 min) while the pass goes on. */
+const embedWaiting=new Map<string,{fails:number;until:number}>();
+const embedPause=(fails:number)=>Math.min(600_000,5000*2**fails);
 // Per-note errors are logged by upsertNoteEmbedding; this catches the pass itself (e.g. its DB query).
 const embeddingFailed=backgroundFailure('Note embedding pass');
 export async function processMemoryMaintenance() {
@@ -526,13 +529,21 @@ export async function processMemoryMaintenance() {
       indexing=true;
       // Archival indexing yields between passages and must not delay a current
       // session checkpoint while the subscription model is available.
-      void (async()=>{for(const note of pendingNoteEmbeddings(undefined,16)) {
-        const r=await upsertNoteEmbedding(note.id,note.workspace_id,note.text);
-        // A missing or broken model fails every note: pause 10 s doubling to 10 min instead of a
-        // failed inference and a WARN every tick. The first success resumes the normal pace.
-        if(r.error){embedFailures++;embedRetryAt=Date.now()+Math.min(600_000,5000*2**embedFailures);break;}
-        embedFailures=0;embedRetryAt=0;
-      }
+      void (async()=>{
+        // The pass used to end at the first note that failed. Notes come newest first, so one note the model
+        // cannot take kept every older note out of the index for good. Such a note now waits on its own and
+        // the pass goes on, looking that many notes further [5.0.25].
+        const waiting=[...embedWaiting.values()].filter(w=>w.until>Date.now()).length;
+        let failed=0;
+        for(const note of pendingNoteEmbeddings(undefined,16+waiting)) {
+          if((embedWaiting.get(note.id)?.until??0)>Date.now())continue;
+          const r=await upsertNoteEmbedding(note.id,note.workspace_id,note.text);
+          if(!r.error){embedWaiting.delete(note.id);failed=0;embedFailures=0;embedRetryAt=0;continue;}
+          const fails=(embedWaiting.get(note.id)?.fails??0)+1;embedWaiting.set(note.id,{fails,until:Date.now()+embedPause(fails)});
+          // Three in a row is the model, missing or broken, not the notes: the whole pass pauses, 10 s
+          // doubling to 10 min, instead of failed inferences and a WARN every tick. A success resumes.
+          if(++failed>=3){embedFailures++;embedRetryAt=Date.now()+embedPause(embedFailures);break;}
+        }
       // Canons imported in bulk wait for their vector here; a new canon embeds itself when written.
       if(!embedFailures)await embedPendingCanons(16);})().catch(embeddingFailed).finally(()=>{indexing=false;});
     }
@@ -616,7 +627,11 @@ async function summarizeOne(sessions:Array<{id:string;workspace_id:string;agent_
           .run(code,retryAt,session.workspace_id,new Date(Date.now()-LIVE_SESSION_MS).toISOString(),session.id);
         memoryModelAlert(code);
       }
-      else db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?) WHERE id=?`).run(code,retryAt,session.id);
+      // Every failure of this session lengthens its next pause, up to six hours: a summary that fails the same
+      // way each time (an answer in the wrong form, a refused text) was retried every five minutes for ever,
+      // a model call each. A timeout keeps its own count: it first halves the batch [F-341].
+      else db.query(`UPDATE sessions SET metadata=json_set(metadata,'$.continuity_error',?,'$.continuity_retry_at',?,'$.continuity_backoff',?) WHERE id=?`)
+        .run(code,retryAt,code==='MODEL_TIMEOUT'?backoff:backoff+1,session.id);
       return 'stopped';
     }
   }

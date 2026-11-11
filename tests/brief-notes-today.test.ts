@@ -8,6 +8,7 @@ import { db } from "../src/db/connection.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { brief } from "../src/services/brief.ts";
+import { queryPlan } from "./helpers/query-plan.ts";
 
 let WS = "", AGENT = "";
 
@@ -39,7 +40,7 @@ test("notes_today counts the last day only and uses the created_at index range",
   expect((result.agent_activity as Record<string, { notes_today: number }>)["brief-today-agent"]?.notes_today).toBe(2);
 
   const sql = seen.find((s) => s.includes("notes_today"))!;
-  const plan = (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(AGENT, 2, WS) as Array<{ detail: string }>).map((r) => r.detail).join(" ; ");
+  const plan = queryPlan(db, sql, AGENT, 2, WS).join(" ; ");
   expect(plan).toContain("created_at>?");
 });
 

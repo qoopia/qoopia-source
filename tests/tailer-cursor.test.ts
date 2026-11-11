@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { extractText } from "../src/ingest/tailer.ts";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { while (cleanup.length) cleanup.pop()!(); });
@@ -56,3 +57,19 @@ test("a transcript replaced under the same name is read from its start (F-520-ta
   await t.until(() => t.posts.includes("n3"));
   expect(t.posts).toEqual(["u1", "u2", "n1", "n2", "n3"]);
 }, 20_000);
+
+test("a turn with something secret-shaped is kept with the secret cut out, not dropped whole [M9]", () => {
+  const key = "sk-ant-" + "a1B2".repeat(10), bearer = "x9Y8".repeat(8);
+  const line = (type: string, content: unknown) => JSON.stringify({ type, uuid: "u", sessionId: "S", cwd: "/w", message: { role: type, content } });
+  const kept = (result: ReturnType<typeof extractText>, ...parts: string[]) => {
+    expect(result).not.toBeNull();
+    for (const part of parts) expect(result!.text).toContain(part);
+    for (const secret of [key, bearer, "hunter2hunter2", "abcdefghijklmnopqrstuvwxyz012345"]) expect(result!.text).not.toContain(secret);
+  };
+  kept(extractText(line("user", `deploy with password=hunter2hunter2 then check ${key} and report back`)), "deploy with", "then check", "and report back");
+  kept(extractText(line("user", [{ type: "text", text: `Authorization: Bearer ${bearer} was in the log` }])), "was in the log");
+  kept(extractText(line("user", `<channel source="plugin:telegram:telegram" chat_id="1">api_key: abcdefghijklmnopqrstuvwxyz012345 is the staging one</channel>`)), "is the staging one");
+  kept(extractText(line("assistant", [{ type: "tool_use", name: "mcp__plugin_telegram_telegram__reply", input: { text: `the key is ${key}, rotate it` } }])), "the key is", "rotate it");
+  // Nothing secret: the text is passed on as it was, file paths included.
+  expect(extractText(line("user", "open /Users/user/project/app.ts and fix it"))!.text).toBe("open /Users/user/project/app.ts and fix it");
+});

@@ -12,12 +12,14 @@ const store=await import('../../src/services/embedding-store.ts');
 const ws=createWorkspace({name:'Embedding freshness',slug:'embed-freshness'}),agent=createAgent({name:'probe',workspaceSlug:ws.slug}).id;
 
 // Count result rows that carry note text: the read-path cost this probe guards.
-let textRows=0;const wrapped=new WeakSet<object>();
+let textRows=0,scanRows=0;const wrapped=new WeakSet<object>();
 for(const method of ['query','prepare'] as const){
   const original=db[method].bind(db) as (sql:string)=>any;
   (db as any)[method]=(sql:string)=>{const statement=original(sql);if(!wrapped.has(statement)){wrapped.add(statement);
     for(const read of ['all','get']){const run=statement[read];statement[read]=(...args:unknown[])=>{const result=run.apply(statement,args);
-      for(const row of Array.isArray(result)?result:result?[result]:[])if(row&&typeof row==='object'&&'text' in row)textRows++;return result;};}}
+      for(const row of Array.isArray(result)?result:result?[result]:[])if(row&&typeof row==='object'&&'text' in row)textRows++;
+      // Rows the pending-work scan brings into JS: the cost M11 bounds.
+      if(Array.isArray(result)&&sql.includes('LEFT JOIN notes_embeddings'))scanRows+=result.length;return result;};}}
     return statement;};
 }
 const reads=<T>(fn:()=>T)=>{const before=textRows;const value=fn();return {value,text_rows:textRows-before};};
@@ -55,6 +57,14 @@ if(EMBED_PROVIDER!=='builtin'){
   if(hit.mode!=='hybrid')throw new Error('expected hybrid recall, got '+hit.mode);
   server.stop(true);
 }
-console.log(JSON.stringify({provider:EMBED_PROVIDER,n:N,per_note:perNote,steady,edited,one_edit:oneEdit,churn,
+// M11. Nothing was written since a scan found nothing: the next tick reads no row at all. Any write ends that.
+db.query('UPDATE notes_embeddings SET text_hash=? WHERE note_id=?').run(textHash('note 0 rewritten'),edited); // the edit above is embedded
+const scanned=(fn:()=>unknown)=>{const before=scanRows;fn();return scanRows-before;};
+const full=scanned(()=>store.pendingNoteEmbeddings(undefined,16)),idle=scanned(()=>store.pendingNoteEmbeddings(undefined,16));
+// Twenty notes rewritten: the sixteen a tick takes are the newest, so the scan stops at its first page.
+for(const id of ids.slice(100,120))updateNote({workspace_id:ws.id,agent_id:agent,is_admin:false,id,text:'rewritten '+id});
+let batch:string[]=[];const busy=scanned(()=>{batch=store.pendingNoteEmbeddings(undefined,16).map(n=>n.id);});
+const everything=store.pendingNoteEmbeddings(undefined,Number.MAX_SAFE_INTEGER).length;
+console.log(JSON.stringify({scan:{full,idle,busy,batch_newest_first:Bun.deepEquals(batch,ids.slice(104,120).reverse()),everything},provider:EMBED_PROVIDER,n:N,per_note:perNote,steady,edited,one_edit:oneEdit,churn,
   loaded:{has_edited:loaded.has(edited),has_cleared:loaded.has(ids[1]!),has_untouched:loaded.has(ids[150]!),size:loaded.size},recall_text_rows:recallReads}));
 closeDb();

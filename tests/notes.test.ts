@@ -20,6 +20,7 @@ import { db } from "../src/db/connection.ts";
 import { saveMessage, sessionSearch } from "../src/services/sessions.ts";
 import { listActivity } from "../src/services/activity.ts";
 import { logger } from "../src/utils/logger.ts";
+import { queryPlan } from "./helpers/query-plan.ts";
 
 let WORKSPACE_ID = "";
 let AGENT_ID = "";
@@ -381,8 +382,7 @@ describe("since/until bounds are moments, not text", () => {
     const plan = (pick: RegExp) => {
       const sql = seen.find((s) => pick.test(s))!;
       const holes = (sql.match(/\?/g) ?? []).length;
-      return (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(Array(holes).fill("2026-03-01T00:00:00.000Z") as never[])) as Array<{ detail: string }>)
-        .map((r) => r.detail).join(" ; ");
+      return queryPlan(db, sql, ...Array(holes).fill("2026-03-01T00:00:00.000Z")).join(" ; ");
     };
     expect(plan(/SELECT \* FROM notes/)).toContain("created_at>? AND created_at<?");
     expect(plan(/SELECT COUNT\(\*\) as c FROM notes/)).toContain("created_at>? AND created_at<?");

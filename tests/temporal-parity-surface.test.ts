@@ -7,6 +7,7 @@ import { runMigrations } from "../src/db/migrate.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { db } from "../src/db/connection.ts";
+import { queryPlan } from "./helpers/query-plan.ts";
 import { createNote } from "../src/services/notes.ts";
 import { recall } from "../src/services/recall.ts";
 import {
@@ -168,15 +169,10 @@ describe("§7.5 MCP surface follows the flag (live probe)", () => {
 
 describe("§10.6 query plans and isolation", () => {
   test("the hot current slice uses the partial index and never scans notes", () => {
-    const plan = db
-      .prepare(
-        `EXPLAIN QUERY PLAN
-         SELECT id FROM notes
+    const plan = queryPlan(db, `SELECT id FROM notes
           WHERE workspace_id = ? AND invalidated_at_ms IS NULL AND deleted_at IS NULL
-          ORDER BY created_at_ms DESC LIMIT 10`,
-      )
-      .all(WORKSPACE_ID) as Array<{ detail: string }>;
-    const detail = plan.map((row) => row.detail).join(" | ");
+          ORDER BY created_at_ms DESC LIMIT 10`, WORKSPACE_ID);
+    const detail = plan.join(" | ");
     expect(detail).toContain("idx_notes_current_ws");
     expect(detail).not.toContain("SCAN notes");
   });
@@ -200,14 +196,12 @@ describe("§10.6 query plans and isolation", () => {
     expect(sql).toContain("skipped_reason IS NOT NULL");
     expect(sql).toContain("relation_type = 'supersedes'");
 
-    const plan = db
-      .prepare(`EXPLAIN QUERY PLAN ${sql}`)
-      .all(WORKSPACE_ID, ...deleted.params, ...temporal.params) as Array<{ detail: string }>;
-    const detail = plan.map((row) => row.detail).join(" | ");
+    const plan = queryPlan(db, sql, WORKSPACE_ID, ...deleted.params, ...temporal.params);
+    const detail = plan.join(" | ");
     expect(detail).toContain("idx_notes_current_ws");
     expect(detail).toContain("idx_note_relations_target");
     // Корреляции идут по индексам, полного прохода по notes нет.
-    for (const line of plan.map((row) => row.detail)) {
+    for (const line of plan) {
       if (/\bSCAN\b/.test(line) && /\bnotes\b/.test(line)) {
         expect(line).toMatch(/USING (COVERING )?INDEX/);
       }
@@ -229,15 +223,11 @@ describe("§10.6 query plans and isolation", () => {
       `ORDER BY n.valid_from_ms`;
     expect(sql).toContain("skipped_reason IS NOT NULL");
 
-    const plan = db
-      .prepare(`EXPLAIN QUERY PLAN ${sql}`)
-      .all(WORKSPACE_ID, "office.address", ...deleted.params, ...temporal.params) as Array<{
-      detail: string;
-    }>;
-    const detail = plan.map((row) => row.detail).join(" | ");
+    const plan = queryPlan(db, sql, WORKSPACE_ID, "office.address", ...deleted.params, ...temporal.params);
+    const detail = plan.join(" | ");
     expect(detail).toContain("idx_notes_subject_valid");
     expect(detail).toContain("note_temporal_provenance");
-    for (const line of plan.map((row) => row.detail)) {
+    for (const line of plan) {
       if (/\bSCAN\b/.test(line) && /\bnotes\b/.test(line)) {
         expect(line).toMatch(/USING (COVERING )?INDEX/);
       }
@@ -245,14 +235,9 @@ describe("§10.6 query plans and isolation", () => {
   });
 
   test("the subject chain slice uses its partial index", () => {
-    const plan = db
-      .prepare(
-        `EXPLAIN QUERY PLAN
-         SELECT id FROM notes
-          WHERE workspace_id = ? AND subject_key = ? ORDER BY valid_from_ms`,
-      )
-      .all(WORKSPACE_ID, "office.address") as Array<{ detail: string }>;
-    const detail = plan.map((row) => row.detail).join(" | ");
+    const plan = queryPlan(db, `SELECT id FROM notes
+          WHERE workspace_id = ? AND subject_key = ? ORDER BY valid_from_ms`, WORKSPACE_ID, "office.address");
+    const detail = plan.join(" | ");
     expect(detail).toContain("idx_notes_subject_valid");
     expect(detail).not.toContain("SCAN notes");
   });

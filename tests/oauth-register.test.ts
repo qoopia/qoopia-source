@@ -28,6 +28,7 @@ import { createAgent } from "../src/admin/agents.ts";
 import { startHttpServer } from "../src/http.ts";
 import { db } from "../src/db/connection.ts";
 import { authLimiter } from "../src/utils/rate-limit.ts";
+import { createConsentTicket, registerClient } from "../src/auth/oauth.ts";
 import { legacyPrivilegedAgent } from "./helpers/legacy-agent.ts";
 
 let server: Server;
@@ -472,6 +473,33 @@ describe("Claude.ai restricted unauthenticated DCR", () => {
     expect(statuses.every((s) => s === 201)).toBe(true);
     expect(count()).toBe(20);
     expect(db.query("SELECT 1 FROM oauth_clients WHERE id = ?").get(last)).not.toBeNull();
+  });
+
+  // A7: the registration an owner is giving consent to used to be the oldest unused one, so twenty
+  // anonymous registrations deleted it together with its consent ticket (ON DELETE CASCADE).
+  test("anonymous registrations never evict one whose consent is in progress", () => {
+    const redirect_uris = ["https://chatgpt.com/connector_platform_oauth_redirect"];
+    const register = () => registerClient({ client_name: "ChatGPT", redirect_uris }, null).client_id;
+    const consent = (clientId: string) => createConsentTicket({ clientId, workspaceId: WS_A_ID, redirectUri: redirect_uris[0]!,
+      codeChallenge: "c".repeat(43), codeChallengeMethod: "S256", scope: "mcp:read", state: "" }).id;
+    const exists = (id: string) => db.query("SELECT 1 FROM oauth_clients WHERE id = ?").get(id) !== null;
+    const unused = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id IS NULL AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)").get() as { n: number }).n;
+    const victim = register(), ticket = consent(victim);
+    for (let i = 0; i < 25; i++) register();
+    expect(exists(victim)).toBe(true);
+    expect(db.query("SELECT 1 FROM consent_tickets WHERE id = ?").get(ticket)).not.toBeNull();
+    // Holding a ticket open is no way around the quota: past 200 such registrations the oldest gives way,
+    // and no registration is refused.
+    for (let i = 0; i < 205; i++) consent(register());
+    expect(exists(victim)).toBe(false);
+    expect(unused()).toBeLessThanOrEqual(220);
+    // A consent that ended (expired here) protects nothing: its registration gives way like any unused one.
+    const stale = register();
+    db.query("UPDATE consent_tickets SET expires_at = '2000-01-01T00:00:00.000Z' WHERE client_id IN (SELECT id FROM oauth_clients WHERE agent_id IS NULL)").run();
+    db.query("UPDATE consent_tickets SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(consent(stale));
+    for (let i = 0; i < 20; i++) register();
+    expect(exists(stale)).toBe(false);
+    expect(unused()).toBe(20);
   });
 
   test("root DCR supports RFC client_secret_basic without granting authority", async () => {

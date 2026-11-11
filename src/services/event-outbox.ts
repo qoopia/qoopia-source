@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { lookup } from "node:dns/promises";
+import http from "node:http";
 import https from "node:https";
 import { QoopiaError } from "../utils/errors.ts";
 import { assertNoSecrets } from "../utils/secret-guard.ts";
@@ -24,6 +25,8 @@ export interface OutboxDestination {
   url: string;
   allowed_hosts: string[];
   signing_key: Uint8Array;
+  /** Set only by readOwnerAlertChannels: this destination comes from the owner's private (0600) channel file. */
+  from_owner_policy?: true;
 }
 
 function assertMetadataOnly(value: unknown, path = "payload", depth = 0): void {
@@ -62,6 +65,7 @@ async function resolvedDestination(
   destination: OutboxDestination,
   resolver: (hostname: string) => Promise<Array<{ address: string }>> = async (hostname) =>
     lookup(hostname, { all: true, verbatim: true }),
+  ownerAlert = false,
 ): Promise<{ url: URL; addresses: string[] }> {
   let url: URL;
   try {
@@ -69,16 +73,22 @@ async function resolvedDestination(
   } catch {
     throw new QoopiaError("INVALID_INPUT", "outbox destination URL is invalid");
   }
-  if (url.protocol !== "https:" || url.username || url.password || url.hash) {
+  const literal = url.hostname.replace(/^\[(.*)\]$/, "$1");
+  // The owner's own receiver on this host (scripts/ops-alert-relay.py) has no TLS. For an operational alert
+  // sent to a channel of the owner's private file, plain http to the literal loopback address is allowed, on
+  // any port, as the release monitor allows it. No name is resolved, so no other host can be reached this way.
+  const local = ownerAlert && url.protocol === "http:" && (literal === "127.0.0.1" || literal === "::1");
+  if ((url.protocol !== "https:" && !local) || url.username || url.password || url.hash) {
     throw new QoopiaError("FORBIDDEN", "outbox destination requires credential-free HTTPS URL");
   }
-  if (url.port && url.port !== "443") throw new QoopiaError("FORBIDDEN", "outbox destination port is not allowlisted");
+  if (!local && url.port && url.port !== "443") throw new QoopiaError("FORBIDDEN", "outbox destination port is not allowlisted");
   const allowed = new Set(destination.allowed_hosts.map((host) => host.toLowerCase()));
   if (destination.signing_key.byteLength < 32) {
     throw new QoopiaError("FORBIDDEN", "outbox signing key must contain at least 32 bytes");
   }
-  if (!allowed.has(url.hostname.toLowerCase())) throw new QoopiaError("FORBIDDEN", "outbox destination host is not allowlisted");
-  const literal = url.hostname.replace(/^\[(.*)\]$/, "$1");
+  // The monitor reads the same file and compares the bare address, so `::1` is accepted as well as `[::1]`.
+  if (!allowed.has(url.hostname.toLowerCase()) && !(local && allowed.has(literal))) throw new QoopiaError("FORBIDDEN", "outbox destination host is not allowlisted");
+  if (local) return { url, addresses: [literal] };
   if (isIP(literal) && isPrivateAddress(literal)) throw new QoopiaError("FORBIDDEN", "private outbox destination is forbidden");
   const resolved = await resolver(url.hostname);
   if (resolved.length === 0 || resolved.some(({ address }) => isPrivateAddress(address))) {
@@ -94,13 +104,16 @@ export async function validateOutboxDestination(
   return (await resolvedDestination(destination, resolver)).url;
 }
 
-function postPinnedHttps(url: URL, address: string, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }> {
+function postPinned(url: URL, address: string, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }> {
+  // Plain http reaches this point only for the owner's loopback receiver (resolvedDestination). Neither
+  // client follows a redirect: a 3xx comes back as a status and is refused by the caller.
+  const plain = url.protocol === "http:";
   return new Promise((resolve, reject) => {
-    const request = https.request({
-      protocol: "https:",
+    const request = (plain ? http : https).request({
+      protocol: url.protocol,
       hostname: address,
-      port: 443,
-      servername: url.hostname,
+      port: plain ? url.port || 80 : 443,
+      ...(plain ? {} : { servername: url.hostname }),
       path: `${url.pathname}${url.search}`,
       method: "POST",
       timeout: 5_000,
@@ -130,7 +143,8 @@ export async function deliverMemoryEvent(input: {
   requireReceipt?: boolean;
   resolver?: (hostname: string) => Promise<Array<{ address: string }>>;
 }): Promise<{ status: number; signature: string; receipt?: { event_id: string; payload_sha256: string; accepted: true } }> {
-  const { url, addresses } = await resolvedDestination(input.destination, input.resolver);
+  const ownerAlert = input.row.event_type === "operational_alert" && input.destination.from_owner_policy === true;
+  const { url, addresses } = await resolvedDestination(input.destination, input.resolver, ownerAlert);
   assertMetadataOnly(JSON.parse(input.row.payload));
   const body = JSON.stringify({ id: input.row.id, event_type: input.row.event_type, payload: JSON.parse(input.row.payload) });
   const signature = createHmac("sha256", input.destination.signing_key).update(body).digest("base64url");
@@ -143,7 +157,7 @@ export async function deliverMemoryEvent(input: {
     ? await input.fetchImpl(url, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(5_000), headers, body })
     : null;
   const received = response ? { status: response.status, body: await response.text() }
-    : await postPinnedHttps(url, addresses[0]!, headers, body);
+    : await postPinned(url, addresses[0]!, headers, body);
   const { status } = received;
   if (status >= 300 && status < 400) {
     throw new QoopiaError("FORBIDDEN", "outbox redirects are forbidden");

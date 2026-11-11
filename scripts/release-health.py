@@ -19,6 +19,10 @@ import xml.etree.ElementTree as ET
 
 UTC = datetime.timezone.utc
 CORE = ('account_service', 'first_party_events', 'github_releases', 'operations', 'owner_memory_only', 'analytics_backup')
+# GitHub stops serving release download counts for 10-30 minutes several times a week. That loses only a few
+# minutes of statistics, so these issues page the owner after an hour; every other issue stays immediate.
+SLOW = ('analytics:github_releases', 'analytics_stale:github_releases', 'unit_failed:qoopia-analytics')
+SLOW_HOLD_SECONDS = 3600
 
 
 def analytics_issues(data, now):
@@ -30,6 +34,13 @@ def analytics_issues(data, now):
         elif not row.get('finished_at') or (now - datetime.datetime.fromisoformat(row['finished_at'])).total_seconds() > 900:
             issues.append('analytics_stale:' + source)
     return issues
+
+
+def hold_slow_issues(issues, since, now):
+    """Returns (issues that page now, issues still held, first-seen time of each slow issue)."""
+    since = {i: since.get(i) or now.isoformat() for i in issues if i in SLOW}
+    held = sorted(i for i, t in since.items() if (now - datetime.datetime.fromisoformat(t)).total_seconds() < SLOW_HOLD_SECONDS)
+    return [i for i in issues if i not in held], held, since
 
 
 def expected_schema(value):
@@ -212,9 +223,10 @@ def loopback_http(url):
 
 def alert_channels(path):
     """The owner's qoopia-alert-channels/1 policy, the same file server ops alerts use (QOOPIA_OPS_CHANNELS_FILE).
-    The monitor also accepts a loopback http receiver; the server's outbox keeps refusing it."""
-    if not path or not os.path.exists(path):
+    A loopback http receiver is accepted here and, for the literal loopback address, by the server too."""
+    if not path:
         return []
+    # A path that is set but has no file is a broken configuration, not «no channel»: lstat raises and the run fails.
     info = os.lstat(path)
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 16384:
         raise ValueError('ALERT_POLICY_UNSAFE')
@@ -247,17 +259,24 @@ def deliver_alert(channels, alert):
     return False
 
 
-def invariant_issues(path):
+def invariant_issues(path, now=None, heartbeat=None, max_age_hours=2):
     """Critical alerts of the host invariant monitor (invariant_check.py) that fired and have not resolved.
-    Its JSONL stream is append-only and small; warnings stay in that stream only."""
+    Its JSONL stream is append-only and small; warnings stay in that stream only. A missing stream is an
+    issue. The stream is written only when something fires, so whether the monitor still runs is read from
+    the heartbeat it writes on every run (every 15 minutes): none for two hours means it is dead."""
     if not path:
         return []
     try:
         lines = Path(path).read_text().splitlines()
-    except FileNotFoundError:
-        return []
     except OSError:
         return ['invariant:unreadable']
+    age = 0
+    if heartbeat:
+        try:
+            beat = datetime.datetime.fromisoformat(str(json.loads(Path(heartbeat).read_text())['at']).replace('Z', '+00:00'))
+            age = ((now or datetime.datetime.now(UTC)) - (beat if beat.tzinfo else beat.replace(tzinfo=UTC))).total_seconds()
+        except (OSError, ValueError, KeyError, TypeError):
+            age = float('inf')
     active = {}
     for line in lines:
         try:
@@ -271,7 +290,8 @@ def invariant_issues(path):
         else:
             active[record.get('fingerprint')] = record.get('check')
     # Only short plain check names reach status.json and the alert text.
-    return sorted({'invariant:' + (check if isinstance(check, str) and re.fullmatch(r'[a-z0-9_]{1,40}', check) else 'unknown') for check in active.values()})
+    return sorted({'invariant:' + (check if isinstance(check, str) and re.fullmatch(r'[a-z0-9_]{1,40}', check) else 'unknown') for check in active.values()}
+                  | ({'invariant:stale'} if age > max_age_hours * 3600 else set()))
 
 
 def unit_issues(units):
@@ -357,6 +377,7 @@ def main():
     p.add_argument('--git-mirror', default='/srv/qoopia/git-mirror')
     p.add_argument('--alert-channels', default=os.environ.get('QOOPIA_OPS_CHANNELS_FILE'), help='Owner qoopia-alert-channels/1 policy that receives OK/ALERT transitions; nothing is sent when unset')
     p.add_argument('--invariant-alerts', default=os.environ.get('QOOPIA_INVARIANT_ALERTS'), help='invariant_check.py JSONL stream; active critical alerts become issues')
+    p.add_argument('--invariant-heartbeat', default=os.environ.get('QOOPIA_INVARIANT_HEARTBEAT'), help='heartbeat JSON invariant_check.py writes on every run; older than two hours is invariant:stale')
     p.add_argument('--offsite-log', default=os.environ.get('QOOPIA_OFFSITE_LOG'), help='offsite-backup.jsonl; a stale or incomplete last copy is an issue')
     p.add_argument('--units', default=os.environ.get('QOOPIA_MONITOR_UNITS', ''), help='Comma-separated systemd units whose failed state is an issue')
     a = p.parse_args()
@@ -417,18 +438,20 @@ def main():
     except (OSError, ValueError, KeyError, TypeError):
         issues.append('analytics:unreadable')
         optional = []
-    issues += invariant_issues(a.invariant_alerts) + offsite_issues(a.offsite_log, now) + unit_issues([u.strip() for u in a.units.split(',') if u.strip()])
+    issues += invariant_issues(a.invariant_alerts, now, a.invariant_heartbeat) + offsite_issues(a.offsite_log, now) + unit_issues([u.strip() for u in a.units.split(',') if u.strip()])
     disk = shutil.disk_usage(root)
     if disk.free < max(10 * 1024**3, disk.total * 0.05):
         issues.append('disk:low_space')
-    summary = ('ALERT' if issues else 'OK') + ' — public ' + a.version + (', owner preview ' + (preview['version'] if preview else 'misconfigured') + ' on ' + '/'.join(PREVIEW_SURFACES) if staged else '')
-    status = {'at': now.isoformat(), 'status': 'ALERT' if issues else 'OK', 'summary': summary, 'issues': sorted(issues), 'stages': stages, 'version': a.version, 'ios': {'version': a.ios_version, 'build': a.ios_build, 'channel': 'separate_beta'}, 'source': a.source, 'package_source': a.package_source or a.source, 'http': results, 'disk_free_bytes': disk.free, 'optional_sources': optional}
     current = root / 'status.json'
     try:
         previous = json.loads(current.read_text())
     except (OSError, ValueError):
         previous = {}
-    pending = previous.get('alert_pending')
+    issues, held, slow_since = hold_slow_issues(issues, previous.get('slow_since') or {}, now)
+    summary = ('ALERT' if issues else 'OK') + ' — public ' + a.version + (', owner preview ' + (preview['version'] if preview else 'misconfigured') + ' on ' + '/'.join(PREVIEW_SURFACES) if staged else '')
+    status = {'at': now.isoformat(), 'status': 'ALERT' if issues else 'OK', 'summary': summary, 'issues': sorted(issues), 'stages': stages, 'version': a.version, 'ios': {'version': a.ios_version, 'build': a.ios_build, 'channel': 'separate_beta'}, 'source': a.source, 'package_source': a.package_source or a.source, 'http': results, 'disk_free_bytes': disk.free, 'optional_sources': optional,
+              'held_issues': held, 'slow_since': slow_since}
+    pending, transition = previous.get('alert_pending'), None
     window = maintenance_until(root, now)
     if window:
         # The deploy window keeps the pre-deploy baseline: a problem that outlives the window still
@@ -436,16 +459,17 @@ def main():
         status.update(status='MAINTENANCE', summary='MAINTENANCE until ' + window.isoformat() + ' — ' + summary,
                       maintenance_until=window.isoformat(), maintenance_issues=status['issues'], issues=previous.get('issues', []))
     elif (previous and previous.get('alerted_issues', previous.get('issues')) != status['issues']
-          and status['issues'] not in (previous.get('issues'), previous.get('maintenance_issues'))):
+          and status['issues'] not in (previous.get('issues'), previous.get('maintenance_issues'))
+          and not (status['issues'] and previous.get('issues') and not previous.get('alerted_issues', previous.get('issues')))):
         # A change must be seen on two consecutive runs (about a minute) before it pages the owner:
         # a single network blip on one public URL used to send an ALERT and an OK a minute apart.
         # status.json keeps the real issues; only the page waits. A problem that outlived a deploy
-        # window was already seen inside it, so it pages at once.
+        # window was already seen inside it, so it pages at once. Two failing runs in a row page even
+        # when their lists differ: an outage that fails another check each minute never repeated one
+        # exact list, and the owner, last told OK, was never paged.
         status['alerted_issues'] = previous.get('alerted_issues', previous.get('issues', []))
     elif previous.get('alerted_issues', previous.get('issues')) != status['issues']:
         transition = {'at': status['at'], 'status': status['status'], 'issues': status['issues']}
-        with (root / 'transitions.jsonl').open('a') as f:
-            f.write(json.dumps(transition) + '\n')
         if previous or issues:
             # Only the latest transition is owed; an undelivered one is retried every run.
             pending = {'id': 'release-health-' + hashlib.sha256(json.dumps(transition).encode()).hexdigest()[:32],
@@ -461,6 +485,10 @@ def main():
     temp = root / 'status.tmp'
     temp.write_text(json.dumps(status, indent=2) + '\n')
     temp.replace(current)
+    if transition:
+        # After status.json: a run stopped between the two writes would log the same transition again every minute.
+        with (root / 'transitions.jsonl').open('a') as f:
+            f.write(json.dumps(transition) + '\n')
     print(json.dumps(status))
     return 1 if (issues and not window) or state in ('failed', 'policy_invalid') else 0
 

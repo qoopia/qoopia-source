@@ -34,7 +34,9 @@
     if (entry.kind === 'date') {const date=new Date(entry.value);return Number.isNaN(date.getTime())?'—':new Intl.DateTimeFormat(language,entry.options).format(date);}
     if(entry.kind === 'count'){const forms=countForms[entry.unit]?.[language==='ru'?1:0]||[entry.unit,entry.unit,entry.unit];const rule=new Intl.PluralRules(language).select(entry.value);return new Intl.NumberFormat(language).format(entry.value)+' '+forms[rule==='one'?0:rule==='few'?1:2];}
     if (entry.kind === 'relative') return new Intl.RelativeTimeFormat(language, {numeric:'auto'}).format(entry.value,entry.unit);
-    return translate(entry.source).replace(/\{(\w+)\}/g, (whole, name) => String(entry.params[name] ?? whole));
+    // A parameter may itself be a token (a date or a number inside a phrase): resolved here, the node stays bound
+    // to the whole phrase and all of it follows a language switch.
+    return resolve(translate(entry.source).replace(/\{(\w+)\}/g, (whole, name) => String(entry.params[name] ?? whole)));
   });
   const cache = new Map();
   const token = entry => {
@@ -46,7 +48,9 @@
   // Past LIMIT the oldest tokens no live node, attribute or plain message uses are dropped, down to half.
   // ponytail: a token held only in a JS string for longer than LIMIT/2 newer tokens resolves to ''; raise LIMIT if one does.
   function prune() {
-    const live = new Set(), mark = text => { for (const m of String(text).matchAll(pattern)) live.add(Number(m[1])); };
+    // A live phrase keeps the tokens in its parameters alive: they are on the page only through it.
+    const live = new Set(), mark = text => { for (const m of String(text).matchAll(pattern)) { const id = Number(m[1]); if (live.has(id)) continue;
+      live.add(id); for (const value of Object.values(messages.get(id)?.entry.params || {})) mark(value); } };
     for (const binding of bindings.values()) for (const template of binding.values()) mark(template);
     for (const value of cache.values()) mark(value);
     for (const [id, {key}] of messages) {

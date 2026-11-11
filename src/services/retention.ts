@@ -65,6 +65,9 @@ export function pruneDeliveredTransit(days = 30, now = Date.now()) {
  * session_summarize both write `summaries`). A session that skill evidence or a runtime loadout still
  * holds is left whole. Counts, ids and dates only — never message content.
  */
+/** A raw message may go only when a summary's own range holds it. «The summaries reach the last message» is not
+ * that: a session summarised from the middle on had its unsummarised start deleted with the rest [5.0.25]. */
+const SUMMARISED = `EXISTS (SELECT 1 FROM summaries su WHERE su.session_id = m.session_id AND m.id BETWEEN su.msg_start_id AND su.msg_end_id)`;
 function rawRetentionCandidates(days: number) {
   const held = [
     tableExists(db, 'skill_captures') ? `EXISTS (SELECT 1 FROM skill_captures c WHERE c.workspace_id=m.workspace_id
@@ -76,7 +79,7 @@ function rawRetentionCandidates(days: number) {
       HAVING MAX(su.msg_end_id) >= (SELECT MAX(x.id) FROM session_messages x WHERE x.session_id = su.session_id))
     SELECT m.workspace_id, m.agent_id, a.name AS agent_name, m.session_id, COUNT(*) AS messages, MIN(m.created_at) AS oldest
     FROM session_messages m JOIN covered c ON c.session_id = m.session_id LEFT JOIN agents a ON a.id = m.agent_id
-    WHERE datetime(m.created_at) < datetime('now', ?) AND NOT (${held})
+    WHERE datetime(m.created_at) < datetime('now', ?) AND ${SUMMARISED} AND NOT (${held})
     GROUP BY m.workspace_id, m.agent_id, m.session_id ORDER BY m.workspace_id, a.name, m.session_id`)
     .all(`-${days} days`) as Array<{ workspace_id: string; agent_id: string | null; agent_name: string | null; session_id: string; messages: number; oldest: string }>;
 }
@@ -107,12 +110,24 @@ export function pruneRawTranscripts(days = env.RAW_RETENTION_DAYS) {
   if (!env.RAW_RETENTION_DELETE) return { enabled: false, sessions: 0, messages_deleted: 0 };
   let sessions = 0, deleted = 0;
   const remove = db.transaction((session: string) => {
-    db.prepare(`DELETE FROM session_messages WHERE session_id = ? AND datetime(created_at) < datetime('now', ?)`).run(session, `-${days} days`);
+    db.prepare(`DELETE FROM session_messages AS m WHERE m.session_id = ? AND datetime(m.created_at) < datetime('now', ?) AND ${SUMMARISED}`).run(session, `-${days} days`);
     // F-280: changes() counts only the rows the DELETE removed, not the FTS trigger's writes.
     return (db.query("SELECT changes() AS n").get() as { n: number }).n;
   });
   for (const r of rawRetentionCandidates(days)) { deleted += remove(r.session_id); sessions++; }
   return { enabled: true, sessions, messages_deleted: deleted };
+}
+
+/** `migrate` writes a full copy of the database before every migration (pre-migrate-<time>-<names>.db) and
+ * nothing removed them: one per release with a migration, for good (eight copies, 10 GB, in production).
+ * The newest three stay. Only this user's plain files of exactly that name are removed [5.0.25]. */
+export function prunePreMigrateCopies(directory = env.BACKUP_DIR, keep = 3): number {
+  let deleted = 0;
+  for (const name of fs.readdirSync(directory).filter(f => /^pre-migrate-\d{4}-\d{2}-\d{2}T[0-9Z-]+-.+\.db$/.test(f)).sort().reverse().slice(keep)) {
+    const file = path.join(directory, name), stat = fs.lstatSync(file);
+    if (stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.uid === process.getuid?.()) { fs.unlinkSync(file); deleted++; }
+  }
+  return deleted;
 }
 
 export function runMaintenance(): { ok: boolean; report: Record<string, unknown> } {
@@ -309,6 +324,7 @@ export function runMaintenance(): { ok: boolean; report: Record<string, unknown>
         fs.rmdirSync(file);deleted++;
       }
     }
+    report.pre_migrate_deleted = prunePreMigrateCopies();
     syncDirectory(env.BACKUP_DIR);
     report.backups_kept = keep.size; report.backups_deleted = deleted;
     if (damaged.length) report.backups_damaged = damaged;

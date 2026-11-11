@@ -29,7 +29,7 @@ const localConnectionSchema=memoryConnectionSchema.extend({native_root:z.string(
 type Connection=z.infer<typeof memoryConnectionSchema>;
 type LocalConnection=z.infer<typeof localConnectionSchema>;
 type HookMessage={id:string;role:'user'|'assistant'|'tool';content:string;timestamp?:string};
-export interface ClientState {source?:'hooks';pending?:HookMessage[];hook_prompt?:{turn:string;prompt:string};hook_user_turn?:string;native_messages?:boolean;capture_error?:'CODEX_TRANSCRIPT_UNAVAILABLE';hook_fields?:string[];file:string;session:string;project:string;cursor:number;part:number;last_sync?:string;error?:string;inode?:string;owner?:{pid:number;identity:string};closed?:boolean;previous?:string;context_percent?:number;manual?:boolean;tree?:WorkTree|null;tree_report?:string}
+export interface ClientState {source?:'hooks';pending?:HookMessage[];hook_prompt?:{turn:string;prompt:string};hook_user_turn?:string;native_messages?:boolean;capture_error?:'CODEX_TRANSCRIPT_UNAVAILABLE';hook_fields?:string[];file:string;session:string;project:string;cursor:number;part:number;last_sync?:string;error?:string;inode?:string;owner?:{pid:number;identity:string};closed?:boolean;previous?:string;context_percent?:number;manual?:boolean;tree?:WorkTree|null;tree_report?:string;remote?:string}
 const quote=(value:string)=>"'"+value.replace(/'/g,"'\\''")+"'";
 function endpoint(raw:string) {
   const url=new URL(raw);
@@ -84,11 +84,13 @@ export function installMemoryClient(input:unknown,root:string,binary:string,home
   }
   const next=Buffer.from(JSON.stringify(config,null,2)+'\n');
   const mcp=planMcp(connection.runtime,connection.url,mcpTarget(connection.runtime,native,ownerHome),connection.key,previous?.key);
+  // The MCP file first: it is the one a running client may have changed since the plan, and that refusal
+  // must come before anything is written.
+  applyMcp(mcp,folder);
   if(!original?.equals(next)){
-    if(original)durableWrite(path.join(folder,'native-settings-before-'+Date.now()+'.json'),original);
+    if(original)keepBefore(folder,'settings',original);
     durableWrite(settings,next);
   }
-  applyMcp(mcp,folder);
   durableWrite(file,JSON.stringify({...connection,native_root:native}));
   // The hook's bootstrap already points at qoopia_protocol when the local copy is missing.
   let protocol;try{protocol=installAgentInstructions(native,connection.runtime);}catch(error){protocol=instructionRefusal(error);}
@@ -126,9 +128,22 @@ function planMcp(runtime:Connection['runtime'],url:string,target:string,key:stri
   if(!isDeepStrictEqual(parsed.mcp_servers??{},expected)||!isDeepStrictEqual({...parsed,mcp_servers:expected},{...config,mcp_servers:expected}))throw new Error('Native TOML edit would change unrelated settings');
   return {file,before,next};
 }
+/** The client's file as it was before Qoopia changed it. Only the three newest of a kind are kept: the MCP
+ * copy is the client's whole config, other servers' credentials included, and every link, key rotation or
+ * move to the launcher left one more for good [5.0.25]. */
+function keepBefore(folder:string,kind:'settings'|'mcp',bytes:Buffer) {
+  const prefix='native-'+kind+'-before-',stamp=(name:string)=>Number(name.slice(prefix.length,-5));
+  durableWrite(path.join(folder,prefix+Date.now()+'.json'),bytes);
+  for(const name of fs.readdirSync(folder).filter(f=>f.startsWith(prefix)&&f.endsWith('.json')).sort((a,b)=>stamp(b)-stamp(a)).slice(3))
+    fs.rmSync(path.join(folder,name),{force:true});
+}
+/** The file is written whole from what planMcp read. A running client saves its own state there all the
+ * time, so it is read again first: changed since the plan, nothing is written and the owner links again [5.0.25]. */
 function applyMcp(plan:ReturnType<typeof planMcp>,backups:string) {
   if(plan.next===null)return;
-  if(plan.before)durableWrite(path.join(backups,'native-mcp-before-'+Date.now()+'.json'),plan.before);
+  const now=fs.existsSync(plan.file)?readJsonBytes(plan.file):null;
+  if(!(now&&plan.before?now.equals(plan.before):now===plan.before))throw new Error('The client changed its MCP settings file while Qoopia was linking; nothing was written to it. Link again.');
+  if(plan.before)keepBefore(backups,'mcp',plan.before);
   durableWrite(plan.file,plan.next);
 }
 /** Before the installation launcher, memory-link wrote the binary it ran from: a bundle that a later
@@ -158,7 +173,7 @@ export function migrateMemoryHooks(root:string,binary:string) {
           h.command=command;changed=true;
         }
       if(!changed){results.push({runtime,state:'current'});continue;}
-      durableWrite(path.join(path.dirname(file),'native-settings-before-'+Date.now()+'.json'),original);
+      keepBefore(path.dirname(file),'settings',original);
       durableWrite(settings,JSON.stringify(config,null,2)+'\n');
       results.push({runtime,state:'migrated'});
     } catch(error) {results.push({runtime,state:'refused',reason:error instanceof Error?error.message:'unknown'});}
@@ -206,8 +221,8 @@ export function removeMemoryClient(root:string,runtime:Connection['runtime'],com
   const report=(state:string)=>({state,runtime,agent_id:connection.agent_id,settings:{file:settings,changed:hooksChanged},mcp:{file:mcp.file,changed:mcp.next!==null},instructions,
     next_action:'Revoke this memory agent in Qoopia if it is still active; removing the local entry does not revoke its key.'});
   if(!commit)return report('planned');
-  if(hooksChanged){durableWrite(path.join(folder,'native-settings-before-'+Date.now()+'.json'),original!);durableWrite(settings,next!);}
   applyMcp(mcp,folder);
+  if(hooksChanged){keepBefore(folder,'settings',original!);durableWrite(settings,next!);}
   // Instructions are optional here: an edited block is reported and left for instructions remove.
   if(instructions.state==='planned')try{instructions=removeAgentInstructions(native,runtime,true);}catch(error){instructions=instructionRefusal(error);}
   fs.rmSync(file);
@@ -419,7 +434,7 @@ async function syncHookMessages(connection:LocalConnection,state:ClientState,sta
   for(const m of state.pending??[]){const weight=Buffer.byteLength(JSON.stringify(m));if(messages.length&&(size+weight>PORTION_BYTES||messages.length>=40))break;messages.push(m);size+=weight;}
   // An end or a compaction is told with the last portion: told earlier, a later portion would reopen the session.
   const drained=messages.length===(state.pending?.length??0);
-  const envelope={session_id:state.session,project:state.project,runtime:connection.runtime,event:drained||event==='start'?event:'progress',
+  const envelope={session_id:state.remote??state.session,project:state.project,runtime:connection.runtime,event:drained||event==='start'?event:'progress',
     ...((event==='start'||unregistered)&&state.previous?{previous_session_id:state.previous}:{}),...(state.capture_error?{capture_error:state.capture_error}:{})};
   const probe=state.manual||unregistered?await send(connection,{...envelope,...(unregistered?{event:'start'}:{}),messages:[]},remaining()):undefined;
   const result=probe&&(probe.memory_mode==='manual'||!messages.length)?probe:await send(connection,{...envelope,messages},remaining());
@@ -433,7 +448,19 @@ async function syncHookMessages(connection:LocalConnection,state:ClientState,sta
   if(state.capture_error)state.error=state.capture_error;
   writeState(stateFile,state);return {...result,drained:state.manual||drained};
 }
+/** The server keeps a session id for the agent that sent it first and answers 404 to any other. A profile
+ * linked again to another agent would then never deliver its open sessions: the cursor stood still for good.
+ * Such a session goes on under an id of its own for this agent. The new id is kept only when the server
+ * takes it, so an address that answers 404 to everything renames nothing [5.0.25]. */
 async function syncSource(connection:LocalConnection,state:ClientState,stateFile:string,event:string,timeout=2000,extra?:DeliveryMessage) {
+  try{return await syncOnce(connection,state,stateFile,event,timeout,extra);}
+  catch(error) {
+    if(state.remote||!(error instanceof Error)||!/HTTP 404\b/.test(error.message))throw error;
+    state.remote=(state.session+'@'+connection.agent_id).slice(0,200);
+    try{return await syncOnce(connection,state,stateFile,event,timeout,extra);}catch{delete state.remote;throw error;}
+  }
+}
+async function syncOnce(connection:LocalConnection,state:ClientState,stateFile:string,event:string,timeout:number,extra?:DeliveryMessage) {
   if(state.source==='hooks') {
     if(extra&&state.tree_report!==extra.id){(state.pending??=[]).push(extra);state.tree_report=extra.id;}
     return syncHookMessages(connection,state,stateFile,event,timeout);
@@ -453,8 +480,12 @@ async function syncSource(connection:LocalConnection,state:ClientState,stateFile
     const messages:ReturnType<typeof transcriptMessages>=[];let size=0;
     // A record over the limit (pasted screenshots, a huge tool result) is passed over with a marker,
     // so the gap is visible in memory. Holding the cursor on it would stop capture for the session.
+    // Over the limit and still without its line break: the record is being written. It waits for its end like
+    // any half-written last line; asked again at once it cost a thousand empty requests per hook.
+    let unfinished=false;
     if(end<0&&n===RECORD_LIMIT) {
       const next=nextNewline(fd,state.cursor+n,actual.size);
+      unfinished=next<0;
       if(next>=0){end=next-state.cursor;cursor=next+1;part=0;
         messages.push({id:'oversized:'+state.cursor,role:'tool',content:`[A transcript record of ${Math.ceil((end+1)/1048576)} MiB exceeded the ${RECORD_LIMIT/1048576} MiB capture limit and was not saved; it remains only in the local transcript.]`});}
     }
@@ -474,13 +505,13 @@ async function syncSource(connection:LocalConnection,state:ClientState,stateFile
     }
     if(extra&&state.tree_report!==extra.id&&messages.length<40&&size+Buffer.byteLength(JSON.stringify(extra))<=PORTION_BYTES)messages.push(extra);
     // Every complete line up to the end of the file is in this portion (a half-written last line waits for its end).
-    const drained=part===0&&cursor===state.cursor+end+1&&state.cursor+n>=actual.size&&(!extra||state.tree_report===extra.id||messages.includes(extra));
+    const drained=part===0&&cursor===state.cursor+end+1&&(unfinished||state.cursor+n>=actual.size)&&(!extra||state.tree_report===extra.id||messages.includes(extra));
     // «Only on request»: once the server has said manual, ask before sending anything. While it
     // stays manual the conversation does not leave this computer, and the bytes passed over here
     // are never sent later — a return to auto continues from the current position.
     // The timeout is the whole call's: in manual the probe and the send share it, inside the vendor's budget [A7-01].
     const deadline=Date.now()+timeout,remaining=()=>Math.max(250,deadline-Date.now());
-    const envelope={session_id:state.session,project:state.project,runtime:connection.runtime,event:drained||event==='start'?event:'progress'};
+    const envelope={session_id:state.remote??state.session,project:state.project,runtime:connection.runtime,event:drained||event==='start'?event:'progress'};
     const probe=state.manual?await send(connection,{...envelope,messages:[]},remaining()):undefined;
     const result=probe?.memory_mode==='manual'?probe:await send(connection,{...envelope,messages,...(state.context_percent!==undefined?{context_percent:state.context_percent}:{}),...(event==='start'&&state.previous?{previous_session_id:state.previous}:{})},remaining());
     state.manual=result.memory_mode==='manual';
@@ -677,7 +708,8 @@ export async function memoryServerAnswers(root:string,probe:(url:string)=>Promis
 }
 /** Read-only, per linked runtime: whether hooks still deliver, from the local cursor files and the client's
  * own settings, so the owner sees a broken client without the server. A failure counts only when it is
- * newer than the last successful delivery: an old error on an abandoned transcript is not an outage. A
+ * newer than the last successful delivery, or is a refusal of a session whose turns still wait: an old
+ * error on an abandoned transcript is not an outage. A
  * transcript the vendor deleted is stale and one from another profile is foreign; neither is failing. */
 export function memoryClientHealth(root:string,home=os.homedir(),answers:Record<string,boolean>={}) {
   return (['claude_code','codex'] as const).flatMap(runtime=>{
@@ -686,7 +718,7 @@ export function memoryClientHealth(root:string,home=os.homedir(),answers:Record<
     if(!fs.existsSync(file))return [];
     const connection=localConnectionSchema.parse(readJson(file));
     let sourceFailure=false,sessions=0,stale=0,foreign=0,delivered=0,ran=0;
-    const errors:{mtime:number;code:keyof typeof FAILURES}[]=[];
+    const errors:{mtime:number;code:keyof typeof FAILURES;standing:boolean}[]=[];
     for(const name of fs.existsSync(cursors)?fs.readdirSync(cursors).filter(f=>f.endsWith('.json')):[]) {
       let state:ClientState,mtime:number;
       try{state=readJson(path.join(cursors,name)) as ClientState;mtime=fs.statSync(path.join(cursors,name)).mtimeMs;}catch{continue;}
@@ -696,10 +728,13 @@ export function memoryClientHealth(root:string,home=os.homedir(),answers:Record<
       const code=failureCode(state.error);
       if(code==='FOREIGN_PROFILE')foreign++;
       else if(state.source!=='hooks'&&code==='TRANSCRIPT_UNREADABLE'&&!fs.existsSync(state.file))stale++;
-      else errors.push({mtime,code});
+      // A refusal of one session, with its turns still waiting here, stays a failure however many other
+      // sessions deliver after it: counted against their deliveries it read as «no repair needed» [5.0.25].
+      else errors.push({mtime,code,standing:['KEY_REJECTED','REFUSED','WRONG_ADDRESS'].includes(code)&&hasBacklog(state,connection)});
     }
-    const current=errors.filter(e=>e.mtime>delivered).sort((a,b)=>b.mtime-a.mtime);
+    const current=errors.filter(e=>e.mtime>delivered||e.standing).sort((a,b)=>b.mtime-a.mtime);
     let code:keyof typeof FAILURES|keyof typeof HEALTH_ACTIONS|undefined=current[0]?.code,failed=current[0]?.mtime??0;
+    const standing=!!current[0]?.standing;
     // Every hook run writes its cursor. A hooks.json newer than all of them (a link, or the move onto the
     // launcher at start) is one Codex has not run: it waits for the owner to trust the new command.
     const hooksAt=runtime==='codex'?fs.statSync(path.join(connection.native_root,'hooks.json'),{throwIfNoEntry:false})?.mtimeMs??0:0;
@@ -712,7 +747,7 @@ export function memoryClientHealth(root:string,home=os.homedir(),answers:Record<
     if(answered===false&&!sourceFailure&&(!code||code==='SERVER_UNAVAILABLE')){code='SERVER_UNAVAILABLE';failed=Math.max(failed,Date.now());}
     const installed=hookInstall(connection,file),mcp=mcpEntry(connection,home);
     if(installed.events<MEMORY_EVENTS.length)code='HOOKS_MISSING';else if(!installed.binary)code='HOOK_BINARY_MISSING';
-    const broken=sourceFailure||code==='HOOKS_MISSING'||code==='HOOK_BINARY_MISSING'||!!code&&failed>delivered;
+    const broken=sourceFailure||code==='HOOKS_MISSING'||code==='HOOK_BINARY_MISSING'||!!code&&(failed>delivered||standing);
     const backlog=deliveryBacklog(cursors),behind=backlog.sessions>0&&(backlog.minutes_behind>=BACKLOG_WARN_MINUTES||lagging);
     const warning=broken?undefined:behind?'CATCHING_UP':mcp==='missing'?'MCP_ENTRY_MISSING':mcp==='changed'?'MCP_ENTRY_CHANGED':foreign?'FOREIGN_PROFILE':undefined;
     const reason=broken?code!:warning??(sessions?'DELIVERING':'NO_SESSION_YET'),actions:Record<string,string>={...FAILURES,...HEALTH_ACTIONS,
@@ -741,7 +776,7 @@ export const HERMES_FAILURES={
 } as const;
 export type HermesFailure=keyof typeof HERMES_FAILURES;
 export interface HermesSyncState {format:'qoopia-hermes-sync/1';home:string;agent_id:string;session_prefix:string;cursor:number;part:number;
-  source_max_id:number;delivered:number;manual?:boolean;last_attempt_at:string;last_success_at?:string;last_delivery_at?:string;error?:{code:HermesFailure;at:string}}
+  source_max_id:number;delivered:number;manual?:boolean;renamed?:string[];last_attempt_at:string;last_success_at?:string;last_delivery_at?:string;error?:{code:HermesFailure;at:string}}
 /** Read-only, per Hermes home: whether its timer still runs and delivers, from the state files alone.
  * Agent ids, counts and codes only: no paths, so support previews can carry it. */
 export function hermesSyncHealth(root:string,now=Date.now()) {
@@ -918,7 +953,7 @@ async function captureHook(file:string,input:unknown) {
       // sessions start meanwhile. This project first (its predecessor must be on the server before the
       // restore), then any other: a tail left by an outage in a project never opened again is still sent.
       // Oldest first, at most 3 sends, and only while the session's own restore keeps 1.5 s of the
-      // budget. The first delivery failure ends catch-up: a server that refused or hung once will again.
+      // budget. A server that does not answer ends catch-up: it would hang again for the next tail.
       const backlog=[...files].reverse().map(f=>({file:f.file,state:read(f.file)})).filter(c=>c.state&&hasBacklog(c.state,connection));
       let sent=0,down=false;
       for(const {file:previousFile} of [...backlog.filter(c=>c.state!.project===hook.cwd),...backlog.filter(c=>c.state!.project!==hook.cwd)]) {
@@ -933,7 +968,9 @@ async function captureHook(file:string,input:unknown) {
           // Recorded once: rewriting an unchanged error would only churn the file.
           const message=error instanceof Error?error.message:'Sync unavailable';
           if(previous.error!==message){previous.error=message;writeState(previousFile,previous);}
-          unreachable=!['TRANSCRIPT_UNREADABLE','FOREIGN_PROFILE'].includes(failureCode(message));
+          // A server that does not answer, or refuses the key, will again for the next tail. A refusal of this
+          // one session says nothing about the others: they still go out.
+          unreachable=['SERVER_UNAVAILABLE','KEY_REJECTED'].includes(failureCode(message));
           if(unreachable)tripBreaker(folder,message);
         } finally{release();}
         if(unreachable){down=true;break;}

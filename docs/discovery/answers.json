@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "reviewed_date": "2026-10-14",
-  "review_again_by": "2026-11-14",
-  "source_sha": "f9a554ed3589f33d44740f3e99d04fa3ca8d7c20",
+  "reviewed_date": "2026-11-10",
+  "review_again_by": "2026-12-10",
+  "source_sha": "6154c7369effb2917643f7e0543b0f5f8ab4219b",
   "summary": {
     "en": "When Qoopia helps, what installation needs and where your data lives: reviewed answers for people and AI assistants evaluating Qoopia.",
     "ru": "Когда Qoopia полезна, что нужно для установки и где хранятся данные: проверенные ответы для людей и ИИ-ассистентов."
@@ -164,15 +164,16 @@
       "id": "messages",
       "en": {
         "question": "What is AgentComm?",
-        "answer": "AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard. Since 5.0.20 a message can also wake a Claude Code or Codex agent through qoopia wake-runner. Its operator configures this on a server (Docker) installation; the Mac and Linux packages do not offer it yet."
+        "answer": "AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard. Since 5.0.20 a message can also wake a Claude Code or Codex agent through qoopia wake-runner. The runner ships in the same qoopia binary as the Mac app and the Linux package; you set it up once on the computer where the agent runs, as a LaunchAgent or systemd user service, and the Qoopia server must be able to reach it."
       },
       "ru": {
         "question": "Что такое AgentComm?",
-        "answer": "AgentComm сохраняет обмен сообщениями между авторизованными агентами в системе. Пользователь может посмотреть общение, а не полагаться только на финальный пересказ агента. Отправка сообщения не доказывает, что адресат его прочитал или выполнил; агенты и каналы доставки должны быть подключены и работать. Обмен можно просматривать в дашборде. С версии 5.0.20 сообщение может разбудить агента Claude Code или Codex через qoopia wake-runner. Это настраивает оператор серверной (Docker) установки; пакеты для Mac и Linux пока этого не дают."
+        "answer": "AgentComm сохраняет обмен сообщениями между авторизованными агентами в системе. Пользователь может посмотреть общение, а не полагаться только на финальный пересказ агента. Отправка сообщения не доказывает, что адресат его прочитал или выполнил; агенты и каналы доставки должны быть подключены и работать. Обмен можно просматривать в дашборде. С версии 5.0.20 сообщение может разбудить агента Claude Code или Codex через qoopia wake-runner. wake-runner входит в тот же файл qoopia, что приложение для Mac и пакет для Linux; его один раз настраивают на компьютере, где работает агент, как LaunchAgent или пользовательскую службу systemd, и сервер Qoopia должен до него доставать."
       },
       "sources": [
         "src/agent-kit/qoopia-protocol.md",
-        "src/services/agent-wake.ts"
+        "src/services/agent-wake.ts",
+        "src/delivery/wake-runner.ts"
       ]
     },
     {
@@ -189,6 +190,70 @@
         "src/agent-kit/OPERATIONS.md",
         "src/agent-kit/MCP-CONNECTIONS.md",
         "LICENSE"
+      ]
+    },
+    {
+      "id": "canon",
+      "en": {
+        "question": "What are canons and night review?",
+        "answer": "Canons are short rules that Qoopia adds to an agent’s context by itself. A canon applies to the whole workspace, to one agent or to one project. Always-on canons load at session start; contextual ones are added to a prompt when its words, files, tools or project match. Clients without Qoopia hooks ask for matching canons with canon_match. The steward and the owner write workspace and project canons; an agent can write canons for itself. The dashboard Canon page shows canons and lets you retire one. The owner can appoint one agent for night review: it reads the workspace’s conversations and may propose new canons, and a proposal becomes a canon only after the owner accepts it in Overview."
+      },
+      "ru": {
+        "question": "Что такое каноны и ночной разбор?",
+        "answer": "Каноны — короткие правила, которые Qoopia сама добавляет в контекст агента. Канон действует на всё пространство, на одного агента или на один проект. Постоянные каноны загружаются в начале сессии, контекстные — добавляются к запросу, когда совпадают его слова, файлы, инструменты или проект. Клиенты без хуков Qoopia запрашивают подходящие каноны через canon_match. Каноны пространства и проектов пишут управляющий агент и владелец; агент может написать каноны для себя. Страница «Канон» в дашборде показывает каноны и позволяет снять ненужный. Владелец может назначить одного агента для ночного разбора: он читает разговоры пространства и может предлагать новые каноны, а предложение становится каноном только после того, как владелец примет его в «Обзоре»."
+      },
+      "sources": [
+        "src/services/canon.ts",
+        "src/mcp/canon-tools.ts",
+        "src/services/canon-proposals.ts"
+      ]
+    },
+    {
+      "id": "handoff",
+      "en": {
+        "question": "Can work pass between Claude Code and Codex?",
+        "answer": "Yes, between agents of the same owner. When a Claude Code or Codex session with Qoopia session memory opens a project, it receives the latest work another of that owner’s agents did there in the last seven days: open work marks, the final answer, the working summary, changed files with their content digests, tool errors and the last requests. It is given as history, not as instructions, and only when shared context is on. Clients without hooks call work_handoff. An agent can mark a topic as taken with work_take; the mark expires by itself and locks nothing."
+      },
+      "ru": {
+        "question": "Может ли работа переходить между Claude Code и Codex?",
+        "answer": "Да, между агентами одного владельца. Когда сессия Claude Code или Codex с памятью сессий Qoopia открывает проект, она получает последнюю работу, которую другой агент этого владельца сделал там за последние семь дней: открытые отметки «взято», итоговый ответ, рабочую сводку, изменённые файлы с отпечатками содержимого, ошибки инструментов и последние запросы. Это передаётся как история, а не как инструкции, и только при включённом общем контексте. Клиенты без хуков вызывают work_handoff. Агент может отметить тему как взятую через work_take; отметка истекает сама и ничего не блокирует."
+      },
+      "sources": [
+        "src/services/continuity.ts",
+        "src/services/work.ts",
+        "src/mcp/work-tools.ts"
+      ]
+    },
+    {
+      "id": "tools",
+      "en": {
+        "question": "Which tools does an agent see when it connects?",
+        "answer": "Since 5.0.24 a direct MCP client sees eight core tools: recall, note_get, note_create, agent_inbox, agent_send, qoopia_guide, tool_search and qoopia_execute, plus qoopia_protocol for older connections. tool_search finds any other tool by name or topic and returns its schema. qoopia_execute runs a short read-only script in an isolated QuickJS sandbox with the caller’s permissions, so several searches and reads take one call. It cannot write, does not use the model, and is limited to 10 seconds, 50 tool calls and 20 KB of output. Writes stay separate calls."
+      },
+      "ru": {
+        "question": "Какие инструменты видит агент при подключении?",
+        "answer": "С версии 5.0.24 MCP-клиент видит восемь основных инструментов: recall, note_get, note_create, agent_inbox, agent_send, qoopia_guide, tool_search и qoopia_execute, а для старых подключений ещё qoopia_protocol. tool_search находит любой другой инструмент по имени или теме и возвращает его схему. qoopia_execute выполняет короткий скрипт только для чтения в изолированной песочнице QuickJS с правами вызывающего агента, так что несколько поисков и чтений занимают один вызов. Писать он не может, модель не использует и ограничен 10 секундами, 50 вызовами инструментов и 20 КБ вывода. Запись остаётся отдельными вызовами."
+      },
+      "sources": [
+        "src/mcp/surface.ts",
+        "src/mcp/code-mode.ts",
+        "docs/operations/mcp-tool-surface.md"
+      ]
+    },
+    {
+      "id": "search",
+      "en": {
+        "question": "Does search need a model or a reranker?",
+        "answer": "No. recall combines full-text search with local embeddings that ship with Qoopia and answers without a model by default. An agent can pass judge: true to have the workspace’s model subscription expand the query and judge the candidates within a time budget. A server operator can also configure an optional, older reranker service; it is off by default, and if it fails or times out, results keep their original order."
+      },
+      "ru": {
+        "question": "Нужны ли поиску модель или реранкер?",
+        "answer": "Нет. recall сочетает полнотекстовый поиск с локальными эмбеддингами, которые входят в Qoopia, и по умолчанию отвечает без модели. Агент может передать judge: true, чтобы подписка пространства на модель расширила запрос и оценила найденное в пределах времени. Оператор сервера может также настроить необязательный старый сервис реранкинга; по умолчанию он выключен, а если он ошибается или не успевает, результаты сохраняют исходный порядок."
+      },
+      "sources": [
+        "docs/MEMORY-V1.md",
+        "src/services/recall/config.ts",
+        "src/mcp/tools.ts"
       ]
     }
   ]

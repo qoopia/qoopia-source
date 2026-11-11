@@ -204,3 +204,17 @@ test('a prepared save survives a restart for its 24 hours, in a private file and
   expireSaveRequests(Date.now()+SAVE_REQUEST_TTL_MS+1);
   expect(restarted()).not.toContain(later);
 });
+
+test('file_put is a door into memory too: a manual agent saves no file, and no request is held for one [X7]',async()=>{
+  setMemoryPolicy({workspace_id:workspace,agent_id:agent,mode:'manual',actor_id:owner});
+  const put=findTool('file_put')!,args={filename:'talk.md',content:'Синтетика: стенограмма разговора файлом.'};
+  const files=()=>(db.query('SELECT COUNT(*) AS n FROM files WHERE workspace_id=?').get(workspace) as {n:number}).n;
+  const waiting=listSaveRequests(workspace,owner,agent).length;
+  await expect((async()=>put.handler(args,auth(agent)))()).rejects.toMatchObject({code:'APPROVAL_REQUIRED'});
+  await expect((async()=>put.handler({...args,append:true},auth(agent)))()).rejects.toMatchObject({code:'APPROVAL_REQUIRED'});
+  expect(files()).toBe(0);
+  // A file cannot wait for the owner like a note: the refusal is plain.
+  expect(listSaveRequests(workspace,owner,agent)).toHaveLength(waiting);
+  setMemoryPolicy({workspace_id:workspace,agent_id:agent,mode:'auto',actor_id:owner});
+  expect((await put.handler(args,auth(agent)) as any).filename).toBe('talk.md');
+});

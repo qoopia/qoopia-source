@@ -11,6 +11,7 @@ import {attemptCounter,deviceCodes} from './device-code.ts';
 import { hash, randomToken } from '../utils/fs.ts';
 import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
 import { parseCookies } from '../utils/cookies.ts';
+import { limitKey } from '../utils/rate-limit.ts';
 
 const sessionName='__Host-qoopia_profile',pendingName='__Host-qoopia_profile_pending';
 /** One sign-in per device: a profile session lasts a year and every visit renews it. */
@@ -140,7 +141,7 @@ export function profilePortal(db:Database,origin:string,page:Page,call:Call,reco
       if(!account)return json(401,{error:'SIGN_IN_REQUIRED'});
       if(url.pathname==='/profile/device/lookup'||url.pathname==='/profile/device/approve'||url.pathname==='/profile/device/deny'){
         // Guessing codes costs attempts per account and per network; an explicit approve follows a lookup.
-        if(!attempt('account:'+account.id,10,3_600_000)||!attempt('ip:'+ip,20,3_600_000))return json(429,{error:'TOO_MANY_ATTEMPTS'});
+        if(!attempt('account:'+account.id,10,3_600_000)||!attempt('ip:'+limitKey(ip),20,3_600_000))return json(429,{error:'TOO_MANY_ATTEMPTS'});
         if(url.pathname==='/profile/device/lookup'){
           const flow=codes.find(body.code);if(!flow)return json(410,{error:'CODE_EXPIRED'});
           return json(200,{label:flow.label,network:flow.network,adds_device:!!flow.adds_device,requested_at:new Date(flow.created).toISOString(),expires_at:new Date(flow.expires).toISOString()});

@@ -114,6 +114,10 @@ export const env = {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
+  // Cloudflare writes CF-Connecting-IP itself, so behind its tunnel a trusted proxy peer may name the
+  // client with it (the default, as deployed). Any other proxy passes that header on as the client
+  // sent it: behind one set TRUST_CF_CONNECTING_IP=false and the address comes from X-Forwarded-For.
+  TRUST_CF_CONNECTING_IP: (process.env.TRUST_CF_CONNECTING_IP ?? "true") === "true",
 };
 
 if (!env.OAUTH_ISSUER) env.OAUTH_ISSUER = env.PUBLIC_URL;

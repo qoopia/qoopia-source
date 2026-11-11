@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { db } from "../db/connection.ts";
 import { QoopiaError } from "../utils/errors.ts";
+import { redactSecretSpans } from "../utils/secret-guard.ts";
 import { agentReply } from "./agent-comm.ts";
 import { boundRuntimeSecret } from "./agent-wake.ts";
 
@@ -63,6 +64,9 @@ export function wakeReply(raw: Buffer, headers: Record<string, string | string[]
     `SELECT id, session_id, sender_agent_id FROM agent_comm_messages WHERE id = ? AND recipient_agent_id = ?`,
   ).get(parsed.reply_to_message_id, agent.id) as { id: string; session_id: string; sender_agent_id: string } | null;
   if (!message) return { status: 404, body: { error: "not_found", error_description: "No such message to this agent" } };
+  // The body is what the runtime said, not a deliberate write. A secret-shaped span in it is cut out and the
+  // rest delivered: refused whole (400), the runner dropped the answer and the sender heard nothing [5.0.25].
+  const labels = new Set<string>(), body = redactSecretSpans(parsed.body, labels);
   try {
     const sent = agentReply({
       workspace_id: agent.workspace_id,
@@ -70,9 +74,9 @@ export function wakeReply(raw: Buffer, headers: Record<string, string | string[]
       session_id: message.session_id,
       to_agent: message.sender_agent_id,
       reply_to_message_id: message.id,
-      body: parsed.body,
+      body,
       idempotency_key: parsed.idempotency_key,
-      metadata: { ...parsed.metadata, via: "wake-runner" },
+      metadata: { ...parsed.metadata, via: "wake-runner", ...(labels.size ? { redacted: [...labels] } : {}) },
     });
     return { status: 200, body: sent };
   } catch (error) {

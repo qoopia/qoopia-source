@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { readBoundedText } from "../utils/http-json.ts";
+import { redactMemory } from "../utils/secret-guard.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -52,26 +53,13 @@ const DIALOGUE_TOOL_WHITELIST = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// Secret patterns — extracted text matching any of these is skipped entirely.
-// We use known-prefix patterns to minimise false positives (no generic base64).
-// The server has a second layer (assertNoSecrets), so we stay conservative here.
+// Secrets. A turn with something secret-shaped in it (`password=...`, a bearer token) used to be dropped
+// whole by patterns of this file's own, so the conversation lost the turn. Since 5.0.23 the server cuts
+// the secret out and keeps the turn; the same shared redaction runs here first, as in the Claude Code and
+// Codex hooks, so the secret does not leave this computer and the turn is still saved [5.0.25].
 // ---------------------------------------------------------------------------
 
-const SENSITIVE_PATTERNS: RegExp[] = [
-  /\bq_[A-Za-z0-9_-]{30,}/,          // Qoopia API keys
-  /\bqcs_[A-Za-z0-9_-]{30,}/,        // Qoopia client secrets
-  /\bsk-ant-[A-Za-z0-9_-]{30,}/,     // Anthropic API keys
-  /Bearer\s+[A-Za-z0-9_\-.]{20,}/i,   // Generic bearer tokens
-  /\bghp_[A-Za-z0-9]{30,}/,           // GitHub PATs
-  /\bAIza[A-Za-z0-9_-]{30,}/,        // Google API keys
-  /api[_-]?key\s*[:=]\s*\S{20,}/i,   // Generic api_key = ...
-  /password\s*[:=]\s*\S{8,}/i,        // Generic password = ...
-  /secret\s*[:=]\s*\S{20,}/i,         // Generic secret = ...
-];
-
-function containsSecret(text: string): boolean {
-  return SENSITIVE_PATTERNS.some((re) => re.test(text));
-}
+const withoutSecrets = (text: string) => redactMemory(text).text;
 
 // ---------------------------------------------------------------------------
 // Channel XML parser — extracts inner text + metadata from Telegram channel tags.
@@ -324,17 +312,9 @@ export function extractText(raw: string): ExtractResult | null {
     if (trimmed.startsWith("<channel ")) {
       const parsed = parseChannelText(trimmed);
       if (!parsed.text) return null;
-      if (containsSecret(parsed.text)) {
-        console.warn(`[tailer] skip ${uuid}: potential secret detected in channel text`);
-        return null;
-      }
-      return { role, text: parsed.text, metadata: parsed.metadata, entry, source: "channel" };
+      return { role, text: withoutSecrets(parsed.text), metadata: parsed.metadata, entry, source: "channel" };
     }
-    if (containsSecret(trimmed)) {
-      console.warn(`[tailer] skip ${uuid}: potential secret detected`);
-      return null;
-    }
-    return { role, text: trimmed, metadata: {}, entry, source: "text" };
+    return { role, text: withoutSecrets(trimmed), metadata: {}, entry, source: "text" };
   }
 
   if (!Array.isArray(content)) return null;
@@ -361,13 +341,9 @@ export function extractText(raw: string): ExtractResult | null {
   if (textParts.length > 0) {
     const text = textParts.join("\n").trim();
     if (!text) return null;
-    if (containsSecret(text)) {
-      console.warn(`[tailer] skip ${uuid}: potential secret detected`);
-      return null;
-    }
     return {
       role,
-      text,
+      text: withoutSecrets(text),
       metadata: hasChannel ? channelMeta : {},
       entry,
       source: hasChannel ? "channel" : "text",
@@ -382,13 +358,9 @@ export function extractText(raw: string): ExtractResult | null {
       const inputText = block.input?.text;
       if (typeof inputText !== "string" || !inputText.trim()) continue;
       const text = inputText.trim();
-      if (containsSecret(text)) {
-        console.warn(`[tailer] skip ${uuid}: potential secret in tool_use.input.text`);
-        return null;
-      }
       return {
         role,
-        text,
+        text: withoutSecrets(text),
         metadata: { tool: block.name },
         entry,
         source: "tool_use",

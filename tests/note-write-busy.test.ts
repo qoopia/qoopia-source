@@ -18,6 +18,7 @@ import { createAgent } from "../src/admin/agents.ts";
 
 let WS = "", AGENT = "";
 const notes = path.resolve(import.meta.dir, "../src/services/notes.ts");
+const sessions = path.resolve(import.meta.dir, "../src/services/sessions.ts"), continuity = path.resolve(import.meta.dir, "../src/services/continuity.ts");
 
 beforeAll(() => {
   runMigrations();
@@ -33,6 +34,8 @@ async function writeBehindForeignLock(write: string): Promise<string> {
   lock.query("UPDATE workspaces SET updated_at = updated_at WHERE id = ?").run(WS);
   const child = Bun.spawn([process.execPath, "-e", `
     const { createNote, updateNote, deleteNote } = await import(${JSON.stringify(notes)});
+    const { saveMessage, saveTurn, sessionSummarize } = await import(${JSON.stringify(sessions)});
+    const { continuityEvent } = await import(${JSON.stringify(continuity)});
     const WS = ${JSON.stringify(WS)}, AGENT = ${JSON.stringify(AGENT)};
     console.log(JSON.stringify(${write}));
   `], { env: process.env, stdout: "pipe", stderr: "pipe" });
@@ -51,3 +54,15 @@ test("note create, update and delete wait for a foreign writer instead of failin
   await writeBehindForeignLock(`updateNote({ workspace_id: WS, agent_id: AGENT, is_admin: false, id: ${JSON.stringify(id)}, text: "updated behind a foreign lock" }) && true`);
   await writeBehindForeignLock(`deleteNote(WS, AGENT, ${JSON.stringify(id)}, false) && true`);
 }, 30_000);
+
+// 5.0.25: the nightly maintenance is a second process writing to the same database. A session write that met
+// its lock failed at once, and the memory hook got «Continuity request refused» instead of waiting.
+test("session turns, hook deliveries and summaries wait for a foreign writer instead of failing BUSY", async () => {
+  const first = JSON.parse(await writeBehindForeignLock(`saveMessage({ workspace_id: WS, agent_id: AGENT, session_id: "busy-session", role: "user", content: "a turn behind a foreign lock" })`)) as { id: number };
+  expect(first.id).toBeGreaterThan(0);
+  await writeBehindForeignLock(`saveTurn({ workspace_id: WS, agent_id: AGENT, session_id: "busy-session", user: "question", assistant: "answer" }) && true`);
+  const hook = JSON.parse(await writeBehindForeignLock(`continuityEvent(WS, AGENT, { session_id: "claude_code:busy-hook", project: "/busy", runtime: "claude_code", event: "progress",
+    messages: [{ id: "busy-1", role: "user", content: "a hook turn behind a foreign lock" }] })`)) as { accepted: string[] };
+  expect(hook.accepted).toEqual(["busy-1"]);
+  await writeBehindForeignLock(`sessionSummarize({ workspace_id: WS, agent_id: AGENT, session_id: "busy-session", content: "summary behind a foreign lock", msg_start_id: ${first.id}, msg_end_id: ${first.id} }) && true`);
+}, 60_000);

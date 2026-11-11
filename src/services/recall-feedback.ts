@@ -68,7 +68,9 @@ export function recordRecallFeedback(input: {
     if (existing) {
       if (
         existing.note_id !== input.note_id ||
-        existing.trace_id !== (input.trace_id ?? null) ||
+        // Trace retention keeps the feedback and clears its trace reference: a stored NULL says nothing
+        // about the trace the feedback came with, so a late retry is the same feedback, not a conflict [5.0.25].
+        (existing.trace_id !== null && existing.trace_id !== (input.trace_id ?? null)) ||
         existing.feedback !== input.feedback ||
         existing.reason_code !== (input.reason_code ?? null) ||
         existing.reason_text !== (input.reason_text ?? null)

@@ -808,9 +808,9 @@ body{padding-top:env(safe-area-inset-top)}.sidebar{padding-left:env(safe-area-in
 .chip-reset{border:0;font-family:inherit}
 .file-picker-hidden{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 
-.canon-list{list-style:none;padding:0;margin:16px 0;max-width:72ch}
+.canon-list{list-style:none;padding:0;margin:16px 0;max-width:72ch;border-top:1px solid var(--border)}
 .canon-item{padding:12px 0;border-bottom:1px solid var(--border)}
-.canon-text{margin:0 0 6px;overflow-wrap:anywhere}
-.canon-item .meta{margin:4px 0}
+.canon-text{margin:0 0 6px;font-size:var(--qoopia-type-body);color:var(--text);line-height:1.5;overflow-wrap:anywhere}
+.canon-item .meta{margin:4px 0;font-size:var(--qoopia-type-metadata);color:var(--text3)}
 .canon-item [data-retire]{margin-top:6px}
 #canonProposals{margin:24px 0;max-width:72ch}

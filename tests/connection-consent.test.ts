@@ -160,9 +160,12 @@ test('remote owner consent binds browser, account and exact client; real finaliz
     edge.close();
     expect(emails.filter(e=>e.includes('https://'))).toHaveLength(1);
 
-    const wrong=make(),stranger=await session(wrong);
-    await stranger.post('start',{method:'email',email:'stranger@example.test'});await confirm();
-    expect((await stranger.post('check')).html).toContain('WRONG_ACCOUNT');await stranger.get();
+    // A4: only the owner's address is mailed. Any other gets the same page and waits, so a visitor of the
+    // consent page can neither spend sign-in e-mails on strangers nor learn which address is the owner's.
+    const wrong=make(),stranger=await session(wrong),mailed=emails.length;
+    const decoy=await stranger.post('start',{method:'email',email:'stranger@example.test'});
+    expect(decoy.result.status).toBe(200);expect(decoy.html).toContain('Open the link from the email on this device');expect(emails).toHaveLength(mailed);
+    expect((await stranger.post('check')).html).toContain('Not confirmed yet');
     expect((await stranger.post('approve')).result.status).toBe(403);expect(getConsentTicket(wrong.ticket.id)!.approved_by_agent_id).toBeNull();
 
     const drift=make(),changed=await session(drift);
@@ -178,6 +181,12 @@ test('remote owner consent binds browser, account and exact client; real finaliz
 
     // Restart is an independent fault scenario, not a test of the broker's already-covered email quota.
     registry.run('DELETE FROM login_limits');
+    // A confirmed sign-in that is no longer the linked account is still refused at the check.
+    const moved=make(),late=await session(moved);
+    await late.post('start',{method:'email',email:binding.email});await confirm();
+    durableWrite(bindingFile,JSON.stringify({...binding,email:'replacement@example.test'}));
+    expect((await late.post('check')).html).toContain('WRONG_ACCOUNT');
+    durableWrite(bindingFile,JSON.stringify(binding));
     const restart=make(),interrupted=await session(restart);
     await interrupted.post('start',{method:'email',email:binding.email});handler=remoteConnectionConsent(root,db,network,loginOrigin);
     expect((await interrupted.post('check')).result.status).toBe(403);

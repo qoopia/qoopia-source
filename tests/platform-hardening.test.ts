@@ -6,6 +6,7 @@ import { runMigrations } from "../src/db/migrate.ts";
 import { startHttpServer } from "../src/http.ts";
 import { env, isTrustedProxy } from "../src/utils/env.ts";
 import { isHttps, SESSION_TTL_SEC, signSession, verifySession } from "../src/dashboard-session.ts";
+import { getClientIp } from "../src/http/respond.ts";
 
 let server: Server, base = "";
 const saved = { trust: env.TRUST_PROXY, proxies: env.TRUSTED_PROXIES, login: process.env.QOOPIA_OWNER_LOGIN };
@@ -36,6 +37,33 @@ test("A3-02: TRUSTED_PROXIES accepts a CIDR range, so a docker-bridge tunnel cou
     env.TRUST_PROXY = false;
     expect(isTrustedProxy("172.18.0.3")).toBe(false);
   } finally {
+    env.TRUST_PROXY = saved.trust;
+    env.TRUSTED_PROXIES = saved.proxies;
+  }
+});
+
+test("A5: the client address comes from the hop a trusted proxy added, never from a header the client wrote", () => {
+  const ip = (remoteAddress: string, headers: Record<string, string> = {}) => getClientIp({ socket: { remoteAddress }, headers } as unknown as IncomingMessage);
+  const cf = env.TRUST_CF_CONNECTING_IP;
+  env.TRUST_PROXY = true;
+  env.TRUSTED_PROXIES = ["127.0.0.1", "10.0.0.0/8"];
+  try {
+    // A proxy appends the address it saw; everything to its left is whatever the client sent.
+    expect(ip("127.0.0.1", { "x-forwarded-for": "198.51.100.66, 203.0.113.9" })).toBe("203.0.113.9");
+    expect(ip("127.0.0.1", { "x-forwarded-for": "198.51.100.66, 203.0.113.9, 10.0.0.2" })).toBe("203.0.113.9");
+    expect(ip("127.0.0.1", { "x-forwarded-for": "203.0.113.9, not-an-address" })).toBe("127.0.0.1");
+    expect(ip("127.0.0.1")).toBe("127.0.0.1");
+    // A peer that is not a trusted proxy speaks for nobody.
+    expect(ip("203.0.113.50", { "cf-connecting-ip": "198.51.100.66", "x-forwarded-for": "198.51.100.66" })).toBe("203.0.113.50");
+    // Behind Cloudflare (the default, as deployed today) its own header names the client.
+    expect(cf).toBe(true);
+    expect(ip("127.0.0.1", { "cf-connecting-ip": "198.51.100.5", "x-forwarded-for": "198.51.100.5" })).toBe("198.51.100.5");
+    // Behind any other proxy that header is the client's own text: the operator turns it off.
+    env.TRUST_CF_CONNECTING_IP = false;
+    expect(ip("127.0.0.1", { "cf-connecting-ip": "198.51.100.66", "x-forwarded-for": "198.51.100.66, 203.0.113.9" })).toBe("203.0.113.9");
+    expect(ip("127.0.0.1", { "cf-connecting-ip": "198.51.100.66" })).toBe("127.0.0.1");
+  } finally {
+    env.TRUST_CF_CONNECTING_IP = cf;
     env.TRUST_PROXY = saved.trust;
     env.TRUSTED_PROXIES = saved.proxies;
   }

@@ -13,8 +13,9 @@
   const packages=[r.packages?.mac,r.packages?.linux];
   for(const pkg of packages){
    if(!pkg||!/^[0-9a-f]{64}$/.test(pkg.sha256))throw Error('Invalid checksum');
-   const url=new URL(pkg.url);
-   if(url.origin!=='https://github.com'||url.search||url.hash||!url.pathname.startsWith('/qoopia/qoopia-downloads/releases/download/'+r.tag+'/'))throw Error('Invalid artifact URL');
+   // The raw text goes into the copied task, so the raw text is checked: new URL() would drop a newline and accept user:pw@.
+   const base='https://github.com/qoopia/qoopia-downloads/releases/download/'+r.tag+'/';
+   if(typeof pkg.url!=='string'||!pkg.url.startsWith(base)||!/^[0-9A-Za-z._-]+$/.test(pkg.url.slice(base.length)))throw Error('Invalid artifact URL');
   }
   return {source:r.source,tag:r.tag,version:r.tag.slice(1),packages};
  }
@@ -49,7 +50,7 @@ ${artifacts}
 
 Если я выберу встроенный чат, открой «Мой Qoopia агент» и предложи выбрать ChatGPT/Codex или Claude/Claude Code и общение в Qoopia или Telegram. Сохрани существующего стюарда, если он уже назначен; не создавай второго ради обхода настройки. Для Telegram токен бота вводится в защищённом поле дашборда, не в сообщениях.
 
-Спросить один раз о дополнительных возможностях допустимо. Если я выберу память сессий, отдельно подключи её в «Память сессий локальных агентов» и объясни сохранение видимых событий; Codex требует /hooks trust review. Файл .qoopia-memory содержит секретный ключ и отличается от OAuth-файла .qoopia-connection. Не выводи их содержимое. Если я выберу модель памяти, используй Memory → моя выбранная подписка → официальный вход → Check connection; лимиты подписки сохраняются, API fallback и покупки не разрешены.
+Спросить один раз о дополнительных возможностях допустимо. Если я выберу память сессий, отдельно подключи её в «Настройки памяти сессий» на странице «Подключения» и объясни сохранение видимых событий; Codex требует /hooks trust review. Файл .qoopia-memory содержит секретный ключ и отличается от OAuth-файла .qoopia-connection. Не выводи их содержимое. Если я выберу модель памяти, используй Memory → моя выбранная подписка → официальный вход → Check connection; лимиты подписки сохраняются, API fallback и покупки не разрешены.
 
 Проверь из настоящего ${name}: отправь запрос из карточки подключения («Скопировать запрос агенту») — его первый вызов qoopia_protocol подтвердит подключение, проверочный код не нужен. Затем создай тестовую заметку, прочитай её по ID и найди поиском. Не подменяй вызов пересказом из чата, прямым HTTP или другим connector. Если включены hooks, проверь новую тестовую сессию и восстановление контекста в следующей. Если включена модель, отдельно проверь реальный вызов по подписке. Настроенный конфиг или сохранённый токен не означает успех.
 
@@ -79,7 +80,7 @@ Use connections-agent.md and connections-guide-en.html in the verified package, 
 
 If I choose the built-in chat, open My Qoopia agent and let me choose ChatGPT/Codex or Claude/Claude Code and the Qoopia or Telegram channel. Preserve an existing steward; do not create a second one to work around setup. Enter a Telegram bot token in the protected dashboard field, never in messages.
 
-You may ask once about optional features. If I choose session continuity, enable it separately in Native session continuity, explaining that visible session events are captured; Codex needs a /hooks trust review. A .qoopia-memory file contains a secret and differs from a .qoopia-connection OAuth binding. Do not print their contents. If I choose a memory model, use Memory → my selected subscription → official sign-in → Check connection. Subscription limits still apply; API fallback and purchases are not authorized.
+You may ask once about optional features. If I choose session continuity, enable it separately in Session memory settings on the Connections page, explaining that visible session events are captured; Codex needs a /hooks trust review. A .qoopia-memory file contains a secret and differs from a .qoopia-connection OAuth binding. Do not print their contents. If I choose a memory model, use Memory → my selected subscription → official sign-in → Check connection. Subscription limits still apply; API fallback and purchases are not authorized.
 
 From the real ${name} client send the request from the connection card (Copy request for your agent): its first qoopia_protocol call confirms the connection, with no verification code. Then create the test note, retrieve its ID and search for it. Do not substitute text recalled from this chat, direct HTTP or another connector. If hooks are enabled, verify a fresh test session and restoration in a subsequent session. If a model is enabled, separately verify an actual subscription model call. A saved configuration or token is not proof of success.
 

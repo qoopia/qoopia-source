@@ -15,6 +15,7 @@ import {
   EXPORT_SCHEMA_VERSION,
 } from "../src/services/export.ts";
 import { createVerifiedBackup, rehearseRestore } from "../src/services/backup.ts";
+import type { QoopiaError } from "../src/utils/errors.ts";
 
 const roots: string[] = [];
 
@@ -271,6 +272,35 @@ describe("P08 export/import and DR", () => {
       workspace_id: "ws-p08", actor_id: "agent-owner", release_sha: "p08-secret",
       signer: { private_key: f.privatePem }, database: f.db,
     })).toThrow(/forbidden metadata key/);
+    f.db.close();
+  });
+
+  test("a harmless metadata key shaped like a secret name still blocks export, and the refusal names the row [M5]", () => {
+    const f = fixture();
+    f.db.query("UPDATE notes SET metadata = ? WHERE id = 'note-p08'").run(JSON.stringify({ token_count: 12 }));
+    expect(() => createExportPlan({
+      workspace_id: "ws-p08", actor_id: "agent-owner", release_sha: "p08-token-count",
+      signer: { private_key: f.privatePem }, database: f.db,
+    })).toThrow("notes.metadata of row note-p08 contains forbidden metadata key token_count");
+    f.db.close();
+  });
+
+  test("a table over the bundle's file limit is refused at the plan, before its rows are read [M5]", () => {
+    const f = fixture();
+    const plan = (limit?: number) => createExportPlan({
+      workspace_id: "ws-p08", actor_id: "agent-owner", release_sha: "p08-size",
+      signer: { private_key: f.privatePem }, database: f.db, ...(limit === undefined ? {} : { table_max_bytes: limit }),
+    });
+    const refusal = (limit: number) => { try { plan(limit); } catch (error) { return error as QoopiaError; } throw new Error("the plan was not refused"); };
+    // The stored text alone is over the limit. The forbidden key in the same row is never reached:
+    // SQLite summed the sizes and no row was read or projected.
+    f.db.query("UPDATE notes SET text = ?, metadata = ? WHERE id = 'note-p08'").run("x".repeat(10_000), JSON.stringify({ token_count: 12 }));
+    expect(refusal(8_000)).toMatchObject({ code: "SIZE_LIMIT", message: expect.stringContaining("notes") });
+    // Under the limit as stored and over it as written (each line break becomes two characters): the exact size refuses.
+    f.db.query("UPDATE notes SET text = ?, metadata = '{}' WHERE id = 'note-p08'").run("\n".repeat(5_000));
+    expect(refusal(8_000)).toMatchObject({ code: "SIZE_LIMIT", message: expect.stringContaining("notes") });
+    expect(plan(20_000).counts.notes).toBe(1);
+    expect(plan().counts.notes).toBe(1);
     f.db.close();
   });
 

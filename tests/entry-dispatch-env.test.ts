@@ -4,8 +4,8 @@ import { dispatchEnvironment, mcpSurfaceEnvironment } from '../src/delivery/entr
 // The downloaded package (and the Mac app's bundled binary) hands `open` to the installed bundle. Bun's
 // os.userInfo().username reads $USER, so without it the first owner was bootstrapped as "unknown".
 test('the installed runtime keeps the desktop user name and nothing beyond the allowlist', () => {
-  const env = dispatchEnvironment({ USER: 'alex', LOGNAME: 'alex', HOME: '/home/alex', TMPDIR: '/tmp/x', OPENAI_API_KEY: 'sk-never', QOOPIA_ADMIN_SECRET: 'never', QOOPIA_TOOL_SURFACE:'classic', QOOPIA_CODE_MODE:'off' });
-  expect(env).toMatchObject({ USER: 'alex', LOGNAME: 'alex', HOME: '/home/alex', TMPDIR: '/tmp/x', QOOPIA_TOOL_SURFACE:'classic', QOOPIA_CODE_MODE:'off' });
+  const env = dispatchEnvironment({ USER: 'alex', LOGNAME: 'alex', HOME: '/home/user', TMPDIR: '/tmp/x', OPENAI_API_KEY: 'sk-never', QOOPIA_ADMIN_SECRET: 'never', QOOPIA_TOOL_SURFACE:'classic', QOOPIA_CODE_MODE:'off' });
+  expect(env).toMatchObject({ USER: 'alex', LOGNAME: 'alex', HOME: '/home/user', TMPDIR: '/tmp/x', QOOPIA_TOOL_SURFACE:'classic', QOOPIA_CODE_MODE:'off' });
   expect(Object.values(env)).not.toContain('sk-never');
   expect(Object.values(env)).not.toContain('never');
   // The same allowlist configures the actual isolated server after launcher dispatch.

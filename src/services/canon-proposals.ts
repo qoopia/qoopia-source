@@ -35,7 +35,17 @@ export function proposeCanon(workspace:string,actor:Actor,input:unknown){
 export function listCanonProposals(workspace:string,actor:string){
  if(!canManagePolicy(workspace,actor))throw new QoopiaError('FORBIDDEN','Only the workspace owner reviews canon proposals');
  const items=db.query("SELECT * FROM canon_proposals WHERE workspace_id=? AND status='pending' ORDER BY created_at,id LIMIT 100").all(workspace) as Proposal[];
- return {items:items.map(publicProposal)};
+ return {items:items.map(row=>forReview(workspace,actor,publicProposal(row)))};
+}
+/** What the owner needs to judge a draft: whose rule it becomes, in which project, which rule it replaces.
+ * Resolved as createCanon will resolve them on acceptance, and only inside this workspace. */
+function forReview(workspace:string,actor:string,p:ReturnType<typeof publicProposal>){
+ const holder=p.agent??actor; // An agent rule that names no agent becomes the accepting owner's own.
+ const agent=p.scope==='agent'?db.query('SELECT name FROM agents WHERE workspace_id=? AND active=1 AND (id=? OR lower(name)=lower(?))').get(workspace,holder,holder) as {name:string}|null:null;
+ const project=p.scope==='project'&&p.project?db.query("SELECT text FROM notes WHERE workspace_id=? AND type='project' AND deleted_at IS NULL AND (id=? OR text=?) LIMIT 1")
+  .get(workspace,p.project,p.project) as {text:string}|null:null;
+ const replaced=p.supersedes_id?db.query('SELECT text FROM canons WHERE id=? AND workspace_id=?').get(p.supersedes_id,workspace) as {text:string}|null:null;
+ return {...p,agent_name:agent?.name??null,project_name:project?project.text.split('\n')[0]!.slice(0,120):null,supersedes_text:replaced?.text??null};
 }
 export function decideCanonProposal(workspace:string,actor:Actor,id:string,accept:boolean){
  if(!canManagePolicy(workspace,actor.agent_id))throw new QoopiaError('FORBIDDEN','Only the workspace owner reviews canon proposals');

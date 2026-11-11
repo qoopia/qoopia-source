@@ -265,15 +265,17 @@ function projectRow(table: TablePolicy, raw: Record<string, unknown>, includeEph
     for (const omitted of table.omitted_columns ?? []) delete row[omitted];
   }
   if (table.name === "recall_feedback" && !includeEphemeral) row.trace_id = null;
+  // A refusal names the row: «notes.metadata» alone left the owner to search the whole table [5.0.25].
+  const key = table.order_by.map(({ column }) => String(raw[column])).join("/");
   for (const column of ["settings", "metadata", "details", "options", "payload"]) {
     if (typeof row[column] !== "string") continue;
     let parsed: unknown;
     try { parsed = JSON.parse(row[column] as string); }
-    catch { throw new QoopiaError("INVALID_INPUT", `${table.name}.${column} is invalid JSON`); }
+    catch { throw new QoopiaError("INVALID_INPUT", `${table.name}.${column} of row ${key} is invalid JSON`); }
     const bodyKeys = table.name === "memory_event_outbox" || table.name === "agent_wake_events" ||
       (table.name === "workspaces" && column === "settings") ||
       (table.name === "agents" && column === "metadata");
-    assertJsonMetadata(parsed, `${table.name}.${column}`, bodyKeys);
+    assertJsonMetadata(parsed, `${table.name}.${column} of row ${key}`, bodyKeys);
   }
   return canonicalValue(row) as Record<string, unknown>;
 }
@@ -304,6 +306,23 @@ function queryRows(database: Database, table: TablePolicy, workspaceId: string):
     return [];
   }
   return database.query(`SELECT * FROM ${q} WHERE workspace_id = ?${order ? ` ORDER BY ${order}` : ""}`).all(workspaceId) as Array<Record<string, unknown>>;
+}
+
+/** Text and blob bytes of one table's rows for a workspace, summed by SQLite without reading a row into this
+ * process. Each value is at least that long in the table's file, so a table over the limit here is over it
+ * there. Tables scoped through a join (ids and numbers only) are left to the exact size [5.0.25]. */
+function storedBytes(database: Database, table: TablePolicy, workspaceId: string): number {
+  const q = quoteIdentifier(table.name);
+  const names = (database.query(`PRAGMA table_info(${q})`).all() as Array<{ name: string }>).map(({ name }) => name);
+  const scope = table.name === "workspaces" ? "id" : names.includes("workspace_id") ? "workspace_id" : null;
+  const carried = Array.isArray(table.projection) ? table.projection : names.filter((name) => !(table.omitted_columns ?? []).includes(name));
+  if (!scope || !carried.length) return 0;
+  const size = carried.map((name) => `CASE WHEN typeof(${quoteIdentifier(name)}) IN ('text','blob') THEN length(CAST(${quoteIdentifier(name)} AS BLOB)) ELSE 0 END`).join(" + ");
+  return (database.query(`SELECT COALESCE(SUM(${size}), 0) AS bytes FROM ${q} WHERE ${scope} = ?`).get(workspaceId) as { bytes: number }).bytes;
+}
+
+function assertTableFits(table: TablePolicy, bytes: number, limit: number): void {
+  if (bytes > limit) throw new QoopiaError("SIZE_LIMIT", `${table.name} holds more than the ${limit} bytes one table of a bundle may carry; nothing was exported`);
 }
 
 function tableIncluded(table: TablePolicy, includeEphemeral: boolean): boolean {
@@ -342,8 +361,11 @@ export function createExportPlan(input: {
   database: Database;
   authorize?: () => void;
   now?: Date;
+  /** The limit import reads a table file with; tests lower it. */
+  table_max_bytes?: number;
 }): ExportPlan {
   const database = input.database;
+  const tableMaxBytes = input.table_max_bytes ?? TABLE_FILE_MAX_BYTES;
   assertLegacyTransferSchema(database);
   const policy = loadPolicy();
   const identity = signerIdentity(input.signer);
@@ -358,9 +380,14 @@ export function createExportPlan(input: {
     for (const table of policy.document.tables) {
       policies[table.name] = table.policy;
       if (!tableIncluded(table, includeEphemeral)) { counts[table.name] = 0; continue; }
+      // Import refuses a table file over this limit, and export never checked it: a workspace with such a
+      // table was read whole into the server process, written, reported as exported, and could not be imported.
+      assertTableFits(table, storedBytes(database, table, input.workspace_id), tableMaxBytes);
       const rows = queryRows(database, table, input.workspace_id).map((row) => projectRow(table, row, includeEphemeral));
       counts[table.name] = rows.length;
-      estimatedBytes += rows.reduce((sum, row) => sum + Buffer.byteLength(canonicalJson(row)) + 1, 0);
+      const tableBytes = rows.reduce((sum, row) => sum + Buffer.byteLength(canonicalJson(row)) + 1, 0);
+      assertTableFits(table, tableBytes, tableMaxBytes);
+      estimatedBytes += tableBytes;
     }
     const base = {
       workspace_id: input.workspace_id,

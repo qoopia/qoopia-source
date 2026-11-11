@@ -16,12 +16,14 @@ import {addToolRisk,fail,riskOf,UNTRUSTED_CONTENT_LABEL} from './tools.ts';
 export const LEAN_TOOLS=new Set(['recall','note_get','note_create','agent_inbox','agent_send','qoopia_guide','tool_search','qoopia_execute']);
 const CONNECTION_TOOLS=new Set(['qoopia_protocol','connection_verify']);
 /** Read-risk tools with effects beyond reading stay top-level only: connection_verify and the protocol/guide record
- * connection status, agent_inbox records delivery (code could discard what it marks delivered). */
-const NOT_IN_CODE_MODE=new Set(['qoopia_execute','connection_verify','qoopia_protocol','qoopia_guide','agent_inbox']);
-/** Code Mode never spends the owner's model: one run could otherwise start up to 50 judged or LLM-reranked recalls. */
+ * connection status, agent_inbox records delivery (code could discard what it marks delivered), canon_match records
+ * each rule it returns as applied. */
+const NOT_IN_CODE_MODE=new Set(['qoopia_execute','connection_verify','qoopia_protocol','qoopia_guide','agent_inbox','canon_match']);
+/** Code Mode never spends the owner's model: one run could otherwise start up to 50 judged or LLM-reranked recalls.
+ * Nor does it store recall traces. */
 export function codeModeArgs(name:string,args:Record<string,unknown>) {
   if(name!=='recall')return args;
-  const next={...args};for(const key of ['judge','deep_llm'])if(key in next)next[key]=false;return next;
+  const next={...args};for(const key of ['judge','deep_llm','trace'])if(key in next)next[key]=false;return next;
 }
 const shortDescriptions:Record<string,string>={recall:'Search memory. Returns excerpts and ids; fetch bodies with note_get. Fast by default.',note_get:'Read a note by id or batch ids. max_chars bounds each body.',note_create:'Remember a note with server deduplication.',agent_inbox:'Read messages addressed to this agent.',agent_send:'Send a message to another agent.'};
 function compactSchema(value:any):any {if(Array.isArray(value))return value.map(compactSchema);if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([k])=>k!=='description'&&k!=='$schema').map(([k,v])=>[k,compactSchema(v)]));return value;}

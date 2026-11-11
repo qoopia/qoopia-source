@@ -6,9 +6,9 @@ Each page exists in English and Russian with the same content. Full text for AI 
 
 ## Current release
 
-- Qoopia 5.0.24, released 2026-11-07 (source c238e5e). Machine-readable manifest: https://qoopia.ai/release.json
-- macOS Apple Silicon, DMG: https://qoopia.ai/download/mac (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.24/qoopia-5.0.24-darwin-arm64.dmg), SHA-256 74f25d6dfc0821d5f57ad288c028765bbbb5c03f89ac73c3fb5ba30e706fa13c
-- Linux x64, TAR.GZ: https://qoopia.ai/download/linux (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.24/qoopia-5.0.24-linux-x64.tar.gz), SHA-256 e14e527de547aa9a627bd369abba96d01559e21461482d45daebc04251306b9b
+- Qoopia 5.0.25, released 2026-11-11 (source 8b13ea6). Machine-readable manifest: https://qoopia.ai/release.json
+- macOS Apple Silicon, DMG: https://qoopia.ai/download/mac (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.25/qoopia-5.0.25-darwin-arm64.dmg), SHA-256 028c852a2e7b2b25724fd9a2a826997551f78fa3fba2f898b0d06343e2fe16ea
+- Linux x64, TAR.GZ: https://qoopia.ai/download/linux (signed file: https://github.com/qoopia/qoopia-downloads/releases/download/v5.0.25/qoopia-5.0.25-linux-x64.tar.gz), SHA-256 3586642b734b51c8150fa8af06ff2cbb7b428d90c157d49d747f84915e69580e
 
 ## Requirements
 
@@ -31,6 +31,14 @@ A local Codex or Claude Code session can do this for you: https://qoopia.ai/docs
 - Claude Desktop on macOS.
 - Claude in a browser and ChatGPT Web/Desktop through external HTTPS access prepared in Connections. ChatGPT last passed real-client acceptance on 15 September 2026; the current consent flow has not been re-verified since.
 - Other MCP clients with a separate agent identity.
+
+## What agents get
+
+- Canons: rules for a workspace, an agent or a project that Qoopia loads into the agent's context itself, always-on ones at session start and contextual ones when their triggers match; the owner can review and retire them on the Canon page.
+- Night review: an agent with the dreamer role, run on its own schedule, proposes new rules from recent work; nothing becomes a canon until the owner accepts it.
+- Handoff between Claude Code and Codex: with shared context on, a new session can pick up the last 7 days of work started in the other tool (summary, last requests, changed files).
+- Tools: eight core tools at connection; tool_search finds the rest, and qoopia_execute combines read-only searches and reads in one isolated call. Writes stay separate calls.
+- Search: keyword and built-in embedding search run locally without a model. Model judgement of results runs only when an agent asks for it; an optional reranker is off by default.
 
 ## Price and license
 

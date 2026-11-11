@@ -5,6 +5,8 @@ import { ulid } from "ulid";
 import { db } from "../db/connection.ts";
 import { QoopiaError, nowIso } from "../utils/errors.ts";
 import { logActivity } from "./activity.ts";
+import { assertAutomaticMemoryAllowed } from "./memory-policy.ts";
+import { assertNoSecrets } from "../utils/secret-guard.ts";
 import { hash } from "../utils/fs.ts";
 import { EXCERPT_MAX, type FileTextStatus } from "./file-text-worker.ts";
 
@@ -24,7 +26,7 @@ function extOf(name: string): string {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
 }
 
-function isTextual(mime: string, filename: string): boolean {
+export function isTextual(mime: string, filename: string): boolean {
   const m = (mime || "").toLowerCase();
   if (m.startsWith("text/")) return true;
   if (["application/json", "application/xml", "application/javascript", "application/x-ndjson", "application/x-yaml"].includes(m)) return true;
@@ -241,10 +243,20 @@ const MAX_FILE_BYTES = 104_857_600; // the dashboard's per-upload limit
  * each part re-reads the stored bytes. A streaming upload endpoint if agents send large files often. */
 export async function filePut(p: { workspace_id: string; agent_id: string; agent_name: string; folder?: string; filename: string;
   content: string; encoding?: "utf8" | "base64"; mime?: string; append?: boolean }) {
-  if (p.encoding === "base64" && !/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(p.content)) throw new QoopiaError("INVALID_INPUT", "content is not base64");
+  // A file is memory too: an agent that saves «only on request» could keep a whole conversation here.
+  // The refusal is plain: the owner's save requests carry notes only (memory_save_decisions), not files.
+  // shortcut: checked once on entry, so a switch to manual during a PDF/DOCX parse (30 s at most) is not seen; re-check in the write if that matters.
+  assertAutomaticMemoryAllowed(p.workspace_id, p.agent_id);
+  // White space is taken out first: with \s in the pattern itself, 900 000 spaces and one wrong character
+  // took minutes of backtracking, and the server answered nobody meanwhile.
+  if (p.encoding === "base64" && !/^[A-Za-z0-9+/]*={0,2}$/.test(p.content.replace(/\s+/g, ""))) throw new QoopiaError("INVALID_INPUT", "content is not base64");
   const part = Buffer.from(p.content, p.encoding === "base64" ? "base64" : "utf8");
   // A part may be empty; a whole new file may not.
   const { folder, filename } = validateFileUpload({ folder: p.folder?.trim() || p.agent_name, filename: p.filename, bytes: p.append ? Buffer.alloc(1) : part });
+  // Bytes of a binary file are not read as text: a key inside a PDF or an archive is not found.
+  // shortcut: each part is checked alone, so a key split across two `append` parts passes; check the joined tail if that is ever used.
+  assertNoSecrets(folder + "\n" + filename, "file name");
+  if (p.encoding !== "base64" || isTextual(p.mime || "", filename)) assertNoSecrets(part.toString("utf8"), "file content");
   const before = p.append ? db.prepare(`SELECT id, sha256, content FROM files WHERE workspace_id = ? AND folder = ? AND filename = ? AND uploaded_by_agent_id = ?`)
     .get(p.workspace_id, folder, filename, p.agent_id) as { id: string; sha256: string; content: Uint8Array } | null : null;
   const bytes = before ? Buffer.concat([Buffer.from(before.content), part]) : part;

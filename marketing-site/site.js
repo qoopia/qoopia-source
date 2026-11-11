@@ -6,7 +6,7 @@ if(platform){
  fetch('/release.json').then(r=>{if(!r.ok)throw Error();return r.json();}).then(release=>{
   function render(){
    const pkg=release.packages[platform.value];
-   document.querySelector('#release-meta').textContent=QI.msg(pkg.requirements)+' '+pkg.format+' · '+QI.number(pkg.bytes/1000000)+' '+QI.msg('MB')+' · '+QI.date(release.date+'T12:00:00Z',{dateStyle:'medium'});
+   document.querySelector('#release-meta').textContent=QI.msg(pkg.requirements)+' '+pkg.format+' · '+QI.number(pkg.bytes/1000000)+' '+QI.msg('MB')+' · '+QI.date(release.date+'T12:00:00Z',{dateStyle:'medium',timeZone:'UTC'});
    const action=document.querySelector('#download-action');action.replaceChildren();
    if(release.availability==='public'&&pkg.url&&new URL(pkg.url).protocol==='https:'){
     document.querySelector('#release-state').textContent=QI.msg('{version} is available for {platform}.',{version:release.version,platform:pkg.label});

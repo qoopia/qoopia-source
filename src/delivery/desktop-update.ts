@@ -52,6 +52,14 @@ export function preparePackageUpdate(delivery:Delivery,bundle:string,trust:strin
   if(Bun.semver.order(target.manifest.version,installed)<=0)return {state:'not_newer' as const,installed,package:target.manifest.version};
   return adopt(delivery,bundle,current);
 }
+/** What ./qoopia open says when it did not adopt its package. A package rebuilt under the installed version
+ * (an owner preview) opened the old build without a word [5.0.25]. */
+export function packageNotAdopted(result:ReturnType<typeof preparePackageUpdate>,review:string){
+  if(result.state!=='not_newer')return;
+  return result.package===result.installed
+    ?`Qoopia was not updated: this package is another build of the installed version ${result.installed}, and the installed build opens. To install this build instead, review and apply the update: ${review}`
+    :`Qoopia was not updated: this package is ${result.package}, older than the installed ${result.installed}, and the installed version opens.`;
+}
 /** Linux has no app updater: a newer public release is named, with how to install it [A6-05]. One request,
  * three seconds, never throws; null when current, offline or unreadable. */
 export async function linuxUpdateNotice(installed:string,fetcher:typeof fetch=fetch){

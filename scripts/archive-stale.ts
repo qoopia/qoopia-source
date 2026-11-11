@@ -40,6 +40,8 @@ export interface SweepRule {
   // unknown. All current rules pass ISO date strings; widen only as far
   // as needed for future numeric/null cutoffs without breaking the type.
   candidateParams: (string | number | null)[];
+  // A note recalled or confirmed after this time is in use and stays. Default: 30 days ago.
+  usedAfter?: string;
 }
 
 const NOW = new Date();
@@ -66,6 +68,7 @@ export const rules: SweepRule[] = [
       AND updated_at < ?
     `,
     candidateParams: [isoDaysAgo(90)],
+    usedAfter: isoDaysAgo(90),
   },
   {
     label: "context notes updated > 30d",
@@ -92,11 +95,21 @@ interface Candidate {
 }
 
 export function sweep(rule: SweepRule, dryRun: boolean): SweepReport {
-  // Common guards: not already archived, not soft-deleted.
+  // Common guards: not already archived, not soft-deleted, and not a note the owner keeps or agents
+  // still use. Recall and confirmation write memory_lifecycle, never notes.updated_at, so by updated_at
+  // alone a note read every day was archived (hidden from recall, list and brief) with the rest. The
+  // protected classes are the ones memory-lifecycle.ts protectedReason names for these note types [5.0.25].
   const where = `
     deleted_at IS NULL
     AND (json_extract(metadata, '$.status') IS NULL
          OR json_extract(metadata, '$.status') != 'archived')
+    AND NOT EXISTS (
+      SELECT 1 FROM memory_lifecycle l
+       WHERE l.workspace_id = notes.workspace_id AND l.note_id = notes.id
+         AND (l.owner_pinned = 1 OR l.last_recalled_at > ?1 OR l.last_confirmed_at > ?1))
+    AND COALESCE(json_extract(metadata, '$.record_class'), '') != 'legal'
+    AND NOT (COALESCE(json_extract(metadata, '$.record_class'), '') IN ('incident', 'runbook')
+             AND COALESCE(json_extract(metadata, '$.status'), '') IN ('active', 'open'))
     AND (${rule.candidateSql})
   `;
 
@@ -111,7 +124,7 @@ export function sweep(rule: SweepRule, dryRun: boolean): SweepReport {
     .prepare(
       `SELECT id, workspace_id, updated_at_ms, json_extract(metadata, '$.status') AS status FROM notes WHERE ${where}`,
     )
-    .all(...rule.candidateParams) as Candidate[];
+    .all(rule.usedAfter ?? isoDaysAgo(30), ...rule.candidateParams) as Candidate[];
 
   if (dryRun || candidates.length === 0) {
     return {

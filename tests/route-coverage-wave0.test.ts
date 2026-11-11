@@ -226,6 +226,14 @@ describe("POST /ingest/session", () => {
     expect(await r.json()).toMatchObject({ error: "workspace_mismatch" });
   });
 
+  test("answers a body that is JSON but not an object with 400, not a server error", async () => {
+    for (const body of ["null", "[]", "7", '"text"']) {
+      const r = await fetch(`${baseUrl}/ingest/session`, { method: "POST", headers: { authorization: `Bearer ${INGEST_KEY}` }, body });
+      expect([body, r.status]).toEqual([body, 400]);
+      expect(await r.json()).toMatchObject({ error: "invalid_json" });
+    }
+  });
+
   // F-091: a session id held by another workspace is a conflict that does not say who holds it.
   test("answers a session id held by another workspace with 409 and no owner detail", async () => {
     saveMessage({ workspace_id: FOREIGN_WORKSPACE_ID, agent_id: FOREIGN_AGENT_ID, session_id: "wave0-held-elsewhere", role: "user", content: "foreign" });
@@ -287,6 +295,21 @@ describe("POST /memory/continuity", () => {
     });
     expect(r.status).toBe(400);
     expect(await r.json()).toMatchObject({ error: "Continuity request refused" });
+  });
+
+  // 5.0.25: a refusal (400) stays with the client for good, so a fault of the store must not look like one.
+  test("answers 503 when the store fails, so the client keeps its turns and tries again", async () => {
+    db.exec("CREATE TEMP TRIGGER wave0_storage_fault BEFORE INSERT ON sessions WHEN NEW.id='claude_code:wave0-storage-fault' BEGIN SELECT RAISE(ABORT,'fixture storage fault'); END");
+    try {
+      const event = (session_id: string, extra: Record<string, unknown> = {}) => fetch(`${baseUrl}/memory/continuity`, { method: "POST", headers: { authorization: `Bearer ${STANDARD_KEY}` },
+        body: JSON.stringify({ session_id, project: "/wave0", runtime: "claude_code", event: "progress", messages: [{ id: "w0-1", role: "user", content: "kept on the client" }], ...extra }) });
+      const fault = await event("claude_code:wave0-storage-fault");
+      expect(fault.status).toBe(503);
+      expect(await fault.json()).toEqual({ error: "Continuity temporarily unavailable" });
+      // A request the server understands and refuses is still 400.
+      expect((await event("claude_code:wave0-fine", { unknown_field: 1 })).status).toBe(400);
+      expect((await event("claude_code:wave0-fine")).status).toBe(200);
+    } finally { db.exec("DROP TRIGGER wave0_storage_fault"); }
   });
 
   test("sends no-store so continuity replies are never cached", async () => {

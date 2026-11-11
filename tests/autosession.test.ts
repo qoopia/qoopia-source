@@ -54,9 +54,11 @@ test('tailer posts each attributed dialogue line once, retries failures and resu
   let tailer = start();
   try {
     // u2 fails once: the cursor stops before it and the bounded sweep retries; nothing after it is skipped.
-    await until(() => delivered().length === 4, 'first delivery');
-    expect(delivered()).toEqual(['u1', 'u2', 'u3', 'u8']);
-    expect(posts.map(post => post.body.uuid)).toEqual(['u1', 'u2', 'u2', 'u3', 'u8']);
+    await until(() => delivered().length === 5, 'first delivery');
+    expect(delivered()).toEqual(['u1', 'u2', 'u3', 'u5', 'u8']);
+    expect(posts.map(post => post.body.uuid)).toEqual(['u1', 'u2', 'u2', 'u3', 'u5', 'u8']);
+    // A turn with a secret in it is delivered without the secret, not dropped [5.0.25].
+    expect(posts[4]!.body.content).toBe('[REDACTED:credential-assignment]');
     expect(posts.every(post => post.auth === 'Bearer q_fixture-ingest-key')).toBe(true);
     expect(posts[0]!.body).toEqual({ attributed_agent_id: 'agent-proj', session_id: 'session-1', uuid: 'u1', role: 'user',
       content: 'hello from the owner', timestamp: '2026-10-02T00:00:00.000Z', cwd: '/work/proj', metadata: {} });
@@ -64,8 +66,8 @@ test('tailer posts each attributed dialogue line once, retries failures and resu
     // The incomplete record is delivered once its newline arrives; a new session file is discovered.
     fs.appendFileSync(file, '\n');
     fs.writeFileSync(path.join(project, 'second.jsonl'), line('s1', 'user', 'second session'));
-    await until(() => delivered().length === 6, 'completed and discovered records');
-    expect(delivered().slice(4).sort()).toEqual(['s1', 'u9']);
+    await until(() => delivered().length === 7, 'completed and discovered records');
+    expect(delivered().slice(5).sort()).toEqual(['s1', 'u9']);
     // The stub records a post before the tailer reads the 200 and advances its cursor;
     // wait for the acknowledgement to be persisted instead of racing SIGTERM against it.
     const acknowledged = { [file]: fs.statSync(file).size, [path.join(project, 'second.jsonl')]: fs.statSync(path.join(project, 'second.jsonl')).size };

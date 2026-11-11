@@ -2,6 +2,7 @@
  * `<hermes_home>/state.db` read-only, past a durable cursor on the message id, and sends the active user and
  * assistant turns to /memory/continuity under the agent's own key. Reasoning columns are never read. */
 import fs from 'node:fs';
+import {installationLauncher} from './launcher.ts';
 import path from 'node:path';
 import os from 'node:os';
 import {spawnSync} from 'node:child_process';
@@ -76,8 +77,11 @@ function messagesOf(row:Row):DeliveryMessage[] {
   // A sub-agent's "user" is the delegating agent, never the person: kept, marked, as the assistant's work.
   const sub=row.source==='subagent',body=text(row.content);
   if(!body.trim())return [];
+  // A time SQLite kept as text, or one out of range, is left out: toISOString would throw, and the run would
+  // read as a server outage and stop this home on that row for good [5.0.25].
+  const at=new Date(Number(row.timestamp)*1000);
   return deliveryChunks(sub?'assistant':row.role as 'user'|'assistant',(sub?'[Sub-agent] ':'')+body,'hermes:'+(row.message_uid??'row-'+row.id),
-    new Date(row.timestamp*1000).toISOString());
+    Number.isNaN(at.getTime())?undefined:at.toISOString());
 }
 
 /** The next batch after the cursor: one Qoopia session, at most 40 messages and the byte budget. A row
@@ -122,6 +126,7 @@ export async function hermesSyncOnce(options:HermesSyncOptions) {
   const state:HermesSyncState={format:'qoopia-hermes-sync/1',home,agent_id:connection.agent_id,session_prefix:options.sessionPrefix??'hermes',
     cursor:-1,part:0,source_max_id:0,delivered:0,...saved,last_attempt_at:new Date().toISOString()};
   const persist=()=>durableWrite(file,JSON.stringify(state));
+  const own=(session:string)=>(session+'@'+connection.agent_id).slice(0,200),remote=(session:string)=>state.renamed?.includes(session)?own(session):session;
   let db:Database|undefined,sent=0;
   try {
     db=openHermes(home);
@@ -134,11 +139,24 @@ export async function hermesSyncOnce(options:HermesSyncOptions) {
     for(;;) {
       const batch=nextBatch(db,state,Date.now()-(options.settleMs??30_000));
       if(batch.messages.length) {
-        const envelope={session_id:batch.session!,project:home,runtime:'hermes',event:'progress',...(batch.previous?{previous_session_id:batch.previous}:{})};
-        // «Only on request»: once the server said manual, ask before sending any text. What passes by
-        // while it stays manual never leaves this computer, as with the Claude Code/Codex hooks.
-        const probe=state.manual?await send(connection,{...envelope,messages:[]},options.timeout??30_000):undefined;
-        const result=probe?.memory_mode==='manual'?probe:await send(connection,{...envelope,messages:batch.messages},options.timeout??30_000);
+        const deliver=async(session:string)=>{
+          const envelope={session_id:session,project:home,runtime:'hermes',event:'progress',...(batch.previous?{previous_session_id:remote(batch.previous)}:{})};
+          // «Only on request»: once the server said manual, ask before sending any text. What passes by
+          // while it stays manual never leaves this computer, as with the Claude Code/Codex hooks.
+          const probe=state.manual?await send(connection,{...envelope,messages:[]},options.timeout??30_000):undefined;
+          return probe?.memory_mode==='manual'?probe:await send(connection,{...envelope,messages:batch.messages},options.timeout??30_000);
+        };
+        // The server keeps a session id for the agent that sent it first and answers 404 to any other. One such
+        // session (a home moved to another agent) held the single cursor of the whole home for good. It goes on
+        // under an id of its own for this agent, kept only when the server takes it: an address that answers
+        // 404 to everything renames nothing [5.0.25].
+        const result=await deliver(remote(batch.session!)).catch(async error=>{
+          if(state.renamed?.includes(batch.session!)||!/HTTP 404\b/.test((error as Error).message??''))throw error;
+          const taken=await deliver(own(batch.session!)).catch(()=>{throw error;});
+          // The newest 100: one dropped from the list is refused once more and joins it again.
+          state.renamed=[...(state.renamed??[]),batch.session!].slice(-100);
+          return taken;
+        });
         state.manual=result.memory_mode==='manual';
         if(!state.manual&&(!Array.isArray(result.accepted)||batch.messages.some(m=>!result.accepted.includes(m.id))))throw new Error('Delivery was not acknowledged');
         if(!state.manual){sent+=batch.messages.length;state.delivered+=batch.messages.length;state.last_delivery_at=new Date().toISOString();}
@@ -213,7 +231,7 @@ export async function hermesSyncCli(argv:string[],arg:(n:string)=>string|undefin
   const need=(n:string)=>{const v=arg(n);if(!v)throw new Error('--'+n+' required. Usage: '+USAGE);return v;};
   if(action==='status'){const {memoryClientsCheck}=await import('./memory-client.ts');const check=memoryClientsCheck(root);
     const hermes=check.runtimes.filter(r=>r.runtime==='hermes');emit({homes:hermes});if(hermes.some(r=>r.status==='fail'))process.exitCode=1;return;}
-  if(action==='install')return emit(installHermesSync(process.execPath,{name:need('name'),home:safePath(need('home')),config:safePath(need('config')),root},flag('commit')));
+  if(action==='install')return emit(installHermesSync(installationLauncher(root,process.execPath),{name:need('name'),home:safePath(need('home')),config:safePath(need('config')),root},flag('commit')));
   if(action==='uninstall')return emit(uninstallHermesSync(need('name'),flag('commit')));
   if(action!=='run')throw new Error('Usage: '+USAGE);
   const after=arg('after-id');

@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { DB_READ_ONLY, db } from "../db/connection.ts";
 import { nowIso } from "../utils/errors.ts";
 import { readBoundedText } from "../utils/http-json.ts";
-import { logger } from "../utils/logger.ts";
+import { guardedTick, logger } from "../utils/logger.ts";
 import { logActivity } from "./activity.ts";
 import { matchCanons, renderCanon } from "./canon.ts";
 
@@ -787,11 +787,11 @@ async function deliverClaimed(row: WakeEventRow): Promise<WakeDeliveryResult | u
   const holder = acquireWakeClaim(row.target_agent_id);
   if (!holder) return undefined;
   let result: WakeDeliveryResult | undefined;
-  const renew = setInterval(() => {
+  const renew = setInterval(guardedTick("AgentComm wake claim renewal", () => {
     if (!renewWakeClaim(row.target_agent_id, holder)) {
       logger.warn("AgentComm wake claim lapsed during delivery", { event_id: row.id, target_agent_id: row.target_agent_id });
     }
-  }, CLAIM_RENEW_MS);
+  }), CLAIM_RENEW_MS);
   try {
     const attempt = claim(row);
     if (attempt !== null) {

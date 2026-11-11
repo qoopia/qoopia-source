@@ -28,6 +28,20 @@ class ReleaseHealthTests(unittest.TestCase):
         missing = rows.pop()['source']
         self.assertEqual(set(health.analytics_issues({'source_runs': rows}, now)), {'analytics:' + rows[0]['source'], 'analytics_stale:' + rows[1]['source'], 'analytics:' + missing})
 
+    def test_github_statistics_outage_pages_only_after_an_hour(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        issues = ['analytics:github_releases', 'unit_failed:qoopia-analytics', 'auth']
+        paged, held, since = health.hold_slow_issues(issues, {}, now)
+        self.assertEqual(paged, ['auth'])
+        self.assertEqual(held, ['analytics:github_releases', 'unit_failed:qoopia-analytics'])
+        later = now + datetime.timedelta(minutes=59)
+        self.assertEqual(health.hold_slow_issues(issues, since, later)[0], ['auth'])
+        later = now + datetime.timedelta(minutes=61)
+        paged, held, kept = health.hold_slow_issues(issues, since, later)
+        self.assertEqual((paged, held, kept), (issues, [], since))
+        # Once the outage ends, the next one starts its own hour.
+        self.assertEqual(health.hold_slow_issues([], kept, later)[2], {})
+
     def test_http_failure_never_exposes_response(self):
         with patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 22, b'private response', b'secret URL')):
             _, result = health.request(('auth', 'https://example.invalid'))
@@ -389,11 +403,46 @@ class AlertDeliveryTests(unittest.TestCase):
         self.run_main(self.channels, self.receiver())
         self.assertEqual(len(self.sent), 1)
 
+    def test_a_problem_whose_details_change_every_run_still_pages_once(self):
+        # An outage that fails a different check each minute never repeated one exact list of issues,
+        # so the two-run rule waited for ever and the owner was told nothing.
+        Path(self.root, 'status.json').write_text(json.dumps({'issues': [], 'status': 'OK', 'alerted_issues': []}))
+        good = {'version': '5.0.14', 'ready': True, 'release_sha': 'a' * 40}
+        seen = []
+        for run in range(6):
+            code, status = self.run_main(self.channels, self.receiver(), good if run % 2 else None)
+            seen.append(status['issues'])
+        self.assertNotEqual(seen[0], seen[1])
+        self.assertEqual((code, status['status'], len(self.sent)), (1, 'ALERT', 1))
+        self.assertEqual(self.sent[0]['payload']['subject'], 'ALERT')
+        # One healthy run in the middle of it is still a blip, and recovery is told once it holds.
+        self.assertEqual(len(Path(self.root, 'transitions.jsonl').read_text().splitlines()), 1)
+
     def test_unconfigured_monitor_sends_nothing(self):
         def forbidden(*_a, **_k):
             raise AssertionError('no channel configured')
         _, status = self.run_main('', forbidden)
         self.assertEqual(status['alert']['state'], 'not_configured')
+
+    def test_a_configured_channels_file_that_is_missing_is_an_error_not_silence(self):
+        # A mistyped or deleted policy path used to read as «not configured»: every alert was dropped quietly.
+        def forbidden(*_a, **_k):
+            raise AssertionError('no channel to deliver to')
+        Path(self.root, 'status.json').write_text(json.dumps({'issues': [], 'status': 'OK', 'alerted_issues': []}))
+        Path(self.root, 'maintenance-until').write_text((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)).isoformat())
+        code, status = self.run_main(os.path.join(self.root, 'absent.json'), forbidden)
+        self.assertEqual((code, status['alert']['state']), (1, 'policy_invalid'))
+
+    def test_a_run_killed_before_its_status_is_saved_does_not_repeat_the_transition_line(self):
+        Path(self.root, 'status.json').write_text(json.dumps({'issues': [], 'status': 'OK', 'alerted_issues': []}))
+        self.run_main(self.channels, self.receiver())  # first failing run: seen, not yet a transition
+        log = Path(self.root, 'transitions.jsonl')
+        # systemd stops the unit between the two writes: the next run sees the old status and logs the transition again.
+        with patch.object(health.Path, 'replace', side_effect=OSError('stopped')), self.assertRaises(OSError):
+            self.run_main(self.channels, self.receiver())
+        self.assertFalse(log.exists())
+        self.run_main(self.channels, self.receiver())
+        self.assertEqual(len(log.read_text().splitlines()), 1)
 
 
 class MonitorSourcesTests(unittest.TestCase):
@@ -414,8 +463,25 @@ class MonitorSourcesTests(unittest.TestCase):
             {'severity': 'warning', 'fingerprint': 'c', 'check': 'release_not_published'},
             {'severity': 'critical', 'fingerprint': 'd', 'check': 'Not A Plain <Name>'}])
         self.assertEqual(health.invariant_issues(stream), ['invariant:identity_mismatch', 'invariant:unknown'])
-        self.assertEqual(health.invariant_issues(os.path.join(self.root, 'absent.jsonl')), [])
         self.assertEqual(health.invariant_issues(None), [])
+
+    def test_a_missing_or_silent_invariant_stream_is_an_issue(self):
+        # The host monitor runs every 15 minutes. With no stream, or one nobody has written for hours,
+        # a dead monitor used to read as «no critical alerts».
+        self.assertEqual(health.invariant_issues(os.path.join(self.root, 'absent.jsonl')), ['invariant:unreadable'])
+        stream = self.write('invariant.jsonl', [{'severity': 'critical', 'fingerprint': 'a', 'check': 'identity_mismatch'}])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        beat = os.path.join(self.root, 'heartbeat.json')
+        Path(beat).write_text(json.dumps({'at': now.strftime('%Y-%m-%dT%H:%M:%S.%fZ'), 'status': 'ok'}))
+        self.assertEqual(health.invariant_issues(stream, now + datetime.timedelta(minutes=110), beat), ['invariant:identity_mismatch'])
+        self.assertEqual(health.invariant_issues(stream, now + datetime.timedelta(minutes=130), beat), ['invariant:identity_mismatch', 'invariant:stale'])
+        quiet = self.write('quiet.jsonl', [])
+        self.assertEqual(health.invariant_issues(quiet, now + datetime.timedelta(hours=3), beat), ['invariant:stale'])
+        self.assertEqual(health.invariant_issues(quiet, now, os.path.join(self.root, 'no-heartbeat.json')), ['invariant:stale'])
+        # The stream itself is written only when something fires: weeks without a line is a healthy monitor.
+        os.utime(quiet, (0, 0))
+        self.assertEqual(health.invariant_issues(quiet, now, beat), [])
+        self.assertEqual(health.invariant_issues(quiet, now), [])
 
     def test_offsite_copy_must_be_fresh_and_include_sign_in_database(self):
         now = datetime.datetime(2026, 10, 15, 12, tzinfo=datetime.timezone.utc)

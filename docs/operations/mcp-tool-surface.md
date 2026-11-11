@@ -62,8 +62,12 @@ with `judge` and `deep_llm` forced off. A remembered text that merely mentions
 
 Each execution gets a separate QuickJS-WASM runtime with a 10 second deadline,
 50 tool calls, 20,000 output bytes, a 32 MiB interpreter heap limit and a 512 KiB
-stack limit. It has no host JavaScript access, network, filesystem, timers or
-module loader. JavaScript evaluation stays inside QuickJS. Tool data and guest
+stack limit. The runtime lives in a sandbox process of its own, started by the
+server without its secrets or database: guest code that never yields cannot hold
+the server, and at the deadline that process is killed. One sandbox process stays
+warm between executions; at most four run at once and further executions wait
+inside their own deadline. It has no host JavaScript access, network, filesystem,
+timers or module loader. JavaScript evaluation stays inside QuickJS. Tool data and guest
 values cross the boundary as JSON; they never become host code, and only the
 guest's `result` crosses, never extra top-level keys. At most four nested calls
 run at once; the rest wait in order. A timeout stops the guest and ends the run:

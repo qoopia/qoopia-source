@@ -55,7 +55,7 @@ import { apiError, handleAuthorityRequest } from "./api/authority.ts";
 import { attachmentDisposition, CANON_MAX_BODY_BYTES, CONTINUITY_MAX_BODY_BYTES, parseJsonObject, REQUEST_TIMEOUTS, RequestBodyError, repeatsSingletonHeader, unreadBody } from "./utils/http-json.ts";
 import { MAX_UPLOAD_BYTES, applyTransportSecurity, publicHealth, dropHeadBody, encodeAsset, getAllowedOrigin, getClientIp, json, methodNotAllowed, nodeReqToFetchRequest, readBody, readBodyLimited, securityHeaders, sendHtml, text } from "./http/respond.ts";
 import { dashboardVersion, serveDashboard } from "./http/dashboard-static.ts";
-import { dashboardCookieValue } from "./dashboard-session.ts";
+import { dashboardCookieValue, standaloneOwnerLoginHosts } from "./dashboard-session.ts";
 import { handleServiceOwner, serviceOwnerEmail } from './http/service-owner.ts';
 import { handleMcp } from "./http/mcp-route.ts";
 import {
@@ -404,8 +404,8 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
   }
 
   if (process.env.QOOPIA_STANDALONE === 'true') {
-    const host = `127.0.0.1:${env.PORT}`;
-    if (req.headers.host !== host) return json(res,403,{error:'Host refused'},req);
+    // Loopback, or the one private address the operator bound [F-207]. The local login below stays loopback-only.
+    if (!standaloneOwnerLoginHosts().includes(req.headers.host ?? '')) return json(res,403,{error:'Host refused'},req);
   }
   // One per-IP limit for every dashboard route, counted once, early-dispatched routes included.
   if (url.startsWith("/api/dashboard") && rateLimit429(dashboardLimiter, "dashboard", clientIp, res)) return;
@@ -534,7 +534,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
     if (isReadOnlyInstance()) return json(res, 503, { error: "read_only_instance", error_description: "This instance does not accept writes" }, req);
     let raw: Buffer;
     try { raw = await readBodyLimited(req, WAKE_REPLY_MAX_BYTES); }
-    catch { return json(res, 413, { error: "payload_too_large", error_description: "Reply body is too large" }, req); }
+    catch (error) {
+      if (!(error instanceof RequestBodyError) || error.status !== 413) throw error; // a stalled body is 408, an abort is logged
+      return json(res, 413, { error: "payload_too_large", error_description: "Reply body is too large" }, req);
+    }
     const result = wakeReply(raw, req.headers);
     return json(res, result.status, result.body, req);
   }
@@ -827,7 +830,14 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       const body=JSON.parse((await readBodyLimited(req,CONTINUITY_MAX_BODY_BYTES)).toString());
       currentToolAuth(db,auth,'write-low');
       return json(res,200,continuityEvent(auth.workspace_id,auth.agent_id,body),req);
-    }catch(error){if(error instanceof RequestBodyError)throw error;return json(res,error instanceof QoopiaError&&error.code==='NOT_FOUND'?404:400,{error:'Continuity request refused'},req);}
+    }catch(error){
+      if(error instanceof RequestBodyError)throw error;
+      // A request this server understood and refused is the client's to keep (400/404). Anything else is a fault
+      // here, the store busy or full: 503, so the client holds its turns and tries again instead of «refused».
+      const refused=error instanceof QoopiaError||error instanceof SyntaxError||(error as {name?:string}|null)?.name==='ZodError';
+      if(!refused)logger.error('Continuity request failed',{error:String(error).slice(0,200)});
+      return json(res,error instanceof QoopiaError&&error.code==='NOT_FOUND'?404:refused?400:503,{error:refused?'Continuity request refused':'Continuity temporarily unavailable'},req);
+    }
   }
 
   // Canon for a memory hook: the always rules at session start, the turn's contextual rules on each
@@ -878,11 +888,10 @@ async function handleRequest(req: NodeReqWithBody, res: ServerResponse) {
       cwd?: string;
       metadata?: Record<string, unknown>;
     };
-    try {
-      payload = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      return json(res, 400, { error: "invalid_json" }, req);
-    }
+    // null, an array or a number parse as JSON but are not a record: reading their fields was a 500.
+    const parsed = parseJsonObject(rawBody);
+    if (!parsed) return json(res, 400, { error: "invalid_json" }, req);
+    payload = parsed;
 
     const { attributed_agent_id, session_id, uuid, role, content } = payload;
     if (!attributed_agent_id || !session_id || !uuid || !role || !content) {

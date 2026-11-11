@@ -124,7 +124,7 @@ final class WorkspaceBrowser: NSObject, ObservableObject, WKNavigationDelegate, 
 
     func reload() {
         failed = false
-        if webView.url != nil { webView.reload() } else { open(active) }
+        if URLPolicy.reloadsInPlace(webView.url, active: active) { webView.reload() } else { open(active) }
     }
 
     func resume() {

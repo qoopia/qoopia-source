@@ -12,6 +12,7 @@ import { loginEmail, type LoginIdentity } from './broker.ts';
 import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
 import { parseCookies } from '../utils/cookies.ts';
 import { env } from '../utils/env.ts';
+import { limitKey } from '../utils/rate-limit.ts';
 
 export const LOGIN_ORIGIN = 'https://auth.qoopia.ai';
 type Binding = LoginIdentity & {ownerId:string};
@@ -44,7 +45,7 @@ export function deviceCodeStep(data:Record<string,unknown>,origin=LOGIN_ORIGIN){
 }
 export function localIdentityLogin(root:string,database:Database,request:typeof fetch=fetch) {
   const claims=new Map<string,{ownerId:string;expires:number}>();
-  const attempts=new Map<string,{ownerId:string;version:number;id:string;verifier:string;expires:number;busy:boolean;ip:string}>();
+  const attempts=new Map<string,{ownerId:string;version:number;id:string;verifier:string;expires:number;busy:boolean;ip:string;minute:number;asked:number}>();
   const cookie=(req:IncomingMessage,name=claimCookie)=>parseCookies(req.headers.cookie)[name]??'';
   const json=(res:ServerResponse,status:number,body:unknown)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(body));};
   const broker=async(route:string,body:unknown)=>{
@@ -97,17 +98,17 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         let data:Record<string,unknown>;
         // ponytail: a decoy answers without the broker's round trip; equalize timing if that ever matters.
         if(decoy)data={id:''};
-        else try{data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:publicDashboard.href}:{}),...(bind?{bind:'network',starter_ip:getClientIp(req)}:{}),...(device?{label:installationLabel()}:{}),challenge:hash(verifier)});}
+        else try{data=await broker('/requests',{method:body.method,language:body.language==='ru'?'ru':'en',...(body.method==='email'?{email:loginEmail(body.email)}:{}),...(body.method==='account'?{dashboard:publicDashboard.href}:{}),starter_ip:getClientIp(req),...(bind?{bind:'network'}:{}),...(device?{label:installationLabel()}:{}),challenge:hash(verifier)});}
         catch(error){throw device&&error instanceof Error&&error.message==='Invalid sign-in request'?new Error(DEVICE_CODE_UNSUPPORTED):error;}
         if(!decoy&&(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id)))throw new Error('Invalid sign-in service response');
         const step=device?deviceCodeStep(data):undefined;
         // A client keeps its two newest pending sign-ins and the table its 20 newest, so anonymous
-        // starts can never refuse the owner's. ponytail: the broker's per-server hourly start
-        // allowance is still shared by every caller; closing that needs a per-installation allowance.
-        const ip=getClientIp(req),own=[...attempts].filter(([,attempt])=>attempt.ip===ip);
+        // starts can never refuse the owner's. The broker counts starts per visitor network behind this
+        // server (starter_ip above), so they cannot spend the owner's hourly starts there either.
+        const ip=limitKey(getClientIp(req)),own=[...attempts].filter(([,attempt])=>attempt.ip===ip);
         if(own.length>=2)attempts.delete(own[0]![0]);
         if(attempts.size>=20)attempts.delete(attempts.keys().next().value!);
-        const token=randomToken();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:String(data.id),verifier,expires:now+600_000,busy:false,ip});
+        const token=randomToken();attempts.set(token,{ownerId:owner.agent_id,version:owner.session_version!,id:String(data.id),verifier,expires:now+600_000,busy:false,ip,minute:0,asked:0});
         res.setHeader('set-cookie',`${pendingCookie}=${token}; HttpOnly; SameSite=Strict; Path=/api/dashboard/identity; Max-Age=600${isHttps(req)?'; Secure':''}`);
         return json(res,200,step??(body.method==='account'?{accountUrl:LOGIN_ORIGIN+'/profile?app=ios&request='+data.id}:body.method==='google'?{googleUrl:LOGIN_ORIGIN+'/google?request='+data.id}:{email:loginEmail(body.email)}));
       }
@@ -115,7 +116,13 @@ export function localIdentityLogin(root:string,database:Database,request:typeof 
         const token=cookie(req,pendingCookie),attempt=attempts.get(token);
         if(!attempt)throw new Error('Sign-in expired. Please start again');
         // A decoy start (an address that is not the owner's) waits like a real one until it expires.
-        if(attempt.busy||!attempt.id)return json(res,200,{pending:true});
+        // Each pending sign-in asks the broker at most 30 times a minute (the page polls every 2.5 s) and
+        // all of them together at most 240, under its 300 a minute for this server: visitors who poll a
+        // hosted dashboard cannot spend the requests the owner's own sign-in needs.
+        const minute=Math.floor(now/60_000);
+        if(attempt.minute!==minute){attempt.minute=minute;attempt.asked=0;}
+        if(attempt.busy||!attempt.id||attempt.asked>=Math.min(30,Math.floor(240/attempts.size)))return json(res,200,{pending:true});
+        attempt.asked++;
         attempt.busy=true;
         try{
           const identity=await broker('/redeem',{id:attempt.id,verifier:attempt.verifier,...(body.accountCode?{account_code:body.accountCode}:{})});

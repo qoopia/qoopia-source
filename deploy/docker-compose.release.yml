@@ -21,6 +21,11 @@ services:
       QOOPIA_AUTO_MIGRATE: "false"
       QOOPIA_RELEASE_STAMP_PATH: /app/release.json
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     volumes:
       - ${QOOPIA_ROOT}/data:${QOOPIA_ROOT}/data
       - ${QOOPIA_ROOT}/logs:${QOOPIA_ROOT}/logs

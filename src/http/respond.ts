@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { isHttps } from "../dashboard-api.ts";
 import { SAFE_HOST } from "../auth/dcr-policy.ts";
-import { isTrustedProxy } from "../utils/env.ts";
+import { isIP } from "node:net";
+import { env, isTrustedProxy } from "../utils/env.ts";
 import { readRequestBody } from "../utils/http-json.ts";
 import { edgeClientKey } from "../delivery/mcp-edge.ts";
 import { MAX_BODY_BYTES } from "../utils/http-json.ts";
@@ -31,7 +32,8 @@ export function getAllowedOrigin(req: IncomingMessage): string {
 // --- Client IP extraction ---
 // Trust proxy-hop headers ONLY when TRUST_PROXY=true AND the connection arrives
 // from one of TRUSTED_PROXIES (default: loopback). Иначе — socket address, чтобы
-// предотвратить header spoofing от сетевого атакующего.
+// предотвратить header spoofing от сетевого атакующего. CF-Connecting-IP counts only
+// while TRUST_CF_CONNECTING_IP is on (the default: a Cloudflare tunnel in front).
 /** A probe from this machine itself: a loopback socket with no proxy or edge hop in front of it.
  * cloudflared also connects over loopback, but it always names the client it forwards. */
 export function isLocalProbe(req: IncomingMessage): boolean {
@@ -54,15 +56,15 @@ export function getClientIp(req: IncomingMessage): string {
   const edge = edgeClientKey(req);
   if (edge) return edge;
   const remote = req.socket?.remoteAddress || "unknown";
-  if (isTrustedProxy(remote)) {
-    return (
-      (req.headers["cf-connecting-ip"] as string) ||
-      (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-      remote
-    );
-  }
   // Direct connection, untrusted source, or TRUST_PROXY=false — socket only
-  return remote;
+  if (!isTrustedProxy(remote)) return remote;
+  const cloudflare = env.TRUST_CF_CONNECTING_IP ? req.headers["cf-connecting-ip"] : undefined;
+  if (typeof cloudflare === "string" && cloudflare) return cloudflare;
+  // Each proxy appends the address it saw, so everything left of our own proxies' entries is the
+  // client's own text: the right-most hop that is not a trusted proxy is the one to believe.
+  const hops = String(req.headers["x-forwarded-for"] ?? "").split(",").map((hop) => hop.trim()).filter(Boolean);
+  const client = hops.findLast((hop) => !isTrustedProxy(hop));
+  return client && isIP(client) ? client : remote;
 }
 
 export const MAX_UPLOAD_BYTES = 104_857_600; // 100 MB per request (dashboard file upload)

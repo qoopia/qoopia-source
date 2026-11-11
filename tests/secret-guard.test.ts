@@ -213,3 +213,40 @@ describe("memory redaction keeps file paths", () => {
     expect(mixed.text).toBe("[REDACTED:credential-assignment] at /Users/user/proj/a.ts via [REDACTED:credential-url]");
   });
 });
+
+describe("audit 5.0.25: linear time, ordinary identifiers, redaction that passes its own check", () => {
+  test("long text built to make the detectors backtrack is judged in linear time", () => {
+    // Each of these held the whole server for 2–9 s: one write of a note, a message or a session turn.
+    for (const text of ["password:".repeat(11_111), "eyJ".repeat(33_333), "пароль:".repeat(11_111)]) {
+      const started = performance.now();
+      detectSecretLabels(text); redactMemory(text);
+      expect(performance.now() - started).toBeLessThan(500);
+    }
+  });
+
+  test("identifiers that merely contain q_, qa_ or the like are not Qoopia keys", () => {
+    for (const text of ["see column seq_number_validation_rule", "qa_checklist_for_release.md", "faq_frequently_asked_questions",
+      "req_body_size_limit_bytes", "rabbitmq_default_user_password_file", "uniq_workspace_folder_filename", "mq_consumer_group_name_default",
+      "freq_distribution_histogram", "qc_report_for_the_last_sprint", "q_and_a_session_notes_for_monday"]) {
+      expect([text, detectSecretLabels(text)]).toEqual([text, []]);
+      expect(redactMemory(text).text).toBe(text);
+    }
+    // A real key is the prefix and 43 base64url characters; a clipped one is still a key.
+    for (const text of [SAMPLE_QOOPIA, "Bearer q_" + "aB3-_".repeat(8) + "xyz", "key=qcs_" + "k9Z".repeat(14), "(q_VN1FAKE012345678)"])
+      expect(detectSecretLabels(text)).toContain("qoopia-token");
+  });
+
+  test("what redactMemory writes passes the secret check, so a saved turn can always be summarised", () => {
+    for (const text of ["пароль от базы: /Users/user/app/.env", "password is /home/user/.aws/credentials", "passphrase: /Users/user/.ssh/config",
+      "DB password: hunter42x and token ghp_1234567890ABCDEF1234567890ABCDEF1234"]) {
+      const clean = redactMemory(text).text;
+      expect([clean, detectSecretLabels(clean)]).toEqual([clean, []]);
+      expect(() => assertNoSecrets(clean, "summary.content")).not.toThrow();
+    }
+  });
+
+  test("a JWT is still found after any character a token can follow", () => {
+    for (const text of [SAMPLE_JWT, "Authorization: Bearer " + SAMPLE_JWT, "token=" + SAMPLE_JWT, '{"jwt":"' + SAMPLE_JWT + '"}'])
+      expect(detectSecretLabels(text)).toContain("jwt");
+  });
+});

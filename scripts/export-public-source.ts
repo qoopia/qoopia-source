@@ -52,7 +52,7 @@ const PRIVATE_IDS=new Set(['0a6e3eb9771cf8a7d33917a4','aa7c53bcec81bcb4ca2fd746'
  '3a42f8f58991d434646ab364','80a398907734039f7e1ae6fb','19b962e2a0c97e8fa8f01537','de7740efd7ca8e3257dc422a','fcd30fad9108bcb10cf6a59f',
  '365f0cf82ddc934b4f13795b','d5a1079826809229075b7047','b9f37ca21a9b81e8962df873']);
 const RULES:[string,RegExp][]=[
- ['home-path',/\/Users\/(?!(?:Shared|example|owner|test|user|you|runner|harmless)\b)[A-Za-z0-9._-]+|\/home\/(?!(?:example|owner|test|user|you|runner|harmless|node|bun)\b)[a-z_][a-z0-9_-]*\//],
+ ['home-path',/\/Users\/(?!(?:Shared|example|owner|test|user|you|runner|harmless)\b)[A-Za-z0-9._-]+|(?<![A-Za-z0-9_.-])\/home\/(?!(?:example|owner|test|user|you|runner|harmless|node|bun)\b)[a-z_][a-z0-9_-]*(?=[/"'\s]|$)/],
  ['tailnet-ip',/\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/],
  ['ssh-target',/\b[a-z_][a-z0-9_-]*@(?:\d{1,3}\.){3}\d{1,3}\b/],
  ['agent-home',/\.ductor-[a-z]/],

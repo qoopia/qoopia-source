@@ -1,10 +1,10 @@
 # Qoopia — full text
 
-Generated from https://qoopia.ai/understand and https://qoopia.ai/docs for Qoopia 5.0.24. The short index is https://qoopia.ai/llms.txt.
+Generated from https://qoopia.ai/understand and https://qoopia.ai/docs for Qoopia 5.0.25. The short index is https://qoopia.ai/llms.txt.
 
 ## Is Qoopia right for you?
 
-Reviewed: 2026-10-14 for Qoopia 5.0.24.
+Reviewed: 2026-11-10 for Qoopia 5.0.25.
 
 
 ### When does Qoopia help?
@@ -79,9 +79,9 @@ Sources: [src/skills/format.ts](https://github.com/qoopia/qoopia-source/blob/mai
 
 ### What is AgentComm?
 
-AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard. Since 5.0.20 a message can also wake a Claude Code or Codex agent through qoopia wake-runner. Its operator configures this on a server (Docker) installation; the Mac and Linux packages do not offer it yet.
+AgentComm records communication between authorized agents within the system. It lets a user inspect the exchange instead of relying only on an agent’s final summary. Sending a message is not proof that the recipient has read or acted on it; agents and delivery paths must be connected and running as required. The exchanges can be inspected in the dashboard. Since 5.0.20 a message can also wake a Claude Code or Codex agent through qoopia wake-runner. The runner ships in the same qoopia binary as the Mac app and the Linux package; you set it up once on the computer where the agent runs, as a LaunchAgent or systemd user service, and the Qoopia server must be able to reach it.
 
-Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/qoopia-protocol.md), [src/services/agent-wake.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/agent-wake.ts)
+Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/qoopia-protocol.md), [src/services/agent-wake.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/agent-wake.ts), [src/delivery/wake-runner.ts](https://github.com/qoopia/qoopia-source/blob/main/src/delivery/wake-runner.ts)
 
 
 ### What if setup fails, or I want to leave?
@@ -90,24 +90,48 @@ A saved configuration or completed login is not proof of a working connection. U
 
 Sources: [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md), [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [LICENSE](https://github.com/qoopia/qoopia-source/blob/main/LICENSE)
 
+
+### What are canons and night review?
+
+Canons are short rules that Qoopia adds to an agent’s context by itself. A canon applies to the whole workspace, to one agent or to one project. Always-on canons load at session start; contextual ones are added to a prompt when its words, files, tools or project match. Clients without Qoopia hooks ask for matching canons with canon_match. The steward and the owner write workspace and project canons; an agent can write canons for itself. The dashboard Canon page shows canons and lets you retire one. The owner can appoint one agent for night review: it reads the workspace’s conversations and may propose new canons, and a proposal becomes a canon only after the owner accepts it in Overview.
+
+Sources: [src/services/canon.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/canon.ts), [src/mcp/canon-tools.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/canon-tools.ts), [src/services/canon-proposals.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/canon-proposals.ts)
+
+
+### Can work pass between Claude Code and Codex?
+
+Yes, between agents of the same owner. When a Claude Code or Codex session with Qoopia session memory opens a project, it receives the latest work another of that owner’s agents did there in the last seven days: open work marks, the final answer, the working summary, changed files with their content digests, tool errors and the last requests. It is given as history, not as instructions, and only when shared context is on. Clients without hooks call work_handoff. An agent can mark a topic as taken with work_take; the mark expires by itself and locks nothing.
+
+Sources: [src/services/continuity.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/continuity.ts), [src/services/work.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/work.ts), [src/mcp/work-tools.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/work-tools.ts)
+
+
+### Which tools does an agent see when it connects?
+
+Since 5.0.24 a direct MCP client sees eight core tools: recall, note_get, note_create, agent_inbox, agent_send, qoopia_guide, tool_search and qoopia_execute, plus qoopia_protocol for older connections. tool_search finds any other tool by name or topic and returns its schema. qoopia_execute runs a short read-only script in an isolated QuickJS sandbox with the caller’s permissions, so several searches and reads take one call. It cannot write, does not use the model, and is limited to 10 seconds, 50 tool calls and 20 KB of output. Writes stay separate calls.
+
+Sources: [src/mcp/surface.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/surface.ts), [src/mcp/code-mode.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/code-mode.ts), [docs/operations/mcp-tool-surface.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/mcp-tool-surface.md)
+
+
+### Does search need a model or a reranker?
+
+No. recall combines full-text search with local embeddings that ship with Qoopia and answers without a model by default. An agent can pass judge: true to have the workspace’s model subscription expand the query and judge the candidates within a time budget. A server operator can also configure an optional, older reranker service; it is off by default, and if it fails or times out, results keep their original order.
+
+Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/docs/MEMORY-V1.md), [src/services/recall/config.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/recall/config.ts), [src/mcp/tools.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/tools.ts)
+
 ## Setup guide
 
-## Install. Connect.Continue.
+## Install. Connect. Continue.
 Qoopia is your own environment for long-term agent memory. Each installation stores its own notes, knowledge, agent spaces and history.
-The current signed packages are available for macOS Apple Silicon and Linux x64. Download Qoopia.Install · Connect · Privacy · Bridges · Troubleshooting
+The current signed packages are available for macOS Apple Silicon and Linux x64. Download Qoopia.
 Before installing: benefits, requirements and permissions
 
 ### Let your agent set up Qoopia
 
 Copy the task into a local Codex or Claude Code session on the computer where you want your memory. Your agent installs and checks it; you complete sign-ins and access approvals.
 
-Your agentCodexClaude Code
+Install it myself
 
-Loading the installation task…
-
-Copy installation taskInstall it myself
-
-Read the task before copyingInstallation task
+Read the task before copying
 
 ### 1. Install your environment
 
@@ -137,14 +161,14 @@ Replace the address with your own server. This selects one environment; it does 
 
 ### 2. Connect your agents
 In your selected Qoopia environment, open Connections. Three independent authorizations have different purposes:
-AuthorizationPurpose
-Google / email sign-inIdentify you as the owner.
-Model subscription in MemoryEnable background summaries and model-assisted search through a supported official runtime.
-MCP client accessAllow a client agent to use its permitted memory tools.
+Authorization | Purpose
+Google / email sign-in | Identify you as the owner.
+Model subscription in Memory | Enable background summaries, and model-assisted search when an agent asks for it, through a supported official runtime.
+MCP client access | Allow a client agent to use its permitted memory tools.
 
 #### Claude Code / Codex
 In Connections, choose your client and Read or Read and add. Apply the prepared setup and complete the client’s OAuth sign-in. Then copy the request from the connection card and send it in that client: its first Qoopia protocol call confirms the connection. No verification code is needed. A local installation can add the settings; for another computer, open the exported .qoopia-connection file with Qoopia there.
-For automatic session context, also open Native session continuity in Connections and select Codex or Claude Code. This installs lifecycle hooks. Codex requires a one-time trust review in /hooks. On another computer, import the .qoopia-memory file. It contains a private key: keep it on your own device. An MCP connection alone does not enable session capture.
+For automatic session context, also open Session memory settings in Connections and select Codex or Claude Code. This installs lifecycle hooks. Codex requires a one-time trust review in /hooks. On another computer, import the .qoopia-memory file. It contains a private key: keep it on your own device. An MCP connection alone does not enable session capture.
 
 #### Claude Desktop · macOS
 Choose Claude Desktop in Connections. Apply its local adapter, open the authorization link and approve access to your installation. Restart Claude Desktop and send the request from the connection card in a real conversation: its first Qoopia protocol call confirms the connection. The adapter keeps its credentials outside the Claude configuration.
@@ -178,6 +202,13 @@ An admitted participant requests a specific version. Choose Approve sending or S
 The copy arrives in Received. It is not automatically added to ordinary memory, installed as a skill, or forwarded.
 Both installations need overlapping uptime for delivery. Received copies cannot be recalled. Pilot limits: 32 member records per group, 100 catalogue records and 1 MiB per item. There is no shared open repository of private notes.
 
+### 5. What your agents get
+Canons: Short rules for the whole workspace, one agent or one project. Qoopia adds always-on canons at session start and matching ones to each prompt; clients without hooks call canon_match. The steward and the owner write workspace and project canons, an agent can write its own, and the Canon page shows them and lets you retire one.
+Night review: Only the owner appoints the night-review agent, on its agent card or with agent_set_dreamer. It reads the workspace’s conversations for a chosen period with session_review and can propose canons; a proposal becomes a canon only after the owner accepts it in Overview. The review runs on that agent’s own schedule. Other agents see only their own conversations.
+Handoff between Claude Code and Codex: A Claude Code or Codex session with session memory that opens a project receives the latest work another agent of the same owner did there: the final answer, the summary, changed files, tool errors and the last requests, given as history rather than instructions. Shared context must be on. Clients without hooks call work_handoff; work_take marks a topic as taken until the mark expires or is released, and locks nothing.
+Tools: A connected client sees eight core tools: recall, note_get, note_create, agent_inbox, agent_send, qoopia_guide, tool_search and qoopia_execute, plus qoopia_protocol for older connections. tool_search finds the other tools and returns their schemas. qoopia_execute runs a short read-only script in an isolated QuickJS sandbox with the agent’s own permissions, within 10 seconds, 50 tool calls and 20 KB of output; it cannot write and does not use the model.
+Search: recall answers without a model by default. With judge: true, the memory-model subscription can expand the query and judge the candidates within model_budget_ms (1–45 seconds). A server operator can configure an optional, older reranker service; it is off by default, and on an error or timeout the results keep their original order. The Mac and Linux packages need no external search service.
+
 ### If something is missing
 Download unavailable: Use the official download links on the home page. If a download fails, reload the release page and try again.
 Local address warning: cloud clients need reachable HTTPS, not a localhost URL.
@@ -188,7 +219,7 @@ Self-check: run qoopia doctor: on Mac /Applications/Qoopia.app/Contents/Resource
 Still stuck: report a problem on GitHub. Include the version, platform and doctor output. Never paste tokens, keys or private notes.
 
 ### Remove Qoopia
-If you linked session memory, first run qoopia memory-unlink --runtime claude_code --commit (or --runtime codex). On Linux with autostart, run ./qoopia service uninstall --commit. Then run qoopia uninstall --commit; on Mac, also quit Qoopia in the menu bar and move Qoopia.app to the Trash.
+If you linked session memory, first run qoopia memory-unlink --runtime claude_code --commit (or --runtime codex). If Qoopia runs as a service, run qoopia service uninstall --commit. Then quit Qoopia: on Mac, choose Quit Qoopia in the menu bar (closing the window keeps it running); on Linux, stop ./qoopia open with Ctrl+C. While Qoopia is running, uninstall stops with “Installation is busy”. Then run qoopia uninstall --commit; on Mac, move Qoopia.app to the Trash afterwards.
 Uninstalling keeps your memory: ~/Library/Application Support/Qoopia on Mac, ~/.local/share/qoopia on Linux. Installing again picks it up. Delete that folder only after a backup, and only if you want the memory gone.
 
 ### Official client references

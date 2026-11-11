@@ -12,6 +12,7 @@ import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { createNote } from "../src/services/notes.ts";
 import { recall } from "../src/services/recall.ts";
+import { queryPlan } from "./helpers/query-plan.ts";
 
 let WS = "", AGENT = "";
 
@@ -39,8 +40,7 @@ test("recall reads the notes FTS index before the notes table", async () => {
   }
   expect(seen.length).toBeGreaterThan(0);
   for (const { sql, params } of seen) {
-    const plan = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as never[])) as Array<{ detail: string }>;
-    expect(plan[0]!.detail).toStartWith("SCAN f VIRTUAL TABLE");
+    expect(queryPlan(db, sql, ...params)[0]).toStartWith("SCAN f VIRTUAL TABLE");
   }
 });
 

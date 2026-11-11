@@ -92,7 +92,7 @@ export function russian(html:string,file:string){
   .replace('<meta content="en_US" property="og:locale"/><meta content="ru_RU" property="og:locale:alternate"/>','<meta content="ru_RU" property="og:locale"/><meta content="en_US" property="og:locale:alternate"/>')
   .replace(/(<script type="application\/ld\+json">)(.*?)(<\/script>)/gs,(_,a:string,json:string,b:string)=>a+JSON.stringify(JSON.parse(json,(key,value)=>
    // Nodes that state their language describe this page; the organization keeps its own address.
-   key==='description'?t(value):value?.inLanguage==='en'?{...value,inLanguage:'ru',url:origin+localize(value.url.slice(origin.length)),
+   key==='description'?t(value):key==='releaseNotes'?origin+localize(value.slice(origin.length)):value?.inLanguage==='en'?{...value,inLanguage:'ru',url:origin+localize(value.url.slice(origin.length)),
     ...(value['@id']?{'@id':value['@id'].replace(value.url,origin+localize(value.url.slice(origin.length)))}:{})}:value)).replaceAll('</','<\\/')+b);
  return html;
 }
@@ -108,13 +108,21 @@ export function render(){
   out.set(file+'.html',releaseBlocks(ownLanguage(en,'en'),'en'));
   if(file!=='404')out.set('ru/'+file+'.html',releaseBlocks(ownLanguage(russian(en,file+'.html').replaceAll('/assets/graphite-overview-en.png','/assets/graphite-overview-ru.png').replaceAll('/assets/graphite-mobile-en.png','/assets/graphite-mobile-ru.png'),'ru'),'ru'));
  }
+ const page=(path:string)=>{const file=path==='/'?'index.html':path==='/ru/'?'ru/index.html':path.slice(1)+'.html';return out.get(file)??readFileSync(new URL(file,site),'utf8');};
+ // A page's lastmod is the day its HTML last changed, never before the release. The published sitemap is the
+ // ledger: each entry ends with a hash of its page, and a page whose hash is unchanged keeps its day, so --check
+ // gives the same file on any machine. The explanation pages carry their own review date.
+ const published=existsSync(new URL('sitemap.xml',site))?readFileSync(new URL('sitemap.xml',site),'utf8'):'';
+ const lastmod=(loc:string)=>{
+  if(loc.endsWith('/understand'))return {day:reviewed>release.date?reviewed:release.date,mark:''}; // they name the version, so a release changes them too
+  const hash=createHash('sha256').update(page(loc)).digest('hex').slice(0,12);
+  const day=new RegExp(`<loc>${origin}${loc}</loc><lastmod>(\\d{4}-\\d{2}-\\d{2})</lastmod>.*<!-- ${hash} -->`).exec(published)?.[1]??new Date().toISOString().slice(0,10);
+  return {day:day>release.date?day:release.date,mark:`<!-- ${hash} -->`};
+ };
  out.set('sitemap.xml','<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'+pairs.flatMap(([en,r])=>{
   const alternates=([['en',en],['ru',r],['x-default',en]] as const).map(([lang,href])=>`<xhtml:link rel="alternate" hreflang="${lang}" href="${origin}${href}"/>`).join('');
-  // Site pages are reviewed and redeployed with each release; the explanation pages carry their own review date.
-  const lastmod=en==='/understand'?reviewed:release.date;
-  return [en,r].map(loc=>`<url><loc>${origin}${loc}</loc><lastmod>${lastmod}</lastmod>${alternates}</url>\n`);
+  return [en,r].map(loc=>{const {day,mark}=lastmod(loc);return `<url><loc>${origin}${loc}</loc><lastmod>${day}</lastmod>${alternates}</url>${mark}\n`;});
  }).join('')+'</urlset>\n');
- const page=(path:string)=>{const file=path==='/'?'index.html':path==='/ru/'?'ru/index.html':path.slice(1)+'.html';return out.get(file)??readFileSync(new URL(file,site),'utf8');};
  const list=(lang:0|1)=>pairs.map(pair=>{const html=page(pair[lang]);return `- [${title(html)}](${origin}${pair[lang]}): ${head(html,'description')}`;}).join('\n');
  const mac=release.packages.mac,linux=release.packages.linux;
  out.set('llms.txt',`# Qoopia
@@ -151,6 +159,14 @@ A local Codex or Claude Code session can do this for you: ${origin}/docs#agent-i
 - Claude in a browser and ChatGPT Web/Desktop through external HTTPS access prepared in Connections. ChatGPT last passed real-client acceptance on 15 September 2026; the current consent flow has not been re-verified since.
 - Other MCP clients with a separate agent identity.
 
+## What agents get
+
+- Canons: rules for a workspace, an agent or a project that Qoopia loads into the agent's context itself, always-on ones at session start and contextual ones when their triggers match; the owner can review and retire them on the Canon page.
+- Night review: an agent with the dreamer role, run on its own schedule, proposes new rules from recent work; nothing becomes a canon until the owner accepts it.
+- Handoff between Claude Code and Codex: with shared context on, a new session can pick up the last 7 days of work started in the other tool (summary, last requests, changed files).
+- Tools: eight core tools at connection; tool_search finds the rest, and qoopia_execute combines read-only searches and reads in one isolated call. Writes stay separate calls.
+- Search: keyword and built-in embedding search run locally without a model. Model judgement of results runs only when an agent asks for it; an optional reranker is off by default.
+
 ## Price and license
 
 Qoopia is free; its source is MIT-licensed. Model subscriptions and server hosting are separate costs.
@@ -171,7 +187,9 @@ ${list(1)}
 `);
  // The same reviewed explanation and the setup guide as plain text, for assistants that read one file (A9-06).
  const plain=(html:string)=>decode(html.slice(html.indexOf('<main'),html.indexOf('</main>'))
-  .replace(/<(script|style|template)\b[\s\S]*?<\/\1>/g,'').replace(/<h([1-3])\b[^>]*>/g,(_,n:string)=>'\n\n'+'#'.repeat(Number(n)+1)+' ')
+  // Controls and live status lines are not text: nav, buttons, labelled fields and what a script fills in later.
+  .replace(/<(script|style|template|nav|button|label)\b[\s\S]*?<\/\1>/g,'').replace(/<(p|div)\b[^>]*\saria-live="[^>]*>[\s\S]*?<\/\1>/g,'')
+  .replace(/<h([1-3])\b[^>]*>/g,(_,n:string)=>'\n\n'+'#'.repeat(Number(n)+1)+' ').replace(/<\/t[dh]>\s*<t[dh]\b[^>]*>/g,' | ').replace(/<br\b[^>]*>/g,' ')
   .replace(/<(p|li|tr|summary|details|section|div|pre)\b[^>]*>/g,'\n').replace(/<[^>]+>/g,'')).replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
  out.set('llms-full.txt',`# Qoopia — full text\n\nGenerated from ${origin}/understand and ${origin}/docs for Qoopia ${release.version}. The short index is ${origin}/llms.txt.\n\n`
   +readFileSync(new URL('../docs/discovery/UNDERSTAND-EN.md',import.meta.url),'utf8').replace(/^# /,'## ').replace(/\n## /g,'\n### ')+'\n## Setup guide\n\n'+plain(page('/docs'))+'\n');

@@ -8,9 +8,14 @@ import {createAgent} from '../src/admin/agents.ts';
 import {authenticate,type AuthContext} from '../src/auth/middleware.ts';
 import {db} from '../src/db/connection.ts';
 import {MCP_INSTRUCTIONS,agentGuide,agentKitFiles,agentKitFilesEn} from '../src/agent-kit/index.ts';
-import {executeCode,CODE_LIMITS} from '../src/mcp/code-mode.ts';
+import {executeCode,codeHosts,CODE_LIMITS} from '../src/mcp/code-mode.ts';
 import {codeModeArgs} from '../src/mcp/surface.ts';
 import {randomUUID} from 'node:crypto';
+import {AsyncLocalStorage} from 'node:async_hooks';
+import {spawnSync} from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 beforeAll(()=>runMigrations());
 async function fixture(opts:Parameters<typeof createMcpServer>[2]={},profile:Parameters<typeof createMcpServer>[1]='full'){
  const ws=createWorkspace({name:'Surface',slug:'surface-'+randomUUID()});
@@ -101,13 +106,71 @@ test('sandbox enforces synchronous and async deadlines, calls, output and memory
  // A pending read may finish after the deadline; it must not touch the disposed VM.
  await expect(executeCode('return await qoopia.read({});',['read'],async()=>{await Bun.sleep(200);return 1;},limits)).rejects.toThrow();await Bun.sleep(150);
 });
+const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
+const gone=async(pids:number[])=>{for(let i=0;i<150&&pids.some(alive);i++)await Bun.sleep(20);return !pids.some(alive);};
+test('guest code that never yields leaves the server answering, and the deadline ends its sandbox',async()=>{
+ // In the server's thread `for(;;){}` held every other request, the dashboard and health checks until the time
+ // limit; a native builtin over a huge array-like never reaches the interpreter's deadline and held them for good.
+ for(const code of ['for(;;){}','return Array.prototype.indexOf.call({length:1e15},1)']){
+  let ticks=0;const tick=setInterval(()=>ticks++,20),started=performance.now();
+  const run=executeCode(code,[],async()=>null,{...CODE_LIMITS,time_ms:400}),held=codeHosts();
+  try{await expect(run).rejects.toMatchObject({code:'SIZE_LIMIT',message:'Code Mode time limit exceeded'});}
+  finally{clearInterval(tick);}
+  expect(performance.now()-started).toBeLessThan(1_000);expect(ticks).toBeGreaterThanOrEqual(10);
+  expect(held.length).toBeGreaterThan(0);expect(await gone(held)).toBe(true);
+ }
+ expect((await executeCode('return 1',[],async()=>null)).result).toBe(1);
+ expect(codeHosts().length).toBe(1);
+ // More runs than sandboxes wait for one and still answer; a tool call sees its caller's request context.
+ const context=new AsyncLocalStorage<string>();
+ const answers=await Promise.all(Array.from({length:10},(_,i)=>context.run('request '+i,()=>executeCode('return (await qoopia.read({})).seen',['read'],async()=>({seen:context.getStore()})))));
+ expect(answers.map(answer=>answer.result)).toEqual(Array.from({length:10},(_,i)=>'request '+i));
+ for(let i=0;i<50&&codeHosts().length>1;i++)await Bun.sleep(20);
+ expect(codeHosts().length).toBe(1);
+});
+test('sandboxes end with the server, and running them leaves its exit listeners working',async()=>{
+ const probe=path.join(import.meta.dir,'helpers','code-mode-host-probe.ts'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'qoopia-code-mode-'));
+ try{
+  // As worker threads they cost the server its 'exit' listeners: Bun 1.3 skips them all once such a thread has ended.
+  const run=spawnSync(process.execPath,[probe,'exit',path.join(dir,'exit-listener-ran')],{encoding:'utf8',timeout:20_000});
+  const out=JSON.parse(run.stdout);
+  expect(out.ended).toEqual(['Code Mode time limit exceeded','Code Mode time limit exceeded',1,2]);
+  expect(out.hosts.length).toBe(1);
+  expect(fs.existsSync(path.join(dir,'exit-listener-ran'))).toBe(true);
+  expect(await gone(out.hosts)).toBe(true);
+  // A server killed outright cannot end the sandbox its guest is holding; past the deadline the sandbox ends itself.
+  const server=Bun.spawn([process.execPath,probe,'stuck'],{stdout:'pipe',stderr:'ignore'});
+  const {hosts}=JSON.parse(Buffer.from((await server.stdout.getReader().read()).value!).toString());
+  expect(hosts.length).toBe(1);expect(alive(hosts[0])).toBe(true);
+  server.kill('SIGKILL');await server.exited;
+  expect(await gone(hosts)).toBe(true);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+},30_000);
+test('sandbox memory has a hard ceiling for each run, and a run that hits it leaves the next one intact',async()=>{
+ const fill='const hog=[];try{for(;;)hog.push("x".repeat(1<<20)+hog.length)}catch(e){}';
+ const before=process.memoryUsage().rss;
+ // One megabyte at a time went past the 32 MiB limit to 2 GB of the server's memory.
+ const grown=await executeCode(fill+' return hog.length;',[],async()=>null).catch(()=>({result:0}));
+ expect(grown.result as number).toBeLessThan(100);
+ expect(process.memoryUsage().rss-before).toBeLessThan(400*1024*1024);
+ // A large tool result arriving in a full sandbox once left the engine broken for every later run, or hung the server.
+ await executeCode(fill+' hog.pop(); try{return (await qoopia.read({})).big.length}catch(e){return "refused"}',['read'],async()=>({big:'y'.repeat(4<<20)})).catch(()=>null);
+ await executeCode(fill+' const ps=[];for(let i=0;i<10;i++)ps.push(qoopia.read({}).catch(()=>0));await Promise.all(ps);return "done"',['read'],async()=>({a:'z'.repeat(20_000)})).catch(()=>null);
+ for(let i=0;i<3;i++)expect((await executeCode('return '+i,[],async()=>null)).result).toBe(i);
+ // Code that closes the wrapper and leaves a plain value is a caller's mistake, not a server error.
+ await expect(executeCode('})();})(); var value=1; 0, (()=>{ (()=>{',[],async()=>null)).rejects.toMatchObject({code:'INVALID_INPUT'});
+ expect((await executeCode('return "after"',[],async()=>null)).result).toBe('after');
+},60_000);
 test('Code Mode hides reads with side effects and never spends the owner model',async()=>{
  expect(codeModeArgs('recall',{query:'x',judge:true,deep_llm:true})).toEqual({query:'x',judge:false,deep_llm:false});
+ // A recall trace is a stored row; canon_match records every rule it returns as applied. Fifty of either per run would
+ // fill the journal and the «last applied» counters from a read-only connection.
+ expect(codeModeArgs('recall',{query:'x',trace:true})).toEqual({query:'x',trace:false});
  expect(codeModeArgs('recall',{query:'x'})).toEqual({query:'x'});
  expect(codeModeArgs('note_get',{id:'a',judge:true})).toEqual({id:'a',judge:true});
  const f=await fixture();try{
-  const seen=await f.call('qoopia_execute',{code:'return [typeof qoopia.qoopia_protocol,typeof qoopia.qoopia_guide,typeof qoopia.agent_inbox,typeof qoopia.recall];'});
-  expect(seen.body.result).toEqual(['undefined','undefined','undefined','function']);
+  const seen=await f.call('qoopia_execute',{code:'return [typeof qoopia.qoopia_protocol,typeof qoopia.qoopia_guide,typeof qoopia.agent_inbox,typeof qoopia.canon_match,typeof qoopia.recall];'});
+  expect(seen.body.result).toEqual(['undefined','undefined','undefined','undefined','function']);
   const judged=await f.call('qoopia_execute',{code:'const r=await qoopia.recall({query:"anything",judge:true,deep_llm:true});return r.judging??null;'});
   expect(judged.error).toBe(false);
   if(judged.body.result)expect(judged.body.result.attempted).not.toBe(true);

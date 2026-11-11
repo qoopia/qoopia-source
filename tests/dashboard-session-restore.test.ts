@@ -66,3 +66,20 @@ test('the sign-in card stays hidden while the session is being checked',()=>{
  expect(inserted.join('')).toContain('Checking your session…');
  expect(inserted.join('')).toContain('role="status"');
 });
+
+// 5.0.25: one failed answer to the workspace question at load (a restart, a rate limit, a dropped connection)
+// was read as «not the owner»: Memory, Connections and the chat disappeared until the page was reloaded.
+test('the owner workspace is asked again after a transient failure; only a refusal means an agent is looking',async()=>{
+ const from=html.indexOf('  async function ownerWorkspace('),probe=dashboardSend+html.slice(from,html.indexOf('  // ---------- Boot ----------',from))+'\nownerWorkspace()';
+ expect(from).toBeGreaterThan(0);
+ const ask=async(replies:any[])=>{let calls=0;
+  const result=await runInNewContext(probe,{BASE:'',QI:{msg:String,resolve:String},setTimeout:(fn:()=>void)=>fn(),
+   fetch:async()=>{calls++;const next=replies.shift()??{ok:false,status:503};if(next==='offline')throw new TypeError('Load failed');return next;}});
+  return {result,calls};};
+ const workspace={ok:true,status:200,json:async()=>({model:{}})};
+ expect(await ask([{ok:false,status:503},'offline',{ok:false,status:429},workspace])).toEqual({result:{model:{}},calls:4});
+ expect(await ask([workspace])).toEqual({result:{model:{}},calls:1});
+ for(const status of [401,403,404])expect(await ask([{ok:false,status},workspace])).toEqual({result:null,calls:1});
+ // A server that stays down is given up after four tries, as an agent view rather than a page that never loads.
+ expect(await ask([])).toEqual({result:null,calls:4});
+});

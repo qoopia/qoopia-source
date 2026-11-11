@@ -44,6 +44,10 @@ test('scanner flags every marker kind and passes documented placeholders',()=>{
     ['token','r'+'e_'+'Ab12Cd34_'+'EfGhIjKlMnOpQrStUv'],['token','GOC'+'SPX-'+'a1B2c3D4e5F6g7H8i9J0k1L2m3N4'],['token','AI'+'za'+'S'.repeat(35)],
     ['internal-host','container qoopia'+'-corsair'],['internal-host','agent cor'+'sair-main']] as const)
     expect([line,scanText('src/x.ts',line).map(h=>h.kind)]).toEqual([line,[kind]]);
+  // A Linux home is private wherever it ends: before a slash, a quote, a space or the end of the line.
+  for(const line of ['env={"HOME": "/ho'+'me/alice"}','cd /ho'+'me/alice','HOME=/ho'+'me/alice run','/ho'+'me/alice/.ssh/id'])
+    expect([line,scanText('scripts/x.py',line).map(h=>h.kind)]).toEqual([line,['home-path']]);
+  expect(scanText('scripts/x.py','/ho'+'me/node /ho'+'me/user" /ho'+'me/bun/app /ho'+'mepage/alice production/ho'+'me/arbitrary targets')).toEqual([]);
   // Short prefixes in ordinary code are not keys.
   expect(scanText('src/x.ts','const q_index=1, qa_ready=true; re_try(); corsair_like')).toEqual([]);
   expect(scanText('src/x.ts','/Us'+'ers/example/a /ho'+'me/node/b user'+at+'example.com bot'+at+'users.noreply.github.com 01ARZ3NDEKTSV4RRFFQ69G5FAV')).toEqual([]);

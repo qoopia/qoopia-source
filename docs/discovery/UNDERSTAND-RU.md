@@ -1,6 +1,6 @@
 # Подходит ли вам Qoopia?
 
-Reviewed: 2026-10-14 for Qoopia 5.0.24.
+Reviewed: 2026-11-10 for Qoopia 5.0.25.
 
 
 ## Когда Qoopia полезна?
@@ -75,9 +75,9 @@ Sources: [src/skills/format.ts](https://github.com/qoopia/qoopia-source/blob/mai
 
 ## Что такое AgentComm?
 
-AgentComm сохраняет обмен сообщениями между авторизованными агентами в системе. Пользователь может посмотреть общение, а не полагаться только на финальный пересказ агента. Отправка сообщения не доказывает, что адресат его прочитал или выполнил; агенты и каналы доставки должны быть подключены и работать. Обмен можно просматривать в дашборде. С версии 5.0.20 сообщение может разбудить агента Claude Code или Codex через qoopia wake-runner. Это настраивает оператор серверной (Docker) установки; пакеты для Mac и Linux пока этого не дают.
+AgentComm сохраняет обмен сообщениями между авторизованными агентами в системе. Пользователь может посмотреть общение, а не полагаться только на финальный пересказ агента. Отправка сообщения не доказывает, что адресат его прочитал или выполнил; агенты и каналы доставки должны быть подключены и работать. Обмен можно просматривать в дашборде. С версии 5.0.20 сообщение может разбудить агента Claude Code или Codex через qoopia wake-runner. wake-runner входит в тот же файл qoopia, что приложение для Mac и пакет для Linux; его один раз настраивают на компьютере, где работает агент, как LaunchAgent или пользовательскую службу systemd, и сервер Qoopia должен до него доставать.
 
-Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/qoopia-protocol.md), [src/services/agent-wake.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/agent-wake.ts)
+Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/qoopia-protocol.md), [src/services/agent-wake.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/agent-wake.ts), [src/delivery/wake-runner.ts](https://github.com/qoopia/qoopia-source/blob/main/src/delivery/wake-runner.ts)
 
 
 ## Что делать при сбое или отказе от Qoopia?
@@ -85,3 +85,31 @@ Sources: [src/agent-kit/qoopia-protocol.md](https://github.com/qoopia/qoopia-sou
 Сохранённая настройка или успешный вход ещё не доказывают, что подключение работает. Используйте раздел устранения проблем и проверку реального клиента. Перед обновлением, переносом или удалением установки сохраните резервную копию данных по инструкции вашей версии. Отзыв доступа клиента отличается от удаления его локальной настройки. Не удаляйте единственную копию памяти при исправлении проблем. Лицензия MIT предоставляет ПО как есть, без гарантий.
 
 Sources: [src/agent-kit/OPERATIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/OPERATIONS.md), [src/agent-kit/MCP-CONNECTIONS.md](https://github.com/qoopia/qoopia-source/blob/main/src/agent-kit/MCP-CONNECTIONS.md), [LICENSE](https://github.com/qoopia/qoopia-source/blob/main/LICENSE)
+
+
+## Что такое каноны и ночной разбор?
+
+Каноны — короткие правила, которые Qoopia сама добавляет в контекст агента. Канон действует на всё пространство, на одного агента или на один проект. Постоянные каноны загружаются в начале сессии, контекстные — добавляются к запросу, когда совпадают его слова, файлы, инструменты или проект. Клиенты без хуков Qoopia запрашивают подходящие каноны через canon_match. Каноны пространства и проектов пишут управляющий агент и владелец; агент может написать каноны для себя. Страница «Канон» в дашборде показывает каноны и позволяет снять ненужный. Владелец может назначить одного агента для ночного разбора: он читает разговоры пространства и может предлагать новые каноны, а предложение становится каноном только после того, как владелец примет его в «Обзоре».
+
+Sources: [src/services/canon.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/canon.ts), [src/mcp/canon-tools.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/canon-tools.ts), [src/services/canon-proposals.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/canon-proposals.ts)
+
+
+## Может ли работа переходить между Claude Code и Codex?
+
+Да, между агентами одного владельца. Когда сессия Claude Code или Codex с памятью сессий Qoopia открывает проект, она получает последнюю работу, которую другой агент этого владельца сделал там за последние семь дней: открытые отметки «взято», итоговый ответ, рабочую сводку, изменённые файлы с отпечатками содержимого, ошибки инструментов и последние запросы. Это передаётся как история, а не как инструкции, и только при включённом общем контексте. Клиенты без хуков вызывают work_handoff. Агент может отметить тему как взятую через work_take; отметка истекает сама и ничего не блокирует.
+
+Sources: [src/services/continuity.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/continuity.ts), [src/services/work.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/work.ts), [src/mcp/work-tools.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/work-tools.ts)
+
+
+## Какие инструменты видит агент при подключении?
+
+С версии 5.0.24 MCP-клиент видит восемь основных инструментов: recall, note_get, note_create, agent_inbox, agent_send, qoopia_guide, tool_search и qoopia_execute, а для старых подключений ещё qoopia_protocol. tool_search находит любой другой инструмент по имени или теме и возвращает его схему. qoopia_execute выполняет короткий скрипт только для чтения в изолированной песочнице QuickJS с правами вызывающего агента, так что несколько поисков и чтений занимают один вызов. Писать он не может, модель не использует и ограничен 10 секундами, 50 вызовами инструментов и 20 КБ вывода. Запись остаётся отдельными вызовами.
+
+Sources: [src/mcp/surface.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/surface.ts), [src/mcp/code-mode.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/code-mode.ts), [docs/operations/mcp-tool-surface.md](https://github.com/qoopia/qoopia-source/blob/main/docs/operations/mcp-tool-surface.md)
+
+
+## Нужны ли поиску модель или реранкер?
+
+Нет. recall сочетает полнотекстовый поиск с локальными эмбеддингами, которые входят в Qoopia, и по умолчанию отвечает без модели. Агент может передать judge: true, чтобы подписка пространства на модель расширила запрос и оценила найденное в пределах времени. Оператор сервера может также настроить необязательный старый сервис реранкинга; по умолчанию он выключен, а если он ошибается или не успевает, результаты сохраняют исходный порядок.
+
+Sources: [docs/MEMORY-V1.md](https://github.com/qoopia/qoopia-source/blob/main/docs/MEMORY-V1.md), [src/services/recall/config.ts](https://github.com/qoopia/qoopia-source/blob/main/src/services/recall/config.ts), [src/mcp/tools.ts](https://github.com/qoopia/qoopia-source/blob/main/src/mcp/tools.ts)

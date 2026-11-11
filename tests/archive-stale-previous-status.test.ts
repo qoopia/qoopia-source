@@ -22,7 +22,7 @@ import { db } from "../src/db/connection.ts";
 import { createWorkspace } from "../src/admin/workspaces.ts";
 import { createAgent } from "../src/admin/agents.ts";
 import { createNote } from "../src/services/notes.ts";
-import { sweep, type SweepRule } from "../scripts/archive-stale.ts";
+import { rules, sweep, type SweepRule } from "../scripts/archive-stale.ts";
 
 let WORKSPACE_ID = "";
 let AGENT_ID = "";
@@ -212,5 +212,44 @@ describe("archive-stale: previous_status preservation", () => {
     expect(md.status).toBe("done");
     expect(md.previous_status).toBeUndefined();
     expect(md.archived_at).toBeUndefined();
+  });
+});
+
+describe("archive-stale: notes the owner keeps or agents still use stay [M6]", () => {
+  const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+  const note = (text: string, type: "memory" | "context", metadata?: Record<string, unknown>) => {
+    const n = createNote({ workspace_id: WORKSPACE_ID, agent_id: AGENT_ID, text, type, metadata });
+    // Not written for 100 days: every age rule takes it.
+    db.prepare(`UPDATE notes SET updated_at = ? WHERE id = ?`).run(daysAgo(100), n.id);
+    return n.id;
+  };
+  const lifecycle = (id: string, fields: { owner_pinned?: number; last_recalled_at?: string; last_confirmed_at?: string }) =>
+    db.prepare(`INSERT INTO memory_lifecycle (workspace_id, note_id, owner_pinned, last_recalled_at, last_confirmed_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(WORKSPACE_ID, id, fields.owner_pinned ?? 0, fields.last_recalled_at ?? null, fields.last_confirmed_at ?? null);
+  const taken = (type: "memory" | "context") => sweep(rules.find((r) => r.label.startsWith(type))!, true).ids;
+
+  test("a pinned note, one recalled or confirmed within the rule's age, and a protected record are not archived", () => {
+    const stale = note("m6 stale memory nobody used", "memory");
+    const pinned = note("m6 pinned memory", "memory"); lifecycle(pinned, { owner_pinned: 1 });
+    // Recall writes memory_lifecycle, never notes.updated_at: this note is read every week.
+    const recalled = note("m6 memory recalled last week", "memory"); lifecycle(recalled, { last_recalled_at: daysAgo(7) });
+    const confirmed = note("m6 memory confirmed last month", "memory"); lifecycle(confirmed, { last_confirmed_at: daysAgo(40) });
+    const forgotten = note("m6 memory last recalled half a year ago", "memory"); lifecycle(forgotten, { last_recalled_at: daysAgo(180) });
+    const legal = note("m6 legal record", "memory", { record_class: "legal" });
+    const runbook = note("m6 open runbook", "memory", { record_class: "runbook", status: "active" });
+    const closed = note("m6 closed runbook", "memory", { record_class: "runbook", status: "closed" });
+    const ids = taken("memory");
+    expect(ids).toEqual(expect.arrayContaining([stale, forgotten, closed]));
+    for (const kept of [pinned, recalled, confirmed, legal, runbook]) expect(ids).not.toContain(kept);
+
+    // A context note is taken after 30 days: a recall 40 days ago no longer keeps it, one last week does.
+    const context = note("m6 context recalled 40 days ago", "context"); lifecycle(context, { last_recalled_at: daysAgo(40) });
+    const live = note("m6 context recalled last week", "context"); lifecycle(live, { last_recalled_at: daysAgo(7) });
+    expect(taken("context")).toContain(context);
+    expect(taken("context")).not.toContain(live);
+
+    // The guard is the sweep's own, whatever the rule: an explicit id does not get past a pin.
+    expect(sweep(ruleForId(pinned), false)).toMatchObject({ matched: 0, archived: 0 });
+    expect(getMetadata(pinned).status).toBeUndefined();
   });
 });

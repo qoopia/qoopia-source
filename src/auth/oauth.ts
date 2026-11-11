@@ -438,21 +438,33 @@ export function assertCanRegisterOAuth(auth: AuthContext): void {
 }
 
 const REGISTRATION_LIMIT = 20;
+/** Registrations whose consent is in progress stand outside that limit; this bounds how many may. */
+const CONSENTING_LIMIT = 200;
 /** A client that retries a failed connect registers again each time, and the Claude and ChatGPT
  * callbacks register without credentials. Registrations that never received a code or token and
  * outlived a consent ticket are dead: reclaim them. Fresh or used bound registrations still count; the public unbound quota counts only unused identities. */
 function reserveRegistration(agentId: string | null): void {
-  const registered = () => (db.query("SELECT count(*) AS n FROM oauth_clients WHERE agent_id IS ? AND (? IS NOT NULL OR NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id))").get(agentId,agentId) as { n: number }).n;
+  const now = nowIso();
+  const tokenless = "NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)";
+  const unused = `${tokenless} AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`;
+  // Somebody is giving consent to this registration right now: its ticket is neither denied nor expired.
+  // Deleting the client deletes that ticket (ON DELETE CASCADE), so the oldest-unused rule below used to
+  // let twenty anonymous registrations end an owner's consent in progress. Such a registration is never
+  // evicted by that rule and does not count toward the limit either: anyone can open a ticket, and counted
+  // ones would refuse the owner's next connection instead.
+  const consenting = `${unused} AND EXISTS(SELECT 1 FROM consent_tickets k WHERE k.client_id=oauth_clients.id AND k.denied=0 AND k.expires_at>?2)`;
+  const count = (where: string) => (db.query(`SELECT count(*) AS n FROM oauth_clients WHERE agent_id IS ?1 AND ${where}`).get(agentId, now) as { n: number }).n;
+  const evictOldest = (where: string) =>
+    db.query(`DELETE FROM oauth_clients WHERE id=(SELECT id FROM oauth_clients WHERE agent_id IS ?1 AND ${where} ORDER BY created_at, rowid LIMIT 1)`).run(agentId, now).changes > 0;
+  // Holding tickets open is therefore bounded on its own: past the bound the oldest of them gives way.
+  while (count(consenting) >= CONSENTING_LIMIT && evictOldest(consenting)) { /* one at a time, oldest first */ }
+  const registered = () => count(`(?1 IS NOT NULL OR ${tokenless}) AND NOT (${consenting})`);
   if (registered() < REGISTRATION_LIMIT) return;
-  const unused = `agent_id IS ? AND NOT EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.client_id=oauth_clients.id)
-    AND NOT EXISTS(SELECT 1 FROM client_connections c WHERE c.oauth_client_id=oauth_clients.id)`;
-  db.query(`DELETE FROM oauth_clients WHERE ${unused} AND created_at<=?`).run(agentId, plusSec(-CONSENT_TICKET_TTL_SEC));
+  db.query(`DELETE FROM oauth_clients WHERE agent_id IS ?1 AND ${unused} AND NOT (${consenting}) AND created_at<=?3`).run(agentId, now, plusSec(-CONSENT_TICKET_TTL_SEC));
   // The Claude and ChatGPT callbacks register without credentials, so anyone can fill the quota
-  // faster than a consent finishes (audit 5.0.21 A3-04). The oldest registration nobody completed
-  // gives way instead of the owner's new connection being refused; a used client never does.
-  if (registered() >= REGISTRATION_LIMIT) {
-    db.query(`DELETE FROM oauth_clients WHERE id=(SELECT id FROM oauth_clients WHERE ${unused} ORDER BY created_at, rowid LIMIT 1)`).run(agentId);
-  }
+  // faster than a consent finishes (audit 5.0.21 A3-04). The oldest registrations nobody completed
+  // give way instead of the owner's new connection being refused; a used client never does.
+  while (registered() >= REGISTRATION_LIMIT && evictOldest(`${unused} AND NOT (${consenting})`)) { /* one at a time, oldest first */ }
   if (registered() >= REGISTRATION_LIMIT) throw new QoopiaError("RATE_LIMITED", "Client registration limit reached; finish or cancel a pending connection first");
 }
 

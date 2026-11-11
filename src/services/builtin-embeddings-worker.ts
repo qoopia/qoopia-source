@@ -6,6 +6,7 @@ import type * as Ort from 'onnxruntime-web';
 import {Tokenizer} from '@huggingface/tokenizers';
 import {pathToFileURL} from 'node:url';
 import {assetPath} from '../utils/assets.ts';
+import {fitPassage} from './builtin-passage.ts';
 declare const self: Worker;
 let ort:typeof Ort;
 let loaded:Promise<{encoder:Tokenizer;model:Ort.InferenceSession}>|undefined;
@@ -27,12 +28,7 @@ self.onmessage=async({data:{id,prefix,text}}:MessageEvent<{id:number;prefix:stri
   let outputs:Record<string,Ort.Tensor>={};
   try {
     const {encoder,model}=await load();
-    let end=text.length,ids:number[];
-    while (true) {
-      ids=encoder.encode(prefix+text.slice(0,end)).ids;
-      if(ids.length<=512)break;
-      end=Math.max(1,Math.floor(end*0.75));
-    }
+    const {ids,end}=fitPassage(passage=>encoder.encode(passage).ids,prefix,text);
     for(const name of model.inputNames) feeds[name]=new ort.Tensor('int64',
       BigInt64Array.from(name==='input_ids'?ids:ids.map(()=>name==='attention_mask'?1:0),BigInt),[1,ids.length]);
     outputs=await model.run(feeds);const out=outputs.last_hidden_state;

@@ -1,5 +1,5 @@
 import { test,expect } from 'bun:test';
-import { mkdtempSync,realpathSync,mkdirSync,readFileSync,writeFileSync,rmSync,symlinkSync,linkSync,existsSync,readdirSync,lstatSync,renameSync } from 'node:fs';
+import { chmodSync,mkdtempSync,realpathSync,mkdirSync,readFileSync,writeFileSync,rmSync,symlinkSync,linkSync,existsSync,readdirSync,lstatSync,renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join,relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -8,7 +8,7 @@ import { sessionGet,skillLifecycle } from '../src/skills/loop.ts';
 import { nativeModelStatus,evaluateArtifacts,authorizeRun } from '../src/skills/runtime.ts';
 import { canonical,digest } from '../src/skills/commands.ts';
 import { loopFixture,accepted,assigned,opened,csvContent } from './helpers/p2-fixtures.ts';
-import { bindManagedRoot,materializeSession,nativeLaunch,nativeOptions,nativeExecution,nativeModelEvidence,nativeSubscriptionStatus,preflightNativeSubscription,prepareNativeSession,prepareCsvTask,runCsvTask,nativeQualificationCanContinue,csvExpected,csvTaskInstructions,QUALIFICATION_MODELS } from '../src/skills/adapter.ts';
+import { managedClaudePolicy,bindManagedRoot,materializeSession,nativeLaunch,nativeOptions,nativeExecution,nativeModelEvidence,nativeSubscriptionStatus,preflightNativeSubscription,prepareNativeSession,prepareCsvTask,runCsvTask,nativeQualificationCanContinue,csvExpected,csvTaskInstructions,QUALIFICATION_MODELS } from '../src/skills/adapter.ts';
 const old=new Map([['SKILL.md',Buffer.from('old instructions')],['assets/data.txt',Buffer.from('old data')]]);
 const newer=new Map([['SKILL.md',Buffer.from('new instructions')],['assets/data.txt',Buffer.from('new data')]]);
 const map=(files:Map<string,Buffer>)=>Object.fromEntries([...files].map(([n,b])=>[n,{sha256:digest(b),size:b.length}]));
@@ -756,4 +756,26 @@ test('P3 model mismatch ordering preserves strict GPT unknown and stops configur
  expect(nativeModelStatus('gpt-6-astra',{source:'codex_exec',models:['gpt-other'],complete:true})).toBe('mismatch');
  expect(nativeModelStatus('gpt-6-astra',{source:'codex_exec',models:['gpt-6-astra'],complete:true})).toBe('unknown');
  expect(nativeModelStatus('gpt-6-astra',{source:'codex_exec',models:[],complete:false})).toBe('unknown');
+});
+
+// I12: both of the owner's Macs carry {"env":{"DISABLE_AUTOUPDATER":"1"}}; that alone refused every Claude Code connection.
+test('A managed Claude settings file that only sets harmless switches is not a policy; anything else still is',()=>{
+ const root=mkdtempSync(join(tmpdir(),'claude-policy-')),file=join(root,'managed-settings.json');
+ try{
+  expect(managedClaudePolicy(root)).toBe(false);
+  for(const harmless of ['{"env":{"DISABLE_AUTOUPDATER":"1"}}','{"env":{"DISABLE_AUTOUPDATER":"1","DISABLE_TELEMETRY":"1","DISABLE_ERROR_REPORTING":"1"}}','{"env":{}}']){
+   writeFileSync(file,harmless);expect(managedClaudePolicy(root)).toBe(false);
+  }
+  for(const policy of ['{"env":{"DISABLE_AUTOUPDATER":"1"},"permissions":{"deny":["Bash"]}}','{"env":{"DISABLE_AUTOUPDATER":"1","ANTHROPIC_BASE_URL":"https://proxy.invalid"}}',
+   '{"env":{"DISABLE_AUTOUPDATER":1}}','{"env":["DISABLE_AUTOUPDATER"]}','{"env":null}','{"hooks":{}}','{}','[]','null','{"env":','','x'.repeat(70_000)]){
+   writeFileSync(file,policy);expect(managedClaudePolicy(root)).toBe(true);
+  }
+  // A file Qoopia cannot read is a policy it cannot judge.
+  writeFileSync(file,'{"env":{"DISABLE_AUTOUPDATER":"1"}}');chmodSync(file,0);
+  if(process.getuid?.()!==0)expect(managedClaudePolicy(root)).toBe(true);
+  chmodSync(file,0o600);expect(managedClaudePolicy(root)).toBe(false);
+  // The other managed sources are never read: their presence is the policy.
+  writeFileSync(join(root,'managed-mcp.json'),'{}');expect(managedClaudePolicy(root)).toBe(true);rmSync(join(root,'managed-mcp.json'));
+  mkdirSync(join(root,'managed-settings.d'));expect(managedClaudePolicy(root)).toBe(true);
+ }finally{rmSync(root,{recursive:true,force:true});}
 });

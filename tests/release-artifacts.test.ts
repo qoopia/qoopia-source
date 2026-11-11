@@ -172,6 +172,15 @@ describe("release artifact contracts", () => {
     }
   });
 
+  // The operations plan says container logs are rotated by compose options; the memory compose had none,
+  // so docker kept one json log that only grew.
+  test("production composes bound their container logs", () => {
+    for (const file of ["deploy/docker-compose.release.yml", "deploy/docker-compose.auth.yml"]) {
+      if (!fs.existsSync(path.join(repoRoot, file))) continue;
+      expect(read(file), file).toContain('    logging:\n      driver: json-file\n      options:\n        max-size: 10m\n        max-file: "3"\n');
+    }
+  });
+
   // scripts/v4-rollback-rehearsal.ts asserts that rolling back is an image
   // swap rather than a code-directory swap, and it reads compose/docker-
   // compose.v4.yml because that is the only compose baked into the image by

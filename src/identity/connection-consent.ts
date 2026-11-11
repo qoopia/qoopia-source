@@ -9,6 +9,7 @@ import { hash, randomToken } from '../utils/fs.ts';
 import { escapeHtml as escape } from '../utils/html.ts';
 import {readBoundedText} from '../utils/http-json.ts';
 import {cspOrigin} from '../http/respond.ts';
+import {limitKey} from '../utils/rate-limit.ts';
 
 const CONSENT_COOKIE_PREFIX='__Secure-qoopia_consent_';
 const loginCookie=CONSENT_COOKIE_PREFIX+'login';
@@ -79,9 +80,9 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
         if(!flow&&!ticket.approved_by_agent_id){
           // Anyone can mint tickets for a public client, so one network may not hold the whole table and lock the owner out.
           const open=[...flows.values()];
-          if(flows.size>=100||open.filter(f=>f.ticket===ticketId).length>=5||open.filter(f=>f.ip===clientIp).length>=10)throw new ConsentError('TOO_MANY_ATTEMPTS',429);
+          if(flows.size>=100||open.filter(f=>f.ticket===ticketId).length>=5||open.filter(f=>f.ip===limitKey(clientIp)).length>=10)throw new ConsentError('TOO_MANY_ATTEMPTS',429);
           token=randomToken();flow={ticket:ticketId,nonce:randomToken(),expires:Math.min(Date.parse(ticket.expires_at),Date.now()+600_000),
-            owner:owner.agent_id,version:owner.session_version!,verified:false,busy:false,ip:clientIp,language:requested};
+            owner:owner.agent_id,version:owner.session_version!,verified:false,busy:false,ip:limitKey(clientIp),language:requested};
           const identityCookies=(req.headers.get('cookie')??'').split(';').map(s=>s.trim()).filter(s=>s.startsWith(loginCookie+'='));
           const proof=identityCookies.length===1?proofs.get(hash(identityCookies[0]!.slice(loginCookie.length+1))):undefined;
           if(proof?.owner===owner.agent_id&&proof.version===owner.session_version&&proof.binding===hash(JSON.stringify(binding))){
@@ -114,12 +115,18 @@ export function remoteConnectionConsent(root:string,database:Database,request:ty
             const method=form.get('method');if(method!=='email'&&method!=='google')throw new ConsentError('INVALID_REQUEST');
             // F-125: the confirmation counts only from this browser's network, so the mailbox owner's
             // click cannot verify a consent flow somebody else started elsewhere.
-            const verifier=randomToken(),data=await post('/requests',{method,language:flow.language,...(method==='email'?{email:loginEmail(form.get('email'))}:{}),bind:'network',starter_ip:clientIp,challenge:hash(verifier)});
-            if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new ConsentError('SIGN_IN_UNAVAILABLE',503);
-            flow.login={id:data.id,verifier,method};
+            const verifier=randomToken(),email=method==='email'?loginEmail(form.get('email')):undefined;
+            // Only the owner's address can pass /check, so no e-mail is spent on any other. The page answers
+            // as for a real start and waits: a visitor does not learn whether an address is the owner's.
+            if(email&&email!==binding.email)flow.login={id:'',verifier,method};
+            else{
+              const data=await post('/requests',{method,language:flow.language,...(email?{email}:{}),bind:'network',starter_ip:clientIp,challenge:hash(verifier)});
+              if(typeof data.id!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.id))throw new ConsentError('SIGN_IN_UNAVAILABLE',503);
+              flow.login={id:data.id,verifier,method};
+            }
           }else if(route==='/oauth/consent/check'){
             if(!flow.login)throw new ConsentError('SIGN_IN_REQUIRED',403);
-            const data=await post('/redeem',{id:flow.login.id,verifier:flow.login.verifier});
+            const data:Record<string,unknown>=flow.login.id?await post('/redeem',{id:flow.login.id,verifier:flow.login.verifier}):{pending:true};
             // Still pending: say so, or the page re-renders unchanged and the tap looks ignored.
             notYet=data.pending===true;
             if(data.pending!==true){

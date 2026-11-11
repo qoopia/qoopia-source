@@ -85,3 +85,11 @@ export function backgroundFailure(task: string, everyMs = 60_000) {
     logger.warn(`${task} failed`, { error: error instanceof Error ? error.message : String(error) });
   };
 }
+
+/** The body of a timer that writes to the database. An exception thrown out of a timer is an uncaught
+ * one, and the server stops on those (process-guards.ts): a busy or full database for one tick must
+ * cost that tick, not the process. The next tick tries again. */
+export function guardedTick(task: string, body: () => void) {
+  const failed = backgroundFailure(task);
+  return () => { try { body(); } catch (error) { failed(error); } };
+}

@@ -51,6 +51,11 @@ beforeAll(() => {
   save("p1", "adr022-partial", id.bob!, "retention partial one", daysAgo(40));
   save("p2", "adr022-partial", id.bob!, "retention partial two", daysAgo(39));
   summarize("adr022-partial", id.bob!, "p1", "p1");
+  // Summarized from the middle to the end (an agent summarised only its last turn): the first two turns have no summary.
+  save("t1", "adr022-tail", id.alice!, "retention tail one", daysAgo(40));
+  save("t2", "adr022-tail", id.alice!, "retention tail two", daysAgo(40));
+  save("t3", "adr022-tail", id.alice!, "retention tail three", daysAgo(39));
+  summarize("adr022-tail", id.alice!, "t3", "t3");
   save("n1", "adr022-none", id.bob!, "retention none one", daysAgo(40));
   // Fully summarized, but only its old half is past the window.
   save("m1", "adr022-mixed", id.alice!, "retention mixed old", daysAgo(45));
@@ -159,9 +164,10 @@ describe("raw retention", () => {
   test("the dry-run report lists only fully summarized sessions past the window, counts only", () => {
     const report = rawRetentionReport(30);
     const ours = report.by_session.filter((s) => s.workspace_id === ws);
-    expect(ours.map((s) => [s.session_id, s.messages]).sort()).toEqual([["adr022-full", 2], ["adr022-mixed", 1]]);
+    // Only messages a summary covers: of adr022-tail the one summarised turn, never the two before it.
+    expect(ours.map((s) => [s.session_id, s.messages]).sort()).toEqual([["adr022-full", 2], ["adr022-mixed", 1], ["adr022-tail", 1]]);
     expect(report).toMatchObject({ dry_run: true, retention_days: 30, delete_enabled: false });
-    expect(report.by_agent.find((a) => a.agent_id === id.alice)).toMatchObject({ sessions: 2, messages: 3, agent_name: "adr022-alice" });
+    expect(report.by_agent.find((a) => a.agent_id === id.alice)).toMatchObject({ sessions: 3, messages: 4, agent_name: "adr022-alice" });
     expect(report.by_agent.find((a) => a.agent_id === id.bob)).toBeUndefined();
     expect(JSON.stringify(report)).not.toContain("retention full");
   });
@@ -179,11 +185,12 @@ describe("raw retention", () => {
     env.RAW_RETENTION_DELETE = true;
     try {
       const expected = rawRetentionReport(30).messages;
-      expect(pruneRawTranscripts(30)).toEqual({ enabled: true, sessions: 2, messages_deleted: expected });
+      expect(pruneRawTranscripts(30)).toEqual({ enabled: true, sessions: 3, messages_deleted: expected });
     } finally { env.RAW_RETENTION_DELETE = false; }
     const left = (session: string) => (db.query("SELECT content FROM session_messages WHERE session_id=? ORDER BY id").all(session) as { content: string }[]).map((m) => m.content);
     expect(left("adr022-full")).toEqual([]);
     expect(left("adr022-mixed")).toEqual(["retention mixed new"]);
+    expect(left("adr022-tail")).toEqual(["retention tail one", "retention tail two"]);
     expect(left("adr022-partial")).toHaveLength(2);
     expect(left("adr022-none")).toHaveLength(1);
     expect((db.query("SELECT COUNT(*) AS n FROM summaries WHERE session_id IN ('adr022-full','adr022-mixed')").get() as { n: number }).n).toBe(2);

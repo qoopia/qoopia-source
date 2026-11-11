@@ -1,5 +1,14 @@
 # Operational normalization contract
 
+> HISTORICAL — a dated record of the Phase 4 / WS-9 review (2026-07-16), kept as
+> release evidence. It is not the current runbook. Two of its statements no
+> longer hold: the 13 foreign-key violations it expects to block production are
+> gone, and production is deployed from per-release folders by an operator
+> script that is not in this repository, not straight from
+> `deploy/docker-compose.release.yml`. The release-input and startup rules are
+> still checked by `tests/release-artifacts.test.ts`. For the current state run
+> `python3 scripts/project-status.py --live`.
+
 Status: Phase 4 / WS-9 review artifact, 2026-07-16. No production action has
 been performed by this change.
 

@@ -152,7 +152,7 @@ async function main(){
    const output=await runMemoryHook(need('config'),JSON.parse(input));if(output)console.log(JSON.stringify(output));return;
  }
  if(cmd==='memory-drain'){const {drainMemoryBacklog}=await import('./memory-client.ts');emit(await drainMemoryBacklog(need('config')));return;}
- if(cmd==='wake-runner'){const {wakeRunnerCli}=await import('./wake-runner.ts');await wakeRunnerCli(argv,arg,flag);return;}
+ if(cmd==='wake-runner'){const {wakeRunnerCli}=await import('./wake-runner.ts');await wakeRunnerCli(argv,arg,flag,platformPaths(arg('root')).root);return;}
  if(cmd==='hermes-sync'){const {hermesSyncCli}=await import('./hermes-sync.ts');await hermesSyncCli(argv,arg,flag,platformPaths(arg('root')).root);return;}
  if(cmd==='client-link'){
    const {configureNativeClient}=await import('./client-config.ts');
@@ -524,11 +524,14 @@ async function main(){
      const reserved=await reservePort(0);try{delivery.install(self,reserved.port);}finally{await reserved.close();}
    }else if(fs.existsSync(path.join(self,'manifest.json'))&&path.resolve(self)!==path.resolve(root,'bundles',readCurrent(root).bundle)){
      // A newer downloaded package is adopted, not silently handed to the older installed runtime.
-     const {preparePackageUpdate}=await import('./desktop-update.ts');
-     try{packageUpdated=preparePackageUpdate(delivery,self,QOOPIA_PINNED_KEY,allow).state==='updated';}
+     const {preparePackageUpdate,packageNotAdopted}=await import('./desktop-update.ts');
+     // The exact commands: apply needs the saved plan and its digest, and an explicit --root must be repeated.
+     const review=JSON.stringify(path.join(self,'qoopia'))+' update --bundle '+JSON.stringify(self)+(arg('root')?' --root '+JSON.stringify(root):'');
+     try{
+       const prepared=preparePackageUpdate(delivery,self,QOOPIA_PINNED_KEY,allow),notice=packageNotAdopted(prepared,review);
+       packageUpdated=prepared.state==='updated';if(notice)console.error(notice);
+     }
      catch(error){
-       // The exact commands: apply needs the saved plan and its digest, and an explicit --root must be repeated.
-       const review=JSON.stringify(path.join(self,'qoopia'))+' update --bundle '+JSON.stringify(self)+(arg('root')?' --root '+JSON.stringify(root):'');
        // Read by a person in a terminal: plain sentences, the reason on its own line [A6-05].
        console.error(['Qoopia was not updated: this package was not installed, and the installed version opens instead.',
          'Reason: '+failureText(error,300),
@@ -620,7 +623,9 @@ async function main(){
    }else throw new Error('Unknown command');
  }finally{release();}
 }
-// The binary is also its own file-text extraction worker (src/services/files.ts spawns it) and its own
-// daily maintenance process (runMaintenanceProcess in src/services/retention.ts).
+// The binary is also its own file-text extraction worker (src/services/files.ts spawns it), its own
+// Code Mode sandbox (src/mcp/code-mode.ts) and its own daily maintenance process (runMaintenanceProcess
+// in src/services/retention.ts).
 if(import.meta.main)(process.env.QOOPIA_FILE_TEXT_WORKER?import('../services/file-text-worker.ts').then(m=>m.runFileTextWorker())
+  :process.env.QOOPIA_CODE_MODE_HOST?import('../mcp/code-mode-host.ts').then(m=>m.runCodeModeHost())
   :process.env.QOOPIA_MAINTENANCE_WORKER?import('../services/maintenance-worker.ts').then(m=>m.runMaintenanceWorker()):main()).catch((error:unknown)=>{console.error('Qoopia operation refused: '+failureText(error,1000));process.exitCode=1;});

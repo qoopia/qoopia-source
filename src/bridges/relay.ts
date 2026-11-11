@@ -1,5 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {z} from 'zod';
+import {limitKey} from '../utils/rate-limit.ts';
 import {BRIDGE_RELAY,MAX_PACKET,MAX_RPC,fingerprint,id,invitationCode,label,peerId,publicIdentity,sha,verifyRPC} from './protocol.ts';
 // The public invite page runs exactly this script and nothing else: its hash is the whole script-src.
 // Its words come from data attributes, so one script (one hash) serves every language. Only a
@@ -77,6 +78,7 @@ export function bridgeRelay(db:Database,relay=BRIDGE_RELAY) {
     for(const [key,message] of queue)if(message.expires<=now)remove(key);
   }
   const handler=async (req:Request,clientIp='unknown'):Promise<Response>=>{
+    clientIp=limitKey(clientIp); // only the limits below read it: an IPv6 client is counted by its /64
     try {
       const url=new URL(req.url),base=new URL(relay);
       if(url.pathname===base.pathname+'/invite'&&req.method==='GET')return new Response(invitePage(req),{headers:{...headers,'content-type':'text/html; charset=utf-8',vary:'accept-language','content-security-policy':`default-src 'none'; style-src 'unsafe-inline'; script-src '${INVITE_SCRIPT_HASH}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`}});

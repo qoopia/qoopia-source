@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {randomBytes,createHash} from 'node:crypto';
 import type {IncomingMessage,ServerResponse} from 'node:http';
-import {loginBroker,releaseStampSha,routeClass} from '../src/identity/broker.ts';
+import {BROKER_IDLE_TIMEOUT_SEC,loginBroker,releaseStampSha,routeClass} from '../src/identity/broker.ts';
 import {SESSION_DAYS} from '../src/identity/profile.ts';
 import {localIdentityLogin,ownerIdentity,LOGIN_ORIGIN} from '../src/identity/local.ts';
 import {issueLocalLogin} from '../src/delivery/local-login.ts';
@@ -159,4 +159,25 @@ test('sign-in /ready answers the loopback healthcheck with check names only; fai
  expect(routeClass('/profile/dashboard')).toBe('profile');
  expect(routeClass('/news/unsubscribe/secret-token')).toBe('news');
  expect(routeClass('/user@example.com')).toBe('other');
+});
+
+test('the sign-in service lets a slow request finish: device enrolment waits for DNS far past Bun\'s 10 s default',async()=>{
+  expect(BROKER_IDLE_TIMEOUT_SEC).toBeGreaterThanOrEqual(100);expect(BROKER_IDLE_TIMEOUT_SEC).toBeLessThanOrEqual(255);
+  expect(fs.readFileSync(new URL('../src/identity/broker.ts',import.meta.url),'utf8')).toContain('idleTimeout:BROKER_IDLE_TIMEOUT_SEC');
+  // The setting itself, on a real listener: a handler that answers after 11 s is not cut off.
+  const server=Bun.serve({hostname:'127.0.0.1',port:0,idleTimeout:BROKER_IDLE_TIMEOUT_SEC,fetch:async()=>{await Bun.sleep(11_000);return new Response('late');}});
+  try{expect(await (await fetch(`http://127.0.0.1:${server.port}/`)).text()).toBe('late');}finally{server.stop(true);}
+},20_000);
+
+test('strangers cannot spend the daily sign-in e-mail budget of people who already have an account (A3)',async()=>{
+ const remote=new Database(':memory:');let sent=0;
+ const handler=loginBroker(remote,{origin:LOGIN_ORIGIN,resendKey:'fixture',from:'Qoopia <login@mail.qoopia.ai>',googleClientId:'fixture-client',googleClientSecret:'fixture-secret'},(async()=>{sent++;return Response.json({id:'sent'});}) as unknown as typeof fetch);
+ const start=(email:string,ip:string)=>handler(new Request(LOGIN_ORIGIN+'/requests',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'email',email,challenge:'a'.repeat(64)})}),ip);
+ remote.query("INSERT INTO connection_accounts(id,email) VALUES ('member','member@example.com')").run();
+ try{
+  for(let i=0;i<80;i++)expect((await start(`stranger${i}@example.com`,`198.51.100.${i}`)).status).toBe(201);
+  // The strangers' budget is spent: one more unknown address gets no e-mail.
+  expect((await start('stranger80@example.com','198.51.100.80')).status).toBe(400);expect(sent).toBe(80);
+  expect((await start('Member@example.com','198.51.100.81')).status).toBe(201);expect(sent).toBe(81);
+ }finally{remote.close();}
 });

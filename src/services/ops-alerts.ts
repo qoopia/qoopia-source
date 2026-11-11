@@ -3,8 +3,11 @@ import { z } from 'zod';
 import { safePath, readJson } from '../utils/fs.ts';
 import { deliverMemoryEvent, type OutboxDestination } from './event-outbox.ts';
 import { readOps, writeOps, opsPayload, OPS_ALERT_BATCH_LIMIT } from '../delivery/ops-state.ts';
+import { QoopiaError } from '../utils/errors.ts';
 // Shared outbox transport keeps HTTPS allowlisting, DNS pinning, no redirect, size/time bounds.
 // Channels are supplied only by an explicit owner integration; empty defaults retain pending.
+// One exception, for channels read from the owner's private file only: a receiver on this host over
+// plain http (http://127.0.0.1:<port> or http://[::1]:<port>), which is what scripts/ops-alert-relay.py is.
 async function attemptOpsAlerts(data: string, channels: OutboxDestination[] = [], transport: Pick<Parameters<typeof deliverMemoryEvent>[0], 'fetchImpl' | 'resolver'> = {}, now = Date.now()) {
   const state = readOps(data);
   if (state.delivery_hold) return state;
@@ -27,7 +30,12 @@ async function attemptOpsAlerts(data: string, channels: OutboxDestination[] = []
           destination, requireReceipt: true, ...transport });
         if (!result.receipt) continue;
         alert.receipt = result.receipt; alert.state = 'confirmed'; alert.last_error = null; break;
-      } catch { /* Untrusted response/error bytes never enter persisted diagnostics. */ }
+      } catch (error) {
+        // A destination the outbox policy refuses will be refused on every retry: the alert says so with a
+        // fixed code instead of looking like a receiver that is slow to confirm. Untrusted response and
+        // error bytes never enter persisted diagnostics.
+        if (error instanceof QoopiaError && error.code === 'FORBIDDEN') alert.last_error = 'DESTINATION_REFUSED';
+      }
     }
     const latest = readOps(data);
     const current = latest.alerts.find(a => a.id === alert.id);
@@ -50,7 +58,7 @@ export function readOwnerAlertChannels(file?: string): OutboxDestination[] {
   return policy.channels.map(({signing_key_base64url,...channel}) => {
     const signing_key=Buffer.from(signing_key_base64url,'base64url');
     if(signing_key.length<32)throw new Error('ALERT_POLICY_INVALID');
-    return {...channel,signing_key};
+    return {...channel,signing_key,from_owner_policy:true as const};
   });
 }
 

@@ -18,6 +18,7 @@ import {newsletter,unsubscribePage} from './newsletter.ts';
 import type {OwnerOptions} from './owner.ts';
 import {confirmationMail,confirmationView,finishedView,loginLanguage,welcomeMail,type LoginLanguage} from './messages.ts';
 import { hash, randomToken } from '../utils/fs.ts';
+import { ipv6Network, limitKey } from '../utils/rate-limit.ts';
 import { escapeHtml as escape } from '../utils/html.ts';
 import { hasColumn } from '../db/introspect.ts';
 import { MAX_BODY_BYTES, readBoundedText } from '../utils/http-json.ts';
@@ -47,12 +48,13 @@ export function signInNetwork(ip:string):string|null {
   }
   if(v.includes(':')&&/^[0-9a-f:]+$/.test(v)){
     if(v==='::1'||v==='::'||/^f[cd]/.test(v)||/^fe[89ab]/.test(v))return null;
-    const [head='',tail='']=v.split('::'),h=head?head.split(':'):[],t=tail?tail.split(':'):[];
-    const groups=v.includes('::')?[...h,...Array(Math.max(0,8-h.length-t.length)).fill('0'),...t]:h;
-    return groups.slice(0,4).map(g=>g.replace(/^0+(?=.)/,'')).join(':')+'::/64';
+    return ipv6Network(v);
   }
   return v||null;
 }
+/** Bun.serve closes a request that sends nothing for 10 s by default. Enrolling a device waits for its DNS
+ * record (up to 90 s) and a provider call may take 15 s: those requests were cut off with no answer [5.0.25]. */
+export const BROKER_IDLE_TIMEOUT_SEC=120;
 type Config = {releaseManifestUrl?:string;releaseSha?:string|null;owner?:OwnerOptions;ownerBridgeSecret?:string;origin:string;resendKey:string;from:string;googleClientId:string;googleClientSecret:string;appleAudience?:string;devices?:DeviceRegistryOptions;recordEvent?:RecordEvent;browserWrite?:(raw:unknown)=>boolean};
 
 /** Same stamp as the server image (scripts/release-stamp.ts); /health reports it for release monitoring. */
@@ -110,7 +112,10 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     return JSON.parse(await readBoundedText(response,MAX_BODY_BYTES)) as Record<string,unknown>;
   };
   async function sendConfirmation(flow: Flow, identity: LoginIdentity) {
-    if (!allowance('email:'+identity.email,3,3_600_000) || !allowance('sending',80,86_400_000)) throw new Error('Too many sign-in emails. Please try again later');
+    // Anyone may start a sign-in for any address, so addresses with an account have a daily budget of
+    // their own: strangers spending theirs no longer closes e-mail sign-in for everyone until tomorrow.
+    const member=db.query('SELECT 1 FROM connection_accounts WHERE email=?').get(identity.email);
+    if (!allowance('email:'+identity.email,3,3_600_000) || !allowance(member?'sending:member':'sending',80,86_400_000)) throw new Error('Too many sign-in emails. Please try again later');
     const token = randomToken();
     db.query('UPDATE login_requests SET email=?,google_sub=?,mail_token=?,state=NULL,pkce=NULL WHERE id=?').run(identity.email,identity.googleSub??null,hash(token),flow.id);
     const link = origin+'/confirm?lang='+loginLanguage(flow.language)+(flow.confirm_code?'&code=1':flow.starter_net?'&auto=1':'')+'#'+token;
@@ -135,7 +140,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     if(!response.ok)throw new Error('Release manifest unavailable');
     return JSON.parse(await readBoundedText(response,MAX_BODY_BYTES));
     // ponytail: at most 20 counted downloads per address an hour; the redirect itself is never refused.
-  },(event,ip)=>{if(allowance('download:'+ip,20,3_600_000))record({kind:'download_redirect',...event});});
+  },(event,ip)=>{if(allowance('download:'+limitKey(ip),20,3_600_000))record({kind:'download_redirect',...event});});
   // A network-bound sign-in finishes only from the network where it started: a link or a Google
   // account someone else completes from elsewhere signs in nobody. This replaces the F-125 code.
   const sameNetwork=(flow:{starter_net:string|null},clientIp:string)=>!!flow.starter_net&&flow.starter_net===signInNetwork(clientIp);
@@ -169,6 +174,8 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
   }
   const handler=async (req: Request, clientIp: string): Promise<Response> => {
     const url = new URL(req.url), now = Date.now();
+    // Every per-client allowance below counts an IPv6 client by its /64, not by the address it chose.
+    const client = limitKey(clientIp);
     if(url.pathname==='/internal/owner')return ownerBridge(req);
     // Container healthcheck (loopback, any Host) and monitors: the account store answers and the providers are configured.
     // Check names only; it costs one trivial query, so it sits before the Host check and the rate limit.
@@ -183,14 +190,14 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
     db.query('DELETE FROM login_requests WHERE expires<=?').run(now);
     handoff.cleanup();codes.cleanup();
     db.query('DELETE FROM login_limits WHERE expires<=?').run(now);
-    if (!allowance('requests:'+clientIp,300,60_000)) return json(429,{error:'Please try again shortly'});
+    if (!allowance('requests:'+client,300,60_000)) return json(429,{error:'Please try again shortly'});
     try {
       const installer=/^\/download\/([^/]+)$/.exec(url.pathname);
       if(installer)return download(req,installer[1]!,clientIp);
       // /e/v1: a neutral path that list-based blockers do not match (/analytics/event is an EasyPrivacy rule).
       if(url.pathname==='/e/v1'){
         if(!config.browserWrite)return new Response(null,{status:503});
-        if(!allowance('analytics-global',100_000,86_400_000)||!allowance('analytics:'+clientIp,60,60_000))return new Response(null,{status:429});
+        if(!allowance('analytics-global',100_000,86_400_000)||!allowance('analytics:'+client,60,60_000))return new Response(null,{status:429});
         return browserEvent(req,config.browserWrite);
       }
       if(url.pathname==='/devices'){
@@ -257,7 +264,11 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
       if (url.pathname === '/requests') {
         if (!['email','google','apple','account','device'].includes(body.method) || !/^[a-f0-9]{64}$/.test(body.challenge)) return json(400,{error:'Invalid sign-in request'});
         if(body.device_peer!==undefined&&(!devices||typeof body.device_peer!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(body.device_peer)))return json(400,{error:'Device registration is unavailable'});
-        if (!allowance('start:'+clientIp,20,3_600_000)) return json(429,{error:'Too many sign-in attempts. Please try again later'});
+        // An installation relays the sign-ins of everyone who opens its dashboard and reports each visitor's
+        // address. Starts are counted per visitor network behind that server, so anonymous visitors cannot
+        // spend its owner's hourly starts; the per-server ceiling bounds a caller that reports a new address each time.
+        const visitor=typeof body.starter_ip==='string'&&body.starter_ip.length<=64?signInNetwork(body.starter_ip):null;
+        if (!allowance('start:'+client+(visitor?'>'+visitor:''),20,3_600_000) || !allowance('starts:'+client,300,3_600_000)) return json(429,{error:'Too many sign-in attempts. Please try again later'});
         if(body.method==='account'){
           if(body.device_peer!==undefined)return json(400,{error:'Account continuation cannot enroll a device'});
           const id=handoff.start(body.challenge,body.dashboard);
@@ -283,7 +294,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         // A request that enrolls a device key (device_peer) is always bound to the network this service
         // itself sees: whoever calls may omit `bind` or report any starter_ip, and the grant it redeems
         // would list and revoke the account's devices. Installations send device keys from their own network.
-        const reported=typeof body.starter_ip==='string'&&body.starter_ip.length<=64&&body.device_peer===undefined?signInNetwork(body.starter_ip):null;
+        const reported=body.device_peer===undefined?visitor:null;
         const starter_net=body.bind==='network'||body.device_peer!==undefined?reported??signInNetwork(clientIp)??'unknown:'+id:null;
         db.query('INSERT INTO login_requests(id,challenge,expires,device_peer,language,confirm_code,starter_net,apple_nonce) VALUES (?,?,?,?,?,?,?,?)').run(id,body.challenge,now+lifetime,body.device_peer??null,language,confirm_code,starter_net,appleNonce&&hash(appleNonce));
         record({kind:'auth_request',method:body.method,language});
@@ -311,7 +322,7 @@ export function loginBroker(db: Database, config: Config, request: typeof fetch 
         // which only that page received, binds Apple's proof to this request; the page then redeems it.
         const shape=/^[A-Za-z0-9_-]{43}$/;
         if(typeof body.request!=='string'||!shape.test(body.request)||typeof body.nonce!=='string'||!shape.test(body.nonce)||typeof body.identity_token!=='string'||!body.identity_token||body.identity_token.length>6144)return json(400,{error:'Invalid sign-in request'});
-        if (!allowance('apple:'+clientIp,20,3_600_000)) return json(429,{error:'Too many sign-in attempts. Please try again later'});
+        if (!allowance('apple:'+client,20,3_600_000)) return json(429,{error:'Too many sign-in attempts. Please try again later'});
         const flow=db.query('SELECT id FROM login_requests WHERE id=? AND apple_nonce=? AND email IS NULL AND confirmed=0 AND expires>?').get(body.request,hash(body.nonce),now) as Pick<Flow,'id'>|null;
         if(!flow)return json(410,{error:'Sign-in expired. Please start again'});
         // One token per request: a refused token ends it and the page starts a new sign-in.
@@ -391,7 +402,7 @@ if (import.meta.main) {
     relay.cleanup();
     void handler.maintenance();
   },30_000).unref();
-  const server=Bun.serve({hostname:'127.0.0.1',port:Number(process.env.QOOPIA_LOGIN_PORT??3740),maxRequestBodySize:MAX_RPC,
+  const server=Bun.serve({hostname:'127.0.0.1',port:Number(process.env.QOOPIA_LOGIN_PORT??3740),maxRequestBodySize:MAX_RPC,idleTimeout:BROKER_IDLE_TIMEOUT_SEC,
     fetch:req=>(new URL(req.url).pathname.startsWith('/bridge/')?relay:handler)(req,req.headers.get('cf-connecting-ip')??'local')});
   console.log('Qoopia sign-in service ready');
   // docker stop sends SIGTERM: finish in-flight requests, checkpoint the WAL and leave before the 10 s SIGKILL.

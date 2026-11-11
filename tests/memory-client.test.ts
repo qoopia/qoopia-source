@@ -834,6 +834,52 @@ test('doctor names every Claude Code and Codex profile on the computer and which
  } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
 
+test('only the three newest copies of the client files from before a change are kept [D11]',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-before-copies-'));
+ try {
+  const home=path.join(root,'home'),store=path.join(root,'store'),folder=path.join(store,'memory-clients/claude_code');
+  fs.mkdirSync(path.join(home,'.claude'),{recursive:true,mode:0o700});fs.mkdirSync(folder,{recursive:true,mode:0o700});
+  fs.writeFileSync(path.join(home,'.claude/settings.json'),'{}\n');
+  fs.writeFileSync(path.join(home,'.claude.json'),JSON.stringify({mcpServers:{other:{type:'http',url:'https://example.test/mcp',headers:{Authorization:'Bearer other-server'}}}}));
+  // Copies left by earlier versions, which kept every one.
+  for(let i=1;i<=5;i++)fs.writeFileSync(path.join(folder,`native-settings-before-${i}.json`),'{}');
+  for(let i=0;i<6;i++){
+   installMemoryClient({format:'qoopia-memory-connection/1',url:'http://127.0.0.1:1',agent_id:'fixture',key:'q_key'+i,runtime:'claude_code'},store,process.execPath,home);
+   await Bun.sleep(3);
+  }
+  const copies=(kind:string)=>fs.readdirSync(folder).filter(f=>f.startsWith(`native-${kind}-before-`)).sort();
+  expect(copies('settings')).toHaveLength(3);
+  expect(copies('settings')).toEqual(expect.arrayContaining(['native-settings-before-4.json','native-settings-before-5.json']));
+  // Each key rotation rewrote the client's whole config: only the copies from before the last three remain.
+  expect(copies('mcp').map(f=>/q_key\d/.exec(fs.readFileSync(path.join(folder,f),'utf8'))?.[0])).toEqual(['q_key2','q_key3','q_key4']);
+  expect(JSON.parse(fs.readFileSync(path.join(home,'.claude.json'),'utf8')).mcpServers.other.headers.Authorization).toBe('Bearer other-server');
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('an MCP config the client rewrote while linking is not overwritten from the earlier read [D13]',()=>{
+ const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-mcp-race-'));
+ const open=fs.openSync;let spy:ReturnType<typeof spyOn>|undefined,reads=0;
+ try {
+  const home=path.join(root,'home'),store=path.join(root,'store'),config=path.join(home,'.claude.json'),settings=path.join(home,'.claude/settings.json');
+  fs.mkdirSync(home,{mode:0o700});
+  fs.writeFileSync(config,JSON.stringify({numStartups:1,mcpServers:{other:{type:'http',url:'https://example.test/mcp'}}}));
+  const connection={format:'qoopia-memory-connection/1',url:'http://127.0.0.1:1',agent_id:'fixture',key:'q_fixturekey',runtime:'claude_code'};
+  // A running Claude Code saves its own state into the same file after Qoopia read it for its plan.
+  const theirs=JSON.stringify({numStartups:2,mcpServers:{other:{type:'http',url:'https://example.test/mcp'}}});
+  spy=spyOn(fs,'openSync').mockImplementation(((file:fs.PathLike,flags:fs.OpenMode,mode?:fs.Mode)=>{
+   if(String(file)===config&&typeof flags==='number'&&!(flags&3)&&++reads===2)fs.writeFileSync(config,theirs);
+   return open(file,flags,mode);}) as typeof fs.openSync);
+  expect(()=>installMemoryClient(connection,store,process.execPath,home)).toThrow('Link again');
+  expect(reads).toBe(2);
+  // Refused before the first write: the client's file is as the client left it, and no hook was installed.
+  expect(fs.readFileSync(config,'utf8')).toBe(theirs);expect(fs.existsSync(settings)).toBe(false);
+  expect(fs.existsSync(path.join(store,'memory-clients/claude_code/connection.json'))).toBe(false);
+  spy.mockRestore();spy=undefined;
+  // Asked again, with the client quiet, the link completes and keeps what the client wrote.
+  installMemoryClient(connection,store,process.execPath,home);
+  expect(JSON.parse(fs.readFileSync(config,'utf8'))).toMatchObject({numStartups:2,mcpServers:{other:{url:'https://example.test/mcp'},qoopia_memory:{url:'http://127.0.0.1:1/mcp'}}});
+ } finally {spy?.mockRestore();fs.rmSync(root,{recursive:true,force:true});}
+});
 
 test('SessionStart stays within 2 KiB with multibyte context, events, handoff and canon',async()=>{
  const root=fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-hook-budget-')),home=path.join(root,'home'),logs=path.join(home,'.claude/projects/p');

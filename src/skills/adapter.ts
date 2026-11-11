@@ -5,7 +5,7 @@ import { readJsonBytes } from '../utils/fs.ts';
 import { z } from 'zod';
 import type { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, realpathSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, statSync, realpathSync, readdirSync } from 'node:fs';
 import { join, relative, isAbsolute, dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AuthContext } from '../auth/middleware.ts';
@@ -219,11 +219,30 @@ export function nativeLaunch(kind:RuntimeKind,sessionRoot:string,prompt:string,i
   Object.defineProperty(launch,'connectionConfig',{value:mcp&&kind==='claude_code'?{file:mcp.file,bytes:mcp.bytes}:undefined,enumerable:false});
   return Object.defineProperty(launch,'env',{value:env,enumerable:false}) as typeof launch & {env:NodeJS.ProcessEnv;connectionConfig?:{file:string;bytes:string}};
 }
+const CLAUDE_POLICY_ROOT=process.platform==='darwin'?'/Library/Application Support/ClaudeCode':'/etc/claude-code';
+/** Environment switches a managed file may set without changing what the runtime may do or reach. Keep it
+ * short: a name belongs here only if no value of it can grant, deny or redirect anything. */
+const HARMLESS_MANAGED_ENV=new Set(['DISABLE_AUTOUPDATER','DISABLE_TELEMETRY','DISABLE_ERROR_REPORTING']);
+/** True when this computer's Claude Code is under a managed policy, which Qoopia never works around.
+ * One shape is not a policy: a managed-settings.json that holds nothing but `env` with switches from the
+ * list above (the owner's Macs carry {"env":{"DISABLE_AUTOUPDATER":"1"}}). Any other key or name, a file
+ * that cannot be read or parsed, managed-settings.d and managed-mcp.json count as policy, as before.
+ * The folder is a parameter for tests only; nothing in the environment can point it elsewhere. */
+export function managedClaudePolicy(policyRoot=CLAUDE_POLICY_ROOT):boolean{
+  if(['managed-settings.d','managed-mcp.json'].some(name=>metadataExists(join(policyRoot,name))))return true;
+  const file=join(policyRoot,'managed-settings.json');
+  if(!metadataExists(file))return false;
+  try{
+    if(statSync(file).size>65_536)return true;
+    const settings=JSON.parse(readFileSync(file,'utf8')) as {env?:unknown}|null,env=settings?.env;
+    return !(settings&&Object.keys(settings).join()==='env'&&env&&typeof env==='object'&&!Array.isArray(env)
+      &&Object.entries(env).every(([name,value])=>HARMLESS_MANAGED_ENV.has(name)&&typeof value==='string'));
+  }catch{return true;}
+}
 function checkNativeHostPolicy(kind:RuntimeKind,store:boolean){
-  // Managed policy outranks --settings. Do not read, import or override it to
+  // Managed policy outranks --settings. Do not import or override it to
   // qualify a disposable task. Remote/MDM policy still needs operator checking.
-  const policyRoot=process.platform==='darwin'?'/Library/Application Support/ClaudeCode':'/etc/claude-code';
-  if(kind==='claude_code'&&['managed-settings.json','managed-settings.d','managed-mcp.json'].some(name=>metadataExists(join(policyRoot,name))))
+  if(kind==='claude_code'&&managedClaudePolicy())
     throw new QoopiaError('UNSUPPORTED','Managed Claude policy detected; use a separately authorized clean qualification environment, never disable required policy');
   if(store&&kind==='codex'&&['config.toml','requirements.toml','managed_config.toml','skills'].some(name=>metadataExists(join('/etc/codex',name))))
     throw new QoopiaError('UNSUPPORTED','Codex system configuration detected; qualification must not import or override unrelated system policy');

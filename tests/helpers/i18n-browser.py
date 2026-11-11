@@ -40,7 +40,7 @@ with sync_playwright() as p:
     page.goto('http://127.0.0.1:18768/'+path+'?lang='+lang);page.evaluate('document.fonts.ready');expect(page.locator('html')).to_have_attribute('lang',lang);assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),('site',path,width,lang);assert '\ue000' not in page.locator('body').inner_text();checks.append(['site/'+path,width,lang])
    page.goto('http://127.0.0.1:18768/?lang='+lang)
    for platform in ['mac','linux']:
-    page.locator('#platform').select_option(platform);expect(page.locator('#download-action a')).to_have_attribute('href',__import__('re').compile('https://github.com/qoopia/qoopia-downloads/'))
+    page.locator('#platform').select_option(platform);expect(page.locator('#download-action a')).to_have_attribute('href','/download/'+platform)
    if width==1440:page.screenshot(path=str(out/f'site-{lang}.png'),full_page=True)
  assert not errors,errors
  b.close()

@@ -279,9 +279,12 @@ export function getCanon(p: { workspace_id: string; actor: Actor; id: string }) 
   const row = rowById(p.workspace_id, p.id, p.actor);
   const history: PublicCanon[] = [];
   for (let prev = row.supersedes_id, guard = 0; prev && guard < 50; guard++) {
-    const older = db.query("SELECT * FROM canons WHERE id = ?").get(prev) as CanonRow | null;
+    const older = db.query("SELECT * FROM canons WHERE id = ? AND workspace_id = ?").get(prev, p.workspace_id) as CanonRow | null;
     if (!older) break;
-    history.push(publicCanon(older)); prev = older.supersedes_id;
+    // An earlier version may be narrower than this one (an agent's own canon the steward replaced with a
+    // workspace canon): the reader sees only the versions it could open by id, and the chain goes on.
+    if (canRead(older, p.actor)) history.push(publicCanon(older));
+    prev = older.supersedes_id;
   }
   const applications = db.query(`SELECT a.agent_id, ag.name AS agent_name, a.session_id, a.surface, a.reason, a.applied_at FROM canon_applications a
     LEFT JOIN agents ag ON ag.id = a.agent_id WHERE a.canon_id = ? ORDER BY a.applied_at DESC LIMIT 20`).all(row.id);

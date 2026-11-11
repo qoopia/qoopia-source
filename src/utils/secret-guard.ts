@@ -46,8 +46,10 @@ interface SecretDetector {
  */
 const BASE_SECRET_DETECTORS: SecretDetector[] = [
   {
+    // The prefix starts a word, and the payload is not plain lower-case words: `seq_number_validation_rule`
+    // and `qa_checklist_for_release` were refused as keys and cut out of captured sessions [5.0.25].
     label: "qoopia-token",
-    re: /(?:q_|qa_|qr_|qc_|qcs_)[A-Za-z0-9_-]{16,}/,
+    re: /(?<![A-Za-z0-9_-])(?:q_|qa_|qr_|qc_|qcs_)(?![a-z]+(?:[_-][a-z]+)*(?![A-Za-z0-9_-]))[A-Za-z0-9_-]{16,}/,
   },
   {
     // Floor lowered from 36 to 20 so a clipped PAT is still caught; `ghp_`
@@ -79,8 +81,9 @@ const BASE_SECRET_DETECTORS: SecretDetector[] = [
     re: /aws_secret_access_key[^A-Za-z0-9]{0,20}[A-Za-z0-9/+=]{40}/i,
   },
   {
+    // Anchored at the start of the run: tried from every `eyJ` inside one long run, it was quadratic.
     label: "jwt",
-    re: /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+    re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
   },
   {
     // Floor lowered from 40 to 12: the corpus sweep found a ~22-char
@@ -178,9 +181,11 @@ const BASE_SECRET_DETECTORS: SecretDetector[] = [
     // A password written as prose, English or Russian: «DB password is "…"», «пароль: …», «пароль от
     // почты — …», «пароль такой: …». The value must look like one: quoted, or 6+ characters with a digit
     // or symbol, so «password is required» and «пароль — смотри в 1Password» stay. References such as
-    // `process.env.X` or `${VAR}` are not values. Only the value is redacted (see PASSWORD_VALUE).
+    // `process.env.X` or `${VAR}` are not values, nor is a `[REDACTED:…]` marker this module wrote itself:
+    // read as a password it made every summary of that session fail. The digit or symbol must come within
+    // 128 characters, which keeps the search linear. Only the value is redacted (see PASSWORD_VALUE).
     label: "password",
-    re: /((?:\b(?:passw(?:or)?d|passphrase|pwd)\b|(?<!\p{L})(?:пароль|пароля|паролем|код доступа)(?!\p{L}))(?:\s+(?:от|для|к|for|of|to)\s+[^\s:=]{1,40})?(?:\s*[:=]\s*|\s+(?:is|was|это|будет|такой(?:-то)?:?|[—–-])\s*))(?!process\.env|os\.environ|env\.|config\.|settings\.|getenv|\$|\{\{)(?:(["'«“])[^"'»”\n]{4,}["'»”]|(?=[^\s"'»”,;]*?[0-9!@#%^&*_+=~-])[^\s"'»”,;]{5,}[^\s"'»”,;.!?:)\]])/iu,
+    re: /((?:\b(?:passw(?:or)?d|passphrase|pwd)\b|(?<!\p{L})(?:пароль|пароля|паролем|код доступа)(?!\p{L}))(?:\s+(?:от|для|к|for|of|to)\s+[^\s:=]{1,40})?(?:\s*[:=]\s*|\s+(?:is|was|это|будет|такой(?:-то)?:?|[—–-])\s*))(?!process\.env|os\.environ|env\.|config\.|settings\.|getenv|\$|\{\{|\[REDACTED:)(?:(["'«“])[^"'»”\n]{4,}["'»”]|(?=[^\s"'»”,;]{0,128}?[0-9!@#%^&*_+=~-])[^\s"'»”,;]{5,}[^\s"'»”,;.!?:)\]])/iu,
   },
 ];
 

@@ -62,6 +62,13 @@ enum URLPolicy {
         (lhs.port ?? 443) == (rhs.port ?? 443) && rhs.user == nil && rhs.password == nil
     }
 
+    /// Retry reloads the shown page only when it belongs to the active workspace or is the account page.
+    /// After a failed switch the web view still holds the previous workspace's page: the active one is opened instead.
+    static func reloadsInPlace(_ current: URL?, active: Workspace?) -> Bool {
+        guard let current else { return false }
+        return active?.contains(current) == true || sameOrigin(account, current)
+    }
+
     /// A file the page builds itself (URL.createObjectURL) is a blob: URL whose origin is the inner URL.
     static func owner(_ url: URL) -> URL {
         url.scheme?.lowercased() == "blob" ? URL(string: String(url.absoluteString.dropFirst(5))) ?? url : url

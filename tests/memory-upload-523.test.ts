@@ -25,12 +25,14 @@ function fixture(runtime: 'claude_code' | 'codex' = 'claude_code') {
   const root = fs.realpathSync(fs.mkdtempSync('/var/tmp/qoopia-upload-')), home = path.join(root, 'home');
   const logs = path.join(home, runtime === 'codex' ? '.codex/sessions' : '.claude/projects/p');
   fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
-  const stored = new Map<string, string>(), requests: Array<{ event: string; ids: string[]; bytes: number }> = [];
-  let delay = (_n: number) => 0;
+  const stored = new Map<string, string>(), requests: Array<{ event: string; ids: string[]; bytes: number; session: string; status: number }> = [];
+  let delay = (_n: number) => 0, refuse = (_event: any) => 0;
   const server = Bun.serve({ port: 0, idleTimeout: 60, async fetch(req) {
     if (new URL(req.url).pathname === '/memory/canon') return new Response('', { status: 404 });
     const body = await req.text(), event = JSON.parse(body);
-    requests.push({ event: event.event, ids: event.messages.map((m: any) => m.id), bytes: body.length });
+    const status = refuse(event);
+    requests.push({ event: event.event, ids: event.messages.map((m: any) => m.id), bytes: body.length, session: event.session_id, status: status || 200 });
+    if (status) return Response.json({ error: 'Continuity request refused' }, { status });
     const wait = delay(requests.length); if (wait) await Bun.sleep(wait);
     for (const m of event.messages) if (!stored.has(m.id)) stored.set(m.id, m.content);
     return Response.json({ accepted: event.messages.map((m: any) => m.id), session_id: event.session_id, tail: [] });
@@ -38,7 +40,7 @@ function fixture(runtime: 'claude_code' | 'codex' = 'claude_code') {
   installMemoryClient({ format: 'qoopia-memory-connection/1', url: `http://127.0.0.1:${server.port}`, agent_id: 'fixture', key: 'q_fixturekey', runtime }, root, process.execPath, home);
   cleanup.push(() => { server.stop(true); fs.rmSync(root, { recursive: true, force: true }); });
   const file = path.join(root, 'memory-clients', runtime, 'connection.json'), cursors = path.join(root, 'memory-clients', runtime, 'cursors');
-  return { root, home, logs, file, cursors, stored, requests, stop: () => server.stop(true), origin: `http://127.0.0.1:${server.port}`, setDelay: (f: (n: number) => number) => { delay = f; } };
+  return { root, home, logs, file, cursors, stored, requests, stop: () => server.stop(true), origin: `http://127.0.0.1:${server.port}`, setDelay: (f: (n: number) => number) => { delay = f; }, setRefuse: (f: (event: any) => number) => { refuse = f; } };
 }
 const turn = (i: number, size = 10_000) => JSON.stringify({ type: 'user', uuid: 'u' + i, message: { role: 'user', content: `ход ${i} ` + 'x'.repeat(size) } }) + '\n';
 
@@ -110,7 +112,8 @@ test('3. the hook returns inside its budget on a slow server; the rest waits on 
   f.setDelay(() => 0);
   expect(await drainMemoryBacklog(f.file)).toMatchObject({ status: 'DRAINED', sessions: 1, complete: 1 });
   expect(f.stored.size).toBe(120); expect(deliveryBacklog(f.cursors).sessions).toBe(0);
-});
+  // The hook alone may take 5.6 s here, above bun's default 5 s test limit.
+}, 20_000);
 
 test('3c. an ended session no hook runs for any more is drained in the background from the next session start, and stays ended', async () => {
   const f = fixture(), transcript = path.join(f.logs, 'ended.jsonl'), started: string[] = [];
@@ -186,6 +189,89 @@ test('4. doctor: no answer from /health, answers but delivery is behind (records
   const done = memoryClientsCheck(f.root, f.home, answers);
   expect(done).toMatchObject({ status: 'pass', reason: 'DELIVERING', runtimes: [{ mode: 'current', waiting: { sessions: 0 } }] });
   expect(done.action).toBe('No repair needed: everything is delivered.');
+});
+
+const cursorOf = (f: ReturnType<typeof fixture>, transcript: string) => JSON.parse(fs.readFileSync(path.join(f.cursors, hash(transcript) + '.json'), 'utf8'));
+
+test('5. a session the server keeps for another agent (the profile was linked again) goes on under an id of its own', async () => {
+  const f = fixture(), transcript = path.join(f.logs, 'moved.jsonl');
+  backgroundDrain.start = () => {};
+  // The server answers 404 to a session id another agent sent first (continuityEvent: «Session unavailable»).
+  f.setRefuse(event => event.session_id === 'claude_code:moved' ? 404 : 0);
+  fs.writeFileSync(transcript, turn(0, 200) + turn(1, 200));
+  await runMemoryHook(f.file, { session_id: 'moved', cwd: '/p', transcript_path: transcript, hook_event_name: 'Stop' });
+  expect([...f.stored.keys()]).toEqual(['u0:0:0', 'u1:0:0']);
+  expect(f.requests.map(r => [r.session, r.status])).toEqual([['claude_code:moved', 404], ['claude_code:moved@fixture', 200]]);
+  expect(cursorOf(f, transcript)).toMatchObject({ session: 'claude_code:moved', remote: 'claude_code:moved@fixture', cursor: fs.statSync(transcript).size });
+  expect(cursorOf(f, transcript).error).toBeUndefined();
+  // Later turns go straight to the new id: the refused one is not asked again.
+  fs.appendFileSync(transcript, turn(2, 200));
+  await runMemoryHook(f.file, { session_id: 'moved', cwd: '/p', transcript_path: transcript, hook_event_name: 'Stop' });
+  expect(f.requests.slice(2).map(r => [r.session, r.status])).toEqual([['claude_code:moved@fixture', 200]]);
+  expect(f.stored.size).toBe(3);
+  // An address that answers 404 to everything is not a taken session: nothing is renamed, the error stays.
+  f.setRefuse(() => 404);
+  const other = path.join(f.logs, 'other.jsonl'); fs.writeFileSync(other, turn(9, 200));
+  await runMemoryHook(f.file, { session_id: 'other', cwd: '/p', transcript_path: other, hook_event_name: 'Stop' });
+  expect(cursorOf(f, other)).toMatchObject({ cursor: 0, error: 'Qoopia HTTP 404' });
+  expect(cursorOf(f, other).remote).toBeUndefined();
+});
+
+test('6. doctor names a session the server refuses while its turns wait, even after other sessions delivered', async () => {
+  const f = fixture(), refused = path.join(f.logs, 'refused.jsonl'), fine = path.join(f.logs, 'fine.jsonl');
+  backgroundDrain.start = () => {};
+  f.setRefuse(event => event.session_id.startsWith('claude_code:refused') && event.messages.length ? 400 : 0);
+  fs.writeFileSync(refused, turn(0, 200));
+  await runMemoryHook(f.file, { session_id: 'refused', cwd: '/p', transcript_path: refused, hook_event_name: 'Stop' });
+  expect(cursorOf(f, refused)).toMatchObject({ cursor: 0, error: 'Qoopia HTTP 400' });
+  await Bun.sleep(20);
+  fs.writeFileSync(fine, turn(1, 200));
+  await runMemoryHook(f.file, { session_id: 'fine', cwd: '/other', transcript_path: fine, hook_event_name: 'Stop' });
+  expect(f.stored.has('u1:0:0')).toBe(true);
+  const answers = await memoryServerAnswers(f.root, async () => 'reachable');
+  const check = memoryClientsCheck(f.root, f.home, answers);
+  expect(check).toMatchObject({ status: 'fail', reason: 'REFUSED', runtimes: [{ failing_sessions: 1, waiting: { sessions: 1 } }] });
+  expect(check.action).not.toContain('nothing is lost');
+  // Once the server takes it, doctor is quiet again.
+  f.setRefuse(() => 0);
+  await drainMemoryBacklog(f.file);
+  expect(memoryClientsCheck(f.root, f.home, answers)).toMatchObject({ status: 'pass', reason: 'DELIVERING' });
+});
+
+test('7. at a session start a tail the server refuses does not hold back the tails of other sessions', async () => {
+  const f = fixture(), refused = path.join(f.logs, 'refused.jsonl'), tail = path.join(f.logs, 'tail.jsonl'), started: string[] = [];
+  backgroundDrain.start = config => { started.push(config); };
+  f.setRefuse(event => event.session_id.startsWith('claude_code:refused') && event.messages.length ? 400 : 0);
+  fs.writeFileSync(refused, turn(0, 200));
+  await runMemoryHook(f.file, { session_id: 'refused', cwd: '/elsewhere', transcript_path: refused, hook_event_name: 'SessionEnd' });
+  await Bun.sleep(20);
+  // A second ended session whose tail never left this computer.
+  fs.writeFileSync(tail, turn(1, 200));
+  const st = fs.statSync(tail);
+  fs.writeFileSync(path.join(f.cursors, hash(tail) + '.json'), JSON.stringify({ file: tail, session: 'claude_code:tail', project: '/elsewhere', cursor: 0, part: 0, inode: st.dev + ':' + st.ino, closed: true, last_sync: new Date().toISOString() }));
+  started.length = 0;
+  fs.writeFileSync(path.join(f.logs, 'fresh.jsonl'), '');
+  await runMemoryHook(f.file, { session_id: 'fresh', cwd: '/fresh', transcript_path: path.join(f.logs, 'fresh.jsonl'), hook_event_name: 'SessionStart' });
+  expect(f.stored.has('u1:0:0')).toBe(true);
+  // The refused one still waits, so the background drain is asked to go on with it.
+  expect(started).toEqual([f.file]);
+});
+
+test('8. a last record over the capture limit that is still being written is waited for, not asked about in a loop', async () => {
+  const f = fixture(), transcript = path.join(f.logs, 'big.jsonl'), started: string[] = [];
+  backgroundDrain.start = config => { started.push(config); };
+  // Cut inside the record: no line break yet.
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'x'.repeat(9 * 1024 * 1024) } }).slice(0, -2));
+  const t0 = performance.now();
+  await runMemoryHook(f.file, { session_id: 'big', cwd: '/p', transcript_path: transcript, hook_event_name: 'Stop' });
+  expect(performance.now() - t0).toBeLessThan(2000);
+  expect(f.requests.length).toBeLessThanOrEqual(2);
+  expect(started).toEqual([]);
+  expect(cursorOf(f, transcript).cursor).toBe(0);
+  // When the record ends, it is passed over with its marker as before and the turn after it is saved.
+  fs.appendFileSync(transcript, '"}\n' + turn(2, 200));
+  await runMemoryHook(f.file, { session_id: 'big', cwd: '/p', transcript_path: transcript, hook_event_name: 'Stop' });
+  expect([...f.stored.keys()]).toEqual(['oversized:0', 'u2:0:0']);
 });
 
 test('the server stores a re-sent portion once: message ids are the idempotency key', () => {

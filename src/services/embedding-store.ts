@@ -267,21 +267,42 @@ export function embeddingCoverage(workspace_id?: string): {
   };
 }
 
-/** The live notes are the durable work list; no second queue can lose pending edits. */
+const PENDING_PAGE=128;
+/** What SQLite itself counts of writes: by other connections (data_version) and by this one (total_changes). */
+const writeStamp=()=>(db.query('PRAGMA data_version').get() as {data_version:number}).data_version+':'+
+  (db.query('SELECT total_changes() AS n').get() as {n:number}).n;
+let nothingPendingAt:string|undefined;
+/** The live notes are the durable work list; no second queue can lose pending edits.
+ * The maintenance tick asks every 5 s, and one query used to bring every note of every workspace into JS
+ * each time, even when the newest sixteen already filled the batch. The list is now read newest first a
+ * page at a time and stops when the batch is full. And when nothing at all was written to the database
+ * since a scan of every note found nothing, there is still nothing: no row is read [5.0.25].
+ * A database that is being written is still walked whole when nothing is pending: whether a note's vector
+ * is current is decided by its text hash, which SQL cannot see without a stored marker (a migration). */
 export function pendingNoteEmbeddings(workspace?:string, limit=32) {
-  const rows=db.query(`SELECT n.id,n.workspace_id,${VERSION},e.text_hash,e.model,e.dim,EXISTS(SELECT 1 FROM note_embedding_chunks c WHERE c.note_id=n.id) AS chunks
+  const stamp=writeStamp();
+  if(!workspace&&nothingPendingAt===stamp)return [];
+  // Ordered by the indexed updated_at_ms (kept with updated_at by every note write), continued after the
+  // last row of the page before.
+  const page=db.query(`SELECT n.rowid AS row_id,n.id,n.workspace_id,${VERSION},e.text_hash,e.model,e.dim,EXISTS(SELECT 1 FROM note_embedding_chunks c WHERE c.note_id=n.id) AS chunks
     FROM notes n LEFT JOIN notes_embeddings e ON e.note_id=n.id
-    WHERE n.deleted_at IS NULL ${workspace?'AND n.workspace_id=?':''} ORDER BY n.updated_at DESC`)
-    .all(...(workspace?[workspace]:[])) as Array<NoteVersion&{id:string;workspace_id:string;text_hash:string|null;model:string|null;dim:number|null;chunks:number}>;
+    WHERE n.deleted_at IS NULL AND (n.updated_at_ms,n.rowid)<(?1,?2) ${workspace?'AND n.workspace_id=?3':''}
+    ORDER BY n.updated_at_ms DESC,n.rowid DESC LIMIT ${PENDING_PAGE}`);
   // Text is read only for the notes actually returned for embedding. A blank note has nothing to embed
   // and fails every attempt: queued first, it would stop the pass for every older note behind it.
   const pending:{id:string;workspace_id:string;text:string}[]=[];
-  for(const r of rows) {
-    if(pending.length>=limit)break;
-    if(r.model===EMBED_MODEL&&r.dim===EMBED_DIM&&(EMBED_PROVIDER!=='builtin'||r.chunks)&&fresh(r.id,r))continue;
-    const live=db.query('SELECT text FROM notes WHERE id=?').get(r.id) as {text:string}|null;
-    if(live?.text.trim())pending.push({id:r.id,workspace_id:r.workspace_id,text:live.text});
+  for(let ms=Number.MAX_SAFE_INTEGER,row=Number.MAX_SAFE_INTEGER;;) {
+    const rows=page.all(ms,row,...(workspace?[workspace]:[])) as Array<NoteVersion&{row_id:number;id:string;workspace_id:string;text_hash:string|null;model:string|null;dim:number|null;chunks:number}>;
+    for(const r of rows) {
+      if(pending.length>=limit)return pending;
+      if(r.model===EMBED_MODEL&&r.dim===EMBED_DIM&&(EMBED_PROVIDER!=='builtin'||r.chunks)&&fresh(r.id,r))continue;
+      const live=db.query('SELECT text FROM notes WHERE id=?').get(r.id) as {text:string}|null;
+      if(live?.text.trim())pending.push({id:r.id,workspace_id:r.workspace_id,text:live.text});
+    }
+    if(rows.length<PENDING_PAGE)break;
+    ms=rows.at(-1)!.version_ms;row=rows.at(-1)!.row_id;
   }
+  if(!workspace&&!pending.length)nothingPendingAt=stamp;
   return pending;
 }
 

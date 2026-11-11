@@ -15,6 +15,8 @@ assert (root/'Assets.xcassets/AppIcon.appiconset/AppIcon.png').stat().st_size>10
 # The dashboard's file input offers Take Photo or Video: iOS terminates an app that opens the camera without these.
 info=(root/'Info.plist').read_text()
 assert all(f'<key>{key}</key>' in info for key in ('NSCameraUsageDescription','NSMicrophoneUsageDescription')),'iOS camera/microphone usage descriptions missing'
+# The share sheet for a downloaded picture offers Save Image: iOS terminates an app that saves to Photos without this.
+assert '<key>NSPhotoLibraryAddUsageDescription</key>' in info,'iOS photo library usage description missing'
 print('iOS assets and localization: passed')
 PY
 if xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then

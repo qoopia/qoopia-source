@@ -21,6 +21,7 @@ import { createAgent } from "../src/admin/agents.ts";
 import { startHttpServer } from "../src/http.ts";
 import { db } from "../src/db/connection.ts";
 import { acPairParams, acPairSql } from "../src/dashboard-api.ts";
+import { queryPlan } from "./helpers/query-plan.ts";
 
 let server: Server;
 let baseUrl = "";
@@ -383,8 +384,7 @@ describe("dashboard pages keyset on (created_at, id)", () => {
 });
 
 describe("F-272: pair queries probe the recipient index per direction", () => {
-  const plan = (sql: string, params: unknown[]) =>
-    (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as never[])) as Array<{ detail: string }>).map((r) => r.detail);
+  const plan = (sql: string, params: unknown[]) => queryPlan(db, sql, ...params);
 
   test("last message and transcript page never scan the whole workspace", () => {
     const cursor = " AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))";

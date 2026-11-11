@@ -9,7 +9,7 @@ import {assertNoSecrets} from '../utils/secret-guard.ts';
 import {canManagePolicy,pendingSave} from './memory-policy.ts';
 import {decideSaveRequest,listSaveRequests} from './memory-save-requests.ts';
 import {QoopiaError} from '../utils/errors.ts';
-import {backgroundFailure} from '../utils/logger.ts';
+import {backgroundFailure,guardedTick} from '../utils/logger.ts';
 import {channel,ensureChannel,queueTelegram,acknowledgeTelegram,recoverTelegram,telegramChunks,TELEGRAM_WAITING_LOGIN,TELEGRAM_LOGIN_REQUIRED,TELEGRAM_LOGIN_ERRORS,resumeTelegramAfterLogin,scrubTelegramTransit} from './telegram-store.ts';
 import { readBoundedText } from '../utils/http-json.ts';
 
@@ -139,7 +139,10 @@ export async function pollTelegramOwner(owner:string) {
         if(permitted&&saveMatch) {
           // The owner decides here through the same writer the dashboard uses: one use, one decision.
           let text:string;
-          try {
+          // A Save button that an older message still carries must not write what that message did not show.
+          const held=pendingSave(settings.workspace_id,saveMatch[1]!);
+          if(saveMatch[2]==='yes'&&held&&!saveShownWhole((held.input as {text?:unknown}).text))text='Review this request in your dashboard';
+          else try {
             const decision=decideSaveRequest({workspace_id:settings.workspace_id,actor_id:settings.owner_id,id:saveMatch[1],accept:saveMatch[2]==='yes'});
             text=decision.state==='saved'?'Qoopia: saved':'Qoopia: declined';
           }catch(error){
@@ -252,6 +255,10 @@ export async function runTelegramQueue(owner:string){
     }
   }finally{workers.delete(owner);}
 }
+/** A prepared save the owner can judge from one Telegram message: it has text and all of it fits. An
+ * update of tags or metadata alone has no text to show, so it is reviewed in the dashboard too. */
+const SAVE_SHOWN=2800;
+const saveShownWhole=(text:unknown)=>typeof text==='string'&&text.length>0&&text.length<=SAVE_SHOWN;
 export function simpleTelegramApproval(a:{method:string;params:any}){return a.method==='item/commandExecution/requestApproval'&&typeof a.params.command==='string'&&a.params.command.length<=2800&&(!a.params.tool||a.params.tool==='Bash');}
 export async function deliverTelegram(owner:string){
   if(deliverers.has(owner)||setupBusy.has(owner))return;
@@ -274,10 +281,12 @@ export async function deliverTelegram(owner:string){
       // the material, and the delivery key sends each request once however often this loop runs.
       if(canManagePolicy(settings.workspace_id,settings.owner_id))
         for(const request of listSaveRequests(settings.workspace_id,settings.owner_id)) {
-          const material=(request.text??'').slice(0,2800);
+          // The Save button writes the whole request, so it is offered only when the message shows the whole of it.
+          const whole=saveShownWhole(request.text),material=(request.text??'').slice(0,SAVE_SHOWN);
           queueTelegram(owner,generation,'save:'+request.id,{chat_id:settings.telegram_chat_id,
-            text:'Qoopia: сохранить это в память? / Save this to memory?\n\n'+request.agent+':\n'+material,
-            reply_markup:{inline_keyboard:[[{text:'Сохранить / Save',callback_data:'qs:'+request.id+':yes'},{text:'Отклонить / Decline',callback_data:'qs:'+request.id+':no'}]]}});
+            text:whole?'Qoopia: сохранить это в память? / Save this to memory?\n\n'+request.agent+':\n'+material
+              :'Qoopia: '+request.agent+' просит сохранить в память то, что здесь нельзя показать целиком. Проверьте в дашборде. / asks to save something that cannot be shown here in full. Review it in your dashboard.'+(material?'\n\n'+material+'…':''),
+            ...(whole?{reply_markup:{inline_keyboard:[[{text:'Сохранить / Save',callback_data:'qs:'+request.id+':yes'},{text:'Отклонить / Decline',callback_data:'qs:'+request.id+':no'}]]}}:{})});
         }
       // Persist every chunk before sending. A restart cannot repeat already sent chunks.
       const deliveries=db.query(`SELECT r.id,r.prompt,r.answer,r.state FROM qoopia_agent_telegram_delivery d JOIN qoopia_agent_runs r ON r.id=d.run_id
@@ -337,9 +346,9 @@ const telegramTasks=[[pollTelegramOwner,backgroundFailure('Telegram polling')],[
 export function startTelegramChannels() {
   if(timer)return;
   recoverTelegram();
-  timer=setInterval(()=>{
+  timer=setInterval(guardedTick('Telegram channels',()=>{
     const owners=db.query('SELECT owner_id FROM qoopia_agent_settings WHERE enabled=1 AND telegram_username IS NOT NULL').all() as {owner_id:string}[];
     for(const {owner_id} of owners)for(const [task,failed] of telegramTasks)void task(owner_id).catch(failed);
-  },1000);timer.unref();
+  }),1000);timer.unref();
 }
 export function stopTelegramChannels(){if(timer)clearInterval(timer);timer=undefined;for(const controller of polls.values())controller.abort();}

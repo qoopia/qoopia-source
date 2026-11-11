@@ -236,6 +236,37 @@ describe("QDASH-COOKIE: cookie authenticates subsequent dashboard reads", () => 
     expect(body.items.length).toBeGreaterThanOrEqual(2);
   });
 
+  // 5.0.25: the renewal on the first read turned a key sign-in of the human owner into an owner-identity
+  // cookie. Without owner sign-in that cookie is not valid, so the second read was 401; with it, a key
+  // sign-in passed for a confirmed identity.
+  test("the human owner's key sign-in survives renewal and stays a key sign-in", async () => {
+    const { bootstrapOwner } = await import("../src/auth/pairings.ts");
+    const owner = bootstrapOwner(db, "QDASH human owner", undefined, WORKSPACE_ID);
+    const decode = (cookie: string) => JSON.parse(Buffer.from(cookie.split("=")[1]!.split(".")[0]!, "base64url").toString()) as { exp: number | null; owner?: boolean };
+    const previous = { login: process.env.QOOPIA_OWNER_LOGIN, standalone: process.env.QOOPIA_STANDALONE };
+    try {
+      for (const ownerLogin of [false, true]) {
+        delete process.env.QOOPIA_STANDALONE;
+        if (ownerLogin) process.env.QOOPIA_OWNER_LOGIN = "true"; else delete process.env.QOOPIA_OWNER_LOGIN;
+        const login = await fetch(`${baseUrl}/api/dashboard/login`, { method: "POST", headers: { authorization: `Bearer ${owner.api_key}` } });
+        let cookie = getSetCookie(login, "qoopia_dash")!.split(";")[0]!;
+        const issued = decode(cookie);
+        expect(issued.exp).toBeNumber();
+        for (let read = 0; read < 3; read++) {
+          const r = await fetch(`${baseUrl}/api/dashboard/agents`, { headers: { cookie } });
+          expect([ownerLogin, read, r.status]).toEqual([ownerLogin, read, 200]);
+          cookie = getSetCookie(r, "qoopia_dash")?.split(";")[0] ?? cookie;
+          const renewed = decode(cookie);
+          expect(renewed.owner).toBeUndefined();
+          expect(renewed.exp).toBeLessThanOrEqual(issued.exp! + 2);
+        }
+      }
+    } finally {
+      for (const [name, value] of [["QOOPIA_OWNER_LOGIN", previous.login], ["QOOPIA_STANDALONE", previous.standalone]] as const)
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  });
+
   test("GET /agents with NO cookie and NO Authorization → 401", async () => {
     const r = await fetch(`${baseUrl}/api/dashboard/agents`);
     expect(r.status).toBe(401);

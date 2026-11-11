@@ -1,4 +1,4 @@
-import {prepareDesktopUpdate,preparePackageUpdate,DESKTOP_RELEASE} from '../src/delivery/desktop-update.ts';
+import {packageNotAdopted,prepareDesktopUpdate,preparePackageUpdate,DESKTOP_RELEASE} from '../src/delivery/desktop-update.ts';
 import {desktopRelease} from '../scripts/desktop-release.ts';
 import {updateFeed} from '../scripts/update-feed.ts';
 import { test, expect } from 'bun:test';
@@ -128,6 +128,10 @@ test('opening a newer downloaded package adopts it like the Mac app; an equal, o
     const pointer=fs.readFileSync(path.join(f.root,'current.json'),'utf8');
     expect(preparePackageUpdate(f.delivery,same,f.trust,true)).toEqual({state:'not_newer',installed:'5.0.0-p3.0',package:'5.0.0-p3.0'});
     expect(preparePackageUpdate(f.delivery,older,f.trust,true).state).toBe('not_newer');
+    // Said in the terminal: a rebuilt package of the installed version used to open the old build without a word [D8].
+    const review='./qoopia update --bundle .';
+    expect(packageNotAdopted(preparePackageUpdate(f.delivery,same,f.trust,true),review)).toBe('Qoopia was not updated: this package is another build of the installed version 5.0.0-p3.0, and the installed build opens. To install this build instead, review and apply the update: '+review);
+    expect(packageNotAdopted(preparePackageUpdate(f.delivery,older,f.trust,true),review)).toBe('Qoopia was not updated: this package is 5.0.0-p2.0, older than the installed 5.0.0-p3.0, and the installed version opens.');
     expect(fs.readFileSync(path.join(f.root,'current.json'),'utf8')).toBe(pointer);
     expect(preparePackageUpdate(f.delivery,newer,f.trust,true)).toMatchObject({state:'updated',memory_preserved:true,backup_created:true});
     const selected=readCurrent(f.root);expect(selected.instance).toBe(f.current.instance);expect(selected.previous?.bundle).toBe(f.current.bundle);

@@ -67,6 +67,17 @@ describe("agents save files with file_put", () => {
     expect(() => fileGet({ workspace_id: WS, id: original.id })).toThrow();
   });
 
+  test("content that is not base64 is refused at once, however much white space it carries", async () => {
+    const put = (content: string) => filePut({ workspace_id: WS, agent_id: OWNER, agent_name: "owner-t", folder: "b64", filename: "a.txt", content, encoding: "base64" });
+    const started = performance.now();
+    // 200 000 spaces took the old pattern tens of seconds, with the whole server waiting.
+    await expect(put(" ".repeat(200_000) + "!")).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(performance.now() - started).toBeLessThan(500);
+    await expect(put("aGVs bG8=\n")).resolves.toMatchObject({ filename: "a.txt" });
+    expect(fileGet({ workspace_id: WS, folder: "b64", filename: "a.txt" }).content).toBe("hello");
+    for (const bad of ["aGVsbG8===", "aGV=sbG8", "=aGVsbG8"]) await expect(put(bad)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
   test("own folder by default, sub-folders on first use, parts appended, another author's file never replaced", async () => {
     const ws = createWorkspace({ name: "files-put" });
     const kiri = createAgent({ name: "file-put-kiri", workspaceSlug: ws.slug }).id, leo = createAgent({ name: "file-put-leo", workspaceSlug: ws.slug }).id;

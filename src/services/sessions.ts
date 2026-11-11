@@ -47,6 +47,8 @@ export interface SessionSaveInput {
 export function saveTurn(input: Pick<SessionSaveInput, "workspace_id" | "agent_id" | "metadata" | "message_id"> & { session_id?: string; user?: string; assistant?: string }) {
   if (!input.user && !input.assistant) throw new QoopiaError("INVALID_INPUT", "Pass user and assistant (one turn), or role and content (one message)");
   const roles = (["user", "assistant"] as const).filter((role) => input[role]);
+  // Session writes take the write lock up front, like note writes [F-267]: a transaction that has already
+  // read cannot wait for another process (the nightly maintenance) and failed at once with SQLITE_BUSY [5.0.25].
   return db.transaction(() => {
     const key = db.query("SELECT api_key_hash FROM agents WHERE id=? AND workspace_id=?").get(input.agent_id, input.workspace_id) as { api_key_hash: string } | null;
     if (!key) throw unavailable();
@@ -63,7 +65,7 @@ export function saveTurn(input: Pick<SessionSaveInput, "workspace_id" | "agent_i
     const messages = roles.map((role) => saveMessage({ workspace_id: input.workspace_id, agent_id: input.agent_id, session_id, role, content: input[role]!,
       metadata: input.metadata, message_id: input.message_id && `${input.message_id}:${role}` }));
     return messages.every((m) => !m.saved) ? { saved: false, duplicate: true, session_id, messages } : { saved: true, session_id, messages };
-  })();
+  }).immediate();
 }
 
 /** Messages in one session. Both callers have already checked that the session is in the caller's
@@ -179,7 +181,7 @@ export function saveMessage(input: SessionSaveInput) {
     const seqRow = db.prepare(SESSION_MESSAGE_COUNT).get(input.session_id) as { c: number };
 
     return { saved: true, id, session_id: input.session_id, seq: seqRow.c, ...redacted };
-  })();
+  }).immediate();
 }
 
 export interface SessionRecentParams {
@@ -428,7 +430,7 @@ export function sessionSummarize(input: SessionSummarizeInput) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, input.workspace_id, input.session_id, input.agent_id, stored(summaryText), input.msg_start_id, input.msg_end_id, level, input.token_count ?? null, nowIso());
     return { saved: true, summary_id: id, range, level };
-  })();
+  }).immediate();
 }
 
 export function sessionExpand(p: {

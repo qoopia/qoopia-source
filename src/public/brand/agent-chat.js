@@ -22,6 +22,9 @@ window.QoopiaChat = function ({api, send, esc, humanSize, onUnauthorized}) {
     const catalogs=new Map(),catalogRequests=new Set(),catalogErrors=new Map();
     const root=$('#myAgent');let actionRevision=0,lastOperation=null,lastTelegramProblem='';let data,selected=null,busy=false,requestId=crypto.randomUUID(),lastMessages='',lastApprovals='',lastSetup='',lastOptions='',filesLoadedAt=0,filesLoading=false,olderRuns=[],allConversations=[],conversationOffset=0;
     const here=()=>!disposed&&root.isConnected,feedback=text=>{if(here())$('#agentFeedback').textContent=text;};
+    // Rebuilt only when its markup changes, compared by a marker: innerHTML already holds translated words and never equals
+    // markup with message tokens, so the link was rebuilt every 1.5 s and lost focus and clicks.
+    const telegramLink=html=>{const el=$('#telegramLink');if(el.dataset.content!==html){el.dataset.content=html;el.innerHTML=html;}};
     async function action(body){
       const priority=body.action==='stop';
       if(busy&&!priority)throw Error(QI.msg('Please wait for the current action'));
@@ -104,7 +107,12 @@ window.QoopiaChat = function ({api, send, esc, humanSize, onUnauthorized}) {
         if($('#agentRecover'))$('#agentRecover').onclick=()=>perform({action:data.running?'login':'start'});
         if($('#agentRecoverCode'))$('#agentRecoverCode').onclick=()=>{setup.scrollIntoView({block:'start'});($('#agentLoginCode')||setup.querySelector('.agent-login'))?.focus();};
         const approvals=JSON.stringify(data.approvals);
-        if(approvals!==lastApprovals){$('#agentApprovals').innerHTML=data.approvals.map(a=>'<section class="agent-approval"><h2>'+esc(QI.msg(a.method.includes('requestUserInput')?'Your answer':'Permission needed'))+'</h2><p>'+esc(a.params.reason||a.params.command||QI.msg('Review the requested access before continuing.'))+'</p><details><summary>'+esc(QI.msg('Details'))+'</summary><pre>'+esc(JSON.stringify(a.params,null,2))+'</pre></details>'+(a.params.questions||[]).map(q=>'<label for="question-'+esc(q.id)+'">'+esc(q.question)+'</label><input id="question-'+esc(q.id)+'" data-question="'+esc(q.id)+'">').join('')+'<div class="work-actions"><button data-approval="'+esc(a.id)+'" data-accept="true">'+esc(QI.msg(a.method.includes('requestUserInput')?'Answer':'Allow once'))+'</button><button data-approval="'+esc(a.id)+'" data-accept="false">'+esc(QI.msg('Decline'))+'</button></div></section>').join('');$('#agentApprovals').querySelectorAll('[data-approval]').forEach(b=>b.onclick=()=>{const answers=Object.fromEntries([...b.closest('section').querySelectorAll('[data-question]')].map(el=>[el.dataset.question,el.value]));perform({action:'approve',id:b.dataset.approval,accept:b.dataset.accept==='true',answers});});lastApprovals=approvals;}
+        if(approvals!==lastApprovals){
+          // Another request arriving rebuilds the list: an answer already typed, and the cursor in it, are carried over.
+          const box=$('#agentApprovals'),key=el=>el.closest('section').dataset.request+'\n'+el.dataset.question,typed=new Map([...box.querySelectorAll('[data-question]')].map(el=>[key(el),el.value])),active=box.contains(document.activeElement)&&document.activeElement.dataset?.question?key(document.activeElement):null;
+          box.innerHTML=data.approvals.map(a=>'<section class="agent-approval" data-request="'+esc(a.id)+'"><h2>'+esc(QI.msg(a.method.includes('requestUserInput')?'Your answer':'Permission needed'))+'</h2><p>'+esc(a.params.reason||a.params.command||QI.msg('Review the requested access before continuing.'))+'</p><details><summary>'+esc(QI.msg('Details'))+'</summary><pre>'+esc(JSON.stringify(a.params,null,2))+'</pre></details>'+(a.params.questions||[]).map(q=>'<label for="question-'+esc(q.id)+'">'+esc(q.question)+'</label><input id="question-'+esc(q.id)+'" data-question="'+esc(q.id)+'">').join('')+'<div class="work-actions"><button data-approval="'+esc(a.id)+'" data-accept="true">'+esc(QI.msg(a.method.includes('requestUserInput')?'Answer':'Allow once'))+'</button><button data-approval="'+esc(a.id)+'" data-accept="false">'+esc(QI.msg('Decline'))+'</button></div></section>').join('');
+          box.querySelectorAll('[data-question]').forEach(el=>{if(typed.get(key(el)))el.value=typed.get(key(el));if(key(el)===active)el.focus();});
+          box.querySelectorAll('[data-approval]').forEach(b=>b.onclick=()=>{const answers=Object.fromEntries([...b.closest('section').querySelectorAll('[data-question]')].map(el=>[el.dataset.question,el.value]));perform({action:'approve',id:b.dataset.approval,accept:b.dataset.accept==='true',answers});});lastApprovals=approvals;}
         if(!$('#agentFileDetails')){$('#agentFiles').innerHTML='<details id="agentFileDetails"><summary>'+esc(QI.msg('Files in your agent folder'))+'</summary><p id="agentFileStatus"></p><ul id="agentFileList"></ul></details>';$('#agentFileDetails').ontoggle=()=>{if($('#agentFileDetails').open)void loadFiles();};}
         if($('#agentFileDetails').open&&!filesLoading&&(!filesLoadedAt||Date.now()-filesLoadedAt>30000))void loadFiles();
         const tg=data.telegram;$('#telegramForm').hidden=!!tg.username;
@@ -114,7 +122,7 @@ window.QoopiaChat = function ({api, send, esc, humanSize, onUnauthorized}) {
         const pairing=data.telegram_setup?.pending,pending=pairing?.user;
         const telegramUrl=tg.linked?'https://t.me/'+tg.username:pairing?.url;
         const linkHtml=telegramUrl?'<a target="_blank" rel="noopener noreferrer" href="'+esc(telegramUrl)+'">'+esc(QI.msg(tg.linked?'Open your bot and send a message':'Open your bot and press Start'))+'</a>':data.telegram_setup?.expired?'<button id="telegramRetry">'+esc(QI.msg('Create a new pairing link'))+'</button>':'';
-        if($('#telegramLink').innerHTML!==linkHtml)$('#telegramLink').innerHTML=linkHtml;
+        telegramLink(linkHtml);
         if($('#telegramRetry'))$('#telegramRetry').onclick=()=>perform({action:'telegram-retry'});
 
         const confirmHtml=pending?'<p>'+esc(QI.msg('Confirm your Telegram account'))+': '+esc(pending.name)+' ('+esc(pending.id)+')</p><button id="telegramConfirmOwner">'+esc(QI.msg('This is my account'))+'</button>':'';
@@ -134,7 +142,7 @@ window.QoopiaChat = function ({api, send, esc, humanSize, onUnauthorized}) {
     $('#agentUseTelegram').onclick=()=>{
       $('#agentChannel').open=true;
       if(data?.telegram?.linked&&/^[A-Za-z0-9_]+$/.test(data.telegram.username)){
-        $('#telegramLink').innerHTML='<a target="_blank" rel="noopener noreferrer" href="https://t.me/'+esc(data.telegram.username)+'">'+esc(QI.msg('Open your bot and send a message'))+'</a>';
+        telegramLink('<a target="_blank" rel="noopener noreferrer" href="https://t.me/'+esc(data.telegram.username)+'">'+esc(QI.msg('Open your bot and send a message'))+'</a>');
         const link=$('#telegramLink a');link.scrollIntoView({block:'center'});link.focus();
         if(data.telegram.verified)return perform({action:'channel',channel:'telegram'});
         feedback(QI.msg('Open your bot and send a message'));return;
@@ -143,7 +151,7 @@ window.QoopiaChat = function ({api, send, esc, humanSize, onUnauthorized}) {
       $('#telegramToken').scrollIntoView({block:'center'});$('#telegramToken').focus();feedback(QI.msg('Connect your Telegram bot below, then confirm your account.'));
     };
     $('#agentCompose').onsubmit=async e=>{e.preventDefault();const text=$('#agentText').value.trim();if(!text)return;try{if(!selected){const created=await action({action:'new',title:text.slice(0,80)});selected=created.id;}await action({action:'send',conversation:selected,requestId,text});$('#agentText').value='';requestId=crypto.randomUUID();feedback('');await load();}catch(error){feedback(error.message);}};
-    $('#telegramForm').onsubmit=async e=>{e.preventDefault();const input=$('#telegramToken'),secret=input.value;input.value='';try{const result=await action({action:'telegram-connect',token:secret});$('#telegramLink').innerHTML='<a target="_blank" rel="noopener noreferrer" href="'+esc(result.url)+'">'+esc(QI.msg('Open your bot and press Start'))+'</a>';await load();}catch(error){feedback(error.message);}};
+    $('#telegramForm').onsubmit=async e=>{e.preventDefault();const input=$('#telegramToken'),secret=input.value;input.value='';try{const result=await action({action:'telegram-connect',token:secret});telegramLink('<a target="_blank" rel="noopener noreferrer" href="'+esc(result.url)+'">'+esc(QI.msg('Open your bot and press Start'))+'</a>');await load();}catch(error){feedback(error.message);}};
     refresh=load;void load();
     $('#agentText').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!$('#agentSend').disabled&&!busy)$('#agentCompose').requestSubmit();}});
   }
