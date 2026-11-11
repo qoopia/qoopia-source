@@ -1,5 +1,20 @@
 # Changelog
 
+## 5.0.25 — 2026-11-11
+
+A reliability release: a general audit of the whole product and 84 fixes. No migration.
+
+- Memory clients: a session the server refuses with 404 (after a profile is linked to another agent) continues under an id of its own instead of waiting for ever; `qoopia doctor` reports a session whose delivery stands still; a refused tail no longer holds back other sessions.
+- Code Mode: `qoopia_execute` runs guest code in a sandbox process of its own with a hard memory ceiling; a tight loop or an exhausted run is stopped at the deadline and the server keeps answering. At most four sandboxes run at once. `canon_match` and stored recall traces are not available inside Code Mode.
+- Long input: `file_put` checks base64 in linear time; the secret guard's password and JWT patterns run in linear time; ordinary identifiers are no longer taken for Qoopia keys; the secret check covers note tags, file names and text files.
+- Memory server: session writes wait for another process that holds the database; `/memory/continuity` answers 503 to a fault of the store; a failing summary backs off up to six hours; `file_put` is refused with APPROVAL_REQUIRED for an agent whose memory is «only on request»; note metadata is limited to 16 KiB.
+- Wake runner and services: an agent whose CLI or working folder no longer exists gets «did not finish» instead of stopping the runner; services start Qoopia by the installation's launcher; a managed Claude Code settings file with only harmless switches no longer blocks connecting Claude Code.
+- Sign-in: separate daily e-mail budgets for addresses with and without an account; visitors of a hosted dashboard cannot lock its owner out; IPv6 clients are counted by /64; `X-Forwarded-For` is read from the trusted side (`TRUST_CF_CONNECTING_IP=false` behind a proxy other than Cloudflare).
+- Dashboard: an API-key sign-in keeps working after the first page; failed reads answer with an error status; a proposed rule shows whose it is and what it replaces; pages no longer redraw over what the owner is doing.
+- Operations: off-host backup copies are pruned and an interrupted copy is never named as a backup; the system backup includes the server's configuration; the release monitor pages a flapping outage and reports a stopped host invariant monitor; the server's own operational alerts can reach a receiver on the same host.
+- Database schema 56, agent kit revision 18 (`file_put` is listed among the tools a manual agent cannot use; refresh with `qoopia instructions refresh --commit`).
+
+
 ## 5.0.24 — 2026-11-07
 
 - Lean tool catalog: direct MCP clients receive a short core set by default (9 tools, 5.1 KB instead of 42 tools, 34.7 KB in 5.0.23). Every other tool stays callable by its old name; `tool_search` returns matching tools and schemas on demand. Existing connections keep working without reconnection.
